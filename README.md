@@ -12,6 +12,7 @@ Technical spikes are validating Pi-native conventions before the runtime archite
 - **FNR-3011** adds a bounded parent/child `ima-mcp` gateway and semantic Vestige lifecycle proof.
 - **FNR-3012** adds a bounded dedicated vision-model image-routing and evidence-handoff probe.
 - **FNR-3013** adds package homes and explicit, opt-in model-role configuration.
+- **FNR-3014** adds bounded first-class agents, the `ima_delegate` production tool, source-aware discovery, and focused session inspection.
 
 ## Try the package
 
@@ -31,6 +32,10 @@ Then try:
 ```
 
 `/ima:delegate-probe`, `/ima:control-probe`, `/ima:gateway-probe`, and `/ima:vision-probe` are bounded technical-spike entry points, not production orchestration interfaces. The gateway probe performs one intentional semantic Vestige ingestion while Serena and Qdrant remain read-only. The control probe accepts `/ima:control-probe cancel <run-id> <a|b>` after startup; see its spike document for live acceptance steps and limitations.
+
+## Production agents
+
+`ima_delegate` is the model-callable production delegation tool. It accepts one to four complete, agent-defined assignments and fails closed for invalid authority, overlapping writer ownership, unavailable minimum capability, or unsafe reuse. Inspect resolved definitions with `/ima:agents`, session metadata with `/ima:agent-sessions`, and request a focused reusable continuation with `/ima:agent-follow-up <session-reference> <brief>`. See [`agents/README.md`](agents/README.md), [`policies/README.md`](policies/README.md), and [`docs/foundation/FNR-3014.md`](docs/foundation/FNR-3014.md).
 
 ## Configure model roles
 
