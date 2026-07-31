@@ -10,6 +10,7 @@ Technical spikes are validating Pi-native conventions before the runtime archite
 - **FNR-3009** adds an executable probe for independently routed child agents, bounded non-interactive tool authority, and persisted-session reuse through Pi's SDK. Live evidence currently proves exact cross-provider routing and session reopening; full authority and nonce-continuity acceptance is blocked until OpenAI API credits are restored.
 - **FNR-3010** adds a bounded parallel-control spike for concurrent child activity, exact cancellation with partial-effect disclosure, child-scoped destructive-action hooks, and explicit skill-load visibility.
 - **FNR-3011** adds a bounded parent/child `ima-mcp` gateway and semantic Vestige lifecycle proof.
+- **FNR-3012** adds a bounded dedicated vision-model image-routing and evidence-handoff probe.
 
 ## Try the package
 
@@ -25,9 +26,10 @@ Then try:
 /ima:delegate-probe start <provider>/<model>
 /ima:control-probe start <provider>/<model> <provider>/<model>
 /ima:gateway-probe <provider>/<model>
+/ima:vision-probe <provider>/<model> <absolute-image-path>
 ```
 
-`/ima:delegate-probe`, `/ima:control-probe`, and `/ima:gateway-probe` are bounded technical-spike entry points, not production orchestration interfaces. The gateway probe performs one intentional semantic Vestige ingestion while Serena and Qdrant remain read-only. The control probe accepts `/ima:control-probe cancel <run-id> <a|b>` after startup; see its spike document for live acceptance steps and limitations.
+`/ima:delegate-probe`, `/ima:control-probe`, `/ima:gateway-probe`, and `/ima:vision-probe` are bounded technical-spike entry points, not production orchestration interfaces. The gateway probe performs one intentional semantic Vestige ingestion while Serena and Qdrant remain read-only. The control probe accepts `/ima:control-probe cancel <run-id> <a|b>` after startup; see its spike document for live acceptance steps and limitations.
 
 ## Test
 
@@ -43,3 +45,4 @@ The default suite is provider-free and makes no paid model requests.
 - [`docs/spikes/FNR-3009.md`](docs/spikes/FNR-3009.md) — child routing, authority, and persisted-session reuse
 - [`docs/spikes/FNR-3010.md`](docs/spikes/FNR-3010.md) — parallel control, cancellation, narrow safety hooks, and skill observability
 - [`docs/spikes/FNR-3011.md`](docs/spikes/FNR-3011.md) — external gateway access and semantic lifecycle verification
+- [`docs/spikes/FNR-3012.md`](docs/spikes/FNR-3012.md) — dedicated vision-model routing and evidence handoff
