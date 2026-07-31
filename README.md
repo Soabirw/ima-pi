@@ -4,7 +4,12 @@ Pi-native IMA agent harness, packaged through Pi's standard Git/npm package mode
 
 ## Current status
 
-Technical spikes are validating Pi-native conventions before the runtime architecture is fixed. The first spike proves package resource discovery and namespaced commands.
+Technical spikes are validating Pi-native conventions before the runtime architecture is fixed.
+
+- **FNR-3008** proves package resource discovery, precedence, and namespaced commands.
+- **FNR-3009** adds an executable probe for independently routed child agents, bounded non-interactive tool authority, and persisted-session reuse through Pi's SDK. Live evidence currently proves exact cross-provider routing and session reopening; full authority and nonce-continuity acceptance is blocked until OpenAI API credits are restored.
+- **FNR-3010** adds a bounded parallel-control spike for concurrent child activity, exact cancellation with partial-effect disclosure, child-scoped destructive-action hooks, and explicit skill-load visibility.
+- **FNR-3011** adds a bounded parent/child `ima-mcp` gateway and semantic Vestige lifecycle proof.
 
 ## Try the package
 
@@ -12,7 +17,17 @@ Technical spikes are validating Pi-native conventions before the runtime archite
 pi -e .
 ```
 
-Then type `/ima:probe` or `/ima:prompt hello`.
+Then try:
+
+```text
+/ima:probe package
+/ima:prompt hello
+/ima:delegate-probe start <provider>/<model>
+/ima:control-probe start <provider>/<model> <provider>/<model>
+/ima:gateway-probe <provider>/<model>
+```
+
+`/ima:delegate-probe`, `/ima:control-probe`, and `/ima:gateway-probe` are bounded technical-spike entry points, not production orchestration interfaces. The gateway probe performs one intentional semantic Vestige ingestion while Serena and Qdrant remain read-only. The control probe accepts `/ima:control-probe cancel <run-id> <a|b>` after startup; see its spike document for live acceptance steps and limitations.
 
 ## Test
 
@@ -20,4 +35,11 @@ Then type `/ima:probe` or `/ima:prompt hello`.
 npm test
 ```
 
-See [`docs/spikes/FNR-3008.md`](docs/spikes/FNR-3008.md) for discovery evidence and precedence rules.
+The default suite is provider-free and makes no paid model requests.
+
+## Spike evidence
+
+- [`docs/spikes/FNR-3008.md`](docs/spikes/FNR-3008.md) — package discovery and precedence
+- [`docs/spikes/FNR-3009.md`](docs/spikes/FNR-3009.md) — child routing, authority, and persisted-session reuse
+- [`docs/spikes/FNR-3010.md`](docs/spikes/FNR-3010.md) — parallel control, cancellation, narrow safety hooks, and skill observability
+- [`docs/spikes/FNR-3011.md`](docs/spikes/FNR-3011.md) — external gateway access and semantic lifecycle verification

@@ -1,0 +1,14 @@
+{
+  "command": "vestige.save",
+  "scope": {
+    "type": "global"
+  },
+  "data": {
+    "type": "closeout",
+    "filePath": "/tmp/fnr-3011-closeout.md",
+    "memoryId": "8fd5f750-f2b7-4756-931a-926bf23ffafd",
+    "stored": true
+  },
+  "diagnostics": [],
+  "ok": true
+}

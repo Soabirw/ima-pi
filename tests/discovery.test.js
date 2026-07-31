@@ -45,6 +45,8 @@ test("package exposes namespaced extension, prompt, and skill commands", async (
 
   assert.equal(result.args, "package");
   assert.equal(commands.get("ima:probe")?.source, "extension");
+  assert.equal(commands.get("ima:delegate-probe")?.source, "extension");
+  assert.equal(commands.get("ima:control-probe")?.source, "extension");
   assert.equal(commands.get("ima:prompt")?.source, "prompt");
   assert.equal(commands.get("skill:ima-pi-probe")?.source, "skill");
 });
