@@ -1,0 +1,1 @@
+{"schemaVersion":1,"models":{"HIGH":{"provider":"openai-codex","model":"gpt-5.5","thinking":"high"},"MID":{"provider":"anthropic","model":"claude-sonnet-4-6","thinking":"medium"},"LOW":{"provider":"anthropic","model":"claude-haiku-4-5","thinking":"low"},"vision":{"provider":"anthropic","model":"claude-sonnet-4-6","thinking":"medium"}}}

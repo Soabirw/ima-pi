@@ -11,6 +11,7 @@ Technical spikes are validating Pi-native conventions before the runtime archite
 - **FNR-3010** adds a bounded parallel-control spike for concurrent child activity, exact cancellation with partial-effect disclosure, child-scoped destructive-action hooks, and explicit skill-load visibility.
 - **FNR-3011** adds a bounded parent/child `ima-mcp` gateway and semantic Vestige lifecycle proof.
 - **FNR-3012** adds a bounded dedicated vision-model image-routing and evidence-handoff probe.
+- **FNR-3013** adds package homes and explicit, opt-in model-role configuration.
 
 ## Try the package
 
@@ -30,6 +31,19 @@ Then try:
 ```
 
 `/ima:delegate-probe`, `/ima:control-probe`, `/ima:gateway-probe`, and `/ima:vision-probe` are bounded technical-spike entry points, not production orchestration interfaces. The gateway probe performs one intentional semantic Vestige ingestion while Serena and Qdrant remain read-only. The control probe accepts `/ima:control-probe cancel <run-id> <a|b>` after startup; see its spike document for live acceptance steps and limitations.
+
+## Configure model roles
+
+Create `~/.pi/agent/ima/config.json` (or trusted `.pi/ima/config.json`) to opt into a preset:
+
+```json
+{
+  "schemaVersion": 1,
+  "profile": "openai-codex-56"
+}
+```
+
+See [`config/README.md`](config/README.md) for schema, paths, trust, and precedence, and [`docs/foundation/FNR-3013.md`](docs/foundation/FNR-3013.md) for source-to-target coverage.
 
 ## Test
 
