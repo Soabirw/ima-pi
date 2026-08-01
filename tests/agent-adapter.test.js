@@ -37,12 +37,13 @@ const fakeSession = (overrides = {}) => {
   return { session, state };
 };
 
-const run = ({ assignments = [assignment("a")], sessions, signal } = {}) => {
+const run = ({ assignments = [assignment("a")], sessions, signal, onActivity, selectedConfig = config, selectedRuntime = runtime } = {}) => {
   let index = 0;
+  let tick = 1_000;
   return coordinateDelegation({
-    cwd: "/repo", request: { title: "work", assignments }, agents: [agent], config, runtime, signal,
+    cwd: "/repo", request: { title: "work", assignments }, agents: [agent], config: selectedConfig, runtime: selectedRuntime, runId: "tool-call", onActivity, signal,
     sessionStore: new Map(), dependencies: {
-      createManager: () => ({}), scopedTools: () => [], clock: () => "2026-07-31T20:00:00.000Z",
+      createManager: () => ({}), scopedTools: () => [], clock: () => "2026-07-31T20:00:00.000Z", activityClock: () => tick += 10,
       createSession: async () => sessions[index++],
     },
   });
@@ -146,4 +147,104 @@ test("idle is not success when terminal report or observed identity is invalid",
   const result = await run({ sessions: [{ session: wrongIdentity.session }] });
   assert.equal(result.status, "failed");
   assert.ok(result.results[0].completion.includes("runtime_identity_mismatch"));
+});
+
+test("emits ordered sanitized route, start, tool, and success activity with a final report", async () => {
+  const snapshots = [];
+  const child = fakeSession({ prompt: ({ listeners }) => {
+    for (const listener of listeners) {
+      listener({ type: "agent_start" });
+      listener({ type: "tool_execution_start", toolName: "read", args: { path: "/secret/credentials", token: "secret" } });
+    }
+  } });
+  const result = await run({ sessions: [{ session: child.session }], onActivity: (snapshot) => snapshots.push(snapshot) });
+  assert.equal(result.status, "succeeded");
+  assert.deepEqual(snapshots.map((snapshot) => snapshot.children[0].state), ["pending", "starting", "running", "running", "succeeded", "succeeded"]);
+  assert.equal(snapshots[3].children[0].activity, "tool:read");
+  assert.doesNotMatch(JSON.stringify(snapshots), /credentials|token|secret/);
+  assert.equal(result.activity.state, "succeeded");
+  assert.equal(result.report.state, "succeeded");
+  assert.equal(result.report.children[0].resumeReference, "a");
+});
+
+test("transient retry is visible and attempt two remains the maximum", async () => {
+  const snapshots = [];
+  const transient = fakeSession({ state: { messages: [{ role: "assistant", stopReason: "error", errorMessage: "provider timeout", content: [] }] }, text: "" });
+  const success = fakeSession();
+  const result = await run({ sessions: [{ session: transient.session }, { session: success.session }], onActivity: (snapshot) => snapshots.push(snapshot) });
+  assert.equal(result.status, "succeeded");
+  const retry = snapshots.find((snapshot) => snapshot.children[0].state === "retrying").children[0];
+  assert.equal(retry.attempt, 2);
+  assert.equal(retry.retryReason, "transient-provider");
+  assert.equal(result.results[0].attempts, 2);
+});
+
+test("abort activity is emitted before child abort, preserves a completed sibling, and discloses writer scope", async () => {
+  const controller = new AbortController();
+  const snapshots = [];
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let abortSawCancelling = false;
+  const completed = fakeSession();
+  const writing = fakeSession({ waitForIdle: () => gate, abort: () => { abortSawCancelling = snapshots.some((snapshot) => snapshot.children[1]?.state === "cancelling"); release(); } });
+  const promise = run({
+    assignments: [assignment("done", []), assignment("writing", ["owned/write"])],
+    sessions: [{ session: completed.session }, { session: writing.session }], signal: controller.signal,
+    onActivity: (snapshot) => snapshots.push(snapshot),
+  });
+  for (let i = 0; i < 20 && !snapshots.some((snapshot) => snapshot.children[0].state === "succeeded"); i += 1) await Promise.resolve();
+  controller.abort();
+  const result = await promise;
+  assert.equal(abortSawCancelling, true);
+  assert.equal(result.status, "cancelled");
+  assert.equal(result.activity.children[0].state, "succeeded");
+  assert.equal(result.activity.children[1].state, "cancelled");
+  assert.deepEqual(result.report.partialState.possibleWriteScopes, ["owned/write"]);
+  assert.equal(result.report.children[1].resumeReference, null);
+  assert.equal(result.report.safeNextAction.code, "inspect-partial-state");
+});
+
+test("unsafe mutation emits visible interception and reports unsafe partial state", async () => {
+  const snapshots = [];
+  const child = fakeSession({ prompt: ({ listeners }) => { for (const listener of listeners) listener({ type: "tool_execution_start", toolName: "write", args: { path: "outside/file" } }); } });
+  const result = await run({ sessions: [{ session: child.session }], onActivity: (snapshot) => snapshots.push(snapshot) });
+  assert.equal(result.status, "failed");
+  assert.ok(snapshots.some((snapshot) => snapshot.children[0].activity === "safety:intercepted"));
+  assert.equal(result.report.safeNextAction.code, "correct-safety-boundary");
+  assert.deepEqual(result.report.partialState.unsafeAssignmentIds, ["a"]);
+});
+
+test("missing exact model blocks without creating a child and exposes escalation", async () => {
+  let created = false;
+  const snapshots = [];
+  const missingRuntime = { getModels: () => [], getModel: () => undefined };
+  const result = await run({ sessions: [{ session: fakeSession().session }], selectedRuntime: missingRuntime, onActivity: (snapshot) => snapshots.push(snapshot) });
+  assert.equal(result.status, "failed");
+  assert.equal(result.results[0].status, "blocked");
+  assert.equal(result.results[0].attempts, 0);
+  assert.match(result.activity.children[0].escalation, /minimum capability/);
+  assert.equal(result.report.safeNextAction.code, "restore-exact-model");
+  assert.equal(created, false);
+});
+
+test("credential-like provider errors are redacted from activity and outcome reports", async () => {
+  const snapshots = [];
+  const child = fakeSession({
+    state: { messages: [{ role: "assistant", stopReason: "error", errorMessage: "authorization=BearerVerySecret quota exceeded", content: [] }] },
+    text: "",
+  });
+  const result = await run({ sessions: [{ session: child.session }], onActivity: (snapshot) => snapshots.push(snapshot) });
+  assert.equal(result.status, "failed");
+  assert.equal(result.results[0].attempts, 1);
+  assert.equal(result.report.safeNextAction.code, "restore-exact-model");
+  assert.match(result.report.blocker, /authorization=\[redacted\] quota exceeded/);
+  assert.doesNotMatch(JSON.stringify({ snapshots, result }), /BearerVerySecret/);
+});
+
+test("throwing activity observer never changes coordinator completion or cleanup", async () => {
+  const child = fakeSession();
+  const result = await run({ sessions: [{ session: child.session }], onActivity: () => { throw new Error("projection failed"); } });
+  assert.equal(result.status, "succeeded");
+  assert.equal(child.state.disposes, 1);
+  assert.equal(child.state.unsubscribes, 1);
 });

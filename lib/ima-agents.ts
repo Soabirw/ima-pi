@@ -97,7 +97,7 @@ export async function loadAgentDefinitions(input: { paths: ImaAgentPaths; projec
     if (source === "project" && !input.projectTrusted) continue;
     let names: string[]; try { names = await readDirectory(directory); } catch (error) { if (isMissing(error)) continue; diagnostics.push(diagnostic("agent_directory_unreadable", source, directory, "Agent directory cannot be read.")); continue; }
     let directoryReal: string; try { directoryReal = await resolvePath(directory); } catch { diagnostics.push(diagnostic("agent_directory_unreadable", source, directory, "Agent directory cannot be resolved.")); continue; }
-    for (const name of names.filter((entry) => entry.endsWith(".md")).sort()) {
+    for (const name of names.filter((entry) => entry.endsWith(".md") && entry.toLowerCase() !== "readme.md").sort()) {
       const path = join(directory, name); try {
         const info = await stat(path); const real = await resolvePath(path);
         if (!info.isFile() || !(real === directoryReal || real.startsWith(`${directoryReal}/`))) { diagnostics.push(diagnostic("agent_path_unsafe", source, path, "Agent must be a regular file inside its source directory.")); continue; }

@@ -16,6 +16,15 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { deriveAgentPaths, loadAgentDefinitions, type AgentDefinition } from "../lib/ima-agents.ts";
 import {
+  buildDelegationOutcomeReport,
+  classifyDelegationActivity,
+  createDelegationActivityState,
+  reduceDelegationActivity,
+  renderDelegationActivity,
+  type DelegationActivityEvent,
+  type DelegationActivityState,
+} from "../lib/ima-activity.ts";
+import {
   agentContractFingerprint,
   buildChildBrief,
   canResumeSession,
@@ -41,6 +50,7 @@ const sessions = new Map<string, SessionRecord>();
 const agentDir = resolve(homedir(), ".pi", "agent");
 const projectTrusted = () => process.env.IMA_PI_PROJECT_TRUSTED === "true";
 const agentToolNames: Record<string, string> = { grep: "grep", find: "find", ls: "ls", read: "read", write: "write", edit: "edit", bash: "bash", test: "bash", image: "read" };
+const activityProjectionKey = "ima-delegation";
 const text = (value: unknown) => typeof value === "string" ? value.trim() : "";
 const now = () => new Date().toISOString();
 
@@ -163,6 +173,7 @@ type CoordinatorDependencies = {
   createManager?: (cwd: string) => unknown;
   scopedTools?: typeof createScopedTools;
   clock?: () => string;
+  activityClock?: () => number;
 };
 
 type CoordinatorInput = {
@@ -171,6 +182,8 @@ type CoordinatorInput = {
   agents: AgentDefinition[];
   config: any;
   runtime: any;
+  runId?: string;
+  onActivity?: (snapshot: DelegationActivityState) => void;
   signal?: AbortSignal;
   sessionStore?: Map<string, SessionRecord>;
   dependencies?: CoordinatorDependencies;
@@ -185,9 +198,15 @@ export async function coordinateDelegation(input: CoordinatorInput) {
     createManager: input.dependencies?.createManager ?? ((cwd: string) => SessionManager.create(cwd)),
     scopedTools: input.dependencies?.scopedTools ?? createScopedTools,
     clock: input.dependencies?.clock ?? now,
+    activityClock: input.dependencies?.activityClock ?? Date.now,
   };
   const store = input.sessionStore ?? sessions;
   let state = createDelegationState(input.request);
+  let activity = createDelegationActivityState({ runId: input.runId ?? "delegation", request: input.request, agents: input.agents, at: deps.activityClock() });
+  const emit = (event: DelegationActivityEvent) => {
+    activity = reduceDelegationActivity(activity, event);
+    try { input.onActivity?.(activity); } catch {}
+  };
   let unsafe = false;
   let cancelled = input.signal?.aborted === true;
   const unsafeEvidence: Array<{ assignmentId: string; writeScope: string[] }> = [];
@@ -196,23 +215,46 @@ export async function coordinateDelegation(input: CoordinatorInput) {
   const markUnsafe = (assignment: DelegationAssignment) => {
     unsafe = true;
     if (!unsafeEvidence.some(({ assignmentId }) => assignmentId === assignment.id)) unsafeEvidence.push({ assignmentId: assignment.id, writeScope: [...assignment.writeScope] });
+    emit({ type: "safety-intercepted", id: assignment.id, at: deps.activityClock(), blocker: "unsafe-partial-state", possiblePartialWriteScopes: assignment.writeScope });
     state = reduceDelegationEvent(state, { type: "failed", id: assignment.id, detail: "unsafe-partial-state", partialEffects: true });
     void abortLive();
   };
-  const onAbort = () => { cancelled = true; void abortLive(); };
+  const requestCancellation = () => {
+    cancelled = true;
+    for (const assignment of input.request.assignments) {
+      const current = activity.children.find((child) => child.assignmentId === assignment.id);
+      if (current && !["succeeded", "blocked", "failed", "cancelled"].includes(current.state)) {
+        emit({ type: "cancel-requested", id: assignment.id, at: deps.activityClock(), possiblePartialWriteScopes: assignment.writeScope.length ? assignment.writeScope : [] });
+      }
+    }
+  };
+  const onAbort = () => { requestCancellation(); void abortLive(); };
+  if (cancelled) requestCancellation();
   input.signal?.addEventListener("abort", onAbort, { once: true });
 
   const catalog = input.runtime.getModels().map((model: any) => ({ provider: model.provider, model: model.id, input: model.input }));
   const runAssignment = async (assignment: DelegationAssignment) => {
     const agent = input.agents.find((item) => item.name === assignment.agent)!;
     const route = resolveAgentRoute({ agent, config: input.config, catalog });
-    if (!route.route) return { id: assignment.id, status: "blocked", attempts: 0, error: route.error, escalation: route.escalation };
+    if (!route.route) {
+      emit({ type: "blocked", id: assignment.id, at: deps.activityClock(), blocker: route.error ?? "model_unavailable", escalation: route.escalation });
+      return { id: assignment.id, status: "blocked", attempts: 0, error: route.error, failure: "model-unavailable" as const, escalation: route.escalation, resumeReference: null };
+    }
+    emit({ type: "route-resolved", id: assignment.id, at: deps.activityClock(), route: route.route });
     const model = input.runtime.getModel(route.route.provider, route.route.model);
-    if (!model) return { id: assignment.id, status: "blocked", attempts: 0, error: "model_unavailable" };
+    if (!model) {
+      emit({ type: "blocked", id: assignment.id, at: deps.activityClock(), blocker: "model_unavailable", escalation: "minimum capability is unavailable" });
+      return { id: assignment.id, status: "blocked", attempts: 0, error: "model_unavailable", failure: "model-unavailable" as const, escalation: "minimum capability is unavailable", resumeReference: null };
+    }
     let attempt = 0;
     while (attempt < 2) {
-      if (cancelled || unsafe) return { id: assignment.id, status: "cancelled", attempts: attempt, error: unsafe ? "unsafe-partial-state" : "cancelled" };
+      if (cancelled || unsafe) {
+        const failure = "unsafe-partial-state" as const;
+        emit({ type: "cancelled", id: assignment.id, at: deps.activityClock(), blocker: unsafe ? failure : "cancelled", possiblePartialWriteScopes: assignment.writeScope.length ? assignment.writeScope : [] });
+        return { id: assignment.id, status: "cancelled", attempts: attempt, error: unsafe ? failure : "cancelled", failure, resumeReference: null };
+      }
       attempt += 1;
+      emit({ type: "child-started", id: assignment.id, at: deps.activityClock(), attempt });
       let session: any;
       let unsubscribe = () => undefined;
       try {
@@ -229,7 +271,9 @@ export async function coordinateDelegation(input: CoordinatorInput) {
         session = created.session;
         live.set(assignment.id, session);
         unsubscribe = session.subscribe?.((event: any) => {
-          if (event?.type === "agent_start") state = reduceDelegationEvent(state, { type: "started", id: assignment.id });
+          if (event?.type === "agent_start") emit({ type: "child-running", id: assignment.id, at: deps.activityClock(), attempt });
+          if (event?.type === "agent_settled") emit({ type: "child-settled", id: assignment.id, at: deps.activityClock() });
+          if (event?.type === "tool_execution_start") emit({ type: "child-activity", id: assignment.id, at: deps.activityClock(), category: classifyDelegationActivity(event.toolName, event.args) });
           if (mutationAttemptUnsafe(event, assignment) || (event?.type === "tool_execution_end" && event.isError && ["write", "edit", "bash"].includes(event.toolName))) markUnsafe(assignment);
         }) ?? unsubscribe;
         if (cancelled || unsafe) { await session.abort?.(); throw new Error(cancelled ? "cancelled" : "unsafe-partial-state"); }
@@ -245,9 +289,14 @@ export async function coordinateDelegation(input: CoordinatorInput) {
           const error = providerError || completion.failures.join(",");
           const failure = providerError ? classifyChildFailure(providerError) : "agent-contract";
           const recovery = decideRecovery({ failure, retries: attempt - 1 });
-          if (recovery.retry && !cancelled && !unsafe) continue;
-          state = reduceDelegationEvent(state, { type: cancelled ? "cancelled" : "failed", id: assignment.id, detail: sanitizeDelegationError(error), partialEffects: unsafe || (cancelled && assignment.writeScope.length > 0) });
-          return { id: assignment.id, status: cancelled ? "cancelled" : "failed", attempts: attempt, error: sanitizeDelegationError(error), completion: completion.failures };
+          if (recovery.retry && !cancelled && !unsafe) {
+            emit({ type: "retrying", id: assignment.id, at: deps.activityClock(), attempt: 2, reason: failure });
+            continue;
+          }
+          const detail = sanitizeDelegationError(error);
+          emit({ type: cancelled ? "cancelled" : "failed", id: assignment.id, at: deps.activityClock(), blocker: detail, possiblePartialWriteScopes: cancelled && assignment.writeScope.length ? assignment.writeScope : [] });
+          state = reduceDelegationEvent(state, { type: cancelled ? "cancelled" : "failed", id: assignment.id, detail, partialEffects: unsafe || (cancelled && assignment.writeScope.length > 0) });
+          return { id: assignment.id, status: cancelled ? "cancelled" : "failed", attempts: attempt, error: detail, failure, completion: completion.failures, resumeReference: null };
         }
         const timestamp = deps.clock();
         const record: SessionRecord = {
@@ -259,23 +308,29 @@ export async function coordinateDelegation(input: CoordinatorInput) {
           createdAt: timestamp, updatedAt: timestamp,
         };
         store.set(record.reference, record);
+        emit({ type: "succeeded", id: assignment.id, at: deps.activityClock() });
         state = reduceDelegationEvent(state, { type: "succeeded", id: assignment.id });
-        return { id: assignment.id, status: "succeeded", attempts: attempt, report, provider: record.provider, model: record.model, thinking: record.thinking, sessionId: record.sessionId, sessionFile: record.sessionFile };
+        return { id: assignment.id, status: "succeeded", attempts: attempt, report, provider: record.provider, model: record.model, thinking: record.thinking, sessionId: record.sessionId, sessionFile: record.sessionFile, resumeReference: record.followUpAllowed ? record.reference : null };
       } catch (error) {
         const failure = unsafe ? "unsafe-partial-state" : cancelled ? "unsafe-partial-state" : classifyChildFailure(error);
         const recovery = decideRecovery({ failure, retries: attempt - 1 });
-        if (recovery.retry && !cancelled && !unsafe) continue;
+        if (recovery.retry && !cancelled && !unsafe) {
+          emit({ type: "retrying", id: assignment.id, at: deps.activityClock(), attempt: 2, reason: failure });
+          continue;
+        }
         const detail = unsafe ? "unsafe-partial-state" : cancelled ? "cancelled" : sanitizeDelegationError(error);
         const possibleWrites = assignment.writeScope.length > 0;
+        emit({ type: cancelled || unsafe ? "cancelled" : "failed", id: assignment.id, at: deps.activityClock(), blocker: detail, possiblePartialWriteScopes: (cancelled || unsafe) && possibleWrites ? assignment.writeScope : [] });
         state = reduceDelegationEvent(state, { type: cancelled ? "cancelled" : "failed", id: assignment.id, detail, partialEffects: unsafe || (cancelled && possibleWrites) });
-        return { id: assignment.id, status: cancelled ? "cancelled" : "failed", attempts: attempt, error: detail };
+        return { id: assignment.id, status: cancelled ? "cancelled" : "failed", attempts: attempt, error: detail, failure, resumeReference: null };
       } finally {
         live.delete(assignment.id);
         unsubscribe();
         session?.dispose?.();
       }
     }
-    return { id: assignment.id, status: "failed", attempts: attempt, error: "terminal" };
+    emit({ type: "failed", id: assignment.id, at: deps.activityClock(), blocker: "terminal" });
+    return { id: assignment.id, status: "failed", attempts: attempt, error: "terminal", failure: "terminal" as const, resumeReference: null };
   };
 
   try {
@@ -283,8 +338,12 @@ export async function coordinateDelegation(input: CoordinatorInput) {
     if (cancelled || unsafe) await abortLive();
     const results = settled.map((entry, index) => entry.status === "fulfilled"
       ? entry.value
-      : { id: input.request.assignments[index].id, status: "failed", attempts: 0, error: sanitizeDelegationError(entry.reason) });
-    return { status: results.every((result) => result.status === "succeeded") ? "succeeded" : cancelled ? "cancelled" : "failed", results, state: { ...state, partialEffects: state.partialEffects || unsafe }, partialEffects: state.partialEffects || unsafe, unsafeEvidence };
+      : { id: input.request.assignments[index].id, status: "failed", attempts: 0, error: sanitizeDelegationError(entry.reason), failure: classifyChildFailure(entry.reason), resumeReference: null });
+    const status = results.every((result) => result.status === "succeeded") ? "succeeded" : cancelled ? "cancelled" : "failed";
+    emit({ type: "run-settled", at: deps.activityClock(), state: status });
+    const partialEffects = state.partialEffects || unsafe;
+    const report = buildDelegationOutcomeReport({ activity, results, partialEffects, unsafeEvidence });
+    return { status, results, state: { ...state, partialEffects }, activity, report, partialEffects, unsafeEvidence };
   } finally {
     input.signal?.removeEventListener("abort", onAbort);
     await abortLive();
@@ -361,13 +420,31 @@ export default function agents(pi: ExtensionAPI) {
   pi.registerTool({
     name: "ima_delegate", label: "IMA delegate", description: "Delegate one to four bounded, agent-defined assignments.", executionMode: "sequential",
     parameters: Type.Object({ title: Type.String(), assignments: Type.Array(Type.Object({ id: Type.String(), agent: Type.String(), goal: Type.String(), context: Type.String(), paths: Type.Array(Type.String()), constraints: Type.Array(Type.String()), nonGoals: Type.Array(Type.String()), expectedOutput: Type.String(), writeScope: Type.Array(Type.String()) }), { minItems: 1, maxItems: 4 }) }),
-    execute: async (_id, request, signal, _update, ctx) => {
-      const { config, loaded, runtime } = await runtimeContext(ctx.cwd);
-      if (!config || loaded.diagnostics.length) return { content: [{ type: "text", text: JSON.stringify({ status: "blocked", errors: [...config?.diagnostics ?? [], ...loaded.diagnostics] }) }], details: { status: "blocked" } };
-      const valid = validateDelegationRequest(request, loaded.definitions);
-      if (!valid.valid) return { content: [{ type: "text", text: JSON.stringify({ status: "blocked", errors: valid.errors }) }], details: { status: "blocked" } };
-      const result = await coordinateDelegation({ cwd: ctx.cwd, request, agents: loaded.definitions, config, runtime, signal, sessionStore: sessions });
-      return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
+    execute: async (toolCallId, request, signal, onUpdate, ctx) => {
+      let projectionDegraded = false;
+      const project = (snapshot: DelegationActivityState) => {
+        const lines = renderDelegationActivity(snapshot, Date.now());
+        try { onUpdate?.({ content: [{ type: "text", text: lines.join("\n") }], details: { status: "running", activity: snapshot } }); } catch { projectionDegraded = true; }
+        if (ctx.mode === "tui") {
+          try { ctx.ui.setWidget(activityProjectionKey, lines); ctx.ui.setStatus(activityProjectionKey, `delegation: ${snapshot.state}`); } catch { projectionDegraded = true; }
+        }
+      };
+      let result: Awaited<ReturnType<typeof coordinateDelegation>>;
+      try {
+        const { config, loaded, runtime } = await runtimeContext(ctx.cwd);
+        if (!config || loaded.diagnostics.length) return { content: [{ type: "text", text: JSON.stringify({ status: "blocked", errors: [...config?.diagnostics ?? [], ...loaded.diagnostics] }) }], details: { status: "blocked" } };
+        const valid = validateDelegationRequest(request, loaded.definitions);
+        if (!valid.valid) return { content: [{ type: "text", text: JSON.stringify({ status: "blocked", errors: valid.errors }) }], details: { status: "blocked" } };
+        result = await coordinateDelegation({ cwd: ctx.cwd, request, agents: loaded.definitions, config, runtime, runId: toolCallId, onActivity: project, signal, sessionStore: sessions });
+      } finally {
+        if (ctx.mode === "tui") {
+          try { ctx.ui.setWidget(activityProjectionKey, undefined); } catch { projectionDegraded = true; }
+          try { ctx.ui.setStatus(activityProjectionKey, undefined); } catch { projectionDegraded = true; }
+        }
+      }
+      // Build the terminal report only after clearing so clear failures remain observable.
+      const details = { ...result, projectionDegraded, report: { ...result.report, projectionDegraded } };
+      return { content: [{ type: "text", text: JSON.stringify({ status: result.status, results: result.results, report: details.report }) }], details };
     },
   });
   pi.registerCommand("ima:agents", { description: "List resolved IMA agents.", handler: async (_args, ctx) => { const loaded = await definitions(ctx.cwd); const rows = loaded.definitions.map(({ name, source, tier, authority, description }) => `${name}\t${source}\t${tier}\t${authority}\t${description}`); ctx.ui.notify(rows.join("\n") || "No valid IMA agents.", loaded.diagnostics.length ? "warning" : "info"); } });
