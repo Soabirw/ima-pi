@@ -17,6 +17,7 @@ Technical spikes are validating Pi-native conventions before the runtime archite
 - **FNR-3016** adds Serena-first production context assembly and semantically verified Vestige lifecycle handoffs through external IMA service boundaries.
 - **FNR-3017** adds production prompts for approved product requirements, two-tier PM decomposition, and one-unit technical planning.
 - **FNR-3018** adds plan-bound MID implementation prompts for generic, JavaScript/TypeScript, and production WordPress/PHP work.
+- **FNR-3019** adds bounded testing, independent review, narrow finding verification, and documentation/learning closeout prompts.
 
 ## Try the package
 
@@ -50,6 +51,13 @@ Each resulting Story/Task independently enters `plan -> implement -> test -> rev
 - `/ima:implement-wp [approved-plan-source]` executes a plan for production WordPress/PHP work with nonce, authorization, sanitization, contextual escaping, and prepared-query requirements.
 
 All implementation prompts require an approved implementation-grade plan, work in the current session with configured MID intent, may delegate bounded work, stop with evidence on material contradictions, and persist verified implementation lifecycle evidence. They run only immediate plan-authorized verification and never automatically enter formal testing or review. See [`docs/foundation/FNR-3018.md`](docs/foundation/FNR-3018.md) for source disposition, routing, safeguards, and live acceptance limitations.
+
+- `/ima:test [implementation-source]` performs bounded test work without silently changing production behavior.
+- `/ima:review [implementation-and-test-source]` runs a fresh product-read-only review and fresh second opinions for Critical/Warning candidates.
+- `/ima:review-verify [finding-brief]` returns exactly one narrow finding verdict.
+- `/ima:document [completed-lifecycle-source]` updates only exact local documentation targets and prepares parent-owned external update manifests.
+
+See [`docs/foundation/FNR-3019.md`](docs/foundation/FNR-3019.md) for authority, review verification fallback, knowledge routing, and limitations.
 
 ## Production agents
 

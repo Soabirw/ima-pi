@@ -33,6 +33,7 @@ import {
   createDelegationState,
   decideRecovery,
   deriveToolAuthority,
+  isDocumentationTarget,
   isOwnedTarget,
   reduceDelegationEvent,
   resolveAgentRoute,
@@ -114,19 +115,20 @@ type ScopedToolInput = {
 // enforce realpath containment before write/edit/bash effects.
 export function createScopedTools(input: ScopedToolInput): ToolDefinition[] {
   const { cwd, assignment, agent } = input;
+  if (agent.authority === "document-write" && assignment.writeScope.some((path) => !isDocumentationTarget(path))) throw new Error("document_scope_invalid");
   const enabled = new Set(deriveToolAuthority(agent));
   const custom: ToolDefinition[] = [];
   if (enabled.has("write")) {
     custom.push(createWriteToolDefinition(cwd, { operations: {
       mkdir: async (path) => { await assertOwnedPath(cwd, path, assignment.writeScope, true); await mkdir(path, { recursive: true }); },
-      writeFile: async (path, content) => { await assertOwnedPath(cwd, path, assignment.writeScope); await writeFile(path, content); },
+      writeFile: async (path, content) => { await assertOwnedPath(cwd, path, assignment.writeScope); if (agent.authority === "document-write" && !isDocumentationTarget(relative(cwd, path))) throw new Error("documentation_target_required"); await writeFile(path, content); },
     } }));
   }
   if (enabled.has("edit")) {
     custom.push(createEditToolDefinition(cwd, { operations: {
-      readFile: async (path) => { await assertOwnedPath(cwd, path, assignment.writeScope); return readFile(path); },
-      access: async (path) => { await assertOwnedPath(cwd, path, assignment.writeScope); await lstat(path); },
-      writeFile: async (path, content) => { await assertOwnedPath(cwd, path, assignment.writeScope); await writeFile(path, content); },
+      readFile: async (path) => { await assertOwnedPath(cwd, path, assignment.writeScope); if (agent.authority === "document-write" && !isDocumentationTarget(relative(cwd, path))) throw new Error("documentation_target_required"); return readFile(path); },
+      access: async (path) => { await assertOwnedPath(cwd, path, assignment.writeScope); if (agent.authority === "document-write" && !isDocumentationTarget(relative(cwd, path))) throw new Error("documentation_target_required"); await lstat(path); },
+      writeFile: async (path, content) => { await assertOwnedPath(cwd, path, assignment.writeScope); if (agent.authority === "document-write" && !isDocumentationTarget(relative(cwd, path))) throw new Error("documentation_target_required"); await writeFile(path, content); },
     } }));
   }
   if (enabled.has("bash") || enabled.has("test")) {
@@ -135,7 +137,7 @@ export function createScopedTools(input: ScopedToolInput): ToolDefinition[] {
       exec: async (command, commandCwd, options) => {
         const classification = classifyBashCommand(command, assignment.writeScope);
         if (classification.kind === "unsafe-ambiguous") throw new Error(`ownership_bash_denied:${classification.reason}`);
-        for (const path of classification.paths) await assertOwnedPath(cwd, resolve(commandCwd, path), assignment.writeScope);
+        for (const path of classification.paths) { await assertOwnedPath(cwd, resolve(commandCwd, path), assignment.writeScope); if (agent.authority === "document-write" && !isDocumentationTarget(path)) throw new Error("documentation_target_required"); }
         return local.exec(command, commandCwd, options);
       },
     } }));
@@ -283,7 +285,7 @@ export async function coordinateDelegation(input: CoordinatorInput) {
         const final = finalAssistant(session);
         const report = session.getLastAssistantText?.() ?? "";
         const observed = observedIdentity(session);
-        const completion = validateDelegationCompletion({ final, text: report, requiredSections: agent.result.requiredSections, expected: route.route, observed });
+        const completion = validateDelegationCompletion({ final, text: report, requiredSections: agent.result.requiredSections, resultFormat: agent.result.format, expected: route.route, observed });
         if (!completion.ok) {
           const providerError = final?.errorMessage;
           const error = providerError || completion.failures.join(",");
@@ -395,7 +397,7 @@ export async function runFocusedContinuation(input: ContinuationInput) {
       const final = finalAssistant(session);
       const report = session.getLastAssistantText?.() ?? "";
       const observed = observedIdentity(session);
-      const completion = validateDelegationCompletion({ final, text: report, requiredSections: input.agent.result.requiredSections, expected: { provider: input.record.provider, model: input.record.model, thinking: input.record.thinking, sessionId: input.record.sessionId, sessionFile: input.record.sessionFile }, observed });
+      const completion = validateDelegationCompletion({ final, text: report, requiredSections: input.agent.result.requiredSections, resultFormat: input.agent.result.format, expected: { provider: input.record.provider, model: input.record.model, thinking: input.record.thinking, sessionId: input.record.sessionId, sessionFile: input.record.sessionFile }, observed });
       if (!completion.ok) {
         const failure = final?.errorMessage ? classifyChildFailure(final.errorMessage) : "agent-contract";
         if (attempt === 0 && decideRecovery({ failure, retries: 0 }).retry) continue;

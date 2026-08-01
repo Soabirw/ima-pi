@@ -3,9 +3,11 @@ import { join } from "node:path";
 
 export const IMA_CONFIG_SCHEMA_VERSION = 1;
 export const IMA_MODEL_ROLES = ["HIGH", "MID", "LOW", "vision"] as const;
+export const IMA_OPTIONAL_MODEL_ROLES = ["reviewVerify"] as const;
+export const IMA_ALL_MODEL_ROLES = [...IMA_MODEL_ROLES, ...IMA_OPTIONAL_MODEL_ROLES] as const;
 export const IMA_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
-type ImaRole = (typeof IMA_MODEL_ROLES)[number];
+export type ImaRole = (typeof IMA_ALL_MODEL_ROLES)[number];
 type ThinkingLevel = (typeof IMA_THINKING_LEVELS)[number];
 export type ConfigSource = "package" | "preset" | "user" | "project" | "resolved";
 export type ConfigDiagnostic = { code: string; source: ConfigSource; path: string[]; message: string };
@@ -35,7 +37,7 @@ export function validateConfigLayer(value: unknown, source: ConfigSource): Confi
     else {
       const models: Partial<Record<ImaRole, ImaModelMapping>> = {};
       for (const [role, raw] of Object.entries(value.models)) {
-        if (!IMA_MODEL_ROLES.includes(role as ImaRole)) { diagnostics.push(diagnostic("config_unknown_role", source, ["models", role], "Unknown model role.")); continue; }
+        if (!IMA_ALL_MODEL_ROLES.includes(role as ImaRole)) { diagnostics.push(diagnostic("config_unknown_role", source, ["models", role], "Unknown model role.")); continue; }
         if (!object(raw)) { diagnostics.push(diagnostic("config_invalid_model", source, ["models", role], "Role must be an object.")); continue; }
         for (const key of Object.keys(raw)) if (!new Set(["provider", "model", "thinking"]).has(key)) diagnostics.push(diagnostic("config_unknown_key", source, ["models", role, key], "Unknown role key."));
         const provider = typeof raw.provider === "string" ? raw.provider.trim() : "";
@@ -58,7 +60,7 @@ export function resolveSelectedProfile(packageDefaults: ValidConfigLayer, user: 
 export function mergeConfigLayers(input: { packageDefaults: ValidConfigLayer; preset: ValidConfigLayer | null; user: ValidConfigLayer | null; project: ValidConfigLayer | null }): ResolvedImaConfig {
   const profile = resolveSelectedProfile(input.packageDefaults, input.user, input.project);
   const models: Partial<Record<ImaRole, ResolvedRole>> = {};
-  for (const [source, layer] of [["preset", input.preset], ["user", input.user], ["project", input.project]] as const) for (const role of IMA_MODEL_ROLES) if (layer?.models?.[role]) models[role] = { ...cloneRole(layer.models[role]), source };
+  for (const [source, layer] of [["preset", input.preset], ["user", input.user], ["project", input.project]] as const) for (const role of IMA_ALL_MODEL_ROLES) if (layer?.models?.[role]) models[role] = { ...cloneRole(layer.models[role]), source };
   const missingRoles = IMA_MODEL_ROLES.filter((role) => !models[role]);
   const diagnostics = missingRoles.length ? [diagnostic("config_incomplete", "resolved", ["models"], "All model roles require explicit mappings.")] : [];
   return { schemaVersion: 1, profile, models, complete: !missingRoles.length, missingRoles, sources: { packageDefaults: "package", preset: profile, user: "user", project: "project" }, diagnostics };
@@ -75,7 +77,7 @@ export function resolveNamedResources<T extends { name: string }>(input: { packa
 
 export function validateModelCatalog(config: ResolvedImaConfig, catalog: ModelCatalogEntry[]) {
   const diagnostics: ConfigDiagnostic[] = [];
-  for (const role of IMA_MODEL_ROLES) {
+  for (const role of IMA_ALL_MODEL_ROLES) {
     const mapping = config.models[role]; if (!mapping) continue;
     const entry = catalog.find((item) => item.provider === mapping.provider && item.model === mapping.model);
     if (!entry) { diagnostics.push(diagnostic("config_model_unavailable", "resolved", ["models", role], "Configured model is unavailable.")); continue; }

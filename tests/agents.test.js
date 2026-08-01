@@ -42,7 +42,7 @@ test("loads the packaged agent catalog without treating README.md as an agent", 
     paths: deriveAgentPaths({ packageRoot, agentDir: resolve(packageRoot, ".missing-agent-home"), cwd: packageRoot }),
     projectTrusted: false,
   });
-  assert.deepEqual(loaded.definitions.map(({ name }) => name), ["explore", "implementer", "js-developer", "reviewer", "tester", "vision-handoff", "wordpress-developer"]);
+  assert.deepEqual(loaded.definitions.map(({ name }) => name), ["documenter", "explore", "implementer", "js-developer", "review-verifier", "reviewer", "tester", "vision-handoff", "wordpress-developer"]);
   assert.deepEqual(loaded.diagnostics, []);
 });
 
@@ -66,4 +66,16 @@ test("implementation specialist agent documents preserve plan, verification, and
   assert.match(byName.get("js-developer").prompt, /parameterized SQL/i);
   assert.match(byName.get("wordpress-developer").prompt, /nonce.*capability|capability.*nonce/i);
   assert.match(byName.get("wordpress-developer").prompt, /sanitize.*escape.*prepared/i);
+});
+
+
+test("quality agents enforce fresh verification and exact documentation authority", async () => {
+  const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const loaded = await loadAgentDefinitions({ paths: deriveAgentPaths({ packageRoot, agentDir: resolve(packageRoot, ".missing-agent-home"), cwd: packageRoot }), projectTrusted: false });
+  const byName = new Map(loaded.definitions.map((definition) => [definition.name, definition]));
+  assert.equal(byName.get("review-verifier").tier, "reviewVerify");
+  assert.equal(byName.get("review-verifier").independence.freshInitial, true);
+  assert.equal(byName.get("review-verifier").authority, "review-read");
+  assert.equal(byName.get("documenter").authority, "document-write");
+  assert.equal(byName.get("documenter").result.kind, "documentation");
 });

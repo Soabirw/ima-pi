@@ -8,7 +8,7 @@ export type DelegationFailure = "brief-correctable" | "transient-provider" | "mo
 export type DelegationEvent = { type: "started" | "succeeded" | "failed" | "cancelled"; id: string; detail?: string; partialEffects?: boolean };
 export type SessionRecord = { reference: string; agent: string; role: string; resultKind: string; provider: string; model: string; thinking?: string; sessionId: string; sessionFile: string; writeScope: string[]; contractFingerprint: string; status: "running" | "succeeded" | "failed" | "cancelled"; fresh: boolean; followUpAllowed: boolean; createdAt: string; updatedAt: string };
 export type BashClassification = { kind: "read-only" | "owned-mutation" | "unsafe-ambiguous"; paths: string[]; reason?: string };
-export type CompletionFailureCode = "assistant_missing" | "assistant_error" | "assistant_aborted" | "assistant_truncated" | "assistant_tool_use" | "assistant_not_terminal" | "report_empty" | "report_section_missing" | "runtime_identity_missing" | "runtime_identity_mismatch" | "session_identity_missing" | "session_identity_mismatch";
+export type CompletionFailureCode = "assistant_missing" | "assistant_error" | "assistant_aborted" | "assistant_truncated" | "assistant_tool_use" | "assistant_not_terminal" | "report_empty" | "report_section_missing" | "report_format_invalid" | "runtime_identity_missing" | "runtime_identity_mismatch" | "session_identity_missing" | "session_identity_mismatch";
 
 const clean = (value: unknown) => typeof value === "string" ? value.trim() : value instanceof Error ? value.message.trim() : "";
 const invalidSegments = (path: string) => path.split("/").some((segment) => !segment || segment === "." || segment === "..");
@@ -27,7 +27,8 @@ export function validateDelegationRequest(request: DelegationRequest, agents: Ag
     for (const field of ["goal", "context", "expectedOutput"] as const) if (!clean(assignment[field])) errors.push(`delegation_${field}_invalid:${assignment.id}`);
     for (const path of [...assignment.paths, ...assignment.writeScope]) if (!safeRelative(path)) errors.push(`delegation_path_invalid:${assignment.id}`);
     if (["read", "review-read", "vision-read"].includes(agent.authority) && assignment.writeScope.length) errors.push(`delegation_read_write_scope:${assignment.id}`);
-    if (["write", "test-write"].includes(agent.authority) && !assignment.writeScope.length) errors.push(`delegation_write_scope_required:${assignment.id}`);
+    if (["write", "test-write", "document-write"].includes(agent.authority) && !assignment.writeScope.length) errors.push(`delegation_write_scope_required:${assignment.id}`);
+  if (agent?.authority === "document-write") errors.push(...validateDocumentWriteScope(assignment.writeScope).errors.map((error) => `${error}:${assignment.id}`));
   }
   errors.push(...validateParallelAssignments(request.assignments)); return { valid: !errors.length, errors };
 }
@@ -42,7 +43,22 @@ export function buildChildBrief(input: { projectRoot: string; assignment: Delega
   ].join("\n\n");
 }
 
+export function resolveReviewVerificationRoute(input: { config: ResolvedImaConfig; catalog: Array<{ provider: string; model: string }> }) {
+  const requestedRole = "reviewVerify" as const;
+  const configured = input.config.models.reviewVerify;
+  const selected = configured ?? input.config.models.HIGH;
+  if (!selected) return { route: null, error: "model_unavailable", requestedRole, resolvedRole: configured ? requestedRole : "HIGH", fallbackUsed: !configured, crossModel: false };
+  const available = input.catalog.some((entry) => entry.provider === selected.provider && entry.model === selected.model);
+  if (!available) return { route: null, error: "model_unavailable", requestedRole, resolvedRole: configured ? requestedRole : "HIGH", fallbackUsed: !configured, crossModel: false };
+  const high = input.config.models.HIGH;
+  return { route: { provider: selected.provider, model: selected.model, thinking: selected.thinking, tier: configured ? requestedRole : "HIGH" }, error: null, requestedRole, resolvedRole: configured ? requestedRole : "HIGH", fallbackUsed: !configured, crossModel: !!high && (high.provider !== selected.provider || high.model !== selected.model) };
+}
+
 export function resolveAgentRoute(input: { agent: AgentDefinition; config: ResolvedImaConfig; catalog: Array<{ provider: string; model: string; input?: { image?: boolean } | string[] }> }) {
+  if (input.agent.tier === "reviewVerify") {
+    const verified = resolveReviewVerificationRoute(input);
+    return verified.route ? { route: verified.route, error: null, escalation: null, verification: verified } : { route: null, error: verified.error, escalation: "review verification model is unavailable", verification: verified };
+  }
   const mapping = input.config.models[input.agent.tier];
   if (!mapping) return { route: null, error: "model_unavailable", escalation: "minimum capability is not configured" };
   const catalog = input.catalog.find((entry) => entry.provider === mapping.provider && entry.model === mapping.model);
@@ -65,6 +81,21 @@ export function isOwnedTarget(target: unknown, writeScope: string[]): boolean {
   if (!normalizedTarget) return false;
   const owners = writeScope.map(normalizeOwnershipTarget).filter((owner): owner is string => owner !== null);
   return owners.some((owner) => contained(normalizedTarget, owner));
+}
+
+export function isDocumentationTarget(path: unknown): boolean {
+  const target = normalizeOwnershipTarget(path);
+  if (!target) return false;
+  if (["README.md", "README", "CHANGELOG.md", "CHANGELOG", "CHANGES", "RELEASE_NOTES"].includes(target)) return true;
+  if (["agents/README.md", "config/README.md", "policies/README.md"].includes(target)) return true;
+  const [root, ...rest] = target.split("/");
+  if (root !== "docs" || rest.length === 0) return false;
+  const name = rest.at(-1) ?? "";
+  return /\.(?:md|mdx|txt)$/i.test(name) || ["README", "CHANGELOG", "CHANGES", "RELEASE_NOTES"].includes(name);
+}
+export function validateDocumentWriteScope(writeScope: string[]): { valid: boolean; errors: string[] } {
+  const errors = writeScope.filter((path) => !isDocumentationTarget(path)).map((path) => `document_scope_invalid:${path}`);
+  return { valid: errors.length === 0 && writeScope.length > 0, errors: writeScope.length ? errors : ["document_scope_empty"] };
 }
 
 // REVIEW-001: narrow bash classifier. Recognizes only a small set of unambiguous read-only commands;
@@ -118,6 +149,7 @@ export function validateDelegationCompletion(input: {
   final: { stopReason?: string; isError?: boolean; hasPendingToolUse?: boolean } | undefined | null;
   text: unknown;
   requiredSections: string[];
+  resultFormat?: "review-verdict-v1";
   expected: { provider: string; model: string; thinking?: string; sessionId?: string; sessionFile?: string };
   observed: { provider?: string; model?: string; thinking?: string; sessionId?: string; sessionFile?: string };
 }): { ok: boolean; failures: CompletionFailureCode[] } {
@@ -133,7 +165,9 @@ export function validateDelegationCompletion(input: {
   }
   const text = clean(input.text);
   if (!text) failures.push("report_empty");
-  else for (const section of input.requiredSections) if (!headingPresent(text, section)) failures.push("report_section_missing");
+  else if (input.resultFormat === "review-verdict-v1") {
+    if (typeof input.text !== "string" || !/^VERDICT: (CONFIRMED|WITHDRAWN|PARTIAL)\nREASON: \S(?:.*\S)?$/.test(input.text)) failures.push("report_format_invalid");
+  } else for (const section of input.requiredSections) if (!headingPresent(text, section)) failures.push("report_section_missing");
   const observed = input.observed;
   if (!clean(observed.provider) || !clean(observed.model)) failures.push("runtime_identity_missing");
   else if (observed.provider !== input.expected.provider || observed.model !== input.expected.model || (input.expected.thinking !== undefined && observed.thinking !== input.expected.thinking)) failures.push("runtime_identity_mismatch");
@@ -149,6 +183,7 @@ export function agentContractFingerprint(agent: AgentDefinition, writeScope: str
     tools: [...agent.tools].sort(),
     resultKind: agent.result.kind,
     requiredSections: [...agent.result.requiredSections].sort(),
+    resultFormat: agent.result.format ?? null,
     freshInitial: agent.independence.freshInitial,
     followUpAllowed: agent.independence.followUpAllowed,
     writeScope: [...writeScope].map((entry) => normalizeOwnershipTarget(entry) ?? entry).sort(),

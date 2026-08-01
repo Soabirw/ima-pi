@@ -11,6 +11,8 @@ import {
   validateDelegationCompletion,
   validateDelegationRequest,
   writeScopesOverlap,
+  isDocumentationTarget,
+  validateDocumentWriteScope,
 } from "../lib/ima-delegation.ts";
 
 const agent = {
@@ -87,10 +89,35 @@ test("requires normal terminal reports, sections, observed identity, and session
   for (const [input, code] of cases) assert.ok(validateDelegationCompletion(input).failures.includes(code), code);
 });
 
+test("validates only the exact review verifier result format", () => {
+  const base = {
+    final: { stopReason: "stop" }, requiredSections: ["verdict", "reason"], resultFormat: "review-verdict-v1",
+    expected: { provider: "p", model: "m", thinking: "high" },
+    observed: { provider: "p", model: "m", thinking: "high", sessionId: "s", sessionFile: "/sessions/s.jsonl" },
+  };
+  for (const verdict of ["CONFIRMED", "WITHDRAWN", "PARTIAL"]) {
+    assert.deepEqual(validateDelegationCompletion({ ...base, text: `VERDICT: ${verdict}\nREASON: supported by evidence` }), { ok: true, failures: [] });
+  }
+  for (const reason of ["x", "a b"]) {
+    assert.deepEqual(validateDelegationCompletion({ ...base, text: `VERDICT: CONFIRMED\nREASON: ${reason}` }), { ok: true, failures: [] });
+  }
+  for (const text of ["## Verdict\nCONFIRMED\n## Reason\nevidence", "VERDICT: INVALID\nREASON: evidence", "VERDICT: CONFIRMED\nREASON: ", "VERDICT: CONFIRMED\nREASON: evidence\nextra", "\nVERDICT: CONFIRMED\nREASON: evidence", "VERDICT: CONFIRMED\nREASON: evidence\n", "VERDICT: CONFIRMED\nREASON: evidence ", "VERDICT: CONFIRMED\nREASON: evidence\t"]) {
+    assert.ok(validateDelegationCompletion({ ...base, text }).failures.includes("report_format_invalid"), text);
+  }
+});
+
 test("fingerprints canonical agent authority and ownership contracts", () => {
   const first = agentContractFingerprint(agent, ["lib/b", "lib/a"]);
   const reordered = agentContractFingerprint({ ...agent, tools: [...agent.tools].reverse(), result: { ...agent.result, requiredSections: [...agent.result.requiredSections].reverse() } }, ["lib/a", "lib/b"]);
   const drifted = agentContractFingerprint({ ...agent, tools: [...agent.tools, "edit"] }, ["lib/a", "lib/b"]);
   assert.equal(first, reordered);
   assert.notEqual(first, drifted);
+});
+
+
+test("accepts only exact documentation write targets", () => {
+  for (const path of ["README", "README.md", "CHANGELOG.md", "docs/FNR-3019.md", "docs/guide.txt", "agents/README.md", "config/README.md", "policies/README.md"]) assert.equal(isDocumentationTarget(path), true, path);
+  for (const path of ["docs", "config/other.md", "tests/notes.md", "lib/design.md", "extensions/notes.md", "migrations/notes.md", "package.md", "../README.md", "/README.md"]) assert.equal(isDocumentationTarget(path), false, path);
+  assert.deepEqual(validateDocumentWriteScope(["docs/FNR-3019.md"]), { valid: true, errors: [] });
+  assert.ok(validateDocumentWriteScope(["config/other.md"]).errors[0].startsWith("document_scope_invalid"));
 });

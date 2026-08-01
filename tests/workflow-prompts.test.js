@@ -33,3 +33,12 @@ test("WordPress implementation prompt treats security as a primary production co
   const text = await prompt("implement-wp");
   for (const value of ["primary production", "nonce", "capability", "Sanitize", "escape output", "$wpdb->prepare()", "WordPress APIs", "hooks", "actions/filters", "vision-handoff"]) has(text, value);
 });
+
+
+test("quality and learning prompts retain distinct bounded terminal contracts", async () => {
+  for (const name of ["test", "review", "review-verify", "document"]) { const text = await prompt(name); has(text, "description:"); has(text, "argument-hint:"); has(text, "stop"); has(text, "/ima:cycle"); }
+  const testing = await prompt("test"); has(testing, "Do not redesign or edit production behavior"); has(testing, "ima_lifecycle");
+  const review = await prompt("review"); for (const value of ["fresh", "product-read-only", "Critical or Warning", "review-verifier", "REVIEW-NNN", "ima_lifecycle"]) has(review, value);
+  const verify = await prompt("review-verify"); for (const value of ["CONFIRMED|WITHDRAWN|PARTIAL", "Do not edit", "one dependency hop"]) has(verify, value);
+  const document = await prompt("document"); for (const value of ["exact approved", "external-update manifest", "Serena", "Vestige", "Qdrant", "ima_lifecycle"]) has(document, value);
+});

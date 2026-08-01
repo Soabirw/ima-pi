@@ -213,3 +213,10 @@ test("reports missing required defaults and an unknown selected preset without e
   } });
   assert.deepEqual(codes(unknownPreset), ["config_preset_unknown"]);
 });
+
+
+test("keeps an optional reviewVerify role without making configuration incomplete", () => {
+  const resolved = mergeConfigLayers({ packageDefaults: valid(layer({}, null)), preset: valid(completeLayer("p"), "preset"), user: valid(layer({ reviewVerify: role("verify", "model") }), "user"), project: null });
+  assert.equal(resolved.complete, true);
+  assert.deepEqual(resolved.models.reviewVerify, { provider: "verify", model: "model", thinking: "medium", source: "user" });
+});

@@ -1,0 +1,5 @@
+---
+description: Run the bounded formal test phase for one implementation artifact
+argument-hint: "[implementation-source]"
+---
+You own one terminal MID-tier **test** phase. `$@` must supply approved outcome, non-goals, changed files, implementation evidence, risks, and lifecycle identity. Call `ima_context`, use Serena-first evidence, and select the smallest repository-supported test level. Delegate only bounded test work to `tester`; test writes are limited to named tests and explicit test support. Do not redesign or edit production behavior: report production defects and point to `/ima:implement`. Run targeted tests then the smallest meaningful broader suite. Persist a complete `test` artifact via `ima_lifecycle` and stop; recommend `/ima:review`. Do not invoke `/ima:cycle`, a workflow DSL, or automatic phase progression.

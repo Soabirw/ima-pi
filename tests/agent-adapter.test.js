@@ -95,6 +95,18 @@ test("coordinates concurrent children but returns results in request order with 
   assert.equal(first.state.unsubscribes, 1); assert.equal(second.state.unsubscribes, 1);
 });
 
+test("coordinates an exact review verifier response as succeeded", async () => {
+  const verifier = { ...agent, name: "review-verifier", tier: "reviewVerify", authority: "review-read", tools: ["read"], result: { kind: "review", format: "review-verdict-v1", requiredSections: ["verdict", "reason"] } };
+  const verifierAssignment = { ...assignment("verify", []), agent: "review-verifier" };
+  const child = fakeSession({ text: "VERDICT: CONFIRMED\nREASON: supported by direct evidence" });
+  const result = await coordinateDelegation({
+    cwd: "/repo", request: { title: "verify", assignments: [verifierAssignment] }, agents: [verifier], config: { models: { ...config.models, HIGH: config.models.MID } }, runtime, runId: "verify",
+    sessionStore: new Map(), dependencies: { createManager: () => ({}), scopedTools: () => [], clock: () => "2026-07-31T20:00:00.000Z", activityClock: () => 1_000, createSession: async () => ({ session: child.session }) },
+  });
+  assert.equal(result.status, "succeeded");
+  assert.equal(result.results[0].status, "succeeded");
+});
+
 test("caller abort cancels and settles live children without retry", async () => {
   const controller = new AbortController();
   let release;
@@ -247,4 +259,49 @@ test("throwing activity observer never changes coordinator completion or cleanup
   assert.equal(result.status, "succeeded");
   assert.equal(child.state.disposes, 1);
   assert.equal(child.state.unsubscribes, 1);
+});
+
+
+test("documenter tools refuse code targets even when ownership is supplied", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ima-documenter-"));
+  await mkdir(join(root, "docs")); await mkdir(join(root, "lib"));
+  const documenter = { ...agent, name: "documenter", authority: "document-write", tools: ["write", "edit", "bash"], result: { kind: "documentation", requiredSections: ["local-changes"] } };
+  const docsAssignment = { ...assignment("docs", ["docs/readme.md"]), writeScope: ["docs/readme.md"] };
+  const tools = createScopedTools({ cwd: root, assignment: docsAssignment, agent: documenter });
+  const write = tools.find((tool) => tool.name === "write");
+  await write.execute("call", { path: "docs/readme.md", content: "ok" }, undefined, undefined, {});
+  await assert.rejects(write.execute("call", { path: "lib/unsafe.ts", content: "no" }, undefined, undefined, {}));
+});
+
+test("documenter permits only exact owned documentation targets and rejects code and symlink escapes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ima-documenter-boundary-"));
+  const outside = await mkdtemp(join(tmpdir(), "ima-documenter-outside-"));
+  await mkdir(join(root, "docs")); await mkdir(join(root, "lib"));
+  await writeFile(join(root, "docs", "FNR-3019.md"), "before\n");
+  await symlink(outside, join(root, "docs", "escape"));
+  const documenter = { ...agent, name: "documenter", authority: "document-write", tools: ["write", "edit", "bash"], result: { kind: "documentation", requiredSections: ["local-changes"] } };
+  const docsAssignment = { ...assignment("docs", ["docs/FNR-3019.md", "docs/README"]), writeScope: ["docs/FNR-3019.md", "docs/README"] };
+  const tools = new Map(createScopedTools({ cwd: root, assignment: docsAssignment, agent: documenter }).map((tool) => [tool.name, tool]));
+  const invoke = (name, args) => tools.get(name).execute("call", args, undefined, undefined, {});
+
+  await invoke("edit", { path: "docs/FNR-3019.md", edits: [{ oldText: "before", newText: "after" }] });
+  await invoke("write", { path: "docs/README", content: "guide" });
+  assert.equal(await readFile(join(root, "docs", "FNR-3019.md"), "utf8"), "after\n");
+  assert.equal(await readFile(join(root, "docs", "README"), "utf8"), "guide");
+
+  for (const args of [
+    { path: "lib/unsafe.ts", content: "no" },
+    { path: "docs/escape/unsafe.md", content: "no" },
+  ]) await assert.rejects(invoke("write", args));
+  assert.equal(existsSync(join(root, "lib", "unsafe.ts")), false);
+  assert.equal(existsSync(join(outside, "unsafe.md")), false);
+});
+
+test("documenter rejects prohibited documentation-looking locations at construction and effect time", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ima-documenter-prohibited-"));
+  for (const directory of ["docs", "config", "tests", "lib", "extensions", "migrations"]) await mkdir(join(root, directory));
+  const documenter = { ...agent, name: "documenter", authority: "document-write", tools: ["write", "edit", "bash"], result: { kind: "documentation", requiredSections: ["local-changes"] } };
+  assert.throws(() => createScopedTools({ cwd: root, assignment: { ...assignment("bad"), writeScope: ["config/other.md"] }, agent: documenter }));
+  const tools = new Map(createScopedTools({ cwd: root, assignment: { ...assignment("docs"), writeScope: ["docs/guide.md"] }, agent: documenter }).map((tool) => [tool.name, tool]));
+  for (const [name, args] of [["write", { path: "config/other.md", content: "no" }], ["edit", { path: "lib/design.md", edits: [] }], ["bash", { command: "echo no > tests/notes.md" }]]) await assert.rejects(tools.get(name).execute("call", args, undefined, undefined, {}));
 });

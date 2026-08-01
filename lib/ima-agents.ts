@@ -3,9 +3,9 @@ import { basename, join, parse, relative, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
 
 export const IMA_AGENT_SCHEMA_VERSION = 1;
-export const IMA_AGENT_TIERS = ["HIGH", "MID", "LOW", "vision"] as const;
-export const IMA_AGENT_AUTHORITIES = ["read", "write", "test-write", "review-read", "vision-read"] as const;
-export const IMA_AGENT_RESULT_KINDS = ["evidence", "implementation", "test", "review", "vision"] as const;
+export const IMA_AGENT_TIERS = ["HIGH", "MID", "LOW", "vision", "reviewVerify"] as const;
+export const IMA_AGENT_AUTHORITIES = ["read", "write", "test-write", "review-read", "vision-read", "document-write"] as const;
+export const IMA_AGENT_RESULT_KINDS = ["evidence", "implementation", "test", "review", "vision", "documentation"] as const;
 export const IMA_AGENT_TOOLS = ["read", "grep", "find", "ls", "write", "edit", "bash", "test", "image"] as const;
 
 type AgentTier = (typeof IMA_AGENT_TIERS)[number];
@@ -23,7 +23,7 @@ export type AgentDefinition = {
   skills: string[];
   delegation: { allowed: boolean; maxDepth: number };
   independence: { freshInitial: boolean; followUpAllowed: boolean };
-  result: { kind: AgentResultKind; requiredSections: string[] };
+  result: { kind: AgentResultKind; requiredSections: string[]; format?: "review-verdict-v1" };
   escalation: string[];
   prompt: string;
   source: AgentSource;
@@ -61,14 +61,16 @@ export function validateAgentDefinition(input: { path: string; source: AgentSour
   if (!prompt) diagnostics.push(diagnostic("agent_prompt_empty", source, path, "Markdown prompt body must be non-empty."));
   if (!object(delegation) || typeof delegation.allowed !== "boolean" || !Number.isInteger(delegation.maxDepth) || delegation.maxDepth !== 0) diagnostics.push(diagnostic("agent_delegation_invalid", source, path, "delegation requires allowed and maxDepth: 0."));
   if (!object(independence) || typeof independence.freshInitial !== "boolean" || typeof independence.followUpAllowed !== "boolean") diagnostics.push(diagnostic("agent_independence_invalid", source, path, "independence requires boolean fields."));
-  const resultKind = object(result) ? string(result.kind) : ""; const requiredSections = object(result) ? strings(result.requiredSections) : null;
-  if (!object(result) || !inList(IMA_AGENT_RESULT_KINDS, resultKind) || !requiredSections || !requiredSections.length || requiredSections.some((item) => !item)) diagnostics.push(diagnostic("agent_result_invalid", source, path, "result requires a supported kind and non-empty requiredSections."));
+  const resultKind = object(result) ? string(result.kind) : ""; const requiredSections = object(result) ? strings(result.requiredSections) : null; const resultFormat = object(result) ? string(result.format) : "";
+  if (!object(result) || !inList(IMA_AGENT_RESULT_KINDS, resultKind) || !requiredSections || !requiredSections.length || requiredSections.some((item) => !item) || (resultFormat && resultFormat !== "review-verdict-v1") || (resultFormat === "review-verdict-v1" && (resultKind !== "review" || requiredSections.join(",") !== "verdict,reason"))) diagnostics.push(diagnostic("agent_result_invalid", source, path, "result requires a supported kind, non-empty requiredSections, and a valid optional format."));
   if (authority === "review-read" && tools?.some((tool) => ["write", "edit", "bash", "test"].includes(tool))) diagnostics.push(diagnostic("agent_authority_tools_conflict", source, path, "review-read cannot receive write-capable tools."));
   if ((tier === "vision") !== (authority === "vision-read")) diagnostics.push(diagnostic("agent_vision_invariant", source, path, "vision tier and vision-read authority are required together."));
   if (authority === "vision-read" && tools?.some((tool) => !["read", "image"].includes(tool))) diagnostics.push(diagnostic("agent_authority_tools_conflict", source, path, "vision-read only permits read and image tools."));
+  if (authority === "document-write" && tools?.some((tool) => !["read", "grep", "find", "ls", "write", "edit", "bash"].includes(tool))) diagnostics.push(diagnostic("agent_authority_tools_conflict", source, path, "document-write only permits scoped documentation tools."));
+  if (authority === "document-write" && !["write", "edit"].some((tool) => tools?.includes(tool))) diagnostics.push(diagnostic("agent_authority_tools_conflict", source, path, "document-write requires write or edit."));
   if (authority === "read" && tools?.some((tool) => ["write", "edit", "bash", "test"].includes(tool))) diagnostics.push(diagnostic("agent_authority_tools_conflict", source, path, "read authority cannot receive write-capable tools."));
   if (diagnostics.length) return { definition: null, diagnostics };
-  return { definition: { schemaVersion: 1, name, description, tier: tier as AgentTier, authority: authority as AgentAuthority, tools: tools!, skills: skills!, delegation: delegation as AgentDefinition["delegation"], independence: independence as AgentDefinition["independence"], result: { kind: resultKind as AgentResultKind, requiredSections: requiredSections! }, escalation: escalation!, prompt, source, path }, diagnostics };
+  return { definition: { schemaVersion: 1, name, description, tier: tier as AgentTier, authority: authority as AgentAuthority, tools: tools!, skills: skills!, delegation: delegation as AgentDefinition["delegation"], independence: independence as AgentDefinition["independence"], result: { kind: resultKind as AgentResultKind, requiredSections: requiredSections!, ...(resultFormat ? { format: resultFormat as "review-verdict-v1" } : {}) }, escalation: escalation!, prompt, source, path }, diagnostics };
 }
 
 export function parseAgentDocument(input: { path: string; source: AgentSource; content: string }): AgentParseResult {
