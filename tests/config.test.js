@@ -215,8 +215,30 @@ test("reports missing required defaults and an unknown selected preset without e
 });
 
 
-test("keeps an optional reviewVerify role without making configuration incomplete", () => {
-  const resolved = mergeConfigLayers({ packageDefaults: valid(layer({}, null)), preset: valid(completeLayer("p"), "preset"), user: valid(layer({ reviewVerify: role("verify", "model") }), "user"), project: null });
+test("keeps optional quality roles out of completeness while merging their explicit mappings", () => {
+  const resolved = mergeConfigLayers({
+    packageDefaults: valid(layer({}, null)),
+    preset: valid(completeLayer("p"), "preset"),
+    user: valid(layer({ reviewVerify: role("verify", "model"), adversaryA: role("provider-a", "model-a") }), "user"),
+    project: valid(layer({ adversaryA: role("provider-a-project", "model-a-project"), adversaryB: role("provider-b", "model-b") }), "project"),
+  });
   assert.equal(resolved.complete, true);
   assert.deepEqual(resolved.models.reviewVerify, { provider: "verify", model: "model", thinking: "medium", source: "user" });
+  assert.deepEqual(resolved.models.adversaryA, { provider: "provider-a-project", model: "model-a-project", thinking: "medium", source: "project" });
+  assert.deepEqual(resolved.models.adversaryB, { provider: "provider-b", model: "model-b", thinking: "medium", source: "project" });
+});
+
+test("accepts adversary roles as optional mappings and validates their catalog availability", () => {
+  const accepted = validateConfigLayer(layer({ adversaryA: role("provider-a", "model-a"), adversaryB: role("provider-b", "model-b") }), "user");
+  assert.equal(accepted.valid, true);
+  const resolved = mergeConfigLayers({ packageDefaults: valid(layer({}, null)), preset: valid(completeLayer("p"), "preset"), user: accepted.value, project: null });
+  assert.equal(validateModelCatalog(resolved, [
+    { provider: "p", model: "HIGH" }, { provider: "p", model: "MID" }, { provider: "p", model: "LOW" }, { provider: "p", model: "vision", input: ["image"] },
+    { provider: "provider-a", model: "model-a" }, { provider: "provider-b", model: "model-b" },
+  ]).valid, true);
+  const unavailable = validateModelCatalog(resolved, []);
+  assert.deepEqual(unavailable.diagnostics.filter(({ path }) => path[1].startsWith("adversary")).map(({ code, path }) => [code, path]), [
+    ["config_model_unavailable", ["models", "adversaryA"]],
+    ["config_model_unavailable", ["models", "adversaryB"]],
+  ]);
 });

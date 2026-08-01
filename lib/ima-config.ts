@@ -3,7 +3,7 @@ import { join } from "node:path";
 
 export const IMA_CONFIG_SCHEMA_VERSION = 1;
 export const IMA_MODEL_ROLES = ["HIGH", "MID", "LOW", "vision"] as const;
-export const IMA_OPTIONAL_MODEL_ROLES = ["reviewVerify"] as const;
+export const IMA_OPTIONAL_MODEL_ROLES = ["reviewVerify", "adversaryA", "adversaryB"] as const;
 export const IMA_ALL_MODEL_ROLES = [...IMA_MODEL_ROLES, ...IMA_OPTIONAL_MODEL_ROLES] as const;
 export const IMA_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
@@ -14,7 +14,7 @@ export type ConfigDiagnostic = { code: string; source: ConfigSource; path: strin
 type ImaModelMapping = { provider: string; model: string; thinking?: ThinkingLevel };
 export type ValidConfigLayer = { schemaVersion: 1; profile?: string | null; models?: Partial<Record<ImaRole, ImaModelMapping>> };
 export type ConfigValidationResult = { valid: boolean; value: ValidConfigLayer | null; diagnostics: ConfigDiagnostic[] };
-type ResolvedRole = ImaModelMapping & { source: "preset" | "user" | "project" };
+export type ResolvedRole = ImaModelMapping & { source: "preset" | "user" | "project" };
 export type ResolvedImaConfig = { schemaVersion: 1; profile: string | null; models: Partial<Record<ImaRole, ResolvedRole>>; complete: boolean; missingRoles: ImaRole[]; sources: { packageDefaults: string; preset: string | null; user: string; project: string }; diagnostics: ConfigDiagnostic[] };
 export type ModelCatalogEntry = { provider: string; model: string; input?: { image?: boolean } | string[] };
 

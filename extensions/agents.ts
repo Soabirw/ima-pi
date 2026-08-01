@@ -38,6 +38,7 @@ import {
   reduceDelegationEvent,
   resolveAgentRoute,
   sanitizeDelegationError,
+  validateAdversarialRoutes,
   validateDelegationCompletion,
   validateDelegationRequest,
   type DelegationAssignment,
@@ -353,6 +354,19 @@ export async function coordinateDelegation(input: CoordinatorInput) {
   };
 
   try {
+    const adversaryNames = new Set(input.request.assignments.map((assignment) => assignment.agent));
+    if (adversaryNames.has("adversary-a") && adversaryNames.has("adversary-b")) {
+      const validation = validateAdversarialRoutes({ config: input.config, catalog });
+      if (!validation.valid) {
+        const results = input.request.assignments.map((assignment) => {
+          emit({ type: "blocked", id: assignment.id, at: deps.activityClock(), blocker: validation.code, escalation: "configure two distinct available adversary routes" });
+          return { id: assignment.id, status: "blocked" as const, attempts: 0, error: validation.code, failure: "model-unavailable" as const, escalation: "configure two distinct available adversary routes", resumeReference: null };
+        });
+        emit({ type: "run-settled", at: deps.activityClock(), state: "failed" });
+        const report = buildDelegationOutcomeReport({ activity, results, partialEffects: false, unsafeEvidence: [] });
+        return { status: "failed" as const, results, state, activity, report, partialEffects: false, unsafeEvidence: [] };
+      }
+    }
     const settled = await Promise.allSettled(input.request.assignments.map(runAssignment));
     if (cancelled || unsafe) await abortLive();
     const results = settled.map((entry, index) => entry.status === "fulfilled"

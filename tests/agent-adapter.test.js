@@ -371,3 +371,21 @@ test("cancellation during image admission prevents child session creation", asyn
   assert.equal(result.status, "cancelled");
   assert.equal(created, 0);
 });
+
+test("adversarial pairs block before child creation when routes are matching or incomplete", async () => {
+  const adversaryA = { ...agent, name: "adversary-a", tier: "adversaryA", authority: "review-read", tools: ["read"], independence: { freshInitial: true, followUpAllowed: false }, result: { kind: "review", requiredSections: ["model-route", "verdict", "findings", "disproof-attempts", "confidence"] } };
+  const adversaryB = { ...adversaryA, name: "adversary-b", tier: "adversaryB" };
+  const assignments = [
+    { ...assignment("a", []), agent: "adversary-a" },
+    { ...assignment("b", []), agent: "adversary-b" },
+  ];
+  let created = 0;
+  const result = await coordinateDelegation({
+    cwd: "/repo", request: { title: "adversarial", assignments }, agents: [adversaryA, adversaryB],
+    config: { models: { adversaryA: { provider: "p", model: "m" }, adversaryB: { provider: "p", model: "m" } } }, runtime, runId: "adversarial", sessionStore: new Map(),
+    dependencies: { createManager: () => ({}), scopedTools: () => [], clock: () => "now", activityClock: () => 1_000, createSession: async () => { created += 1; return { session: fakeSession().session }; } },
+  });
+  assert.equal(result.status, "failed");
+  assert.equal(created, 0);
+  assert.deepEqual(result.results.map(({ error }) => error), ["adversary_routes_not_distinct", "adversary_routes_not_distinct"]);
+});

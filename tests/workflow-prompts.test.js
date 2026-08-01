@@ -83,3 +83,11 @@ test("visual workflows preserve external-browser evidence and terminal planning 
   for (const value of ["HIGH-tier", "WordPress/Bootstrap", "ima_context", "Serena-first", "vision-handoff", "ima_lifecycle", "as `plan`", "/ima:implement-wp", "Do not edit"]) has(design, value);
   for (const name of ["plan", "test", "review", "implement-wp"]) has(await prompt(name), name === "test" ? "visual-diff" : "vision-handoff");
 });
+
+test("scorecard and adversarial-review retain bounded quality contracts", async () => {
+  const scorecard = await prompt("scorecard");
+  for (const value of ["Serena-first", "non-mutating validators", "Code Standards", "Security", "Test Coverage", "Documentation", "Maintainability", "A/B/C/D/F", "cap Code Standards at C", "Scorecard", "later explicit request", "stop read-only"]) has(scorecard, value);
+  const adversarial = await prompt("adversarial-review");
+  for (const value of ["one complete packet", "adversary-a", "adversary-b", "parallel", "distinct", "provider, model", "one-sided", "Dropped Adversarial Claims", "REVIEW-NNN", "advisory", "/ima:review"]) has(adversarial, value);
+  assert.doesNotMatch(adversarial, /ima_lifecycle/);
+});

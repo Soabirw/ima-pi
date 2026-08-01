@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { classifyChildFailure, decideRecovery, resolveAgentRoute, resolveReviewVerificationRoute, sanitizeDelegationError } from "../lib/ima-delegation.ts";
+import { classifyChildFailure, decideRecovery, resolveAgentRoute, resolveReviewVerificationRoute, sanitizeDelegationError, validateAdversarialRoutes } from "../lib/ima-delegation.ts";
 
 const config = { models: { HIGH: { provider: "p", model: "high", thinking: "high" }, MID: { provider: "p", model: "mid" }, LOW: { provider: "p", model: "low" }, vision: { provider: "p", model: "vision" } } };
 const catalog = [{ provider: "p", model: "high" }, { provider: "p", model: "mid" }, { provider: "p", model: "low" }, { provider: "p", model: "vision", input: ["image"] }];
@@ -24,4 +24,16 @@ test("review verification uses an explicit route or visible fresh-HIGH fallback"
   const routed = resolveReviewVerificationRoute({ config: configured, catalog });
   assert.equal(routed.resolvedRole, "reviewVerify"); assert.equal(routed.fallbackUsed, false); assert.equal(routed.crossModel, true);
   assert.equal(resolveReviewVerificationRoute({ config: configured, catalog: [] }).route, null);
+});
+
+
+test("adversary routes have no fallback and require distinct exact identities", () => {
+  const adversaryAgent = { tier: "adversaryA" };
+  assert.equal(resolveAgentRoute({ agent: adversaryAgent, config, catalog }).escalation, "adversaryA model is not configured");
+  const mapped = { models: { ...config.models, adversaryA: { provider: "p", model: "high" }, adversaryB: { provider: "p", model: "mid" } } };
+  assert.equal(resolveAgentRoute({ agent: adversaryAgent, config: mapped, catalog }).route.tier, "adversaryA");
+  assert.deepEqual(validateAdversarialRoutes({ config: mapped, catalog }), { valid: true, routes: { adversaryA: mapped.models.adversaryA, adversaryB: mapped.models.adversaryB } });
+  assert.deepEqual(validateAdversarialRoutes({ config: { models: { ...mapped.models, adversaryB: { provider: "p", model: "high", thinking: "off" } } }, catalog }), { valid: false, code: "adversary_routes_not_distinct" });
+  assert.deepEqual(validateAdversarialRoutes({ config: { models: { ...config.models, adversaryB: { provider: "p", model: "mid" } } }, catalog }), { valid: false, code: "adversary_route_unconfigured", role: "adversaryA" });
+  assert.deepEqual(validateAdversarialRoutes({ config: mapped, catalog: [] }), { valid: false, code: "adversary_route_unavailable", role: "adversaryA" });
 });

@@ -3,7 +3,7 @@ import { basename, join, parse, relative, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
 
 export const IMA_AGENT_SCHEMA_VERSION = 1;
-export const IMA_AGENT_TIERS = ["HIGH", "MID", "LOW", "vision", "reviewVerify"] as const;
+export const IMA_AGENT_TIERS = ["HIGH", "MID", "LOW", "vision", "reviewVerify", "adversaryA", "adversaryB"] as const;
 export const IMA_AGENT_AUTHORITIES = ["read", "write", "test-write", "review-read", "vision-read", "document-write"] as const;
 export const IMA_AGENT_RESULT_KINDS = ["evidence", "implementation", "test", "review", "vision", "documentation"] as const;
 export const IMA_AGENT_TOOLS = ["read", "grep", "find", "ls", "write", "edit", "bash", "test", "image"] as const;

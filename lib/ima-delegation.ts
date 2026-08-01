@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { AgentDefinition } from "./ima-agents.ts";
-import type { ResolvedImaConfig } from "./ima-config.ts";
+import type { ResolvedImaConfig, ResolvedRole } from "./ima-config.ts";
 import { validateImagePaths } from "./ima-vision.ts";
 
 export type DelegationAssignment = { id: string; agent: string; goal: string; context: string; paths: string[]; constraints: string[]; nonGoals: string[]; expectedOutput: string; writeScope: string[]; imagePaths?: string[]; allowUpwardFallback?: boolean };
@@ -59,16 +59,31 @@ export function resolveReviewVerificationRoute(input: { config: ResolvedImaConfi
   return { route: { provider: selected.provider, model: selected.model, thinking: selected.thinking, tier: configured ? requestedRole : "HIGH" }, error: null, requestedRole, resolvedRole: configured ? requestedRole : "HIGH", fallbackUsed: !configured, crossModel: !!high && (high.provider !== selected.provider || high.model !== selected.model) };
 }
 
+export type AdversarialRouteValidation =
+  | { valid: true; routes: { adversaryA: ResolvedRole; adversaryB: ResolvedRole } }
+  | { valid: false; code: "adversary_route_unconfigured" | "adversary_route_unavailable" | "adversary_routes_not_distinct"; role?: "adversaryA" | "adversaryB" };
+
+export function validateAdversarialRoutes(input: { config: ResolvedImaConfig; catalog: Array<{ provider: string; model: string }> }): AdversarialRouteValidation {
+  const adversaryA = input.config.models.adversaryA;
+  const adversaryB = input.config.models.adversaryB;
+  if (!adversaryA) return { valid: false, code: "adversary_route_unconfigured", role: "adversaryA" };
+  if (!adversaryB) return { valid: false, code: "adversary_route_unconfigured", role: "adversaryB" };
+  if (!input.catalog.some((entry) => entry.provider === adversaryA.provider && entry.model === adversaryA.model)) return { valid: false, code: "adversary_route_unavailable", role: "adversaryA" };
+  if (!input.catalog.some((entry) => entry.provider === adversaryB.provider && entry.model === adversaryB.model)) return { valid: false, code: "adversary_route_unavailable", role: "adversaryB" };
+  if (adversaryA.provider === adversaryB.provider && adversaryA.model === adversaryB.model) return { valid: false, code: "adversary_routes_not_distinct" };
+  return { valid: true, routes: { adversaryA, adversaryB } };
+}
+
 export function resolveAgentRoute(input: { agent: AgentDefinition; config: ResolvedImaConfig; catalog: Array<{ provider: string; model: string; input?: { image?: boolean } | string[] }> }) {
   if (input.agent.tier === "reviewVerify") {
     const verified = resolveReviewVerificationRoute(input);
     return verified.route ? { route: verified.route, error: null, escalation: null, verification: verified } : { route: null, error: verified.error, escalation: "review verification model is unavailable", verification: verified };
   }
   const mapping = input.config.models[input.agent.tier];
-  if (!mapping) return { route: null, error: "model_unavailable", escalation: "minimum capability is not configured" };
+  if (!mapping) return { route: null, error: "model_unavailable", escalation: input.agent.tier === "adversaryA" || input.agent.tier === "adversaryB" ? `${input.agent.tier} model is not configured` : "minimum capability is not configured" };
   const catalog = input.catalog.find((entry) => entry.provider === mapping.provider && entry.model === mapping.model);
   const image = Array.isArray(catalog?.input) ? catalog.input.includes("image") : catalog?.input?.image === true;
-  if (!catalog || (input.agent.tier === "vision" && !image)) return { route: null, error: "model_unavailable", escalation: "minimum capability is unavailable" };
+  if (!catalog || (input.agent.tier === "vision" && !image)) return { route: null, error: "model_unavailable", escalation: input.agent.tier === "adversaryA" || input.agent.tier === "adversaryB" ? `${input.agent.tier} model is unavailable` : "minimum capability is unavailable" };
   return { route: { provider: mapping.provider, model: mapping.model, thinking: mapping.thinking, tier: input.agent.tier }, error: null, escalation: null };
 }
 

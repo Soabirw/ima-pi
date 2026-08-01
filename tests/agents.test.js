@@ -42,7 +42,7 @@ test("loads the packaged agent catalog without treating README.md as an agent", 
     paths: deriveAgentPaths({ packageRoot, agentDir: resolve(packageRoot, ".missing-agent-home"), cwd: packageRoot }),
     projectTrusted: false,
   });
-  assert.deepEqual(loaded.definitions.map(({ name }) => name), ["documenter", "explore", "implementer", "js-developer", "review-verifier", "reviewer", "tester", "vision-handoff", "wordpress-developer"]);
+  assert.deepEqual(loaded.definitions.map(({ name }) => name), ["adversary-a", "adversary-b", "documenter", "explore", "implementer", "js-developer", "review-verifier", "reviewer", "tester", "vision-handoff", "wordpress-developer"]);
   assert.deepEqual(loaded.diagnostics, []);
 });
 
@@ -78,4 +78,22 @@ test("quality agents enforce fresh verification and exact documentation authorit
   assert.equal(byName.get("review-verifier").authority, "review-read");
   assert.equal(byName.get("documenter").authority, "document-write");
   assert.equal(byName.get("documenter").result.kind, "documentation");
+});
+
+
+test("adversaries require fresh, distinct, read-only review contracts", async () => {
+  const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const loaded = await loadAgentDefinitions({ paths: deriveAgentPaths({ packageRoot, agentDir: resolve(packageRoot, ".missing-agent-home"), cwd: packageRoot }), projectTrusted: false });
+  const byName = new Map(loaded.definitions.map((definition) => [definition.name, definition]));
+  for (const [name, tier] of [["adversary-a", "adversaryA"], ["adversary-b", "adversaryB"]]) {
+    const definition = byName.get(name);
+    assert.equal(definition.tier, tier); assert.equal(definition.authority, "review-read");
+    assert.deepEqual(definition.tools, ["read", "grep", "find", "ls"]);
+    assert.deepEqual(definition.delegation, { allowed: false, maxDepth: 0 });
+    assert.deepEqual(definition.independence, { freshInitial: true, followUpAllowed: false });
+    assert.deepEqual(definition.result.requiredSections, ["model-route", "verdict", "findings", "disproof-attempts", "confidence"]);
+    assert.doesNotMatch(definition.prompt, /Claude|OpenAI|Opus|GPT/i);
+  }
+  assert.match(byName.get("adversary-a").prompt, /integration|state-transition/i);
+  assert.match(byName.get("adversary-b").prompt, /boundary|invariant/i);
 });

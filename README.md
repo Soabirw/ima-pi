@@ -20,6 +20,7 @@ Technical spikes are validating Pi-native conventions before the runtime archite
 - **FNR-3019** adds bounded testing, independent review, narrow finding verification, and documentation/learning closeout prompts.
 - **FNR-3020** adds bounded architecture, investigation, instruction, and inline prompt-building prompts while reusing the existing read-only `explore` agent.
 - **FNR-3021** adds bounded local-image vision delegation, read-only UI/UX review, and planning-only WordPress/Bootstrap design-to-code handoffs.
+- **FNR-3022** adds evidence-backed scorecards and advisory independent adversarial review with distinct configured routes.
 
 ## Try the package
 
@@ -70,6 +71,13 @@ All implementation prompts require an approved implementation-grade plan, work i
 - `/ima:document [completed-lifecycle-source]` updates only exact local documentation targets and prepares parent-owned external update manifests.
 
 See [`docs/foundation/FNR-3019.md`](docs/foundation/FNR-3019.md) for authority, review verification fallback, knowledge routing, and limitations.
+
+## Quality advisory workflows
+
+- `/ima:scorecard [target]` produces a read-only, evidence-backed A/B/C/D/F assessment for Code Standards, Security, Test Coverage, Documentation, and Maintainability using only existing configured non-mutating validators. It displays paste-ready Markdown; a later explicit request may update only that exact scorecard section in one unambiguous README.
+- `/ima:adversarial-review [target]` gives one evidence packet to two fresh, read-only adversaries in parallel. It requires configured, catalog-available `adversaryA` and `adversaryB` routes with distinct `(provider, model)` identities and blocks rather than falling back or accepting one-sided results.
+
+Adversarial reports are advisory only: they do not create formal review state or `REVIEW-NNN` findings. Use `/ima:review` for formal review. See [`docs/foundation/FNR-3022.md`](docs/foundation/FNR-3022.md) for source-to-target coverage, authority, tests, manual acceptance, limitations, and rollback.
 
 ## Visual workflows
 
