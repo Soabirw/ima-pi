@@ -51,6 +51,13 @@ test("package exposes namespaced extension, prompt, and skill commands", async (
   assert.equal(commands.get("skill:ima-pi-probe")?.source, "skill");
 });
 
+test("package ships integrations extension with both production tool registrations", async () => {
+  const integrations = await readFile(join(root, "extensions", "integrations.ts"), "utf8");
+  assert.match(integrations, /registerTool\(\{ name: "ima_context"/);
+  assert.match(integrations, /registerTool\(\{ name: "ima_lifecycle"/);
+  assert.equal((await readFile(join(root, "extensions", "gateway-probe.ts"), "utf8")).includes("ima:gateway-probe"), true);
+});
+
 test("Pi discovers package, user, and trusted project resources", async () => {
   const directory = await mkdtemp(join(tmpdir(), "ima-pi-scopes-"));
   const agentDir = join(directory, "agent");

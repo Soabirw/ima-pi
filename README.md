@@ -14,6 +14,7 @@ Technical spikes are validating Pi-native conventions before the runtime archite
 - **FNR-3013** adds package homes and explicit, opt-in model-role configuration.
 - **FNR-3014** adds bounded first-class agents, the `ima_delegate` production tool, source-aware discovery, and focused session inspection.
 - **FNR-3015** adds concise production delegation activity, cancellation/possible-partial-state disclosure, structured stopped-state reports, and visible focused safety interception.
+- **FNR-3016** adds Serena-first production context assembly and semantically verified Vestige lifecycle handoffs through external IMA service boundaries.
 
 ## Try the package
 
@@ -39,6 +40,12 @@ Then try:
 `ima_delegate` is the model-callable production delegation tool. It accepts one to four complete, agent-defined assignments and fails closed for invalid authority, overlapping writer ownership, unavailable minimum capability, or unsafe reuse. During a run it projects at most five concise activity lines through Pi tool updates and one replaceable TUI widget/status, including phase, child agent, exact model, declared skills, sanitized tool/gateway category, state, elapsed time, retry, and escalation. Terminal results preserve child reports and add structured cancellation, possible-partial-state, blocker, resume-reference, and safe-next-action facts. Safety interception remains the narrow FNR-3014 mechanical ownership boundary; no confirmation loop or permission matrix was added.
 
 Inspect resolved definitions with `/ima:agents`, session metadata with `/ima:agent-sessions`, and request a focused reusable continuation with `/ima:agent-follow-up <session-reference> <brief>`. See [`agents/README.md`](agents/README.md), [`policies/README.md`](policies/README.md), [`docs/foundation/FNR-3014.md`](docs/foundation/FNR-3014.md), and [`docs/foundation/FNR-3015.md`](docs/foundation/FNR-3015.md).
+
+## Production integrations
+
+`ima_context` is a model-callable tool that activates Serena, loads its instructions and standard project memories, then normalizes exactly one Jira, Taskwarrior, project-file, Vestige-memory, or free-text source into a versioned phase context. An optional Qdrant lookup is read-only. `ima_lifecycle` validates a complete lifecycle artifact, saves it only through `ima-mcp vestige save`, and requires a single semantic recall hit before reporting completion.
+
+Both tools call externally installed/configured IMA gateway services; they do not provide service SDKs, mutate Jira or Taskwarrior, index Qdrant, or implement phase commands/cycle automation. Later stories own production phase commands. See [`docs/foundation/FNR-3016.md`](docs/foundation/FNR-3016.md) for contracts, ordering, security boundaries, limitations, and live acceptance.
 
 ## Configure model roles
 
