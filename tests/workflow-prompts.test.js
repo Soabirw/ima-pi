@@ -42,3 +42,36 @@ test("quality and learning prompts retain distinct bounded terminal contracts", 
   const verify = await prompt("review-verify"); for (const value of ["CONFIRMED|WITHDRAWN|PARTIAL", "Do not edit", "one dependency hop"]) has(verify, value);
   const document = await prompt("document"); for (const value of ["exact approved", "external-update manifest", "Serena", "Vestige", "Qdrant", "ima_lifecycle"]) has(document, value);
 });
+
+
+const advisoryPrompts = ["architect", "investigate", "instruct", "prompt-start"];
+
+test("advisory prompts are discoverable, non-mutating terminal contracts distinct from the prompt probe", async () => {
+  for (const name of advisoryPrompts) {
+    const text = await prompt(name);
+    for (const value of ["description:", "argument-hint:", "non-mutating", "does not change the active model", "Stop"]) has(text, value);
+    assert.doesNotMatch(text, /\/ima:cycle/i);
+  }
+  const starter = await prompt("prompt-start");
+  for (const value of ["Unlike `/ima:prompt`", "resource-discovery probe", "production inline prompt builder"]) has(starter, value);
+});
+
+test("architect favors evidence, simple design, explicit boundaries, and bounded assessment", async () => {
+  const text = await prompt("architect");
+  for (const value of ["evidence over assumptions", "simple over complex", "simpler viable path", "pure/effect boundaries", "trade-offs", "risks", "do not implement", "Serena-first"]) has(text, value);
+});
+
+test("investigate traces evidence and hypotheses without applying fixes", async () => {
+  const text = await prompt("investigate");
+  for (const value of ["root cause when proven", "ranked hypotheses", "read-only diagnostics", "explore", "vision-handoff", "confidence and disconfirming evidence", "Stop without applying a fix"]) has(text, value);
+});
+
+test("instruct teaches safe action without performing it", async () => {
+  const text = await prompt("instruct");
+  for (const value of ["what to do", "why it matters", "read-only", "low-risk", "state-changing", "destructive", "explore", "vision-handoff", "never performs the work", "Stop after the teaching response"]) has(text, value);
+});
+
+test("prompt-start builds one inline ready-to-paste prompt without executing it", async () => {
+  const text = await prompt("prompt-start");
+  for (const value of ["prompt-building", "not execution", "inline in the current Pi conversation", "ask one focused clarification", "standalone, ready-to-paste prompt", "GUI editor", "write files", "invoke the generated workflow", "Stop after presenting the refined prompt"]) has(text, value);
+});

@@ -18,6 +18,7 @@ Technical spikes are validating Pi-native conventions before the runtime archite
 - **FNR-3017** adds production prompts for approved product requirements, two-tier PM decomposition, and one-unit technical planning.
 - **FNR-3018** adds plan-bound MID implementation prompts for generic, JavaScript/TypeScript, and production WordPress/PHP work.
 - **FNR-3019** adds bounded testing, independent review, narrow finding verification, and documentation/learning closeout prompts.
+- **FNR-3020** adds bounded architecture, investigation, instruction, and inline prompt-building prompts while reusing the existing read-only `explore` agent.
 
 ## Try the package
 
@@ -37,6 +38,16 @@ Then try:
 ```
 
 `/ima:delegate-probe`, `/ima:control-probe`, `/ima:gateway-probe`, and `/ima:vision-probe` are bounded technical-spike entry points, not production orchestration interfaces. The gateway probe performs one intentional semantic Vestige ingestion while Serena and Qdrant remain read-only. The control probe accepts `/ima:control-probe cancel <run-id> <a|b>` after startup; see its spike document for live acceptance steps and limitations.
+
+## Production advisory workflows
+
+- `/ima:architect [source]` produces a bounded, evidence-oriented architecture assessment and favors the simplest viable design.
+- `/ima:investigate [source]` traces symptoms and reports a proven root cause or ranked hypotheses without applying a fix.
+- `/ima:instruct [source]` researches enough to teach what to do and why, labels command risk, and never performs the work.
+- `/ima:prompt-start [rough-context]` produces one standalone, ready-to-paste prompt inline without executing or persisting it.
+- `explore` remains the fast read-only repository specialist and is invoked through `ima_delegate` with a complete bounded assignment; inspect it with `/ima:agents`.
+
+All five are advisory and non-mutating, and they stop without implementing. They are optional bounded operations rather than stages in the formal delivery sequence. `/ima:prompt` remains the resource-discovery probe, while `/ima:prompt-start` is the production prompt builder. See [`docs/foundation/FNR-3020.md`](docs/foundation/FNR-3020.md) for source disposition, authority boundaries, integration, verification, and limitations.
 
 ## Production workflow prompts
 
