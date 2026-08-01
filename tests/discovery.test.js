@@ -48,6 +48,11 @@ test("package exposes namespaced extension, prompt, and skill commands", async (
   assert.equal(commands.get("ima:delegate-probe")?.source, "extension");
   assert.equal(commands.get("ima:control-probe")?.source, "extension");
   assert.equal(commands.get("ima:prompt")?.source, "prompt");
+  for (const [name, description] of [["brainstorm", "product requirements"], ["decompose", "two-tier delivery units"], ["plan", "technical implementation contract"]]) {
+    assert.equal(commands.get(`ima:${name}`)?.source, "prompt");
+    assert.equal(commands.get(`ima:${name}`)?.origin, "package");
+    assert.match(await readFile(join(root, "prompts", `ima:${name}.md`), "utf8"), new RegExp(description, "i"));
+  }
   assert.equal(commands.get("skill:ima-pi-probe")?.source, "skill");
 });
 

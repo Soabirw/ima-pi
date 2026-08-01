@@ -15,6 +15,7 @@ Technical spikes are validating Pi-native conventions before the runtime archite
 - **FNR-3014** adds bounded first-class agents, the `ima_delegate` production tool, source-aware discovery, and focused session inspection.
 - **FNR-3015** adds concise production delegation activity, cancellation/possible-partial-state disclosure, structured stopped-state reports, and visible focused safety interception.
 - **FNR-3016** adds Serena-first production context assembly and semantically verified Vestige lifecycle handoffs through external IMA service boundaries.
+- **FNR-3017** adds production prompts for approved product requirements, two-tier PM decomposition, and one-unit technical planning.
 
 ## Try the package
 
@@ -34,6 +35,14 @@ Then try:
 ```
 
 `/ima:delegate-probe`, `/ima:control-probe`, `/ima:gateway-probe`, and `/ima:vision-probe` are bounded technical-spike entry points, not production orchestration interfaces. The gateway probe performs one intentional semantic Vestige ingestion while Serena and Qdrant remain read-only. The control probe accepts `/ima:control-probe cancel <run-id> <a|b>` after startup; see its spike document for live acceptance steps and limitations.
+
+## Production workflow prompts
+
+- `/ima:brainstorm [source]` turns an idea or evidence into approved product requirements; it does not decompose or technically design.
+- `/ima:decompose [requirements-source]` creates exactly a Taskwarrior Project → Task or Jira Epic → Story/Task hierarchy, with lower-level work kept as checklists. It previews one PM destination and requires approval before persistence.
+- `/ima:plan [story-or-task-source]` creates an approved technical implementation contract for one bounded delivery unit; it does not implement or execute work.
+
+Each resulting Story/Task independently enters `plan -> implement -> test -> review -> document`. See [`docs/foundation/FNR-3017.md`](docs/foundation/FNR-3017.md) for authority, integration, safeguards, limitations, and human acceptance.
 
 ## Production agents
 
