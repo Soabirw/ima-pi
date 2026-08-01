@@ -21,6 +21,7 @@ Technical spikes are validating Pi-native conventions before the runtime archite
 - **FNR-3020** adds bounded architecture, investigation, instruction, and inline prompt-building prompts while reusing the existing read-only `explore` agent.
 - **FNR-3021** adds bounded local-image vision delegation, read-only UI/UX review, and planning-only WordPress/Bootstrap design-to-code handoffs.
 - **FNR-3022** adds evidence-backed scorecards and advisory independent adversarial review with distinct configured routes.
+- **FNR-3023** adds terminal medical and patristic research prompts, reusable specialist skills, and packaged patristic indexes.
 
 ## Try the package
 
@@ -85,6 +86,13 @@ Adversarial reports are advisory only: they do not create formal review state or
 - `/ima:design-to-code [design-source]` produces an approved WordPress/Bootstrap implementation plan, persists it as `plan`, and stops at `/ima:implement-wp`.
 
 Vision delegation accepts one to four accessible absolute local PNG, JPEG, WebP, or GIF paths and blocks on any invalid source. Image bytes and full paths are not projected into results. See [`docs/foundation/FNR-3021.md`](docs/foundation/FNR-3021.md) for privacy, limitations, source disposition, and manual acceptance.
+
+## Specialist research workflows
+
+- `/ima:medical-research [question]` provides evidence-driven medical research using current primary-source verification and `ima-research` when available. It never silently substitutes `ima-knowledge`, discloses corpus limitations, audits methods/funding/conflicts, escalates emergency symptoms, and provides education rather than individualized medical advice.
+- `/ima:patristic-research [question]` researches early Christianity through Augustine with packaged indexes, the `theology` corpus, primary-source quotation verification, precise citations, historical context, authority distinctions, and anti-anachronism safeguards.
+
+Both accept natural-language questions rather than depth/audience parameters. They infer safe context, ask focused clarification only when needed, and stop after the research response rather than entering a delivery lifecycle. See [`docs/foundation/FNR-3023.md`](docs/foundation/FNR-3023.md) for source coverage, safety boundaries, manual acceptance, limitations, and rollback.
 
 ## Production agents
 

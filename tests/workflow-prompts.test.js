@@ -4,6 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 const root = resolve(dirname(new URL(import.meta.url).pathname), "..");
 const prompt = (name) => readFile(join(root, "prompts", `ima:${name}.md`), "utf8");
+const skill = (name) => readFile(join(root, "skills", name, "SKILL.md"), "utf8");
 const has = (text, value) => assert.match(text, new RegExp(value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
 test("production workflow prompts have distinct Pi frontmatter and HIGH-tier authority", async () => { for (const name of ["brainstorm", "decompose", "plan"]) { const text = await prompt(name); has(text, "description:"); has(text, "argument-hint:"); has(text, "HIGH-tier"); has(text, "explicit approval"); assert.doesNotMatch(text, /\/ima:cycle|workflow DSL/i); } });
 test("brainstorm owns approved product requirements and stops before decomposition or design", async () => { const text = await prompt("brainstorm"); for (const value of ["problem or opportunity", "users and use cases", "business rules", "product acceptance criteria", "vision-handoff", "lifecycle type `decision`", "/ima:decompose", "stop"]) has(text, value); has(text, "Do **not** decompose PM work"); });
@@ -90,4 +91,27 @@ test("scorecard and adversarial-review retain bounded quality contracts", async 
   const adversarial = await prompt("adversarial-review");
   for (const value of ["one complete packet", "adversary-a", "adversary-b", "parallel", "distinct", "provider, model", "one-sided", "Dropped Adversarial Claims", "REVIEW-NNN", "advisory", "/ima:review"]) has(adversarial, value);
   assert.doesNotMatch(adversarial, /ima_lifecycle/);
+});
+
+test("specialist research prompts preserve natural-language, terminal, and domain contracts", async () => {
+  const medical = await prompt("medical-research");
+  for (const value of ["description:", "argument-hint: \"[question]\"", "natural-language", "$@", "empty", "wait", "two or three", "parameter grammar", "emergency", "911", "PICO", "ima-research", "ima-knowledge", "current primary", "funding", "conflicts", "endpoints", "limitations", "Do not diagnose", "prescribe", "educational purposes", "What Is Unsettled", "does not change the active model", "Stop after"]) has(medical, value);
+  has(medical, "Do not invoke `/ima:cycle`");
+
+  const patristic = await prompt("patristic-research");
+  for (const value of ["description:", "argument-hint: \"[question]\"", "natural-language", "$@", "empty", "wait", "two or three", "parameter grammar", "AD 30–430", "Augustine", "references/Patristic-Quick-Reference.md", "theology", "metadata.collection: fathers", "metadata.era: patristic", "discovery evidence", "verified quotations", "New Advent", "chronologically", "Apostolic Tradition", "pseudepigrapha", "anachronism", "Sources Checked", "does not change the active model", "Stop after"]) has(patristic, value);
+  has(patristic, "Do not invoke `/ima:cycle`");
+});
+
+test("specialist research skills and packaged patristic references retain their source boundaries", async () => {
+  const medical = await skill("ima-medical-research");
+  for (const value of ["name: ima-medical-research", "Honest Medicine", "Do not diagnose", "emergency", "ima-research", "Never silently use `ima-knowledge`", "current primary literature", "funding", "conflicts", "PICO", "What Is Unsettled"]) has(medical, value);
+
+  const patristic = await skill("patristic-researcher");
+  for (const value of ["name: patristic-researcher", "AD 30–430", "Augustine", "Patristic-Quick-Reference.md", "theology", "metadata.collection: fathers", "metadata.era: patristic", "never as verified quotations", "New Advent", "Apostolic Tradition", "pseudepigrapha", "anachronism", "Sources Checked"]) has(patristic, value);
+
+  for (const name of ["Patristic-Quick-Reference.md", "Index-NT-Epistles.md", "Index-Apostolic-Fathers.md", "Index-Ante-Nicene.md", "Index-Nicene-Post-Nicene.md"]) {
+    const content = await readFile(join(root, "skills", "patristic-researcher", "references", name), "utf8");
+    assert.ok(content.trim().length > 0, `${name} must be packaged and non-empty`);
+  }
 });
