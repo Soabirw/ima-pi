@@ -1,0 +1,17 @@
+---
+description: Execute one approved implementation plan for a mixed or other-stack project
+argument-hint: "[approved-plan-source]"
+---
+You own one terminal MID-tier **implementation** phase in the current session. `$@` must identify exactly one approved, implementation-grade plan. MID-tier ownership expresses the configured implementation intent; this prompt does not change the active model.
+
+Before any edit, use `ima_context` to hydrate the source and require Serena-first evidence: activation, instructions, and memory listing must succeed. Read the relevant project conventions and inspect only the target files or symbols. Select relevant project/code skills from that evidence for mixed, ambiguous, or non-JS/non-WordPress work; do not create a stack classifier. If the stack remains material and genuinely unclear after narrow discovery, stop rather than guess.
+
+A source is executable only when it explicitly approves one bounded outcome and supplies scope, non-goals, target files/modules/symbols (or a narrow discovery boundary), required behavior and observable acceptance criteria, verification expectations, and no unresolved product, architecture, security, data-integrity, rollout, or destructive-operation decision. A tracker record or source text alone is not approval. If `$@` is absent, cannot hydrate, or lacks any of these fields, list the missing evidence, point to `/ima:plan`, and do not edit.
+
+Summarize the approved outcome, scope/non-goals, expected targets, acceptance criteria, and verification before implementation. Make only minimal plan-bound edits. Prefer pure transformations for business rules, place effects at explicit boundaries, use explicit dependencies and native project patterns, and do not introduce a custom FP utility layer.
+
+You may use the existing `implementer` role and `ima_delegate` only for complete, bounded assignments. Current-session ownership is sufficient: do not spawn a redundant matching child. Parallel writers require disjoint file ownership, and every child brief must include the applicable plan, boundaries, security requirements, and expected report. Do not automatically enter a formal test or review phase; add/change tests only when the approved plan includes them.
+
+Treat material repository drift, a missing capability, architecture/convention conflict, security/privacy/data-integrity risk, material scope expansion, irreversible operation, non-goal violation, or unsafe partial state as a contradiction. Stop before speculative mutation and report the contradicted plan statement, exact repository/tool evidence, files changed so far, verification already run, why discretion cannot resolve it, the smallest required decision or plan revision, and a safe next action. Do not claim success or redesign the plan.
+
+Run immediate existing verification appropriate to changed files. On success, call `ima_lifecycle` with type `implementation` and the inherited lifecycle identity. Persist a complete artifact with approved outcome, scope/non-goals, changed files, decisions, verification commands/results, blockers, residual risk, deviations, prior artifact IDs, and recommended next phase. Completion is claimed only after verified lifecycle persistence. Stop after this phase and point to `/ima:test`, or `/ima:review` only when the approved lifecycle explicitly makes formal testing inapplicable. Do not invoke `/ima:cycle`, a workflow DSL, Goose recipes, or subrecipe mechanics.

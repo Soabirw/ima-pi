@@ -16,6 +16,7 @@ Technical spikes are validating Pi-native conventions before the runtime archite
 - **FNR-3015** adds concise production delegation activity, cancellation/possible-partial-state disclosure, structured stopped-state reports, and visible focused safety interception.
 - **FNR-3016** adds Serena-first production context assembly and semantically verified Vestige lifecycle handoffs through external IMA service boundaries.
 - **FNR-3017** adds production prompts for approved product requirements, two-tier PM decomposition, and one-unit technical planning.
+- **FNR-3018** adds plan-bound MID implementation prompts for generic, JavaScript/TypeScript, and production WordPress/PHP work.
 
 ## Try the package
 
@@ -43,6 +44,12 @@ Then try:
 - `/ima:plan [story-or-task-source]` creates an approved technical implementation contract for one bounded delivery unit; it does not implement or execute work.
 
 Each resulting Story/Task independently enters `plan -> implement -> test -> review -> document`. See [`docs/foundation/FNR-3017.md`](docs/foundation/FNR-3017.md) for authority, integration, safeguards, limitations, and human acceptance.
+
+- `/ima:implement [approved-plan-source]` executes a plan for mixed, ambiguous, or non-JavaScript/non-WordPress stacks.
+- `/ima:implement-js [approved-plan-source]` executes a plan for known JavaScript/TypeScript work.
+- `/ima:implement-wp [approved-plan-source]` executes a plan for production WordPress/PHP work with nonce, authorization, sanitization, contextual escaping, and prepared-query requirements.
+
+All implementation prompts require an approved implementation-grade plan, work in the current session with configured MID intent, may delegate bounded work, stop with evidence on material contradictions, and persist verified implementation lifecycle evidence. They run only immediate plan-authorized verification and never automatically enter formal testing or review. See [`docs/foundation/FNR-3018.md`](docs/foundation/FNR-3018.md) for source disposition, routing, safeguards, and live acceptance limitations.
 
 ## Production agents
 

@@ -49,3 +49,21 @@ test("loads the packaged agent catalog without treating README.md as an agent", 
 test("derives package, user, and project agent paths", () => {
   assert.deepEqual(deriveAgentPaths({ packageRoot: "/package", agentDir: "/agent", cwd: "/project" }), { packageAgents: "/package/agents", userAgents: "/agent/ima/agents", projectAgents: "/project/.pi/ima/agents" });
 });
+
+test("implementation specialist agent documents preserve plan, verification, and security contracts", async () => {
+  const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const loaded = await loadAgentDefinitions({ paths: deriveAgentPaths({ packageRoot, agentDir: resolve(packageRoot, ".missing-agent-home"), cwd: packageRoot }), projectTrusted: false });
+  const byName = new Map(loaded.definitions.map((definition) => [definition.name, definition]));
+  for (const name of ["implementer", "js-developer", "wordpress-developer"]) {
+    const definition = byName.get(name);
+    assert.equal(definition.tier, "MID");
+    assert.equal(definition.authority, "write");
+    assert.deepEqual(definition.result.requiredSections, ["changed-files", "verification", "blockers"]);
+    assert.match(definition.prompt, /approved.*plan|plan.*approved/i);
+    assert.match(definition.prompt, /Serena.*evidence/i);
+    assert.match(definition.prompt, /verification/i);
+  }
+  assert.match(byName.get("js-developer").prompt, /parameterized SQL/i);
+  assert.match(byName.get("wordpress-developer").prompt, /nonce.*capability|capability.*nonce/i);
+  assert.match(byName.get("wordpress-developer").prompt, /sanitize.*escape.*prepared/i);
+});

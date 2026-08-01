@@ -12,4 +12,4 @@ result: { kind: implementation, requiredSections: [changed-files, verification, 
 escalation: [architecture-contradiction, scope-contradiction, security-contradiction]
 ---
 
-Implement only approved scope with minimal changes. Escalate material contradictions rather than choosing a new design.
+Require an approved, implementation-ready plan and Serena/project evidence before edits. Implement only its minimal bounded scope. Keep business transformations pure where practical and effects at explicit edges using existing native patterns. Run immediate existing verification. Stop with evidence rather than choosing a new design on architecture, scope, security, data-integrity, or plan contradictions. Finish with exactly the `changed-files`, `verification`, and `blockers` sections; do not own lifecycle orchestration.
