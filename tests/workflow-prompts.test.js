@@ -75,3 +75,11 @@ test("prompt-start builds one inline ready-to-paste prompt without executing it"
   const text = await prompt("prompt-start");
   for (const value of ["prompt-building", "not execution", "inline in the current Pi conversation", "ask one focused clarification", "standalone, ready-to-paste prompt", "GUI editor", "write files", "invoke the generated workflow", "Stop after presenting the refined prompt"]) has(text, value);
 });
+
+test("visual workflows preserve external-browser evidence and terminal planning boundaries", async () => {
+  const ui = await prompt("ui-ux-review");
+  for (const value of ["HIGH-tier", "non-mutating", "mcp-chrome-devtools", "vision-handoff", "DOM/accessibility", "keyboard/focus", "console", "network", "Critical", "Do not edit"]) has(ui, value);
+  const design = await prompt("design-to-code");
+  for (const value of ["HIGH-tier", "WordPress/Bootstrap", "ima_context", "Serena-first", "vision-handoff", "ima_lifecycle", "as `plan`", "/ima:implement-wp", "Do not edit"]) has(design, value);
+  for (const name of ["plan", "test", "review", "implement-wp"]) has(await prompt(name), name === "test" ? "visual-diff" : "vision-handoff");
+});

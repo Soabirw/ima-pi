@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
+import { admitVisionImage, readBoundedImage } from "../lib/ima-vision.ts";
 import {
   MAX_IMAGE_BYTES, STORY, USAGE, buildVisionBrief,
   childExecutionErrorCode, childIdentityMatches, classifyImage, deliverImageToVerifiedSession,
@@ -133,4 +137,36 @@ test("sanitization and concise summary do not expose error detail", () => {
   assert.deepEqual(error, { code: "image_not_found", message: "image was not found" });
   assert.equal(sanitizeError("unknown", "secret").message, "vision probe failed");
   assert.equal(formatSummary({ status: "failed", image, actualChild: { provider: "p", model: "m" }, error }), "failed: evidence.png · p/m · image_not_found");
+});
+
+
+test("bounded image reader assembles partial reads and rejects its sentinel without a larger request", async () => {
+  const requests = [];
+  const content = Buffer.from("abcdefgh");
+  let position = 0;
+  const partialHandle = { read: async (buffer, offset, length) => {
+    requests.push(length);
+    const bytesRead = Math.min(2, content.length - position, length);
+    content.copy(buffer, offset, position, position + bytesRead);
+    position += bytesRead;
+    return { bytesRead };
+  } };
+  assert.deepEqual(await readBoundedImage(partialHandle, content.length), content);
+  assert.ok(Math.max(...requests) <= content.length + 1);
+
+  let sentinelRequest = 0;
+  const sentinel = { read: async (_buffer, _offset, length) => { sentinelRequest = length; return { bytesRead: length }; } };
+  assert.equal(await readBoundedImage(sentinel, MAX_IMAGE_BYTES), null);
+  assert.equal(sentinelRequest, MAX_IMAGE_BYTES + 1);
+});
+
+test("admission keeps stable read and filesystem error projections", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ima-vision-"));
+  const directory = join(root, "directory.png");
+  const unreadable = join(root, "missing.png");
+  await mkdir(directory);
+  await writeFile(join(root, "empty.png"), "");
+  assert.equal((await admitVisionImage(directory)).error, "image_not_regular_file");
+  assert.equal((await admitVisionImage(join(root, "empty.png"))).error, "image_empty");
+  assert.equal((await admitVisionImage(unreadable)).error, "image_not_found");
 });

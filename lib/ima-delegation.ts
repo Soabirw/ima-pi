@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
 import type { AgentDefinition } from "./ima-agents.ts";
 import type { ResolvedImaConfig } from "./ima-config.ts";
+import { validateImagePaths } from "./ima-vision.ts";
 
-export type DelegationAssignment = { id: string; agent: string; goal: string; context: string; paths: string[]; constraints: string[]; nonGoals: string[]; expectedOutput: string; writeScope: string[]; allowUpwardFallback?: boolean };
+export type DelegationAssignment = { id: string; agent: string; goal: string; context: string; paths: string[]; constraints: string[]; nonGoals: string[]; expectedOutput: string; writeScope: string[]; imagePaths?: string[]; allowUpwardFallback?: boolean };
 export type DelegationRequest = { title: string; assignments: DelegationAssignment[] };
 export type DelegationFailure = "brief-correctable" | "transient-provider" | "model-unavailable" | "auth-or-quota" | "agent-contract" | "unsafe-partial-state" | "plan-contradiction" | "critical-decision" | "terminal";
 export type DelegationEvent = { type: "started" | "succeeded" | "failed" | "cancelled"; id: string; detail?: string; partialEffects?: boolean };
@@ -26,6 +27,9 @@ export function validateDelegationRequest(request: DelegationRequest, agents: Ag
     const agent = names.get(assignment.agent); if (!agent) { errors.push(`delegation_agent_unknown:${assignment.agent}`); continue; }
     for (const field of ["goal", "context", "expectedOutput"] as const) if (!clean(assignment[field])) errors.push(`delegation_${field}_invalid:${assignment.id}`);
     for (const path of [...assignment.paths, ...assignment.writeScope]) if (!safeRelative(path)) errors.push(`delegation_path_invalid:${assignment.id}`);
+    const imageValidation = validateImagePaths(assignment.imagePaths ?? []);
+    if (!imageValidation.valid) errors.push(`${imageValidation.error}:${assignment.id}`);
+    if ((assignment.imagePaths?.length ?? 0) > 0 && (agent.tier !== "vision" || agent.authority !== "vision-read" || agent.result.kind !== "vision")) errors.push(`delegation_images_vision_only:${assignment.id}`);
     if (["read", "review-read", "vision-read"].includes(agent.authority) && assignment.writeScope.length) errors.push(`delegation_read_write_scope:${assignment.id}`);
     if (["write", "test-write", "document-write"].includes(agent.authority) && !assignment.writeScope.length) errors.push(`delegation_write_scope_required:${assignment.id}`);
   if (agent?.authority === "document-write") errors.push(...validateDocumentWriteScope(assignment.writeScope).errors.map((error) => `${error}:${assignment.id}`));
@@ -33,12 +37,13 @@ export function validateDelegationRequest(request: DelegationRequest, agents: Ag
   errors.push(...validateParallelAssignments(request.assignments)); return { valid: !errors.length, errors };
 }
 
-export function buildChildBrief(input: { projectRoot: string; assignment: DelegationAssignment; agent: AgentDefinition }) {
+export function buildChildBrief(input: { projectRoot: string; assignment: DelegationAssignment; agent: AgentDefinition; images?: Array<{ id: string; sourceLabel: string; mimeType: string; byteLength: number }> }) {
   const { assignment, agent } = input;
   return [
     `You are the ${agent.name} specialist.`, `Goal: ${assignment.goal}`, `Project root: ${input.projectRoot}`, `Relevant paths: ${assignment.paths.join(", ") || "none"}`, `Context and prior decisions: ${assignment.context}`,
     `Constraints: ${assignment.constraints.join("; ") || "none"}`, `Non-goals: ${assignment.nonGoals.join("; ") || "none"}`, `Expected output: ${assignment.expectedOutput}`,
     `Authority: ${agent.authority}. Allowed tools: ${agent.tools.join(", ")}.`, `Exact write ownership: ${assignment.writeScope.join(", ") || "none"}.`,
+    ...(input.images?.length ? [`Attached visual evidence only: ${input.images.map((image) => `${image.id} (${image.sourceLabel}, ${image.mimeType}, ${image.byteLength} bytes)`).join("; ")}. Analyze only those identities; report direct visual facts, exact legible text, uncertainty, and missing/ambiguous evidence. Do not include paths, bytes, or implementation decisions.`] : []),
     "Other work may run concurrently. Do not edit outside your ownership, rely on parent chat, or delegate further.", `Escalate: ${agent.escalation.join(", ")}.`, `Report sections: ${agent.result.requiredSections.join(", ")}.`, agent.prompt,
   ].join("\n\n");
 }

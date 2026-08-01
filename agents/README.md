@@ -33,3 +33,12 @@ FNR-3020 reuses `explore` as the fast read-only exploration target. It is invoke
 ```
 
 The production tool remains authoritative for the actual assignment contract and routing.
+
+
+## Visual evidence
+
+`vision-handoff` is evidence-only. An `ima_delegate` assignment may provide one to four `imagePaths` only when it targets that vision-tier agent; each must be an accessible absolute local PNG, JPEG, WebP, or GIF under 20 MiB. Any invalid source blocks before prompting—there is no partial omission or text-only fallback. Child briefs and results expose opaque source IDs and safe basenames, never bytes, base64, or full paths.
+
+```json
+{ "title": "Review visual evidence", "assignments": [{ "id": "visual", "agent": "vision-handoff", "goal": "Report direct visual facts and uncertainty.", "context": "Evidence only.", "paths": [], "constraints": ["No implementation decisions"], "nonGoals": ["Planning"], "expectedOutput": "Visual evidence", "writeScope": [], "imagePaths": ["/absolute/local/mockup.png"] }] }
+```

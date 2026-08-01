@@ -1,14 +1,14 @@
-import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join } from "node:path";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { dirname, isAbsolute, join } from "node:path";
 import { tmpdir } from "node:os";
 import { createAgentSession, ModelRuntime, SessionManager, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { MAX_IMAGE_BYTES, admitVisionImage, classifyImage, extensionMatchesMime, imageSizeError } from "../lib/ima-vision.ts";
+export { MAX_IMAGE_BYTES, classifyImage, extensionMatchesMime, imageSizeError } from "../lib/ima-vision.ts";
 
 export const STORY = "FNR-3012";
 export const SCHEMA_VERSION = 1;
 export const RESULT_ENV_VAR = "IMA_PI_VISION_RESULT";
 export const CHILD_TIMEOUT_MS = 60_000;
-export const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 const CHILD_EXECUTION_TIMEOUT = Symbol("child_execution_timeout");
 export const USAGE = "usage: /ima:vision-probe <provider>/<model> <absolute-image-path>";
 const MAX_RESPONSE_BYTES = 32_000;
@@ -40,24 +40,6 @@ export function parseVisionProbeArgs(value: unknown) {
 
 export function supportsImageInput(model: unknown): boolean {
   return !!model && typeof model === "object" && Array.isArray((model as { input?: unknown }).input) && (model as { input: unknown[] }).input.includes("image");
-}
-
-export function classifyImage(bytes: Uint8Array): string | null {
-  if (bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47 && bytes[4] === 0x0d && bytes[5] === 0x0a && bytes[6] === 0x1a && bytes[7] === 0x0a) return "image/png";
-  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
-  if (bytes.length >= 12 && String.fromCharCode(...bytes.slice(0, 4)) === "RIFF" && String.fromCharCode(...bytes.slice(8, 12)) === "WEBP") return "image/webp";
-  if (bytes.length >= 6 && (String.fromCharCode(...bytes.slice(0, 6)) === "GIF87a" || String.fromCharCode(...bytes.slice(0, 6)) === "GIF89a")) return "image/gif";
-  return null;
-}
-
-export function imageSizeError(size: number): "image_empty" | "image_too_large" | null {
-  return size === 0 ? "image_empty" : size > MAX_IMAGE_BYTES ? "image_too_large" : null;
-}
-
-export function extensionMatchesMime(path: string, mimeType: string): boolean {
-  const extension = path.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1];
-  const expected: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif" };
-  return !extension || !expected[extension] || expected[extension] === mimeType;
 }
 
 export function buildVisionBrief(input: { imageId: string; sourceLabel: string }): string {
@@ -142,17 +124,11 @@ export function formatSummary(result: { status: string; image: ImageInfo; actual
 
 async function runProbe(input: { provider: string; model: string; imagePath: string }) {
   const requested = { provider: input.provider, model: input.model };
-  let bytes: Buffer; let source: ImageInfo;
-  try {
-    const info = await stat(input.imagePath);
-    if (!info.isFile()) return failure(requested, "image_not_regular_file");
-    const sizeError = imageSizeError(info.size);
-    if (sizeError) return failure(requested, sizeError);
-    bytes = await readFile(input.imagePath);
-    const mimeType = classifyImage(bytes);
-    if (!mimeType || !extensionMatchesMime(input.imagePath, mimeType)) return failure(requested, "image_unsupported");
-    source = { id: randomUUID(), sourceLabel: basename(input.imagePath), mimeType, byteLength: bytes.length, accessible: true, delivered: false };
-  } catch (error) { return failure(requested, (error as { code?: string }).code === "ENOENT" ? "image_not_found" : "image_read_failed"); }
+  const admitted = await admitVisionImage(input.imagePath);
+  if (!admitted.admitted) return failure(requested, admitted.error);
+  const { source: admittedSource, attachment } = admitted.value;
+  let source: ImageInfo = { ...admittedSource, accessible: true, delivered: false };
+  const bytes = Buffer.from(attachment.data, "base64");
   const runtime = await ModelRuntime.create(); const model = runtime.getModel(input.provider, input.model);
   if (!model) return failure(requested, "child_model_not_found", source);
   if (!runtime.hasConfiguredAuth(input.provider)) return failure(requested, "child_model_unauthenticated", source);

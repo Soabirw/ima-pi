@@ -28,7 +28,7 @@ const fakeSession = (overrides = {}) => {
     messages: state.messages,
     model: { provider: "p", id: "m" }, thinkingLevel: "high", sessionId: overrides.sessionId ?? "session", sessionFile: overrides.sessionFile ?? "/sessions/session.jsonl",
     subscribe: (listener) => { listeners.push(listener); return () => { state.unsubscribes += 1; }; },
-    prompt: async (brief) => { state.prompts.push(brief); await overrides.prompt?.({ state, listeners, session }); },
+    prompt: async (brief, options) => { state.prompts.push({ brief, options }); await overrides.prompt?.({ state, listeners, session }); },
     waitForIdle: async () => overrides.waitForIdle?.({ state, listeners, session }),
     getLastAssistantText: () => overrides.text ?? report,
     abort: async () => { state.aborts += 1; await overrides.abort?.({ state, listeners, session }); },
@@ -304,4 +304,70 @@ test("documenter rejects prohibited documentation-looking locations at construct
   assert.throws(() => createScopedTools({ cwd: root, assignment: { ...assignment("bad"), writeScope: ["config/other.md"] }, agent: documenter }));
   const tools = new Map(createScopedTools({ cwd: root, assignment: { ...assignment("docs"), writeScope: ["docs/guide.md"] }, agent: documenter }).map((tool) => [tool.name, tool]));
   for (const [name, args] of [["write", { path: "config/other.md", content: "no" }], ["edit", { path: "lib/design.md", edits: [] }], ["bash", { command: "echo no > tests/notes.md" }]]) await assert.rejects(tools.get(name).execute("call", args, undefined, undefined, {}));
+});
+
+test("delivers admitted vision images through Pi prompt options without projecting bytes or paths", async () => {
+  const vision = { ...agent, name: "vision-handoff", tier: "vision", authority: "vision-read", tools: ["read", "image"], result: { kind: "vision", requiredSections: ["source-access"] } };
+  const visual = { ...assignment("visual", []), agent: "vision-handoff", imagePaths: ["/tmp/evidence.png"] };
+  const child = fakeSession({ text: "## Source-access\naccessible" });
+  child.session.model = { provider: "p", id: "vision" };
+  const runtimeWithVision = { getModels: () => [{ provider: "p", id: "vision", input: ["text", "image"] }], getModel: () => ({ provider: "p", id: "vision" }) };
+  const result = await coordinateDelegation({ cwd: "/repo", request: { title: "visual", assignments: [visual] }, agents: [vision], config: { models: { vision: { provider: "p", model: "vision", thinking: "high" } } }, runtime: runtimeWithVision, dependencies: { createManager: () => ({}), scopedTools: () => [], clock: () => "now", activityClock: () => 1, admitImages: async () => ({ admitted: true, value: [{ source: { id: "opaque", sourceLabel: "evidence.png", mimeType: "image/png", byteLength: 8, absolutePath: "/tmp/evidence.png" }, attachment: { type: "image", data: "cHJpdmF0ZQ==", mimeType: "image/png" } }] }), createSession: async () => ({ session: child.session }) } });
+  assert.equal(result.status, "succeeded");
+  assert.equal(child.state.prompts.length, 1);
+  assert.equal(child.state.prompts[0].options.images[0].data, "cHJpdmF0ZQ==");
+  assert.doesNotMatch(JSON.stringify(result), /cHJpdmF0ZQ==|\/tmp\/evidence\.png/);
+});
+
+test("blocks all vision delivery before session creation when any local image admission fails", async () => {
+  const vision = { ...agent, name: "vision-handoff", tier: "vision", authority: "vision-read", tools: ["read", "image"], result: { kind: "vision", requiredSections: ["source-access"] } };
+  const visual = { ...assignment("visual", []), agent: "vision-handoff", imagePaths: ["/tmp/first.png", "/tmp/unreadable.png"] };
+  let created = false;
+  const result = await coordinateDelegation({
+    cwd: "/repo", request: { title: "visual", assignments: [visual] }, agents: [vision], config: { models: { vision: { provider: "p", model: "vision", thinking: "high" } } }, runtime: { getModels: () => [{ provider: "p", id: "vision", input: ["text", "image"] }], getModel: () => ({ provider: "p", id: "vision" }) },
+    dependencies: { createManager: () => ({}), scopedTools: () => [], clock: () => "now", activityClock: () => 1, admitImages: async () => ({ admitted: false, error: "image_not_found" }), createSession: async () => { created = true; return { session: fakeSession().session }; } },
+  });
+  assert.equal(result.status, "failed");
+  assert.equal(result.results[0].status, "blocked");
+  assert.equal(result.results[0].error, "image_not_found");
+  assert.equal(created, false);
+  assert.doesNotMatch(JSON.stringify(result), /\/tmp\/(first|unreadable)\.png/);
+});
+
+test("keeps text-only delegation on the original prompt call shape", async () => {
+  const child = fakeSession();
+  const result = await run({ sessions: [{ session: child.session }] });
+  assert.equal(result.status, "succeeded");
+  assert.equal(child.state.prompts.length, 1);
+  assert.equal(child.state.prompts[0].options, undefined);
+});
+
+
+test("unavailable model and pre-aborted signal never admit local images", async () => {
+  const vision = { ...agent, name: "vision-handoff", tier: "vision", authority: "vision-read", tools: ["read", "image"], result: { kind: "vision", requiredSections: ["source-access"] } };
+  const visual = { ...assignment("visual", []), agent: "vision-handoff", imagePaths: ["/tmp/evidence.png"] };
+  let admissions = 0;
+  const dependencies = { createManager: () => ({}), scopedTools: () => [], clock: () => "now", activityClock: () => 1, admitImages: async () => { admissions += 1; return { admitted: true, value: [] }; }, createSession: async () => { assert.fail("session must not be created"); } };
+  const unavailable = await coordinateDelegation({ cwd: "/repo", request: { title: "visual", assignments: [visual] }, agents: [vision], config: { models: { vision: { provider: "p", model: "vision", thinking: "high" } } }, runtime: { getModels: () => [], getModel: () => undefined }, dependencies });
+  assert.equal(unavailable.results[0].error, "model_unavailable");
+  assert.equal(admissions, 0);
+  const controller = new AbortController(); controller.abort();
+  const availableRuntime = { getModels: () => [{ provider: "p", id: "vision", input: ["text", "image"] }], getModel: () => ({ provider: "p", id: "vision" }) };
+  const aborted = await coordinateDelegation({ cwd: "/repo", request: { title: "visual", assignments: [visual] }, agents: [vision], config: { models: { vision: { provider: "p", model: "vision", thinking: "high" } } }, runtime: availableRuntime, signal: controller.signal, dependencies });
+  assert.equal(aborted.status, "cancelled");
+  assert.equal(admissions, 0);
+});
+
+test("cancellation during image admission prevents child session creation", async () => {
+  const vision = { ...agent, name: "vision-handoff", tier: "vision", authority: "vision-read", tools: ["read", "image"], result: { kind: "vision", requiredSections: ["source-access"] } };
+  const visual = { ...assignment("visual", []), agent: "vision-handoff", imagePaths: ["/tmp/evidence.png"] };
+  const controller = new AbortController();
+  let release; const admitted = new Promise((resolve) => { release = resolve; });
+  let created = 0;
+  const runtimeWithVision = { getModels: () => [{ provider: "p", id: "vision", input: ["text", "image"] }], getModel: () => ({ provider: "p", id: "vision" }) };
+  const promise = coordinateDelegation({ cwd: "/repo", request: { title: "visual", assignments: [visual] }, agents: [vision], config: { models: { vision: { provider: "p", model: "vision", thinking: "high" } } }, runtime: runtimeWithVision, signal: controller.signal, dependencies: { createManager: () => ({}), scopedTools: () => [], clock: () => "now", activityClock: () => 1, admitImages: () => admitted, createSession: async () => { created += 1; return { session: fakeSession().session }; } } });
+  await Promise.resolve(); controller.abort(); release({ admitted: true, value: [] });
+  const result = await promise;
+  assert.equal(result.status, "cancelled");
+  assert.equal(created, 0);
 });

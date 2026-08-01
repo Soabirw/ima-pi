@@ -19,6 +19,7 @@ Technical spikes are validating Pi-native conventions before the runtime archite
 - **FNR-3018** adds plan-bound MID implementation prompts for generic, JavaScript/TypeScript, and production WordPress/PHP work.
 - **FNR-3019** adds bounded testing, independent review, narrow finding verification, and documentation/learning closeout prompts.
 - **FNR-3020** adds bounded architecture, investigation, instruction, and inline prompt-building prompts while reusing the existing read-only `explore` agent.
+- **FNR-3021** adds bounded local-image vision delegation, read-only UI/UX review, and planning-only WordPress/Bootstrap design-to-code handoffs.
 
 ## Try the package
 
@@ -69,6 +70,13 @@ All implementation prompts require an approved implementation-grade plan, work i
 - `/ima:document [completed-lifecycle-source]` updates only exact local documentation targets and prepares parent-owned external update manifests.
 
 See [`docs/foundation/FNR-3019.md`](docs/foundation/FNR-3019.md) for authority, review verification fallback, knowledge routing, and limitations.
+
+## Visual workflows
+
+- `/ima:ui-ux-review [target-and-review-request]` performs a read-only evidence-led UI/UX review. Live inspection requires a configured external Chrome DevTools MCP capability; supplied or captured local images go through the configured `vision-handoff` agent.
+- `/ima:design-to-code [design-source]` produces an approved WordPress/Bootstrap implementation plan, persists it as `plan`, and stops at `/ima:implement-wp`.
+
+Vision delegation accepts one to four accessible absolute local PNG, JPEG, WebP, or GIF paths and blocks on any invalid source. Image bytes and full paths are not projected into results. See [`docs/foundation/FNR-3021.md`](docs/foundation/FNR-3021.md) for privacy, limitations, source disposition, and manual acceptance.
 
 ## Production agents
 

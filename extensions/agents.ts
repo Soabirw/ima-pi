@@ -45,6 +45,7 @@ import {
   type SessionRecord,
 } from "../lib/ima-delegation.ts";
 import { loadImaConfig } from "../lib/ima-config.ts";
+import { admitVisionImages, publicVisionSource } from "../lib/ima-vision.ts";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const sessions = new Map<string, SessionRecord>();
@@ -176,6 +177,7 @@ type CoordinatorDependencies = {
   scopedTools?: typeof createScopedTools;
   clock?: () => string;
   activityClock?: () => number;
+  admitImages?: typeof admitVisionImages;
 };
 
 type CoordinatorInput = {
@@ -201,6 +203,7 @@ export async function coordinateDelegation(input: CoordinatorInput) {
     scopedTools: input.dependencies?.scopedTools ?? createScopedTools,
     clock: input.dependencies?.clock ?? now,
     activityClock: input.dependencies?.activityClock ?? Date.now,
+    admitImages: input.dependencies?.admitImages ?? admitVisionImages,
   };
   const store = input.sessionStore ?? sessions;
   let state = createDelegationState(input.request);
@@ -237,6 +240,7 @@ export async function coordinateDelegation(input: CoordinatorInput) {
   const catalog = input.runtime.getModels().map((model: any) => ({ provider: model.provider, model: model.id, input: model.input }));
   const runAssignment = async (assignment: DelegationAssignment) => {
     const agent = input.agents.find((item) => item.name === assignment.agent)!;
+    const imagePaths = assignment.imagePaths ?? [];
     const route = resolveAgentRoute({ agent, config: input.config, catalog });
     if (!route.route) {
       emit({ type: "blocked", id: assignment.id, at: deps.activityClock(), blocker: route.error ?? "model_unavailable", escalation: route.escalation });
@@ -247,6 +251,17 @@ export async function coordinateDelegation(input: CoordinatorInput) {
     if (!model) {
       emit({ type: "blocked", id: assignment.id, at: deps.activityClock(), blocker: "model_unavailable", escalation: "minimum capability is unavailable" });
       return { id: assignment.id, status: "blocked", attempts: 0, error: "model_unavailable", failure: "model-unavailable" as const, escalation: "minimum capability is unavailable", resumeReference: null };
+    }
+    if (cancelled || unsafe) {
+      const failure = "unsafe-partial-state" as const;
+      emit({ type: "cancelled", id: assignment.id, at: deps.activityClock(), blocker: unsafe ? failure : "cancelled", possiblePartialWriteScopes: assignment.writeScope.length ? assignment.writeScope : [] });
+      return { id: assignment.id, status: "cancelled", attempts: 0, error: unsafe ? failure : "cancelled", failure, resumeReference: null };
+    }
+    const admitted = imagePaths.length ? await deps.admitImages(imagePaths) : { admitted: true as const, value: [] };
+    if (!admitted.admitted) {
+      const blocker = admitted.error;
+      emit({ type: "blocked", id: assignment.id, at: deps.activityClock(), blocker, escalation: "correct the local visual source" });
+      return { id: assignment.id, status: "blocked", attempts: 0, error: blocker, failure: "agent-contract" as const, escalation: "correct the local visual source", resumeReference: null };
     }
     let attempt = 0;
     while (attempt < 2) {
@@ -279,7 +294,9 @@ export async function coordinateDelegation(input: CoordinatorInput) {
           if (mutationAttemptUnsafe(event, assignment) || (event?.type === "tool_execution_end" && event.isError && ["write", "edit", "bash"].includes(event.toolName))) markUnsafe(assignment);
         }) ?? unsubscribe;
         if (cancelled || unsafe) { await session.abort?.(); throw new Error(cancelled ? "cancelled" : "unsafe-partial-state"); }
-        await session.prompt(buildChildBrief({ projectRoot: input.cwd, assignment, agent }));
+        const brief = buildChildBrief({ projectRoot: input.cwd, assignment, agent, images: admitted.value.map(({ source }) => publicVisionSource(source)) });
+        if (admitted.value.length) await session.prompt(brief, { images: admitted.value.map(({ attachment }) => attachment), expandPromptTemplates: false });
+        else await session.prompt(brief);
         await session.waitForIdle();
         if (cancelled || unsafe) throw new Error(cancelled ? "cancelled" : "unsafe-partial-state");
         const final = finalAssistant(session);
@@ -421,7 +438,7 @@ export async function runFocusedContinuation(input: ContinuationInput) {
 export default function agents(pi: ExtensionAPI) {
   pi.registerTool({
     name: "ima_delegate", label: "IMA delegate", description: "Delegate one to four bounded, agent-defined assignments.", executionMode: "sequential",
-    parameters: Type.Object({ title: Type.String(), assignments: Type.Array(Type.Object({ id: Type.String(), agent: Type.String(), goal: Type.String(), context: Type.String(), paths: Type.Array(Type.String()), constraints: Type.Array(Type.String()), nonGoals: Type.Array(Type.String()), expectedOutput: Type.String(), writeScope: Type.Array(Type.String()) }), { minItems: 1, maxItems: 4 }) }),
+    parameters: Type.Object({ title: Type.String(), assignments: Type.Array(Type.Object({ id: Type.String(), agent: Type.String(), goal: Type.String(), context: Type.String(), paths: Type.Array(Type.String()), constraints: Type.Array(Type.String()), nonGoals: Type.Array(Type.String()), expectedOutput: Type.String(), writeScope: Type.Array(Type.String()), imagePaths: Type.Optional(Type.Array(Type.String(), { maxItems: 4 })) }), { minItems: 1, maxItems: 4 }) }),
     execute: async (toolCallId, request, signal, onUpdate, ctx) => {
       let projectionDegraded = false;
       const project = (snapshot: DelegationActivityState) => {

@@ -121,3 +121,13 @@ test("accepts only exact documentation write targets", () => {
   assert.deepEqual(validateDocumentWriteScope(["docs/FNR-3019.md"]), { valid: true, errors: [] });
   assert.ok(validateDocumentWriteScope(["config/other.md"]).errors[0].startsWith("document_scope_invalid"));
 });
+
+test("admits image paths only for vision evidence assignments", () => {
+  const vision = { ...agent, name: "vision-handoff", tier: "vision", authority: "vision-read", tools: ["read", "image"], result: { kind: "vision", requiredSections: ["source-access"] } };
+  const visual = { ...assignment, agent: "vision-handoff", writeScope: [], imagePaths: ["/tmp/a.png"] };
+  assert.equal(validateDelegationRequest({ title: "visual", assignments: [visual] }, [vision]).valid, true);
+  for (const input of [{ ...visual, imagePaths: ["relative.png"] }, { ...visual, imagePaths: ["/tmp/a.png", "/tmp/a.png"] }, { ...visual, imagePaths: Array.from({ length: 5 }, (_, i) => `/tmp/${i}.png`) }]) assert.equal(validateDelegationRequest({ title: "visual", assignments: [input] }, [vision]).valid, false);
+  assert.ok(validateDelegationRequest({ title: "wrong", assignments: [{ ...visual, agent: "implementer" }] }, [agent]).errors.some((error) => error.startsWith("delegation_images_vision_only")));
+  const brief = buildChildBrief({ projectRoot: "/repo", assignment: visual, agent: vision, images: [{ id: "opaque", sourceLabel: "a.png", mimeType: "image/png", byteLength: 8 }] });
+  assert.match(brief, /opaque/); assert.doesNotMatch(brief, /\/tmp\/a\.png/);
+});
