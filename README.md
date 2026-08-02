@@ -24,6 +24,26 @@ Technical spikes are validating Pi-native conventions before the runtime archite
 - **FNR-3023** adds terminal medical and patristic research prompts, reusable specialist skills, and packaged patristic indexes.
 - **FNR-3025** adds Pi-native Serena/Vestige bootstrap, natural-language stable memory updates, diagnostic preflight, supported configuration migration, and a package child-spawn canary.
 - **FNR-3026** adds `/ima:ship-it`, a Pi-native staging/production release-preparation prompt with reusable trunk/release/tag policy and human-owned deployment authority.
+- **FNR-3027** packages core architecture, functional-programming, search, and source-control skills for native Pi discovery.
+
+## Core engineering skills
+
+Pi discovers these package skills directly:
+
+```text
+/skill:architect
+/skill:functional-programmer
+/skill:js-fp
+/skill:php-fp
+/skill:py-fp
+/skill:ruby-fp
+/skill:rg
+/skill:ima-git
+/skill:gh-cli
+/skill:tea-gitea
+```
+
+See [`docs/foundation/FNR-3027.md`](docs/foundation/FNR-3027.md) for source coverage, Ruby reference repairs, verification, limitations, and rollback.
 
 ## Try the package
 

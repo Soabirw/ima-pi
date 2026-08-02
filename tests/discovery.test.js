@@ -53,7 +53,7 @@ test("package exposes namespaced extension, prompt, and skill commands", async (
     assert.equal(commands.get(`ima:${name}`)?.origin, "package");
     assert.match(await readFile(join(root, "prompts", `ima:${name}.md`), "utf8"), new RegExp(description, "i"));
   }
-  for (const name of ["ima-pi-probe", "ima-medical-research", "patristic-researcher", "ima-git"]) {
+  for (const name of ["ima-pi-probe", "ima-medical-research", "patristic-researcher", "architect", "functional-programmer", "js-fp", "php-fp", "py-fp", "ruby-fp", "rg", "ima-git", "gh-cli", "tea-gitea"]) {
     const skill = commands.get(`skill:${name}`);
     assert.equal(skill?.source, "skill");
     assert.equal(skill?.origin, "top-level");
