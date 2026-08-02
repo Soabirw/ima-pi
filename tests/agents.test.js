@@ -3,6 +3,7 @@ import test from "node:test";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { deriveAgentPaths, loadAgentDefinitions, parseAgentDocument, resolveAgentDefinitions, validateAgentDefinition } from "../lib/ima-agents.ts";
+import { validateDelegationCompletion } from "../lib/ima-delegation.ts";
 
 const document = (name = "explore", extra = "") => `---
 schemaVersion: 1
@@ -42,7 +43,7 @@ test("loads the packaged agent catalog without treating README.md as an agent", 
     paths: deriveAgentPaths({ packageRoot, agentDir: resolve(packageRoot, ".missing-agent-home"), cwd: packageRoot }),
     projectTrusted: false,
   });
-  assert.deepEqual(loaded.definitions.map(({ name }) => name), ["adversary-a", "adversary-b", "documenter", "explore", "implementer", "js-developer", "review-verifier", "reviewer", "tester", "vision-handoff", "wordpress-developer"]);
+  assert.deepEqual(loaded.definitions.map(({ name }) => name), ["adversary-a", "adversary-b", "documenter", "explore", "implementer", "js-developer", "preflight-probe", "review-verifier", "reviewer", "tester", "vision-handoff", "wordpress-developer"]);
   assert.deepEqual(loaded.diagnostics, []);
 });
 
@@ -96,4 +97,25 @@ test("adversaries require fresh, distinct, read-only review contracts", async ()
   }
   assert.match(byName.get("adversary-a").prompt, /integration|state-transition/i);
   assert.match(byName.get("adversary-b").prompt, /boundary|invariant/i);
+});
+
+
+test("preflight-probe is a fixed fresh read-only package canary", async () => {
+  const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const loaded = await loadAgentDefinitions({ paths: deriveAgentPaths({ packageRoot, agentDir: resolve(packageRoot, ".missing-agent-home"), cwd: packageRoot }), projectTrusted: false });
+  const definition = loaded.definitions.find(({ name }) => name === "preflight-probe");
+  assert.equal(definition.tier, "LOW"); assert.equal(definition.authority, "read");
+  assert.deepEqual(definition.tools, []); assert.deepEqual(definition.skills, []);
+  assert.deepEqual(definition.delegation, { allowed: false, maxDepth: 0 });
+  assert.deepEqual(definition.independence, { freshInitial: true, followUpAllowed: false });
+  assert.deepEqual(definition.result, { kind: "evidence", requiredSections: ["marker", "identity", "limitations"] });
+  assert.match(definition.prompt, /IMA_PI_PREFLIGHT_CHILD_OK/);
+  const response = "## Marker\n\nIMA_PI_PREFLIGHT_CHILD_OK\n\n## Identity\n\npackage preflight-probe Pi agent invoked through ima_delegate\n\n## Limitations\n\nno files, services, or memory were inspected or changed";
+  assert.deepEqual(validateDelegationCompletion({
+    final: { stopReason: "stop" },
+    text: response,
+    requiredSections: definition.result.requiredSections,
+    expected: { provider: "test-provider", model: "test-model", sessionId: "session-id", sessionFile: "session-file" },
+    observed: { provider: "test-provider", model: "test-model", sessionId: "session-id", sessionFile: "session-file" },
+  }), { ok: true, failures: [] });
 });

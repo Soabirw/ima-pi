@@ -1,6 +1,6 @@
 # IMA agents
 
-FNR-3014 and FNR-3022 provide eleven package-defined, inspectable specialists: `explore`, `implementer`, `js-developer`, `wordpress-developer`, `tester`, `reviewer`, `review-verifier`, `adversary-a`, `adversary-b`, `documenter`, and `vision-handoff`.
+FNR-3014, FNR-3022, and FNR-3025 provide twelve package-defined, inspectable specialists: `explore`, `implementer`, `js-developer`, `wordpress-developer`, `tester`, `reviewer`, `review-verifier`, `adversary-a`, `adversary-b`, `documenter`, `vision-handoff`, and `preflight-probe`.
 
 Each `*.md` file has one leading YAML frontmatter block and a non-empty Markdown prompt. Required metadata covers schema version, name, description, model tier, authority, tools, skills, zero-depth delegation, independence, result contract, and escalation categories. Unknown fields, invalid names, empty prompts, unsupported tools, duplicate same-source names, and unsafe authority/tool combinations are rejected with diagnostics.
 
@@ -42,3 +42,8 @@ The production tool remains authoritative for the actual assignment contract and
 ```json
 { "title": "Review visual evidence", "assignments": [{ "id": "visual", "agent": "vision-handoff", "goal": "Report direct visual facts and uncertainty.", "context": "Evidence only.", "paths": [], "constraints": ["No implementation decisions"], "nonGoals": ["Planning"], "expectedOutput": "Visual evidence", "writeScope": [], "imagePaths": ["/absolute/local/mockup.png"] }] }
 ```
+
+
+## Preflight child canary
+
+`preflight-probe` is a no-tool, fixed-marker canary used only by `/ima:preflight` through `ima_delegate`. It returns `IMA_PI_PREFLIGHT_CHILD_OK` with its package-agent identity and limitations, is always fresh with no follow-up or delegation, and is not a general diagnostic agent. It does not replace parent preflight orchestration.

@@ -115,3 +115,18 @@ test("specialist research skills and packaged patristic references retain their 
     assert.ok(content.trim().length > 0, `${name} must be packaged and non-empty`);
   }
 });
+
+
+test("FNR-3025 support prompts encode gateway, safety, and terminal contracts", async () => {
+  const serena = await prompt("serena-bootstrap");
+  for (const value of ["description:", "argument-hint:", "ima-mcp serena project activate", "instructions", "memory list", "core", "conventions", "tech_stack", "suggested_commands", "task_completion", "PASS, MISSING, or FAIL", "Never pass a Taskwarrior project", "Stop after"]) has(serena, value);
+  has(serena, "Use only the `ima-mcp serena` gateway");
+  const vestige = await prompt("vestige-bootstrap");
+  for (const value of ["preferences list", "preferences search", "--timeout-ms 300000", "PASS, EMPTY, FAIL, or SKIP", "Never save", "Stop after"]) has(vestige, value);
+  const memorize = await prompt("memorize");
+  for (const value of ["natural language", "parameter grammar", "Vestige preference", "Serena `core`", "`conventions`", "`tech_stack`", "`suggested_commands`", "`task_completion`", "`memory_maintenance`", "ima_lifecycle", "Qdrant", "secrets", "exact preview", "explicit approval", "preferences save", "ima-mcp serena tools call edit_memory", "mode\":\"literal", "allow_multiple_occurrences\":false", "--allow-write", "verify", "Stop after one"]) has(memorize, value);
+  const preflight = await prompt("preflight");
+  for (const value of ["offline", "quick", "full", "PASS, WARN, FAIL, BLOCKED, SKIP, NOT_CONFIGURED", "0700", "bounded line/byte chunks", "redact", "cleanup", "retained", "ima_delegate", "IMA_PI_PREFLIGHT_CHILD_OK", "preflight-probe", "Goose subrecipe", "Stop after"]) has(preflight, value);
+  const migrate = await prompt("migrate");
+  for (const value of ["Pi-native", "external through `ima-mcp`", "Serena, Vestige, or Qdrant", "~/.pi/agent/ima/config.json", "trusted `.pi/ima/config.json`", "exact redacted preview", "explicit approval", "atomically", "secret", "Validate JSON", "Stop after"]) has(migrate, value);
+});
