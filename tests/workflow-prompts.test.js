@@ -130,3 +130,12 @@ test("FNR-3025 support prompts encode gateway, safety, and terminal contracts", 
   const migrate = await prompt("migrate");
   for (const value of ["Pi-native", "external through `ima-mcp`", "Serena, Vestige, or Qdrant", "~/.pi/agent/ima/config.json", "trusted `.pi/ima/config.json`", "exact redacted preview", "explicit approval", "atomically", "secret", "Validate JSON", "Stop after"]) has(migrate, value);
 });
+
+test("FNR-3026 ship-it prompt and Git skill preserve release safety without deployment authority", async () => {
+  const shipIt = await prompt("ship-it");
+  const git = await skill("ima-git");
+  for (const value of ["description: Prepare and validate staging release branches", "argument-hint: \"stg|prod [project-path] [release details]\"", "natural-language", "$@", "current working directory", "stg", "prod", "main", "release/*", "v*", "fast-forward", "clean worktree", "git fetch origin --tags --prune", "ship-it script", ".ima-ship-it.json", "npm run ship-it -- stg --dry-run", "npm run ship-it -- prod --dry-run", "npm run ship-it -- stg", "npm run ship-it -- prod", "not executed", "immutable tag", "force", "history rewrite", "latest project ship-it/deploy log", "git rev-parse HEAD", "git cat-file -t <tag>", "refs/tags/<tag>^{}", "captured release commit SHA", "direct tag object", "absent or mismatched", "exit evidence", "Do **not** execute", "stop"]) has(shipIt, value);
+  has(shipIt, "do not invoke `/ima:cycle`, persist a lifecycle artifact, or enter a workflow DSL");
+  for (const value of ["name: \"ima-git\"", "main", "release/*", "v*", "hotfix", "fast-forward", "Never force-push", "dry-run", "actual deployment authority", "Exit code", "preflight failure", "remote push failure", "direct remote tag-object ref to exist", "peeled remote `^{}` target to equal the expected release commit"]) has(git, value);
+  assert.doesNotMatch(git, /direct remote tag object and its peeled remote `\^\{\}` target equal to the expected release commit/);
+});

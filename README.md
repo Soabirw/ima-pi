@@ -23,6 +23,7 @@ Technical spikes are validating Pi-native conventions before the runtime archite
 - **FNR-3022** adds evidence-backed scorecards and advisory independent adversarial review with distinct configured routes.
 - **FNR-3023** adds terminal medical and patristic research prompts, reusable specialist skills, and packaged patristic indexes.
 - **FNR-3025** adds Pi-native Serena/Vestige bootstrap, natural-language stable memory updates, diagnostic preflight, supported configuration migration, and a package child-spawn canary.
+- **FNR-3026** adds `/ima:ship-it`, a Pi-native staging/production release-preparation prompt with reusable trunk/release/tag policy and human-owned deployment authority.
 
 ## Try the package
 
@@ -52,6 +53,13 @@ Then try:
 - `/ima:migrate [request]` classifies legacy configuration and, after an exact preview and approval, writes only supported Pi/IMA configuration atomically.
 
 See [`docs/foundation/FNR-3025.md`](docs/foundation/FNR-3025.md) for source coverage, authority boundaries, verification, limitations, and rollback.
+
+## Release preparation
+
+- `/ima:ship-it stg [project-path]` prepares/pushes a fast-forward `release/*` branch and runs its staging dry-run.
+- `/ima:ship-it prod [project-path]` prepares/pushes a new immutable annotated `v*` tag from a pushed release branch and runs its production dry-run.
+
+Both recommend, but never execute, the real deployment command after successful validation. See [`docs/foundation/FNR-3026.md`](docs/foundation/FNR-3026.md) for source coverage, authority boundaries, verification, limitations, and rollback.
 
 ## Production advisory workflows
 
