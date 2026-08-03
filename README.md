@@ -26,6 +26,7 @@ Technical spikes are validating Pi-native conventions before the runtime archite
 - **FNR-3026** adds `/ima:ship-it`, a Pi-native staging/production release-preparation prompt with reusable trunk/release/tag policy and human-owned deployment authority.
 - **FNR-3027** packages core architecture, functional-programming, search, and source-control skills for native Pi discovery.
 - **FNR-3029** packages WordPress, PHP integration, and IMA site-building skills for native Pi discovery.
+- **FNR-3031** packages IMA brand, editorial, email, and research skills for native Pi discovery.
 
 ## Core engineering skills
 
@@ -79,6 +80,24 @@ Pi also discovers native guidance for production WordPress/PHP and IMA site-buil
 DDEV is the supported local WordPress environment. LocalWP support is deprecated and not packaged. Standalone `ima-brand` remains assigned to FNR-3031; `ima-bootstrap` includes implementation-level brand guidance only.
 
 See [`docs/foundation/FNR-3029.md`](docs/foundation/FNR-3029.md) for source coverage, security boundaries, verification, limitations, and rollback.
+
+## IMA brand, editorial, email, and research skills
+
+Pi discovers IMA content and domain guidance directly:
+
+```text
+/skill:ima-brand
+/skill:ima-copywriting
+/skill:ima-editorial-scorecard
+/skill:ima-editorial-workflow
+/skill:ima-email-creator
+/skill:ima-medical-research
+/ima:medical-research
+/skill:patristic-researcher
+/ima:patristic-research
+```
+
+The editorial scorecard is distinct from engineering `/ima:scorecard`; the editorial workflow is skill-only. Email helpers have optional Python dependencies and are never installed automatically. See [`docs/foundation/FNR-3031.md`](docs/foundation/FNR-3031.md) for source coverage, safety boundaries, verification, limitations, and rollback.
 
 ## Try the package
 
