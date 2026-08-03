@@ -45,6 +45,22 @@ Pi discovers these package skills directly:
 
 See [`docs/foundation/FNR-3027.md`](docs/foundation/FNR-3027.md) for source coverage, Ruby reference repairs, verification, limitations, and rollback.
 
+## JavaScript, browser, API, and testing skills
+
+Pi also discovers native guidance for JavaScript API/framework work, WordPress/browser behavior, and pragmatic testing:
+
+```text
+/skill:js-fp-api
+/skill:js-fp-react
+/skill:js-fp-vue
+/skill:js-fp-wordpress
+/skill:jquery
+/skill:playwright
+/skill:unit-testing
+```
+
+See [`docs/foundation/FNR-3028.md`](docs/foundation/FNR-3028.md) for source coverage, Pi-native skill semantics, verification, limitations, and rollback.
+
 ## Try the package
 
 ```bash
