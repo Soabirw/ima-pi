@@ -25,6 +25,7 @@ Technical spikes are validating Pi-native conventions before the runtime archite
 - **FNR-3025** adds Pi-native Serena/Vestige bootstrap, natural-language stable memory updates, diagnostic preflight, supported configuration migration, and a package child-spawn canary.
 - **FNR-3026** adds `/ima:ship-it`, a Pi-native staging/production release-preparation prompt with reusable trunk/release/tag policy and human-owned deployment authority.
 - **FNR-3027** packages core architecture, functional-programming, search, and source-control skills for native Pi discovery.
+- **FNR-3029** packages WordPress, PHP integration, and IMA site-building skills for native Pi discovery.
 
 ## Core engineering skills
 
@@ -60,6 +61,24 @@ Pi also discovers native guidance for JavaScript API/framework work, WordPress/b
 ```
 
 See [`docs/foundation/FNR-3028.md`](docs/foundation/FNR-3028.md) for source coverage, Pi-native skill semantics, verification, limitations, and rollback.
+
+## WordPress, PHP, and IMA site-building skills
+
+Pi also discovers native guidance for production WordPress/PHP and IMA site-building work:
+
+```text
+/skill:php-fp-wordpress
+/skill:phpunit-wp
+/skill:wp-ddev
+/skill:ima-bootstrap
+/skill:livecanvas
+/skill:ima-forms-expert
+/skill:php-authnet
+```
+
+DDEV is the supported local WordPress environment. LocalWP support is deprecated and not packaged. Standalone `ima-brand` remains assigned to FNR-3031; `ima-bootstrap` includes implementation-level brand guidance only.
+
+See [`docs/foundation/FNR-3029.md`](docs/foundation/FNR-3029.md) for source coverage, security boundaries, verification, limitations, and rollback.
 
 ## Try the package
 
