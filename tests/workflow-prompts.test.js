@@ -139,3 +139,16 @@ test("FNR-3026 ship-it prompt and Git skill preserve release safety without depl
   for (const value of ["name: \"ima-git\"", "main", "release/*", "v*", "hotfix", "fast-forward", "Never force-push", "dry-run", "actual deployment authority", "Exit code", "preflight failure", "remote push failure", "direct remote tag-object ref to exist", "peeled remote `^{}` target to equal the expected release commit"]) has(git, value);
   assert.doesNotMatch(git, /direct remote tag object and its peeled remote `\^\{\}` target equal to the expected release commit/);
 });
+
+
+test("FNR-3033 Pi operational guidance skills retain approved contracts", async () => {
+  const preflight = await skill("pi-preflight");
+  for (const value of ["name: pi-preflight", "/ima:preflight", "offline", "quick", "full", "PASS", "WARN", "FAIL", "BLOCKED", "SKIP", "NOT_CONFIGURED", "package", "agent", "skill", "gateway", "model", "integration", "ima_delegate", "preflight-probe", "configured:false", "READ-ONLY", "FNR-3025"]) has(preflight, value);
+  const docs = await skill("pi-doc-guide");
+  for (const value of ["name: pi-doc-guide", "installed version-matched", "packages.md", "skills.md", "extensions.md", "prompt-templates.md", "settings.md", "models.md", "providers.md", "security.md", "upstream Pi semantics", "ima-pi", "observed local state", "Cite", "rather than guessing"]) has(docs, value);
+  const guide = await skill("ima-pi-guide");
+  for (const value of ["name: ima-pi-guide", "installation", "configuration", "operation", "diagnosis", "architecture", "README.md", "docs/foundation", "package resource", "prompts", "/skill:*", "agents", "model-role", "ima-mcp", "/ima:preflight", "READ-ONLY", "LOCAL WRITE", "EXTERNAL WRITE", "DESTRUCTIVE/RISKY", "pasted secrets"]) has(guide, value);
+  for (const text of [preflight, docs, guide]) {
+    assert.doesNotMatch(text, /goose-docs\.ai|~\/\.config\/goose|\.goose-aliases|run `goose-cycle`/i);
+  }
+});

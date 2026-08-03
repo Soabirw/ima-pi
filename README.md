@@ -27,6 +27,7 @@ Technical spikes are validating Pi-native conventions before the runtime archite
 - **FNR-3027** packages core architecture, functional-programming, search, and source-control skills for native Pi discovery.
 - **FNR-3029** packages WordPress, PHP integration, and IMA site-building skills for native Pi discovery.
 - **FNR-3031** packages IMA brand, editorial, email, and research skills for native Pi discovery.
+- **FNR-3033** adds Pi-native operational guidance skills for preflight, Pi documentation, and ima-pi operation.
 
 ## Core engineering skills
 
@@ -144,6 +145,14 @@ Then try:
 - `/ima:migrate [request]` classifies legacy configuration and, after an exact preview and approval, writes only supported Pi/IMA configuration atomically.
 
 See [`docs/foundation/FNR-3025.md`](docs/foundation/FNR-3025.md) for source coverage, authority boundaries, verification, limitations, and rollback.
+
+## Pi operational guidance
+
+- `/skill:pi-preflight` explains evidence-led, read-only Pi and IMA diagnostic scopes and routes executable checks to `/ima:preflight`.
+- `/skill:pi-doc-guide` requires version-matched Pi documentation before Pi-specific guidance.
+- `/skill:ima-pi-guide` routes installation, configuration, operation, diagnosis, architecture, and integration questions to the smallest supported evidence source.
+
+See [`docs/foundation/FNR-3033.md`](docs/foundation/FNR-3033.md) for source disposition and verification.
 
 ## Release preparation
 
