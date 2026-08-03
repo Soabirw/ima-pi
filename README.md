@@ -99,6 +99,23 @@ Pi discovers IMA content and domain guidance directly:
 
 The editorial scorecard is distinct from engineering `/ima:scorecard`; the editorial workflow is skill-only. Email helpers have optional Python dependencies and are never installed automatically. See [`docs/foundation/FNR-3031.md`](docs/foundation/FNR-3031.md) for source coverage, safety boundaries, verification, limitations, and rollback.
 
+## MCP, browser, research, and work-management skills
+
+Pi discovers these package skills directly:
+
+/skill:mcp-serena
+/skill:mcp-vestige
+/skill:mcp-qdrant
+/skill:mcp-atlassian
+/skill:mcp-taskwarrior
+/skill:mcp-context7
+/skill:mcp-tavily
+/skill:mcp-fetch
+/skill:mcp-sequential-thinking
+/skill:mcp-chrome-devtools
+
+Eight direct MCP servers use the package adapter. Atlassian uses its packaged REST helper and Taskwarrior uses the native CLI. For team or global installation, run `pi install ssh://git@gitea.theflccc.org:2222/IMA/ima-pi.git`; this unpinned private-Gitea source was verified in an isolated Pi home on 2026-08-03. For local development only, run `pi install /home/eric/IMA/dev/ima-pi`. Updates are explicit with `pi update --extensions` or `pi update --all`. Synchronize shared Agent Skills with `npm run install:skills`. See [`docs/foundation/FNR-3032.md`](docs/foundation/FNR-3032.md) for prerequisites, source coverage, manual acceptance, limitations, and rollback.
+
 ## Try the package
 
 ```bash
@@ -120,8 +137,8 @@ Then try:
 
 ## Production support workflows
 
-- `/ima:serena-bootstrap [context]` loads Serena instructions and standard project memories through `ima-mcp`, read-only.
-- `/ima:vestige-bootstrap [topic]` reads relevant user preferences without mutation.
+- `/ima:serena-bootstrap [context]` loads Serena instructions and standard project memories through direct MCP, read-only.
+- `/ima:vestige-bootstrap [topic]` reads relevant user preferences through direct MCP without mutation.
 - `/ima:memorize [what should be remembered]` lets users say what should be remembered; it infers project memory versus cross-project preference, asks only when scope is ambiguous, previews exact wording, and requires approval before one verified write.
 - `/ima:preflight [offline|quick|full or request]` reports bounded read-only Pi/IMA diagnostics. It can spool large raw gateway evidence into restrictive temporary files and optionally retain only a redacted final report.
 - `/ima:migrate [request]` classifies legacy configuration and, after an exact preview and approval, writes only supported Pi/IMA configuration atomically.

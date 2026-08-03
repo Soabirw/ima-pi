@@ -1,0 +1,7 @@
+interface:
+  display_name: "Taskwarrior CLI"
+  short_description: "Manage local Taskwarrior tasks safely"
+  default_prompt: "Use $mcp-taskwarrior to inspect my local Taskwarrior tasks and make safe task updates."
+
+policy:
+  allow_implicit_invocation: true

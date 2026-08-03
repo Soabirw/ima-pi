@@ -1,9 +1,7 @@
 ---
-description: Load relevant user preferences through Vestige without mutation
+description: Load relevant user preferences through direct Vestige MCP without mutation
 argument-hint: "[optional preference topic]"
 ---
-Run a terminal, read-only Vestige preference bootstrap. `$@` is an optional natural-language topic.
+Use the package MCP adapter, never generated SDK namespaces. Discover Vestige through the compact mcp proxy. Use one bounded read-only session_start call or focused recall query for preferences and optional context. Retrieve full memory only when a hit is insufficient; direct Vestige may not expose ima-mcp preference helpers.
 
-Verify `ima-mcp` with `command -v ima-mcp`, call `ima-mcp vestige status --json`, then prefer `ima-mcp vestige preferences list --json` (or focused `ima-mcp vestige preferences search "$@" --json`). Use high-level `ima-mcp vestige search` only if the preference helper is unavailable. If a healthy backend search times out, retry once with `--timeout-ms 300000`. Retrieve a full hit only when its list/search content is insufficient using `ima-mcp vestige get <id> --json`.
-
-Return gateway, status, preference search, focused fallback, and retrieval as PASS, EMPTY, FAIL, or SKIP; summarize relevant high-confidence preferences with IDs and label stale or partial uncertainty. Never save, suppress, delete, or otherwise mutate memory. Stop after the preference summary.
+Return discovery, preference lookup, focused fallback, and retrieval as PASS, EMPTY, FAIL, or SKIP. Summarize high-confidence preferences and label stale or partial evidence. Never ingest, suppress, delete, or otherwise mutate memory. Stop after the preference summary.

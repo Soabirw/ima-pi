@@ -119,10 +119,10 @@ test("specialist research skills and packaged patristic references retain their 
 
 test("FNR-3025 support prompts encode gateway, safety, and terminal contracts", async () => {
   const serena = await prompt("serena-bootstrap");
-  for (const value of ["description:", "argument-hint:", "ima-mcp serena project activate", "instructions", "memory list", "core", "conventions", "tech_stack", "suggested_commands", "task_completion", "PASS, MISSING, or FAIL", "Never pass a Taskwarrior project", "Stop after"]) has(serena, value);
-  has(serena, "Use only the `ima-mcp serena` gateway");
+  for (const value of ["description:", "argument-hint:", "direct Serena tools to activate", "instructions", "list memories", "core", "conventions", "tech_stack", "suggested_commands", "task_completion", "PASS, MISSING, or FAIL", "Do not pass a Taskwarrior project", "Stop after"]) has(serena, value);
+  has(serena, "package MCP adapter");
   const vestige = await prompt("vestige-bootstrap");
-  for (const value of ["preferences list", "preferences search", "--timeout-ms 300000", "PASS, EMPTY, FAIL, or SKIP", "Never save", "Stop after"]) has(vestige, value);
+  for (const value of ["session_start", "recall", "Discover Vestige", "PASS, EMPTY, FAIL, or SKIP", "Never ingest", "Stop after"]) has(vestige, value);
   const memorize = await prompt("memorize");
   for (const value of ["natural language", "parameter grammar", "Vestige preference", "Serena `core`", "`conventions`", "`tech_stack`", "`suggested_commands`", "`task_completion`", "`memory_maintenance`", "ima_lifecycle", "Qdrant", "secrets", "exact preview", "explicit approval", "preferences save", "ima-mcp serena tools call edit_memory", "mode\":\"literal", "allow_multiple_occurrences\":false", "--allow-write", "verify", "Stop after one"]) has(memorize, value);
   const preflight = await prompt("preflight");

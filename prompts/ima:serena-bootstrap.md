@@ -1,9 +1,7 @@
 ---
-description: Load Serena project instructions and standard project memory read-only
+description: Load Serena project instructions and standard project memory read-only through direct MCP
 argument-hint: "[optional project-memory context]"
 ---
-Run a terminal, read-only Serena project-memory bootstrap. `$@` is optional natural-language context; it never changes Serena project identity.
+Use the package MCP adapter, never generated SDK namespaces. Discover Serena through the compact mcp proxy. In exact order, call direct Serena tools to activate the current project, load initial_instructions, list memories, then read each present standard memory: core, conventions, tech_stack, suggested_commands, task_completion, and memory_maintenance when present. Do not pass a Taskwarrior project as Serena identity.
 
-Use only the `ima-mcp serena` gateway, never a typed SDK or direct/native wrapper while the gateway is available. In this exact order: verify `ima-mcp` with `command -v ima-mcp`; activate the current project with `ima-mcp serena project activate --json`; load `ima-mcp serena instructions --json`; list `ima-mcp serena memory list --json`; then read every present standard memory: `core`, `conventions`, `tech_stack`, `suggested_commands`, `task_completion`, plus `memory_maintenance` when present. Never pass a Taskwarrior project as Serena activation identity.
-
-Return a compact auditable status report for gateway, activation, instructions, listing, and every standard memory using exactly PASS, MISSING, or FAIL. For a missing standard memory, recommend migration but do not write it. On gateway, activation, instruction, or listing failure, report the command and safe error excerpt and stop. Do not mutate memory, files, trackers, or configuration. Stop after the bootstrap summary.
+Return discovery, activation, instructions, listing, and every memory as PASS, MISSING, or FAIL. Recommend migration for a missing memory without writing it. On discovery, activation, instruction, or listing failure, report a safe error excerpt and stop. This prompt is read-only. Stop after the bootstrap summary.
