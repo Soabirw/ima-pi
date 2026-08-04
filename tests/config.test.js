@@ -255,9 +255,10 @@ test("validates phase mappings and preserves legacy role-only inheritance", () =
 
   const resolved = mergeConfigLayers({ packageDefaults: valid(layer({}, null)), preset: valid(completeLayer("role"), "preset"), user: phaseLayer, project: null });
   assert.deepEqual(resolved.phases.plan, { provider: "phase", model: "plan", thinking: "max", source: "user" });
+  assert.deepEqual(resolved.phases.brainstorm, { provider: "role", model: "HIGH", thinking: "medium", source: "inherited", inheritedFrom: "HIGH" });
   assert.deepEqual(resolved.phases.review, { provider: "role", model: "HIGH", thinking: "medium", source: "inherited", inheritedFrom: "HIGH" });
   assert.deepEqual(resolved.phases.test, { provider: "role", model: "MID", thinking: "medium", source: "inherited", inheritedFrom: "MID" });
-  assert.deepEqual(IMA_PHASES, ["plan", "implement", "test", "review", "document"]);
+  assert.deepEqual(IMA_PHASES, ["brainstorm", "plan", "implement", "test", "review", "document"]);
 });
 
 test("loads the highest-precedence selected profile and applies trusted project overrides", async () => {

@@ -21,6 +21,7 @@ export const IMA_PROFILE_ENTRY = "ima-profile-state";
 export const IMA_PHASE_ROUTE_ENTRY = "ima-phase-route";
 export const WORKFLOW_PHASES = IMA_PHASES;
 export const WORKFLOW_COMMAND_PHASES: Readonly<Record<string, ImaPhase>> = {
+  "ima:brainstorm": "brainstorm",
   "ima:plan": "plan",
   "ima:implement": "implement",
   "ima:implement-js": "implement",

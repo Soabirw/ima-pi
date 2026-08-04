@@ -5,7 +5,7 @@ export const IMA_CONFIG_SCHEMA_VERSION = 1;
 export const IMA_MODEL_ROLES = ["HIGH", "MID", "LOW", "vision"] as const;
 export const IMA_OPTIONAL_MODEL_ROLES = ["reviewVerify", "adversaryA", "adversaryB"] as const;
 export const IMA_ALL_MODEL_ROLES = [...IMA_MODEL_ROLES, ...IMA_OPTIONAL_MODEL_ROLES] as const;
-export const IMA_PHASES = ["plan", "implement", "test", "review", "document"] as const;
+export const IMA_PHASES = ["brainstorm", "plan", "implement", "test", "review", "document"] as const;
 export const IMA_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
 export type ImaRole = (typeof IMA_ALL_MODEL_ROLES)[number];
@@ -79,7 +79,7 @@ export function mergeConfigLayers(input: { packageDefaults: ValidConfigLayer; pr
   for (const [source, layer] of [["preset", input.preset], ["user", input.user], ["project", input.project]] as const) for (const role of IMA_ALL_MODEL_ROLES) if (layer?.models?.[role]) models[role] = { ...cloneRole(layer.models[role]), source };
   const phases: Partial<Record<ImaPhase, ResolvedPhase>> = {};
   for (const [source, layer] of [["preset", input.preset], ["user", input.user], ["project", input.project]] as const) for (const phase of IMA_PHASES) if (layer?.phases?.[phase]) phases[phase] = { ...cloneRole(layer.phases[phase]), source };
-  const inheritedRole = (phase: ImaPhase): "HIGH" | "MID" => phase === "plan" || phase === "review" ? "HIGH" : "MID";
+  const inheritedRole = (phase: ImaPhase): "HIGH" | "MID" => phase === "brainstorm" || phase === "plan" || phase === "review" ? "HIGH" : "MID";
   for (const phase of IMA_PHASES) if (!phases[phase]) {
     const role = models[inheritedRole(phase)];
     if (role) phases[phase] = { ...cloneRole(role), source: "inherited", inheritedFrom: inheritedRole(phase) };

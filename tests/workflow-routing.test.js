@@ -43,6 +43,7 @@ const state = () => {
 };
 
 test("maps only exact workflow commands and leaves ordinary input unchanged", () => {
+  assert.deepEqual(parseWorkflowCommand("/ima:brainstorm idea"), { command: "ima:brainstorm", phase: "brainstorm", args: "idea" });
   assert.deepEqual(parseWorkflowCommand("/ima:plan source"), { command: "ima:plan", phase: "plan", args: "source" });
   assert.deepEqual(parseWorkflowCommand("  /ima:implement-js plan"), { command: "ima:implement-js", phase: "implement", args: "plan" });
   assert.equal(parseWorkflowCommand("/ima:planner source"), null);

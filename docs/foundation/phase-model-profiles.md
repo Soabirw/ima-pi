@@ -14,12 +14,13 @@ Profile files are discovered in this order:
 
 A project profile is ignored when the project is not trusted. Profile names and filenames are lowercase kebab-case. Profile JSON accepts only schema-v1 `schemaVersion`, `profile`, `models`, and `phases` fields; credentials, endpoints, shell commands, and arbitrary provider settings remain outside IMA configuration.
 
-A selected profile supplies base mappings. User and trusted-project `config.json` mappings then replace complete role or phase entries. Omitted phase entries inherit `HIGH` for `plan`/`review` and `MID` for `implement`/`test`/`document`. Inheritance happens while loading configuration and is never a runtime downgrade.
+A selected profile supplies base mappings. User and trusted-project `config.json` mappings then replace complete role or phase entries. Omitted phase entries inherit `HIGH` for `brainstorm`/`plan`/`review` and `MID` for `implement`/`test`/`document`. Inheritance happens while loading configuration and is never a runtime downgrade.
 
 ## Runtime behavior
 
 The extension registers `/ima:profile` and observes raw input for the exact workflow commands:
 
+- `/ima:brainstorm` -> `brainstorm`;
 - `/ima:plan` -> `plan`;
 - `/ima:implement`, `/ima:implement-js`, `/ima:implement-wp` -> `implement`;
 - `/ima:test` -> `test`;
