@@ -10,6 +10,7 @@
     "adversaryB": { "provider": "sakana", "model": "fugu", "thinking": "xhigh" }
   },
   "phases": {
+    "brainstorm": { "provider": "sakana", "model": "fugu", "thinking": "high" },
     "plan": { "provider": "openai-codex", "model": "gpt-5.6-terra", "thinking": "max" },
     "implement": { "provider": "openai-codex", "model": "gpt-5.6-luna", "thinking": "max" },
     "test": { "provider": "openai-codex", "model": "gpt-5.6-luna", "thinking": "max" },
