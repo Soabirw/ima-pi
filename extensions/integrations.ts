@@ -5,14 +5,17 @@ import { lstat, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promi
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
-import { Type } from "typebox";
+import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { derivePhaseContext, evaluateSerenaBootstrap, normalizeSourcePayload, sanitizeContextError, validateContextRequest } from "../lib/ima-context.ts";
+import { Type } from "typebox";
+import { derivePhaseContext, evaluateSerenaBootstrap, normalizeSourcePayload, prepareContextArguments, sanitizeContextError, sanitizeContextText, validateContextRequest } from "../lib/ima-context.ts";
 import { artifactIsComplete, buildLifecycleArtifact, deriveLifecycleResult, evaluateLifecycleRecall, sanitizeLifecycleError, validateLifecycleRequest, validateVestigeSaveReceipt } from "../lib/ima-lifecycle.ts";
 
 const execFile = promisify(execFileCallback);
 const TIMEOUT = 30_000;
 const MAX_BUFFER = 128 * 1024;
+const SOURCE_ERROR_CODES = ["source_path_outside_project", "source_file_unreadable", "source_file_too_large"];
+const sourceErrorCode = (error: unknown) => error instanceof Error && SOURCE_ERROR_CODES.includes(error.message) ? error.message : "source_boundary_unavailable";
 const inside = (root: string, target: string) => { const path = relative(root, target); return path === "" || (!path.startsWith("..") && !isAbsolute(path)); };
 const object = (value: unknown): Record<string, unknown> | null => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 const text = (value: unknown) => typeof value === "string" ? value.trim() : "";
@@ -53,7 +56,7 @@ async function sourcePayload(source: any, root: string, deps: Required<Integrati
   if (source.type === "jira") {
     const helper = join(deps.home(), ".agents", "skills", "mcp-atlassian", "scripts", "atlassian-api.mjs");
     const result = await deps.run("node", [helper, "jira:get", source.key]); const data = object(result);
-    return data ? { key: source.key, title: text(data.summary) || source.key, content: text(data.description) || text(data.summary), references: ["https://flccc.atlassian.net/browse/" + source.key] } : null;
+    return data ? { key: source.key, title: text(data.summary) || source.key, content: text(data.descriptionText) || text(data.summary), references: ["https://flccc.atlassian.net/browse/" + source.key] } : null;
   }
   if (source.type === "taskwarrior") {
     const result = await deps.run("task", ["rc.verbose=nothing", `project:${source.project}`, source.uuid, "export"]);
@@ -73,9 +76,9 @@ export async function coordinateContext(request: unknown, cwd: string, supplied?
   if (setup.blocking) return derivePhaseContext({ cwd: root, serenaProjectPath: root, source: null, serena: setup.bootstrap, diagnostics: [{ code: setup.blocking, stage: "serena", message: "Serena bootstrap did not complete." }] });
   try {
     const payload = await sourcePayload(valid.source, root, deps); const source = normalizeSourcePayload({ source: valid.source, payload });
-    const durableKnowledge = valid.durableKnowledge ? await (async () => { const args = ["qdrant", "find", valid.durableKnowledge!.query, ...(valid.durableKnowledge!.collection ? ["--collection", valid.durableKnowledge!.collection] : []), "--json"]; const result = object(await deps.run("ima-mcp", args)); const results = object(result?.data)?.results; return !passed(result, "qdrant.find") ? { requested: true, status: "failed" as const, references: [] } : !Array.isArray(results) || results.length === 0 ? { requested: true, status: "empty" as const, references: [] } : { requested: true, status: "loaded" as const, references: results.slice(0, 20).map((entry: any) => ({ summary: text(entry.summary ?? entry.content).slice(0, 512), score: typeof entry.score === "number" ? entry.score : null })) }; })() : undefined;
+    const durableKnowledge = valid.durableKnowledge ? await (async () => { const args = ["qdrant", "find", valid.durableKnowledge!.query, ...(valid.durableKnowledge!.collection ? ["--collection", valid.durableKnowledge!.collection] : []), "--json"]; const result = object(await deps.run("ima-mcp", args)); const results = object(result?.data)?.results; return !passed(result, "qdrant.find") ? { requested: true, status: "failed" as const, references: [] } : !Array.isArray(results) || results.length === 0 ? { requested: true, status: "empty" as const, references: [] } : { requested: true, status: "loaded" as const, references: results.slice(0, valid.durableKnowledge!.limit ?? 20).map((entry: any) => ({ summary: sanitizeContextText(text(entry.summary ?? entry.content), 512), score: typeof entry.score === "number" ? entry.score : null })) }; })() : undefined;
     return derivePhaseContext({ cwd: root, serenaProjectPath: root, source, serena: setup.bootstrap, durableKnowledge, diagnostics: source ? [] : [{ code: "source_boundary_unavailable", stage: "source", message: "Source hydration did not return usable content." }] });
-  } catch (error) { return derivePhaseContext({ cwd: root, serenaProjectPath: root, source: null, serena: setup.bootstrap, diagnostics: [{ code: error instanceof Error ? error.message : "source_boundary_unavailable", stage: "source", message: "Source hydration failed." }] }); }
+  } catch (error) { return derivePhaseContext({ cwd: root, serenaProjectPath: root, source: null, serena: setup.bootstrap, diagnostics: [{ code: sourceErrorCode(error), stage: "source", message: "Source hydration failed." }] }); }
 }
 
 export async function coordinateLifecycle(request: unknown, supplied?: IntegrationDependencies) {
@@ -111,7 +114,29 @@ export async function coordinateLifecycle(request: unknown, supplied?: Integrati
   }
 }
 
+const CONTEXT_SOURCE_PARAMETERS = Type.Object({}, {
+  oneOf: [
+    Type.Object({ type: StringEnum(["jira"] as const, { description: "Source kind. Supply only the fields required for the selected kind." }), key: Type.String({ pattern: "^[A-Z][A-Z0-9]+-\\d+$", description: "Required for jira; extract the uppercase issue key from a Jira URL." }) }, { additionalProperties: false }),
+    Type.Object({ type: StringEnum(["taskwarrior"] as const, { description: "Source kind. Supply only the fields required for the selected kind." }), project: Type.String({ pattern: "^[\\w.-]+$", description: "Required for taskwarrior." }), uuid: Type.String({ pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F-]{27}$", description: "Required for taskwarrior." }) }, { additionalProperties: false }),
+    Type.Object({ type: StringEnum(["file"] as const, { description: "Source kind. Supply only the fields required for the selected kind." }), path: Type.String({ minLength: 1, maxLength: 1_024, description: "Required for file; project-root-contained regular file path." }) }, { additionalProperties: false }),
+    Type.Object({ type: StringEnum(["vestige"] as const, { description: "Source kind. Supply only the fields required for the selected kind." }), id: Type.String({ pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", description: "Required for vestige; memory UUID." }) }, { additionalProperties: false }),
+    Type.Object({ type: StringEnum(["text"] as const, { description: "Source kind. Supply only the fields required for the selected kind." }), title: Type.String({ minLength: 1, maxLength: 256, description: "Required for text." }), content: Type.String({ minLength: 1, maxLength: 64_000, description: "Required for text." }) }, { additionalProperties: false }),
+  ],
+  description: "Exactly one source: jira uses key; taskwarrior uses project and uuid; file uses path; vestige uses id; text uses title and content.",
+});
+
+const CONTEXT_DURABLE_KNOWLEDGE_PARAMETERS = Type.Object({
+  query: Type.String({ minLength: 1, maxLength: 2_000, description: "Read-only Qdrant query." }),
+  collection: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Optional Qdrant collection." })),
+  limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 20, description: "Maximum durable references." })),
+}, { additionalProperties: false });
+
+const CONTEXT_TOOL_PARAMETERS = Type.Object({
+  source: CONTEXT_SOURCE_PARAMETERS,
+  durableKnowledge: Type.Optional(CONTEXT_DURABLE_KNOWLEDGE_PARAMETERS),
+}, { additionalProperties: false });
+
 export default function integrations(pi: ExtensionAPI) {
-  pi.registerTool({ name: "ima_context", label: "IMA context", description: "Build Serena-first normalized project phase context.", parameters: Type.Object({ source: Type.Any(), durableKnowledge: Type.Optional(Type.Any()) }), execute: async (_id, request, _signal, _update, ctx) => ({ content: [{ type: "text", text: JSON.stringify(await coordinateContext(request, ctx.cwd)) }], details: {} }) });
+  pi.registerTool({ name: "ima_context", label: "IMA context", description: "Build Serena-first project context from one typed source: jira/key, taskwarrior/project+uuid, file/path, vestige/id, or text/title+content. Optional durableKnowledge requires query and accepts collection and limit.", parameters: CONTEXT_TOOL_PARAMETERS, prepareArguments: prepareContextArguments, execute: async (_id, request, _signal, _update, ctx) => ({ content: [{ type: "text", text: JSON.stringify(await coordinateContext(request, ctx.cwd)) }], details: {} }) });
   pi.registerTool({ name: "ima_lifecycle", label: "IMA lifecycle", description: "Save and semantically verify a lifecycle artifact.", parameters: Type.Object({ type: Type.String(), identity: Type.Any(), artifact: Type.String() }), execute: async (_id, request) => ({ content: [{ type: "text", text: JSON.stringify(await coordinateLifecycle(request)) }], details: {} }) });
 }

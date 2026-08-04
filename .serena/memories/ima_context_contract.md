@@ -1,0 +1,7 @@
+# ima_context contract
+
+- Public request schema: exactly five closed `oneOf` branches—Jira (`type,key`), Taskwarrior (`type,project,uuid`), file (`type,path`), Vestige (`type,id`), and text (`type,title,content`)—plus closed optional durable knowledge (`query`, `collection`, `limit`).
+- `prepareContextArguments` canonically projects valid input and substitutes a static non-reflecting sentinel for invalid input; `validateContextRequest` remains runtime authority.
+- Public and runtime validation both require the canonical 8-4-4-4-12 hexadecimal Vestige UUID. A requested Qdrant limit bounds returned references, and Jira hydration uses installed-helper `descriptionText` with trimmed `summary` fallback.
+- Model-facing title/file metadata, durable summaries, and unknown source errors are bounded and sanitized; invalid requests make no external call.
+- `@earendil-works/pi-ai@0.82.1` is direct because production uses `StringEnum`; modern and legacy Google serialization are regression-covered. Use isolated `PI_CODING_AGENT_DIR` for full-suite verification when a global package shadows this checkout.

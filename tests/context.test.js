@@ -1,16 +1,47 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { derivePhaseContext, evaluateSerenaBootstrap, normalizeSourcePayload, normalizeSourceReference, sanitizeContextError, validateContextRequest } from "../lib/ima-context.ts";
+import { derivePhaseContext, evaluateSerenaBootstrap, normalizeSourcePayload, normalizeSourceReference, prepareContextArguments, sanitizeContextError, sanitizeContextText, validateContextRequest } from "../lib/ima-context.ts";
 
+const invalidVestigeId = "-".repeat(36);
 const sources = [{ type: "jira", key: "FNR-3016" }, { type: "taskwarrior", project: "FNR-3007", uuid: "689fa7ac-84b7-42d0-8912-b8ef76041370" }, { type: "file", path: "README.md" }, { type: "vestige", id: "7027acec-43d3-4fa4-83ec-16e993551720" }, { type: "text", title: "Brief", content: "Approved outcome" }];
 test("validates each closed context source and rejects ambiguous input", () => {
   for (const source of sources) assert.equal(validateContextRequest({ source }).valid, true);
-  for (const source of [{ type: "jira", key: "not-a-key" }, { type: "taskwarrior", project: "x", uuid: "x" }, { type: "shell", command: "rm" }, { type: "text", title: "", content: "x" }]) assert.equal(validateContextRequest({ source }).valid, false);
+  for (const source of [{ type: "jira", key: "not-a-key" }, { type: "taskwarrior", project: "x", uuid: "x" }, { type: "shell", command: "rm" }, { type: "vestige", id: invalidVestigeId }, { type: "text", title: "", content: "x" }]) assert.equal(validateContextRequest({ source }).valid, false);
+  for (const request of [{ source: "FNR-3016" }, { source: { type: "jira" } }, { source: { ...sources[0], path: "README.md" } }, { source: { ...sources[0], url: "https://example.test/FNR-3016" } }, { source: sources[0], phase: "technical-planning" }, { source: sources[0], durableKnowledge: "FNR-3016" }, { source: sources[0], durableKnowledge: { required: true, correlationKeys: ["FNR-3016"] } }, { source: sources[0], durableKnowledge: { query: "x", sources: ["serena"] } }]) assert.equal(validateContextRequest(request).valid, false);
+});
+test("prepares canonical context requests without reflecting malformed input", () => {
+  for (const source of sources) assert.deepEqual(prepareContextArguments({ source }), { source });
+  assert.deepEqual(prepareContextArguments({ source: sources[0], durableKnowledge: { query: " evidence ", collection: " ima ", limit: 2 } }), { source: sources[0], durableKnowledge: { query: "evidence", collection: "ima", limit: 2 } });
+  const invalidVestige = { source: { type: "vestige", id: invalidVestigeId } };
+  const preparedVestige = prepareContextArguments(invalidVestige);
+  assert.deepEqual(preparedVestige, { source: { type: "invalid_context_request" } });
+  assert.doesNotMatch(JSON.stringify(preparedVestige), new RegExp(invalidVestigeId));
+  const marker = "fake-context-token=do-not-echo";
+  for (const request of [{ source: { type: "jira" } }, { source: { ...sources[0], path: "README.md" } }, { source: { ...sources[0], unexpected: marker } }]) {
+    const prepared = prepareContextArguments(request);
+    assert.deepEqual(prepared, { source: { type: "invalid_context_request" } });
+    assert.doesNotMatch(JSON.stringify(prepared), /fake-context-token=do-not-echo/);
+  }
+});
+test("validates durable knowledge boundaries", () => {
+  assert.equal(validateContextRequest({ source: sources[0], durableKnowledge: { query: "x", collection: "c", limit: 1 } }).valid, true);
+  assert.equal(validateContextRequest({ source: sources[0], durableKnowledge: { query: "x".repeat(2_000), collection: "c".repeat(256), limit: 20 } }).valid, true);
+  for (const durableKnowledge of [{ query: "" }, { query: "x".repeat(2_001) }, { query: "x", collection: "c".repeat(257) }, { query: "x", limit: 0 }, { query: "x", limit: 21 }]) assert.equal(validateContextRequest({ source: sources[0], durableKnowledge }).valid, false);
 });
 test("normalizes direct and hydrated sources into the common source shape", () => {
   const direct = normalizeSourcePayload({ source: sources[4], payload: null });
   const hydrated = normalizeSourcePayload({ source: sources[0], payload: { key: "FNR-3016", title: "Integrations", content: "Description", references: ["https://example.test"] } });
   assert.deepEqual(direct, { type: "text", key: "Brief", title: "Brief", content: "Approved outcome", references: ["Text:Brief"] });
+  const sensitive = normalizeSourcePayload({ source: { type: "text", title: "token=secret-value", content: "Approved outcome" }, payload: null });
+  assert.deepEqual(sensitive, { type: "text", key: "[redacted]", title: "[redacted]", content: "Approved outcome", references: ["Text:[redacted]"] });
+  assert.doesNotMatch(JSON.stringify(sensitive), /secret-value/);
+  const sensitiveFileFallback = normalizeSourcePayload({ source: { type: "file", path: "fixtures/token=demo-value" }, payload: { content: "File contents" } });
+  assert.deepEqual(sensitiveFileFallback, { type: "file", key: "fixtures/[redacted]", title: "File:fixtures/[redacted]", content: "File contents", references: ["File:fixtures/[redacted]"] });
+  const sensitiveFileKey = normalizeSourcePayload({ source: { type: "file", path: "fixtures/ordinary.md" }, payload: { key: "fixtures/token=demo-value", content: "File contents" } });
+  assert.equal(sensitiveFileKey.key, "fixtures/[redacted]");
+  assert.doesNotMatch(JSON.stringify(sensitiveFileKey), /demo-value/);
+  const ordinaryFile = normalizeSourcePayload({ source: { type: "file", path: "fixtures/ordinary.md" }, payload: { content: "File contents" } });
+  assert.deepEqual(ordinaryFile, { type: "file", key: "fixtures/ordinary.md", title: "File:fixtures/ordinary.md", content: "File contents", references: ["File:fixtures/ordinary.md"] });
   assert.equal(hydrated.type, "jira"); assert.deepEqual(hydrated.references, ["Jira:FNR-3016", "https://example.test"]);
   assert.equal(normalizeSourceReference(sources[1]), "Taskwarrior:FNR-3007:689fa7ac-84b7-42d0-8912-b8ef76041370");
 });
@@ -26,4 +57,11 @@ test("derives ready, degraded, and failed contexts without mutating inputs", () 
   assert.equal(derivePhaseContext({ cwd: "/repo", serenaProjectPath: "/repo", source, serena: { ...ready, missingRequiredMemories: ["core"] } }).status, "degraded");
   assert.equal(derivePhaseContext({ cwd: "/repo", serenaProjectPath: "/repo", source: null, serena: ready }).status, "failed");
 });
-test("sanitization never echoes external secrets", () => assert.deepEqual(sanitizeContextError("source_failed", "token=secret"), { code: "source_failed", message: "Context integration failed: source_failed." }));
+test("sanitization never echoes external secrets and safely corrects invalid requests", () => {
+  assert.deepEqual(sanitizeContextError("source_failed", "token=secret"), { code: "source_failed", message: "Context integration failed: source_failed." });
+  assert.equal(sanitizeContextText("Authorization: Bearer abc123\nsafe"), "[redacted]\nsafe");
+  const invalid = sanitizeContextError("invalid_context_request", "token=secret");
+  assert.equal(invalid.code, "invalid_context_request");
+  assert.match(invalid.hint, /jira:key.*durableKnowledge requires query/);
+  assert.doesNotMatch(JSON.stringify(invalid), /secret/);
+});
