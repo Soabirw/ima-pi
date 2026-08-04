@@ -31,6 +31,8 @@ test("parses a constrained agent document and rejects missing or unknown schema"
 test("validates authority invariants and deterministic full replacement", () => {
   const invalid = validateAgentDefinition({ path: "/agents/reviewer.md", source: "package", prompt: "x", metadata: { schemaVersion: 1, name: "reviewer", description: "r", tier: "HIGH", authority: "review-read", tools: ["write"], skills: ["x"], delegation: { allowed: false, maxDepth: 0 }, independence: { freshInitial: true, followUpAllowed: true }, result: { kind: "review", requiredSections: ["findings"] }, escalation: ["x"] } });
   assert.ok(invalid.diagnostics.some(({ code }) => code === "agent_authority_tools_conflict"));
+  const invalidPhase = validateAgentDefinition({ path: "/agents/explore.md", source: "package", prompt: "x", metadata: { schemaVersion: 1, name: "explore", description: "r", tier: "LOW", phase: "unknown", authority: "read", tools: ["read"], skills: ["x"], delegation: { allowed: false, maxDepth: 0 }, independence: { freshInitial: true, followUpAllowed: false }, result: { kind: "evidence", requiredSections: ["findings"] }, escalation: ["x"] } });
+  assert.ok(invalidPhase.diagnostics.some(({ code }) => code === "agent_phase_invalid"));
   const packageAgent = parseAgentDocument({ path: "/package/explore.md", source: "package", content: document() }).definition;
   const userAgent = { ...packageAgent, source: "user", path: "/user/explore.md", description: "User replacement" };
   const resolved = resolveAgentDefinitions({ packageAgents: [packageAgent], userAgents: [userAgent], projectAgents: [] });
@@ -58,6 +60,7 @@ test("implementation specialist agent documents preserve plan, verification, and
   for (const name of ["implementer", "js-developer", "wordpress-developer"]) {
     const definition = byName.get(name);
     assert.equal(definition.tier, "MID");
+    assert.equal(definition.phase, "implement");
     assert.equal(definition.authority, "write");
     assert.deepEqual(definition.result.requiredSections, ["changed-files", "verification", "blockers"]);
     assert.match(definition.prompt, /approved.*plan|plan.*approved/i);
@@ -75,6 +78,9 @@ test("quality agents enforce fresh verification and exact documentation authorit
   const loaded = await loadAgentDefinitions({ paths: deriveAgentPaths({ packageRoot, agentDir: resolve(packageRoot, ".missing-agent-home"), cwd: packageRoot }), projectTrusted: false });
   const byName = new Map(loaded.definitions.map((definition) => [definition.name, definition]));
   assert.equal(byName.get("review-verifier").tier, "reviewVerify");
+  assert.equal(byName.get("tester").phase, "test");
+  assert.equal(byName.get("reviewer").phase, "review");
+  assert.equal(byName.get("documenter").phase, "document");
   assert.equal(byName.get("review-verifier").independence.freshInitial, true);
   assert.equal(byName.get("review-verifier").authority, "review-read");
   assert.equal(byName.get("documenter").authority, "document-write");

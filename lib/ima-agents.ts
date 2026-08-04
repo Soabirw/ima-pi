@@ -1,6 +1,7 @@
 import { lstat, readdir, readFile, realpath } from "node:fs/promises";
 import { basename, join, parse, relative, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
+import { IMA_PHASES, type ImaPhase } from "./ima-config.ts";
 
 export const IMA_AGENT_SCHEMA_VERSION = 1;
 export const IMA_AGENT_TIERS = ["HIGH", "MID", "LOW", "vision", "reviewVerify", "adversaryA", "adversaryB"] as const;
@@ -18,6 +19,7 @@ export type AgentDefinition = {
   name: string;
   description: string;
   tier: AgentTier;
+  phase?: ImaPhase;
   authority: AgentAuthority;
   tools: string[];
   skills: string[];
@@ -45,15 +47,16 @@ export function deriveAgentPaths(input: { packageRoot: string; agentDir: string;
 export function validateAgentDefinition(input: { path: string; source: AgentSource; metadata: unknown; prompt: string }): AgentParseResult {
   const { path, source } = input; const diagnostics: AgentDiagnostic[] = [];
   if (!object(input.metadata)) return { definition: null, diagnostics: [diagnostic("agent_frontmatter_invalid", source, path, "Frontmatter must be a YAML object.")] };
-  const allowed = new Set(["schemaVersion", "name", "description", "tier", "authority", "tools", "skills", "delegation", "independence", "result", "escalation"]);
+  const allowed = new Set(["schemaVersion", "name", "description", "tier", "phase", "authority", "tools", "skills", "delegation", "independence", "result", "escalation"]);
   for (const key of Object.keys(input.metadata)) if (!allowed.has(key)) diagnostics.push(diagnostic("agent_unknown_key", source, path, `Unknown agent key: ${key}.`));
-  const name = string(input.metadata.name); const description = string(input.metadata.description); const tier = string(input.metadata.tier); const authority = string(input.metadata.authority);
+  const name = string(input.metadata.name); const description = string(input.metadata.description); const tier = string(input.metadata.tier); const phase = string(input.metadata.phase); const authority = string(input.metadata.authority);
   const tools = strings(input.metadata.tools); const skills = strings(input.metadata.skills); const escalation = strings(input.metadata.escalation); const prompt = input.prompt.trim();
   const delegation = input.metadata.delegation; const independence = input.metadata.independence; const result = input.metadata.result;
   if (input.metadata.schemaVersion !== IMA_AGENT_SCHEMA_VERSION) diagnostics.push(diagnostic("agent_schema_version_unsupported", source, path, "schemaVersion must be 1."));
   if (!/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(name) || name !== parse(path).name) diagnostics.push(diagnostic("agent_name_invalid", source, path, "name must be lowercase kebab-case and match its filename."));
   if (!description) diagnostics.push(diagnostic("agent_description_invalid", source, path, "description must be non-empty."));
   if (!inList(IMA_AGENT_TIERS, tier)) diagnostics.push(diagnostic("agent_tier_invalid", source, path, "tier is unsupported."));
+  if (input.metadata.phase !== undefined && !inList(IMA_PHASES, phase)) diagnostics.push(diagnostic("agent_phase_invalid", source, path, "phase is unsupported."));
   if (!inList(IMA_AGENT_AUTHORITIES, authority)) diagnostics.push(diagnostic("agent_authority_invalid", source, path, "authority is unsupported."));
   if (!tools || tools.some((tool) => !inList(IMA_AGENT_TOOLS, tool))) diagnostics.push(diagnostic("agent_tools_invalid", source, path, "tools must contain only supported tool names."));
   if (!skills || skills.some((skill) => !skill)) diagnostics.push(diagnostic("agent_skills_invalid", source, path, "skills must be non-empty strings."));
@@ -70,7 +73,7 @@ export function validateAgentDefinition(input: { path: string; source: AgentSour
   if (authority === "document-write" && !["write", "edit"].some((tool) => tools?.includes(tool))) diagnostics.push(diagnostic("agent_authority_tools_conflict", source, path, "document-write requires write or edit."));
   if (authority === "read" && tools?.some((tool) => ["write", "edit", "bash", "test"].includes(tool))) diagnostics.push(diagnostic("agent_authority_tools_conflict", source, path, "read authority cannot receive write-capable tools."));
   if (diagnostics.length) return { definition: null, diagnostics };
-  return { definition: { schemaVersion: 1, name, description, tier: tier as AgentTier, authority: authority as AgentAuthority, tools: tools!, skills: skills!, delegation: delegation as AgentDefinition["delegation"], independence: independence as AgentDefinition["independence"], result: { kind: resultKind as AgentResultKind, requiredSections: requiredSections!, ...(resultFormat ? { format: resultFormat as "review-verdict-v1" } : {}) }, escalation: escalation!, prompt, source, path }, diagnostics };
+  return { definition: { schemaVersion: 1, name, description, tier: tier as AgentTier, ...(input.metadata.phase !== undefined ? { phase: phase as ImaPhase } : {}), authority: authority as AgentAuthority, tools: tools!, skills: skills!, delegation: delegation as AgentDefinition["delegation"], independence: independence as AgentDefinition["independence"], result: { kind: resultKind as AgentResultKind, requiredSections: requiredSections!, ...(resultFormat ? { format: resultFormat as "review-verdict-v1" } : {}) }, escalation: escalation!, prompt, source, path }, diagnostics };
 }
 
 export function parseAgentDocument(input: { path: string; source: AgentSource; content: string }): AgentParseResult {

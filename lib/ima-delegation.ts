@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { AgentDefinition } from "./ima-agents.ts";
-import type { ResolvedImaConfig, ResolvedRole } from "./ima-config.ts";
+import type { ImaPhase, ResolvedImaConfig, ResolvedRole } from "./ima-config.ts";
 import { validateImagePaths } from "./ima-vision.ts";
 
 export type DelegationAssignment = { id: string; agent: string; goal: string; context: string; paths: string[]; constraints: string[]; nonGoals: string[]; expectedOutput: string; writeScope: string[]; imagePaths?: string[]; allowUpwardFallback?: boolean };
@@ -42,6 +42,7 @@ export function buildChildBrief(input: { projectRoot: string; assignment: Delega
   return [
     `You are the ${agent.name} specialist.`, `Goal: ${assignment.goal}`, `Project root: ${input.projectRoot}`, `Relevant paths: ${assignment.paths.join(", ") || "none"}`, `Context and prior decisions: ${assignment.context}`,
     `Constraints: ${assignment.constraints.join("; ") || "none"}`, `Non-goals: ${assignment.nonGoals.join("; ") || "none"}`, `Expected output: ${assignment.expectedOutput}`,
+    `Phase route: ${agent.phase ?? "tier-routed"}.`,
     `Authority: ${agent.authority}. Allowed tools: ${agent.tools.join(", ")}.`, `Exact write ownership: ${assignment.writeScope.join(", ") || "none"}.`,
     ...(input.images?.length ? [`Attached visual evidence only: ${input.images.map((image) => `${image.id} (${image.sourceLabel}, ${image.mimeType}, ${image.byteLength} bytes)`).join("; ")}. Analyze only those identities; report direct visual facts, exact legible text, uncertainty, and missing/ambiguous evidence. Do not include paths, bytes, or implementation decisions.`] : []),
     "Other work may run concurrently. Do not edit outside your ownership, rely on parent chat, or delegate further.", `Escalate: ${agent.escalation.join(", ")}.`, `Report sections: ${agent.result.requiredSections.join(", ")}.`, agent.prompt,
@@ -79,12 +80,13 @@ export function resolveAgentRoute(input: { agent: AgentDefinition; config: Resol
     const verified = resolveReviewVerificationRoute(input);
     return verified.route ? { route: verified.route, error: null, escalation: null, verification: verified } : { route: null, error: verified.error, escalation: "review verification model is unavailable", verification: verified };
   }
-  const mapping = input.config.models[input.agent.tier];
-  if (!mapping) return { route: null, error: "model_unavailable", escalation: input.agent.tier === "adversaryA" || input.agent.tier === "adversaryB" ? `${input.agent.tier} model is not configured` : "minimum capability is not configured" };
+  const phase = input.agent.phase as ImaPhase | undefined;
+  const mapping = phase ? input.config.phases?.[phase] : input.config.models[input.agent.tier];
+  if (!mapping) return { route: null, error: phase ? "phase_route_missing" : "model_unavailable", escalation: phase ? `${phase} phase route is not configured` : input.agent.tier === "adversaryA" || input.agent.tier === "adversaryB" ? `${input.agent.tier} model is not configured` : "minimum capability is not configured" };
   const catalog = input.catalog.find((entry) => entry.provider === mapping.provider && entry.model === mapping.model);
   const image = Array.isArray(catalog?.input) ? catalog.input.includes("image") : catalog?.input?.image === true;
   if (!catalog || (input.agent.tier === "vision" && !image)) return { route: null, error: "model_unavailable", escalation: input.agent.tier === "adversaryA" || input.agent.tier === "adversaryB" ? `${input.agent.tier} model is unavailable` : "minimum capability is unavailable" };
-  return { route: { provider: mapping.provider, model: mapping.model, thinking: mapping.thinking, tier: input.agent.tier }, error: null, escalation: null };
+  return { route: { provider: mapping.provider, model: mapping.model, thinking: mapping.thinking, tier: input.agent.tier, ...(phase ? { phase } : {}) }, error: null, escalation: null };
 }
 
 export function deriveToolAuthority(agent: AgentDefinition) { return [...agent.tools]; }
@@ -165,6 +167,18 @@ const headingPresent = (text: string, section: string) => {
     return !!heading && heading[1].trim().toLowerCase().replace(/[:*_`]/g, "").startsWith(normalizedSection);
   });
 };
+
+export function validateDelegationRouteIdentity(input: {
+  expected: { provider: string; model: string; thinking?: string };
+  observed: { provider?: string; model?: string; thinking?: string };
+}): { ok: boolean; failures: CompletionFailureCode[] } {
+  const failures: CompletionFailureCode[] = [];
+  const observed = input.observed;
+  if (!clean(observed.provider) || !clean(observed.model)) failures.push("runtime_identity_missing");
+  else if (observed.provider !== input.expected.provider || observed.model !== input.expected.model || (input.expected.thinking !== undefined && observed.thinking !== input.expected.thinking)) failures.push("runtime_identity_mismatch");
+  return { ok: failures.length === 0, failures };
+}
+
 export function validateDelegationCompletion(input: {
   final: { stopReason?: string; isError?: boolean; hasPendingToolUse?: boolean } | undefined | null;
   text: unknown;
@@ -189,8 +203,7 @@ export function validateDelegationCompletion(input: {
     if (typeof input.text !== "string" || !/^VERDICT: (CONFIRMED|WITHDRAWN|PARTIAL)\nREASON: \S(?:.*\S)?$/.test(input.text)) failures.push("report_format_invalid");
   } else for (const section of input.requiredSections) if (!headingPresent(text, section)) failures.push("report_section_missing");
   const observed = input.observed;
-  if (!clean(observed.provider) || !clean(observed.model)) failures.push("runtime_identity_missing");
-  else if (observed.provider !== input.expected.provider || observed.model !== input.expected.model || (input.expected.thinking !== undefined && observed.thinking !== input.expected.thinking)) failures.push("runtime_identity_mismatch");
+  failures.push(...validateDelegationRouteIdentity({ expected: input.expected, observed }).failures);
   if (!clean(observed.sessionId) || !clean(observed.sessionFile)) failures.push("session_identity_missing");
   else if ((input.expected.sessionId !== undefined && observed.sessionId !== input.expected.sessionId) || (input.expected.sessionFile !== undefined && observed.sessionFile !== input.expected.sessionFile)) failures.push("session_identity_mismatch");
   return { ok: failures.length === 0, failures };

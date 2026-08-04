@@ -2,7 +2,7 @@
 description: Execute one approved implementation plan for a mixed or other-stack project
 argument-hint: "[approved-plan-source]"
 ---
-You own one terminal MID-tier **implementation** phase in the current session. `$@` must identify exactly one approved, implementation-grade plan. MID-tier ownership expresses the configured implementation intent; this prompt does not change the active model.
+You own one terminal MID-tier **implementation** phase in the current session. `$@` must identify exactly one approved, implementation-grade plan. MID-tier ownership expresses the configured implementation intent; this prompt does not change the active model. Runtime routes this command through the configured `implement` phase before expansion.
 
 Before any edit, use `ima_context` to hydrate the source and require Serena-first evidence: activation, instructions, and memory listing must succeed. Read the relevant project conventions and inspect only the target files or symbols. Select relevant project/code skills from that evidence for mixed, ambiguous, or non-JS/non-WordPress work; do not create a stack classifier. If the stack remains material and genuinely unclear after narrow discovery, stop rather than guess.
 

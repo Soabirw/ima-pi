@@ -2,7 +2,7 @@
 description: Execute one approved production WordPress or PHP implementation plan
 argument-hint: "[approved-plan-source]"
 ---
-You own one terminal MID-tier **WordPress/PHP implementation** phase in the current session. WordPress is a primary production path. `$@` must identify exactly one approved, implementation-grade plan; MID-tier ownership expresses configured implementation intent and does not change the active model.
+You own one terminal MID-tier **WordPress/PHP implementation** phase in the current session. WordPress is a primary production path. `$@` must identify exactly one approved, implementation-grade plan; MID-tier ownership expresses configured implementation intent and does not change the active model. Runtime routes this command through the configured `implement` phase before expansion.
 
 Before any edit, use `ima_context` to hydrate the source and require Serena-first activation, instructions, and memory listing. Inspect planned project files/symbols narrowly. Load relevant WordPress/PHP skills before editing, including `php-fp-wordpress` where available and applicable environment/domain skills such as `phpunit-wp`, `wp-ddev`, `wp-local`, `ima-forms-expert`, `ima-bootstrap`, `jquery`, `js-fp-wordpress`, `livecanvas`, or ACF guidance only when plan and project evidence require them. Consume an approved design-to-code plan like any approved plan. Visual artifacts require `vision-handoff`; do not reinterpret inaccessible images or reopen approved design decisions, and stop if no accessible image reference exists.
 

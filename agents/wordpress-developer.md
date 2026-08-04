@@ -3,6 +3,7 @@ schemaVersion: 1
 name: wordpress-developer
 description: Secure WordPress and PHP implementation specialist.
 tier: MID
+phase: implement
 authority: write
 tools: [read, grep, find, ls, write, edit, bash]
 skills: [mcp-serena, php-fp, phpunit-wp]

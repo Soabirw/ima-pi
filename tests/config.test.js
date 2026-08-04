@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   IMA_MODEL_ROLES,
+  IMA_PHASES,
   IMA_THINKING_LEVELS,
   deriveImaConfigPaths,
+  discoverImaProfiles,
   loadImaConfig,
   mergeConfigLayers,
   resolveNamedResources,
@@ -155,6 +157,8 @@ test("derives the exact package, user, and project configuration paths", () => {
     presets: "/package/config/presets",
     user: "/agent/ima/config.json",
     project: "/project/.pi/ima/config.json",
+    userProfiles: "/agent/ima/profiles",
+    projectProfiles: "/project/.pi/ima/profiles",
   });
 });
 
@@ -240,5 +244,60 @@ test("accepts adversary roles as optional mappings and validates their catalog a
   assert.deepEqual(unavailable.diagnostics.filter(({ path }) => path[1].startsWith("adversary")).map(({ code, path }) => [code, path]), [
     ["config_model_unavailable", ["models", "adversaryA"]],
     ["config_model_unavailable", ["models", "adversaryB"]],
+  ]);
+});
+
+test("validates phase mappings and preserves legacy role-only inheritance", () => {
+  const phaseLayer = valid({ schemaVersion: 1, phases: { plan: role("phase", "plan", "max"), implement: role("phase", "impl") } }, "preset");
+  assert.deepEqual(Object.keys(phaseLayer.phases), ["plan", "implement"]);
+  const invalid = validateConfigLayer({ schemaVersion: 1, phases: { plan: { provider: "p", model: "m", apiKey: "secret" }, unknown: role("p", "m") } }, "user");
+  assert.deepEqual(codes(invalid), ["config_unknown_key", "config_unknown_phase"]);
+
+  const resolved = mergeConfigLayers({ packageDefaults: valid(layer({}, null)), preset: valid(completeLayer("role"), "preset"), user: phaseLayer, project: null });
+  assert.deepEqual(resolved.phases.plan, { provider: "phase", model: "plan", thinking: "max", source: "user" });
+  assert.deepEqual(resolved.phases.review, { provider: "role", model: "HIGH", thinking: "medium", source: "inherited", inheritedFrom: "HIGH" });
+  assert.deepEqual(resolved.phases.test, { provider: "role", model: "MID", thinking: "medium", source: "inherited", inheritedFrom: "MID" });
+  assert.deepEqual(IMA_PHASES, ["plan", "implement", "test", "review", "document"]);
+});
+
+test("loads the highest-precedence selected profile and applies trusted project overrides", async () => {
+  const paths = deriveImaConfigPaths({ packageRoot: "/package", agentDir: "/agent", cwd: "/project" });
+  const defaults = JSON.stringify(layer({}, null));
+  const user = JSON.stringify({ schemaVersion: 1, profile: "shared", phases: { document: role("user", "document") } });
+  const project = JSON.stringify({ schemaVersion: 1, models: { MID: role("project", "mid") } });
+  const shared = JSON.stringify({ schemaVersion: 1, models: Object.fromEntries(IMA_MODEL_ROLES.map((name) => [name, role("project-profile", name)])), phases: { implement: role("project-profile", "implement") } });
+  const files = new Map([[paths.packageDefaults, defaults], [paths.user, user], [paths.project, project], [`${paths.projectProfiles}/shared.json`, shared]]);
+  const loaded = await loadImaConfig({
+    packageRoot: "/package", agentDir: "/agent", cwd: "/project", projectTrusted: true,
+    readText: async (path) => { if (!files.has(path)) throw Object.assign(new Error("missing"), { code: "ENOENT" }); return files.get(path); },
+  });
+  assert.equal(loaded.diagnostics.length, 0);
+  assert.equal(loaded.config.models.MID.provider, "project");
+  assert.equal(loaded.config.phases.implement.model, "implement");
+  assert.equal(loaded.config.phases.document.provider, "user");
+});
+
+test("discovers profile files by trusted project, user, then package precedence", async () => {
+  const paths = deriveImaConfigPaths({ packageRoot: "/package", agentDir: "/agent", cwd: "/project" });
+  const directories = new Map([
+    [paths.projectProfiles, ["same.json", "project-only.json"]],
+    [paths.userProfiles, ["same.json", "user-only.json"]],
+    [paths.presets, ["same.json", "package-only.json"]],
+  ]);
+  const files = new Map();
+  for (const [directory, names] of directories) for (const name of names) files.set(`${directory}/${name}`, JSON.stringify({ schemaVersion: 1, models: {} }));
+  const result = await discoverImaProfiles({
+    paths,
+    projectTrusted: true,
+    readDirectory: async (directory) => directories.get(directory) ?? [],
+    readText: async (path) => files.get(path),
+    resolvePath: async (path) => path,
+    stat: async () => ({ isFile: () => true }),
+  });
+  assert.deepEqual(result.profiles.map(({ name, source }) => ({ name, source })), [
+    { name: "package-only", source: "package" },
+    { name: "project-only", source: "project" },
+    { name: "same", source: "project" },
+    { name: "user-only", source: "user" },
   ]);
 });

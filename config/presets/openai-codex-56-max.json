@@ -3,17 +3,17 @@
   "models": {
     "HIGH": { "provider": "openai-codex", "model": "gpt-5.6-sol", "thinking": "high" },
     "MID": { "provider": "openai-codex", "model": "gpt-5.6-terra", "thinking": "high" },
-    "LOW": { "provider": "openai-codex", "model": "gpt-5.6-terra", "thinking": "medium" },
+    "LOW": { "provider": "openai-codex", "model": "gpt-5.6-luna", "thinking": "max" },
     "vision": { "provider": "openai-codex", "model": "gpt-5.6-sol", "thinking": "medium" },
     "reviewVerify": { "provider": "openai-codex", "model": "gpt-5.6-terra", "thinking": "high" },
     "adversaryA": { "provider": "openai-codex", "model": "gpt-5.6-sol", "thinking": "high" },
     "adversaryB": { "provider": "openai-codex", "model": "gpt-5.6-terra", "thinking": "high" }
   },
   "phases": {
-    "plan": { "provider": "openai-codex", "model": "gpt-5.6-sol", "thinking": "high" },
-    "implement": { "provider": "openai-codex", "model": "gpt-5.6-terra", "thinking": "high" },
-    "test": { "provider": "openai-codex", "model": "gpt-5.6-terra", "thinking": "high" },
-    "review": { "provider": "openai-codex", "model": "gpt-5.6-sol", "thinking": "high" },
-    "document": { "provider": "openai-codex", "model": "gpt-5.6-terra", "thinking": "high" }
+    "plan": { "provider": "openai-codex", "model": "gpt-5.6-terra", "thinking": "max" },
+    "implement": { "provider": "openai-codex", "model": "gpt-5.6-luna", "thinking": "max" },
+    "test": { "provider": "openai-codex", "model": "gpt-5.6-luna", "thinking": "max" },
+    "review": { "provider": "openai-codex", "model": "gpt-5.6-sol", "thinking": "xhigh" },
+    "document": { "provider": "openai-codex", "model": "gpt-5.6-terra", "thinking": "max" }
   }
 }

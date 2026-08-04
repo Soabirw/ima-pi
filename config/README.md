@@ -1,17 +1,21 @@
 # IMA configuration
 
-IMA configuration is schema-versioned JSON with exactly `schemaVersion`, optional `profile`, and optional `models`. Required model roles are `HIGH`, `MID`, `LOW`, and `vision`; optional `reviewVerify` selects a dedicated fresh second-opinion route when configured; optional `adversaryA` and `adversaryB` select independent advisory challenge routes when both are configured; every mapping has non-empty `provider` and `model`, with optional Pi `thinking` (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`). Unknown keys, credentials, endpoints, and arbitrary provider settings are rejected.
+IMA configuration is schema-versioned JSON with exactly `schemaVersion`, optional `profile`, optional `models`, and optional `phases`. Required model roles are `HIGH`, `MID`, `LOW`, and `vision`; optional `reviewVerify`, `adversaryA`, and `adversaryB` remain available for quality routes. Every mapping has non-empty `provider` and `model`, with optional Pi `thinking` (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`). Phase mappings are `plan`, `implement`, `test`, `review`, and `document`. Unknown keys, credentials, endpoints, commands, and arbitrary provider settings are rejected. Profile names are lowercase kebab-case.
 
-Paths are package `config/defaults.json` and `config/presets/<name>.json`, user `~/.pi/agent/ima/config.json`, and trusted project `.pi/ima/config.json`. The loader never reads project configuration unless its caller explicitly supplies `projectTrusted: true`. Package defaults select nothing. Profile choice resolves package → user → trusted project; models resolve selected preset → user → trusted project. A higher-precedence role replaces the whole role mapping, and `profile: null` clears an inherited choice.
-
-```json
-{"schemaVersion":1,"profile":"openai-codex-56"}
-```
-
-A complete configuration has independent mappings for all four required roles. `reviewVerify` is optional: when omitted, fresh review verification visibly uses `HIGH`; when explicitly configured but unavailable, verification fails closed. `adversaryA` and `adversaryB` are also optional and do not affect ordinary completeness. An adversarial pass requires both exact mappings to be catalog-available and distinct by `(provider, model)`; neither falls back to another role or to each other. For example:
+Profiles resolve by trusted project -> user -> package precedence from `.pi/ima/profiles/*.json`, `~/.pi/agent/ima/profiles/*.json`, and package `config/presets/*.json`. The selected profile is controlled by package `config/defaults.json`, user `~/.pi/agent/ima/config.json`, or trusted project `.pi/ima/config.json`, with project configuration ignored unless the caller supplies project trust. A profile file provides the base role and phase mappings; valid user then trusted-project mappings replace whole mappings. `profile: null` clears an inherited choice.
 
 ```json
-{"schemaVersion":1,"models":{"adversaryA":{"provider":"provider-a","model":"model-a"},"adversaryB":{"provider":"provider-b","model":"model-b"}}}
+{
+  "schemaVersion": 1,
+  "profile": "openai-codex-56-max",
+  "phases": {
+    "implement": { "provider": "openai-codex", "model": "gpt-5.6-luna", "thinking": "max" }
+  }
+}
 ```
 
-`vision` never inherits another role and catalog validation requires its exact provider/model entry to advertise image input; no model falls back automatically. Presets are opt-in data, while credentials, provider registration, and model catalogs stay Pi-owned. To add an ordinary preset, add a schema-valid JSON file under `presets/`; no resolution-code change is required.
+Omitted phases inherit configuration only: `plan` and `review` inherit `HIGH`; `implement`, `test`, and `document` inherit `MID`. This is resolved configuration inheritance, not runtime fallback. Once a phase route exists, an unavailable, unauthenticated, unsupported, or clamped route blocks before the workflow prompt runs and never downgrades to another route.
+
+`/ima:profile` lists available profiles and their effective matrix. `/ima:profile <name>` activates a session-only selection; `/ima:profile <name> --save` also atomically updates the user default while preserving valid model and phase overrides. Session selection is stored in the Pi session and restored on reload/resume. Ordinary Pi prompts and manual `/model` selection remain flexible; only the named IMA workflow commands are routed.
+
+The built-in `openai-codex-56-max` experiment uses Terra/max for `plan` and `document`, Luna/max for `implement` and `test`, and Sol/xhigh for `review`. Credentials, provider registration, and model catalogs stay Pi-owned. No dependency or package-manifest change is required to add a valid profile.

@@ -3,6 +3,7 @@ schemaVersion: 1
 name: documenter
 description: Bounded local documentation and learning specialist.
 tier: MID
+phase: document
 authority: document-write
 tools: [read, grep, find, ls, write, edit, bash]
 skills: [mcp-serena]

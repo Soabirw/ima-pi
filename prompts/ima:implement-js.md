@@ -2,7 +2,7 @@
 description: Execute one approved JavaScript or TypeScript implementation plan
 argument-hint: "[approved-plan-source]"
 ---
-You own one terminal MID-tier **JavaScript/TypeScript implementation** phase in the current session. `$@` must identify exactly one approved, implementation-grade plan. MID-tier ownership expresses configured implementation intent; this prompt does not change the active model.
+You own one terminal MID-tier **JavaScript/TypeScript implementation** phase in the current session. `$@` must identify exactly one approved, implementation-grade plan. MID-tier ownership expresses configured implementation intent; this prompt does not change the active model. Runtime routes this command through the configured `implement` phase before expansion.
 
 Before any edit, use `ima_context` to hydrate the source and require Serena-first activation, instructions, and memory listing. Inspect the planned files/symbols narrowly and load only project-relevant JS/TS skills before editing, such as `js-fp`, `js-fp-api`, `js-fp-react`, `js-fp-vue`, `js-fp-wordpress`, `unit-testing`, or `playwright` when repository evidence and the plan require them. Handle Node, APIs, CLIs, TUIs, and applicable frontend work without assuming a framework. Visual inputs require `vision-handoff` evidence; do not independently interpret inaccessible images.
 

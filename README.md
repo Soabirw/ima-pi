@@ -195,14 +195,15 @@ Each resulting Story/Task independently enters `plan -> implement -> test -> rev
 - `/ima:implement-js [approved-plan-source]` executes a plan for known JavaScript/TypeScript work.
 - `/ima:implement-wp [approved-plan-source]` executes a plan for production WordPress/PHP work with nonce, authorization, sanitization, contextual escaping, and prepared-query requirements.
 
-All implementation prompts require an approved implementation-grade plan, work in the current session with configured MID intent, may delegate bounded work, stop with evidence on material contradictions, and persist verified implementation lifecycle evidence. They run only immediate plan-authorized verification and never automatically enter formal testing or review. See [`docs/foundation/FNR-3018.md`](docs/foundation/FNR-3018.md) for source disposition, routing, safeguards, and live acceptance limitations.
+All implementation prompts require an approved implementation-grade plan, work in the current session with configured MID intent, may delegate bounded work, stop with evidence on material contradictions, and persist verified implementation lifecycle evidence. They run only immediate plan-authorized verification and never automatically enter formal testing or review. Before expansion, the phase router applies the configured `implement` model route. See [`docs/foundation/FNR-3018.md`](docs/foundation/FNR-3018.md) for source disposition, routing, safeguards, and live acceptance limitations.
 
 - `/ima:test [implementation-source]` performs bounded test work without silently changing production behavior.
 - `/ima:review [implementation-and-test-source]` runs a fresh product-read-only review and fresh second opinions for Critical/Warning candidates.
 - `/ima:review-verify [finding-brief]` returns exactly one narrow finding verdict.
 - `/ima:document [completed-lifecycle-source]` updates only exact local documentation targets and prepares parent-owned external update manifests.
+- `/ima:profile [name] [--save]` lists or activates the configured phase model matrix without changing ordinary prompt/model flexibility.
 
-See [`docs/foundation/FNR-3019.md`](docs/foundation/FNR-3019.md) for authority, review verification fallback, knowledge routing, and limitations.
+See [`docs/foundation/FNR-3019.md`](docs/foundation/FNR-3019.md) for authority, review verification fallback, knowledge routing, and limitations. See [`docs/foundation/phase-model-profiles.md`](docs/foundation/phase-model-profiles.md) for phase routing and fail-closed behavior.
 
 ## Quality advisory workflows
 
@@ -229,7 +230,7 @@ Both accept natural-language questions rather than depth/audience parameters. Th
 
 `ima_delegate` is the model-callable production delegation tool. It accepts one to four complete, agent-defined assignments and fails closed for invalid authority, overlapping writer ownership, unavailable minimum capability, or unsafe reuse. During a run it projects at most five concise activity lines through Pi tool updates and one replaceable TUI widget/status, including phase, child agent, exact model, declared skills, sanitized tool/gateway category, state, elapsed time, retry, and escalation. Terminal results preserve child reports and add structured cancellation, possible-partial-state, blocker, resume-reference, and safe-next-action facts. Safety interception remains the narrow FNR-3014 mechanical ownership boundary; no confirmation loop or permission matrix was added.
 
-Inspect resolved definitions with `/ima:agents`, session metadata with `/ima:agent-sessions`, and request a focused reusable continuation with `/ima:agent-follow-up <session-reference> <brief>`. See [`agents/README.md`](agents/README.md), [`policies/README.md`](policies/README.md), [`docs/foundation/FNR-3014.md`](docs/foundation/FNR-3014.md), and [`docs/foundation/FNR-3015.md`](docs/foundation/FNR-3015.md).
+Inspect resolved definitions with `/ima:agents`, session metadata with `/ima:agent-sessions`, and request a focused reusable continuation with `/ima:agent-follow-up <session-reference> <brief>`. Phase-tagged implementation, tester, reviewer, and documenter agents inherit the parent session profile while retaining their tier authority. See [`agents/README.md`](agents/README.md), [`policies/README.md`](policies/README.md), [`docs/foundation/FNR-3014.md`](docs/foundation/FNR-3014.md), and [`docs/foundation/FNR-3015.md`](docs/foundation/FNR-3015.md).
 
 ## Production integrations
 
@@ -248,7 +249,7 @@ Create `~/.pi/agent/ima/config.json` (or trusted `.pi/ima/config.json`) to opt i
 }
 ```
 
-See [`config/README.md`](config/README.md) for schema, paths, trust, and precedence, and [`docs/foundation/FNR-3013.md`](docs/foundation/FNR-3013.md) for source-to-target coverage.
+See [`config/README.md`](config/README.md) for schema, phase routes, profile paths, trust, and precedence, [`docs/foundation/phase-model-profiles.md`](docs/foundation/phase-model-profiles.md) for runtime routing, and [`docs/foundation/FNR-3013.md`](docs/foundation/FNR-3013.md) for the original role configuration foundation.
 
 ## Test
 

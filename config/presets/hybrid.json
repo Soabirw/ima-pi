@@ -1,1 +1,19 @@
-{"schemaVersion":1,"models":{"HIGH":{"provider":"openai-codex","model":"gpt-5.5","thinking":"high"},"MID":{"provider":"anthropic","model":"claude-sonnet-4-6","thinking":"medium"},"LOW":{"provider":"anthropic","model":"claude-haiku-4-5","thinking":"low"},"vision":{"provider":"anthropic","model":"claude-sonnet-4-6","thinking":"medium"},"reviewVerify":{"provider":"anthropic","model":"claude-sonnet-4-6","thinking":"medium"},"adversaryA":{"provider":"openai-codex","model":"gpt-5.5","thinking":"high"},"adversaryB":{"provider":"anthropic","model":"claude-sonnet-4-6","thinking":"medium"}}}
+{
+  "schemaVersion": 1,
+  "models": {
+    "HIGH": { "provider": "openai-codex", "model": "gpt-5.5", "thinking": "high" },
+    "MID": { "provider": "anthropic", "model": "claude-sonnet-4-6", "thinking": "medium" },
+    "LOW": { "provider": "anthropic", "model": "claude-haiku-4-5", "thinking": "low" },
+    "vision": { "provider": "anthropic", "model": "claude-sonnet-4-6", "thinking": "medium" },
+    "reviewVerify": { "provider": "anthropic", "model": "claude-sonnet-4-6", "thinking": "medium" },
+    "adversaryA": { "provider": "openai-codex", "model": "gpt-5.5", "thinking": "high" },
+    "adversaryB": { "provider": "anthropic", "model": "claude-sonnet-4-6", "thinking": "medium" }
+  },
+  "phases": {
+    "plan": { "provider": "openai-codex", "model": "gpt-5.5", "thinking": "high" },
+    "implement": { "provider": "anthropic", "model": "claude-sonnet-4-6", "thinking": "medium" },
+    "test": { "provider": "anthropic", "model": "claude-sonnet-4-6", "thinking": "medium" },
+    "review": { "provider": "openai-codex", "model": "gpt-5.5", "thinking": "high" },
+    "document": { "provider": "anthropic", "model": "claude-sonnet-4-6", "thinking": "medium" }
+  }
+}

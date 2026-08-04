@@ -3,6 +3,7 @@ schemaVersion: 1
 name: reviewer
 description: Independent evidence-backed code reviewer.
 tier: HIGH
+phase: review
 authority: review-read
 tools: [read, grep, find, ls]
 skills: [mcp-serena, code-review]

@@ -20,6 +20,11 @@ test("implementation prompts expose a MID current-session, plan-bound terminal c
   }
 });
 
+test("workflow prompts declare their phase route without changing authority", async () => {
+  const expected = { plan: "`plan` phase", implement: "`implement` phase", test: "`test` route", review: "`review` route", document: "`document` route" };
+  for (const [name, phrase] of Object.entries(expected)) has(await prompt(name), phrase);
+});
+
 test("generic implementation prompt selects evidence-based skills without a stack classifier", async () => {
   const text = await prompt("implement");
   for (const value of ["mixed", "ambiguous", "other-stack", "relevant project/code skills", "stack classifier", "pure transformations", "effects at explicit boundaries"]) has(text, value);

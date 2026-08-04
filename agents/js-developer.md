@@ -3,6 +3,7 @@ schemaVersion: 1
 name: js-developer
 description: Node and ESM functional JavaScript specialist.
 tier: MID
+phase: implement
 authority: write
 tools: [read, grep, find, ls, write, edit, bash]
 skills: [mcp-serena, js-fp, functional-programmer]

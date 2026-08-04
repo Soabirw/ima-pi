@@ -1,1 +1,19 @@
-{"schemaVersion":1,"models":{"HIGH":{"provider":"anthropic","model":"claude-opus-4-7","thinking":"high"},"MID":{"provider":"anthropic","model":"claude-sonnet-4-6","thinking":"medium"},"LOW":{"provider":"anthropic","model":"claude-haiku-4-5","thinking":"low"},"vision":{"provider":"anthropic","model":"claude-sonnet-4-6","thinking":"medium"},"reviewVerify":{"provider":"anthropic","model":"claude-sonnet-4-6","thinking":"medium"},"adversaryA":{"provider":"anthropic","model":"claude-opus-4-7","thinking":"high"},"adversaryB":{"provider":"anthropic","model":"claude-sonnet-4-6","thinking":"medium"}}}
+{
+  "schemaVersion": 1,
+  "models": {
+    "HIGH": { "provider": "anthropic", "model": "claude-opus-4-7", "thinking": "high" },
+    "MID": { "provider": "anthropic", "model": "claude-sonnet-4-6", "thinking": "medium" },
+    "LOW": { "provider": "anthropic", "model": "claude-haiku-4-5", "thinking": "low" },
+    "vision": { "provider": "anthropic", "model": "claude-sonnet-4-6", "thinking": "medium" },
+    "reviewVerify": { "provider": "anthropic", "model": "claude-sonnet-4-6", "thinking": "medium" },
+    "adversaryA": { "provider": "anthropic", "model": "claude-opus-4-7", "thinking": "high" },
+    "adversaryB": { "provider": "anthropic", "model": "claude-sonnet-4-6", "thinking": "medium" }
+  },
+  "phases": {
+    "plan": { "provider": "anthropic", "model": "claude-opus-4-7", "thinking": "high" },
+    "implement": { "provider": "anthropic", "model": "claude-sonnet-4-6", "thinking": "medium" },
+    "test": { "provider": "anthropic", "model": "claude-sonnet-4-6", "thinking": "medium" },
+    "review": { "provider": "anthropic", "model": "claude-opus-4-7", "thinking": "high" },
+    "document": { "provider": "anthropic", "model": "claude-sonnet-4-6", "thinking": "medium" }
+  }
+}

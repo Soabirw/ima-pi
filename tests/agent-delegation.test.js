@@ -10,6 +10,7 @@ import {
   reduceDelegationEvent,
   validateDelegationCompletion,
   validateDelegationRequest,
+  validateDelegationRouteIdentity,
   writeScopesOverlap,
   isDocumentationTarget,
   validateDocumentWriteScope,
@@ -87,6 +88,17 @@ test("requires normal terminal reports, sections, observed identity, and session
     [{ ...base, observed: { ...base.observed, sessionFile: "" } }, "session_identity_missing"],
   ];
   for (const [input, code] of cases) assert.ok(validateDelegationCompletion(input).failures.includes(code), code);
+});
+
+test("validates provider, model, and thinking identity independently of completion", () => {
+  const expected = { provider: "p", model: "m", thinking: "high" };
+  assert.deepEqual(validateDelegationRouteIdentity({ expected, observed: expected }), { ok: true, failures: [] });
+  assert.deepEqual(validateDelegationRouteIdentity({ expected, observed: { provider: "", model: "m", thinking: "high" } }), { ok: false, failures: ["runtime_identity_missing"] });
+  for (const observed of [
+    { provider: "other", model: "m", thinking: "high" },
+    { provider: "p", model: "other", thinking: "high" },
+    { provider: "p", model: "m", thinking: "low" },
+  ]) assert.deepEqual(validateDelegationRouteIdentity({ expected, observed }), { ok: false, failures: ["runtime_identity_mismatch"] });
 });
 
 test("validates only the exact review verifier result format", () => {

@@ -1,1 +1,17 @@
-{"schemaVersion":1,"models":{"HIGH":{"provider":"openai-codex","model":"gpt-5.5","thinking":"high"},"MID":{"provider":"openai-codex","model":"gpt-5.5","thinking":"medium"},"LOW":{"provider":"openai-codex","model":"gpt-5.5","thinking":"low"},"vision":{"provider":"openai-codex","model":"gpt-5.5","thinking":"medium"},"reviewVerify":{"provider":"openai-codex","model":"gpt-5.5","thinking":"high"}}}
+{
+  "schemaVersion": 1,
+  "models": {
+    "HIGH": { "provider": "openai-codex", "model": "gpt-5.5", "thinking": "high" },
+    "MID": { "provider": "openai-codex", "model": "gpt-5.5", "thinking": "medium" },
+    "LOW": { "provider": "openai-codex", "model": "gpt-5.5", "thinking": "low" },
+    "vision": { "provider": "openai-codex", "model": "gpt-5.5", "thinking": "medium" },
+    "reviewVerify": { "provider": "openai-codex", "model": "gpt-5.5", "thinking": "high" }
+  },
+  "phases": {
+    "plan": { "provider": "openai-codex", "model": "gpt-5.5", "thinking": "high" },
+    "implement": { "provider": "openai-codex", "model": "gpt-5.5", "thinking": "medium" },
+    "test": { "provider": "openai-codex", "model": "gpt-5.5", "thinking": "medium" },
+    "review": { "provider": "openai-codex", "model": "gpt-5.5", "thinking": "high" },
+    "document": { "provider": "openai-codex", "model": "gpt-5.5", "thinking": "medium" }
+  }
+}

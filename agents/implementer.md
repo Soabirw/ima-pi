@@ -3,6 +3,7 @@ schemaVersion: 1
 name: implementer
 description: Plan-bound production implementation.
 tier: MID
+phase: implement
 authority: write
 tools: [read, grep, find, ls, write, edit, bash]
 skills: [mcp-serena, functional-programmer]

@@ -3,6 +3,7 @@ schemaVersion: 1
 name: tester
 description: Bounded test implementation and verification specialist.
 tier: MID
+phase: test
 authority: test-write
 tools: [read, grep, find, ls, write, edit, bash, test]
 skills: [mcp-serena, unit-testing, functional-programmer]

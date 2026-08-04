@@ -9,6 +9,10 @@ test("routes exact configured tiers and fails closed for missing capability", ()
   const high = resolveAgentRoute({ agent: { tier: "HIGH" }, config, catalog }); assert.deepEqual(high.route, { provider: "p", model: "high", thinking: "high", tier: "HIGH" });
   const vision = resolveAgentRoute({ agent: { tier: "vision" }, config, catalog }); assert.equal(vision.route.model, "vision");
   assert.equal(resolveAgentRoute({ agent: { tier: "HIGH" }, config, catalog: [] }).error, "model_unavailable");
+  const phased = { ...config, phases: { implement: { provider: "p", model: "phase-implement", thinking: "max", source: "preset" } } };
+  const phaseRoute = resolveAgentRoute({ agent: { tier: "MID", phase: "implement" }, config: phased, catalog: [...catalog, { provider: "p", model: "phase-implement" }] });
+  assert.deepEqual(phaseRoute.route, { provider: "p", model: "phase-implement", thinking: "max", tier: "MID", phase: "implement" });
+  assert.equal(resolveAgentRoute({ agent: { tier: "MID", phase: "test" }, config: phased, catalog }).error, "phase_route_missing");
 });
 
 test("limits recovery and sanitizes credentials", () => {

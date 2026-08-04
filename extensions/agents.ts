@@ -1,10 +1,9 @@
 import { existsSync } from "node:fs";
 import { lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
-import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import {
   createAgentSession,
   createBashToolDefinition,
@@ -13,6 +12,7 @@ import {
   createWriteToolDefinition,
   ModelRuntime,
   SessionManager,
+  getAgentDir,
 } from "@earendil-works/pi-coding-agent";
 import { deriveAgentPaths, loadAgentDefinitions, type AgentDefinition } from "../lib/ima-agents.ts";
 import {
@@ -41,6 +41,7 @@ import {
   validateAdversarialRoutes,
   validateDelegationCompletion,
   validateDelegationRequest,
+  validateDelegationRouteIdentity,
   type DelegationAssignment,
   type DelegationRequest,
   type SessionRecord,
@@ -50,19 +51,26 @@ import { admitVisionImages, publicVisionSource } from "../lib/ima-vision.ts";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const sessions = new Map<string, SessionRecord>();
-const agentDir = resolve(homedir(), ".pi", "agent");
-const projectTrusted = () => process.env.IMA_PI_PROJECT_TRUSTED === "true";
+const agentDir = getAgentDir();
+export function resolveProjectTrust(ctx: Partial<Pick<ExtensionContext, "isProjectTrusted">> | undefined, fallback = process.env.IMA_PI_PROJECT_TRUSTED === "true"): boolean {
+  return typeof ctx?.isProjectTrusted === "function" ? ctx.isProjectTrusted() : fallback;
+}
 const agentToolNames: Record<string, string> = { grep: "grep", find: "find", ls: "ls", read: "read", write: "write", edit: "edit", bash: "bash", test: "bash", image: "read" };
 const activityProjectionKey = "ima-delegation";
 const text = (value: unknown) => typeof value === "string" ? value.trim() : "";
 const now = () => new Date().toISOString();
 
-async function definitions(cwd: string) {
-  return loadAgentDefinitions({ paths: deriveAgentPaths({ packageRoot, agentDir, cwd }), projectTrusted: projectTrusted() });
+async function definitions(cwd: string, trusted: boolean) {
+  return loadAgentDefinitions({ paths: deriveAgentPaths({ packageRoot, agentDir, cwd }), projectTrusted: trusted });
 }
-async function runtimeContext(cwd: string) {
-  const config = await loadImaConfig({ packageRoot, agentDir, cwd, projectTrusted: projectTrusted() });
-  const loaded = await definitions(cwd);
+export const readSessionProfile = (entries: readonly any[]): string | null => {
+  for (const entry of [...entries].reverse()) if (entry?.type === "custom" && entry.customType === "ima-profile-state" && typeof entry.data?.profile === "string") return entry.data.profile;
+  return null;
+};
+
+async function runtimeContext(cwd: string, profile: string | null, trusted: boolean) {
+  const config = await loadImaConfig({ packageRoot, agentDir, cwd, projectTrusted: trusted, ...(profile ? { profileOverride: profile } : {}) });
+  const loaded = await definitions(cwd, trusted);
   const runtime = await ModelRuntime.create();
   return { config: config.config, loaded, runtime };
 }
@@ -287,6 +295,13 @@ export async function coordinateDelegation(input: CoordinatorInput) {
           sessionManager: deps.createManager(input.cwd) as any,
         });
         session = created.session;
+        const identity = validateDelegationRouteIdentity({ expected: route.route, observed: observedIdentity(session) });
+        if (!identity.ok) {
+          const detail = identity.failures.join(",");
+          emit({ type: "failed", id: assignment.id, at: deps.activityClock(), blocker: detail, possiblePartialWriteScopes: [] });
+          state = reduceDelegationEvent(state, { type: "failed", id: assignment.id, detail, partialEffects: false });
+          return { id: assignment.id, status: "failed", attempts: attempt, error: detail, failure: "agent-contract" as const, completion: identity.failures, resumeReference: null };
+        }
         live.set(assignment.id, session);
         unsubscribe = session.subscribe?.((event: any) => {
           if (event?.type === "agent_start") emit({ type: "child-running", id: assignment.id, at: deps.activityClock(), attempt });
@@ -464,7 +479,9 @@ export default function agents(pi: ExtensionAPI) {
       };
       let result: Awaited<ReturnType<typeof coordinateDelegation>>;
       try {
-        const { config, loaded, runtime } = await runtimeContext(ctx.cwd);
+        const trusted = resolveProjectTrust(ctx);
+        const profile = readSessionProfile(ctx.sessionManager.getBranch?.() ?? ctx.sessionManager.getEntries());
+        const { config, loaded, runtime } = await runtimeContext(ctx.cwd, profile, trusted);
         if (!config || loaded.diagnostics.length) return { content: [{ type: "text", text: JSON.stringify({ status: "blocked", errors: [...config?.diagnostics ?? [], ...loaded.diagnostics] }) }], details: { status: "blocked" } };
         const valid = validateDelegationRequest(request, loaded.definitions);
         if (!valid.valid) return { content: [{ type: "text", text: JSON.stringify({ status: "blocked", errors: valid.errors }) }], details: { status: "blocked" } };
@@ -480,13 +497,13 @@ export default function agents(pi: ExtensionAPI) {
       return { content: [{ type: "text", text: JSON.stringify({ status: result.status, results: result.results, report: details.report }) }], details };
     },
   });
-  pi.registerCommand("ima:agents", { description: "List resolved IMA agents.", handler: async (_args, ctx) => { const loaded = await definitions(ctx.cwd); const rows = loaded.definitions.map(({ name, source, tier, authority, description }) => `${name}\t${source}\t${tier}\t${authority}\t${description}`); ctx.ui.notify(rows.join("\n") || "No valid IMA agents.", loaded.diagnostics.length ? "warning" : "info"); } });
+  pi.registerCommand("ima:agents", { description: "List resolved IMA agents.", handler: async (_args, ctx) => { const loaded = await definitions(ctx.cwd, resolveProjectTrust(ctx)); const rows = loaded.definitions.map(({ name, source, tier, authority, description }) => `${name}\t${source}\t${tier}\t${authority}\t${description}`); ctx.ui.notify(rows.join("\n") || "No valid IMA agents.", loaded.diagnostics.length ? "warning" : "info"); } });
   pi.registerCommand("ima:agent-sessions", { description: "List sanitized IMA agent session references.", handler: async (_args, ctx) => ctx.ui.notify([...sessions.values()].map((record) => `${record.reference}\t${record.role}\t${record.provider}/${record.model}\t${record.status}`).join("\n") || "No IMA agent sessions.", "info") });
   pi.registerCommand("ima:agent-follow-up", { description: "Run a focused continuation: <session-reference> <brief>.", handler: async (args, ctx) => {
     const [reference, ...rest] = args.trim().split(/\s+/);
     const record = sessions.get(reference);
     const brief = rest.join(" ");
-    const loaded = await definitions(ctx.cwd);
+    const loaded = await definitions(ctx.cwd, resolveProjectTrust(ctx));
     const agent = loaded.definitions.find((item) => item.name === record?.agent);
     if (!record || !agent || !brief) { ctx.ui.notify("Follow-up refused: unknown, unsafe, or non-reusable session.", "warning"); return; }
     const runtime = await ModelRuntime.create();

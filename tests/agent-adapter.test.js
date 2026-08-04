@@ -4,7 +4,7 @@ import { lstat, mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/pro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { coordinateDelegation, createScopedTools } from "../extensions/agents.ts";
+import { coordinateDelegation, createScopedTools, resolveProjectTrust } from "../extensions/agents.ts";
 
 const agent = {
   schemaVersion: 1, name: "implementer", description: "Implement", tier: "MID", authority: "write",
@@ -79,6 +79,46 @@ test("scoped write and edit permit owned targets and deny sibling, parent, trave
   assert.equal(existsSync(join(root, "..", "parent-no.txt")), false);
   assert.equal(existsSync(join(outside, "no.txt")), false);
   assert.equal(existsSync(join(root, "owned", "edit.txt")), true);
+});
+
+test("uses Pi trust as authoritative and only falls back to the environment decision when unavailable", () => {
+  assert.equal(resolveProjectTrust({ isProjectTrusted: () => true }, false), true);
+  assert.equal(resolveProjectTrust({ isProjectTrusted: () => false }, true), false);
+  assert.equal(resolveProjectTrust({}, true), true);
+  assert.equal(resolveProjectTrust(undefined, false), false);
+});
+
+test("routes a phase-tagged delegated agent through the parent phase matrix", async () => {
+  const phaseAgent = { ...agent, phase: "implement" };
+  const child = fakeSession();
+  child.session.model = { provider: "p", id: "phase-model" };
+  child.session.thinkingLevel = "max";
+  let selected;
+  const phaseRuntime = { getModels: () => [{ provider: "p", id: "phase-model", input: ["text"] }], getModel: (provider, model) => provider === "p" && model === "phase-model" ? { provider, id: model } : undefined };
+  const result = await coordinateDelegation({
+    cwd: "/repo", request: { title: "phase", assignments: [assignment("phase")] }, agents: [phaseAgent],
+    config: { models: { MID: { provider: "p", model: "tier-model" } }, phases: { implement: { provider: "p", model: "phase-model", thinking: "max", source: "preset" } } }, runtime: phaseRuntime,
+    sessionStore: new Map(), dependencies: { createManager: () => ({}), scopedTools: () => [], createSession: async (options) => { selected = options.model; return { session: child.session }; } },
+  });
+  assert.equal(result.status, "succeeded");
+  assert.deepEqual(selected, { provider: "p", id: "phase-model" });
+  assert.equal(result.results[0].thinking, "max");
+});
+
+test("rejects a mismatched child route before prompt or idle wait", async () => {
+  for (const mismatch of ["model", "thinking"]) {
+    const child = fakeSession();
+    if (mismatch === "model") child.session.model = { provider: "p", id: "wrong-model" };
+    else child.session.thinkingLevel = "low";
+    let idleWaits = 0;
+    child.session.waitForIdle = async () => { idleWaits += 1; };
+    const result = await run({ sessions: [{ session: child.session }] });
+    assert.equal(result.status, "failed", mismatch);
+    assert.ok(result.results[0].completion.includes("runtime_identity_mismatch"), mismatch);
+    assert.equal(child.state.prompts.length, 0, mismatch);
+    assert.equal(idleWaits, 0, mismatch);
+    assert.equal(child.state.disposes, 1, mismatch);
+  }
 });
 
 test("coordinates concurrent children but returns results in request order with observed reports and identity", async () => {
