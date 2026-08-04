@@ -2,6 +2,18 @@
 
 Pi-native IMA agent harness, packaged through Pi's standard Git/npm package model.
 
+## Install and get started
+
+Prerequisites: Node.js 24+ and a current Pi installation. Install the complete package through Pi's normal Git-package mechanism:
+
+```bash
+pi install ssh://git@gitea.theflccc.org:2222/IMA/ima-pi.git
+```
+
+Open Pi after installation and use an `/ima:*` command (for example `/ima:plan`) or inspect packaged guidance through `/skill:*`. The full onboarding path—configuration, model roles, commands, agents, skills, integrations, degradation, troubleshooting, updates/removal, and checkout development—is in [`docs/guide.md`](docs/guide.md).
+
+`npm run install:skills` is **optional** cross-harness synchronization for `~/.agents/skills`; Pi installation, package discovery, and normal operation do not require it. Use installed-version Pi help for update/removal syntax. The team comparison is [Lesson 13: Claude Code, Goose, and Pi Workflows](https://flccc.atlassian.net/wiki/spaces/FNR/pages/845611010/Lesson+13+Claude+Code+Goose+and+Pi+Workflows).
+
 ## Current status
 
 Technical spikes are validating Pi-native conventions before the runtime architecture is fixed.
