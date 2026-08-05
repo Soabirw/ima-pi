@@ -310,7 +310,7 @@ test("validates the approved XHIGH mapping in every bundled preset", async () =>
     anthropic: { provider: "anthropic", model: "claude-opus-4-7", thinking: "high" },
     hybrid: { provider: "openai-codex", model: "gpt-5.6-sol", thinking: "xhigh" },
     "openai-codex": { provider: "openai-codex", model: "gpt-5.5", thinking: "high" },
-    "openai-codex-56": { provider: "openai-codex", model: "gpt-5.6-sol", thinking: "high" },
+    "openai-codex-56": { provider: "openai-codex", model: "gpt-5.6-sol", thinking: "xhigh" },
     "openai-codex-56-max": { provider: "openai-codex", model: "gpt-5.6-sol", thinking: "xhigh" },
   };
   for (const [name, mapping] of Object.entries(expected)) {
