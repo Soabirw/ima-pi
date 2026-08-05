@@ -4,6 +4,25 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-08-05
+
+### Added
+
+- Packaged `ima-lifecycle-contract` as the single reusable lifecycle handoff and persistence contract.
+- `/ima:new plan` now resolves and seeds the mapped lifecycle-contract skill after Serena and Vestige bootstrap.
+
+### Changed
+
+- `/ima:plan` restores its Pi-native planning methodology and idempotent shared-instruction bootstrap guidance.
+
+### Safety
+
+- Missing, invalid, or unsuccessful mapped skill bootstrap fails closed without leaving a plan hint; non-plan selectors retain their existing bootstrap sequence.
+
+### Known limitations
+
+- Human TUI confirmation of `/ima:new plan` skill seeding and direct `/ima:plan` / `/ima:cycle` prompt compliance remain manual acceptance paths.
+
 ## [1.3.1] - 2026-08-05
 
 ### Fixed
