@@ -14,10 +14,10 @@ export const IMA_NEW_RESULT_ENTRY = "ima-new-result";
 export const IMA_NEW_BOOTSTRAP_COMMANDS = ["ima:serena-bootstrap", "ima:vestige-bootstrap"] as const;
 export const IMA_NEW_PLAN_HINT = "/ima:plan <story-or-task-source>";
 
-export type ImaNewSelector = "high" | "plan" | null;
+export type ImaNewSelector = "high" | "xhigh" | "plan" | null;
 export type ImaNewRequest = { selector: ImaNewSelector };
 export type ImaNewRouteEvidence =
-  | { role: "HIGH"; provider: string; model: string; thinking?: ThinkingLevel }
+  | { role: "HIGH" | "XHIGH"; provider: string; model: string; thinking?: ThinkingLevel }
   | { phase: "plan"; provider: string; model: string; thinking?: ThinkingLevel };
 export type ImaNewResult =
   | { selector: ImaNewSelector; ok: true; route: ImaNewRouteEvidence | null }
@@ -62,7 +62,7 @@ export function parseImaNewSelector(input: unknown): ParsedImaNewSelector {
   if (typeof input !== "string") return { ok: false, error: "selector_invalid" };
   const value = input.trim();
   if (!value) return { ok: true, selector: null };
-  if (value === "high" || value === "plan") return { ok: true, selector: value };
+  if (value === "high" || value === "xhigh" || value === "plan") return { ok: true, selector: value };
   return { ok: false, error: "selector_invalid" };
 }
 
@@ -78,8 +78,9 @@ const validateRouteEvidence = (input: unknown): ImaNewRouteEvidence | null => {
   if (!object(input) || !nonEmptyText(input.provider) || !nonEmptyText(input.model)) return null;
   if (input.thinking !== undefined && (!nonEmptyText(input.thinking) || !thinkingLevels.has(input.thinking as ThinkingLevel))) return null;
   const thinking = input.thinking === undefined ? {} : { thinking: input.thinking as ThinkingLevel };
-  if (input.role === "HIGH" && exactKeys(input, ["role", "provider", "model", ...(input.thinking === undefined ? [] : ["thinking"])]) ) {
-    return { role: "HIGH", provider: input.provider, model: input.model, ...thinking };
+  const role = input.role;
+  if ((role === "HIGH" || role === "XHIGH") && exactKeys(input, ["role", "provider", "model", ...(input.thinking === undefined ? [] : ["thinking"])]) ) {
+    return { role, provider: input.provider, model: input.model, ...thinking };
   }
   if (input.phase === "plan" && exactKeys(input, ["phase", "provider", "model", ...(input.thinking === undefined ? [] : ["thinking"])]) ) {
     return { phase: "plan", provider: input.provider, model: input.model, ...thinking };
@@ -87,13 +88,21 @@ const validateRouteEvidence = (input: unknown): ImaNewRouteEvidence | null => {
   return null;
 };
 
+const selectorMatchesRoute = (selector: ImaNewSelector, route: ImaNewRouteEvidence | null): boolean => {
+  if (selector === null) return route === null;
+  if (selector === "high") return route !== null && "role" in route && route.role === "HIGH";
+  if (selector === "xhigh") return route !== null && "role" in route && route.role === "XHIGH";
+  return route !== null && "phase" in route && route.phase === "plan";
+};
+
 export function validateImaNewResult(input: unknown): Validation<ImaNewResult> {
   if (!object(input) || !("selector" in input)) return { valid: false, error: "result_invalid" };
   const selector = parseStoredSelector(input.selector);
   if (!selector.ok || typeof input.ok !== "boolean") return { valid: false, error: "result_invalid" };
   if (input.ok) {
-    if (!exactKeys(input, ["selector", "ok", "route"]) || (input.route !== null && validateRouteEvidence(input.route) === null)) return { valid: false, error: "result_invalid" };
-    return { valid: true, value: { selector: selector.selector, ok: true, route: input.route === null ? null : validateRouteEvidence(input.route) } };
+    const route = input.route === null ? null : validateRouteEvidence(input.route);
+    if (!exactKeys(input, ["selector", "ok", "route"]) || (input.route !== null && route === null) || !selectorMatchesRoute(selector.selector, route)) return { valid: false, error: "result_invalid" };
+    return { valid: true, value: { selector: selector.selector, ok: true, route } };
   }
   if (!exactKeys(input, ["selector", "ok", "error"]) || typeof input.error !== "string" || !safeRouteErrors.has(input.error)) return { valid: false, error: "result_invalid" };
   return { valid: true, value: { selector: selector.selector, ok: false, error: input.error } };
@@ -127,8 +136,9 @@ const pendingImaNewRequest = (entries: readonly unknown[]): ImaNewRequest | null
 
 const routeEvidence = (route: WorkflowRoute | RoleRoute): ImaNewRouteEvidence | null => {
   if ("role" in route) {
-    return route.role === "HIGH" && nonEmptyText(route.provider) && nonEmptyText(route.model)
-      ? { role: "HIGH", provider: route.provider, model: route.model, ...(route.thinking ? { thinking: route.thinking } : {}) }
+    const role = route.role;
+    return (role === "HIGH" || role === "XHIGH") && nonEmptyText(route.provider) && nonEmptyText(route.model)
+      ? { role, provider: route.provider, model: route.model, ...(route.thinking ? { thinking: route.thinking } : {}) }
       : null;
   }
   return route.phase === "plan" && nonEmptyText(route.provider) && nonEmptyText(route.model)
@@ -141,7 +151,7 @@ const safeRouteError = (error: unknown) => typeof error === "string" && safeRout
 export function buildImaNewResult(selector: ImaNewSelector, result: RouteSwitchResult): ImaNewResult {
   if (!result.ok) return { selector, ok: false, error: safeRouteError(result.error) };
   const route = routeEvidence(result.route);
-  return result.route && !route
+  return !selectorMatchesRoute(selector, route)
     ? { selector, ok: false, error: "route_apply_failed" }
     : { selector, ok: true, route };
 }
@@ -252,9 +262,11 @@ const notify = (ctx: Pick<ExtensionContext, "hasUI" | "ui">, message: string, le
 const prepareResult = async (pi: ExtensionAPI, ctx: ExtensionContext, selector: ImaNewSelector): Promise<ImaNewResult> => {
   if (selector === null) return { selector, ok: true, route: null };
   try {
-    const result = selector === "high"
-      ? await applyConfiguredRoleRoute(pi, ctx, "HIGH")
-      : await applyConfiguredPhaseRoute(pi, ctx, "plan");
+    let result: RouteSwitchResult;
+    if (selector === "high") result = await applyConfiguredRoleRoute(pi, ctx, "HIGH");
+    else if (selector === "xhigh") result = await applyConfiguredRoleRoute(pi, ctx, "XHIGH");
+    else if (selector === "plan") result = await applyConfiguredPhaseRoute(pi, ctx, "plan");
+    else return { selector, ok: false, error: "route_apply_failed" };
     return buildImaNewResult(selector, result);
   } catch {
     return { selector, ok: false, error: "route_apply_failed" };
@@ -280,7 +292,7 @@ const handleReplacement = async (ctx: ReplacementSessionContext, messages: reado
 
 export default function imaNew(pi: ExtensionAPI) {
   pi.registerCommand("ima:new", {
-    description: "Create a fresh TUI session with an optional HIGH or plan route.",
+    description: "Create a fresh TUI session with an optional HIGH, XHIGH, or plan route.",
     handler: async (args, ctx) => {
       if (ctx.mode !== "tui") {
         notify(ctx, "ima:new requires TUI mode.");
@@ -292,7 +304,7 @@ export default function imaNew(pi: ExtensionAPI) {
       }
       const parsed = parseImaNewSelector(args);
       if (!parsed.ok) {
-        notify(ctx, "Usage: /ima:new [high|plan].");
+        notify(ctx, "Usage: /ima:new [high|xhigh|plan].");
         return;
       }
       const parentSession = ctx.sessionManager.getSessionFile();

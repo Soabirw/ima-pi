@@ -2,6 +2,7 @@
   "schemaVersion": 1,
   "models": {
     "HIGH": { "provider": "openai-codex", "model": "gpt-5.5", "thinking": "high" },
+    "XHIGH": { "provider": "openai-codex", "model": "gpt-5.5", "thinking": "high" },
     "MID": { "provider": "openai-codex", "model": "gpt-5.5", "thinking": "medium" },
     "LOW": { "provider": "openai-codex", "model": "gpt-5.5", "thinking": "low" },
     "vision": { "provider": "openai-codex", "model": "gpt-5.5", "thinking": "medium" },

@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
   IMA_MODEL_ROLES,
+  IMA_OPTIONAL_MODEL_ROLES,
   IMA_PHASES,
   IMA_THINKING_LEVELS,
   deriveImaConfigPaths,
@@ -14,6 +18,7 @@ import {
   validateModelCatalog,
 } from "../lib/ima-config.ts";
 
+const root = fileURLToPath(new URL("..", import.meta.url));
 const layer = (models = {}, profile) => ({
   schemaVersion: 1,
   ...(profile === undefined ? {} : { profile }),
@@ -48,6 +53,23 @@ test("accepts schema-v1 partial layers and trims their explicit values", () => {
   for (const thinking of IMA_THINKING_LEVELS) {
     assert.equal(validateConfigLayer(layer({ HIGH: role("p", "m", thinking) }), "user").valid, true);
   }
+});
+
+test("keeps XHIGH optional, case-sensitive, and independently validated", () => {
+  assert.deepEqual(IMA_OPTIONAL_MODEL_ROLES, ["reviewVerify", "adversaryA", "adversaryB", "XHIGH"]);
+  assert.deepEqual(valid(layer({ XHIGH: role("provider", "model", "xhigh") }), "user").models.XHIGH, {
+    provider: "provider",
+    model: "model",
+    thinking: "xhigh",
+  });
+  const lowercase = validateConfigLayer(layer({ xhigh: role("provider", "model") }), "user");
+  assert.deepEqual(lowercase.diagnostics[0].path, ["models", "xhigh"]);
+  const invalid = validateConfigLayer(layer({ XHIGH: { provider: "", model: "", thinking: "unsupported" } }), "user");
+  assert.deepEqual(invalid.diagnostics.map(({ code, path }) => [code, path]), [
+    ["config_invalid_provider", ["models", "XHIGH", "provider"]],
+    ["config_invalid_model", ["models", "XHIGH", "model"]],
+    ["config_invalid_thinking", ["models", "XHIGH", "thinking"]],
+  ]);
 });
 
 test("rejects invalid schema shapes, unknown fields, unknown roles, and secret-bearing fields", () => {
@@ -223,27 +245,29 @@ test("keeps optional quality roles out of completeness while merging their expli
   const resolved = mergeConfigLayers({
     packageDefaults: valid(layer({}, null)),
     preset: valid(completeLayer("p"), "preset"),
-    user: valid(layer({ reviewVerify: role("verify", "model"), adversaryA: role("provider-a", "model-a") }), "user"),
-    project: valid(layer({ adversaryA: role("provider-a-project", "model-a-project"), adversaryB: role("provider-b", "model-b") }), "project"),
+    user: valid(layer({ reviewVerify: role("verify", "model"), adversaryA: role("provider-a", "model-a"), XHIGH: role("provider-xhigh", "model-xhigh", "high") }), "user"),
+    project: valid(layer({ adversaryA: role("provider-a-project", "model-a-project"), adversaryB: role("provider-b", "model-b"), XHIGH: { provider: "provider-xhigh-project", model: "model-xhigh-project" } }), "project"),
   });
   assert.equal(resolved.complete, true);
   assert.deepEqual(resolved.models.reviewVerify, { provider: "verify", model: "model", thinking: "medium", source: "user" });
   assert.deepEqual(resolved.models.adversaryA, { provider: "provider-a-project", model: "model-a-project", thinking: "medium", source: "project" });
   assert.deepEqual(resolved.models.adversaryB, { provider: "provider-b", model: "model-b", thinking: "medium", source: "project" });
+  assert.deepEqual(resolved.models.XHIGH, { provider: "provider-xhigh-project", model: "model-xhigh-project", source: "project" });
 });
 
-test("accepts adversary roles as optional mappings and validates their catalog availability", () => {
-  const accepted = validateConfigLayer(layer({ adversaryA: role("provider-a", "model-a"), adversaryB: role("provider-b", "model-b") }), "user");
+test("accepts optional mappings and validates their catalog availability", () => {
+  const accepted = validateConfigLayer(layer({ adversaryA: role("provider-a", "model-a"), adversaryB: role("provider-b", "model-b"), XHIGH: role("provider-xhigh", "model-xhigh", "xhigh") }), "user");
   assert.equal(accepted.valid, true);
   const resolved = mergeConfigLayers({ packageDefaults: valid(layer({}, null)), preset: valid(completeLayer("p"), "preset"), user: accepted.value, project: null });
   assert.equal(validateModelCatalog(resolved, [
     { provider: "p", model: "HIGH" }, { provider: "p", model: "MID" }, { provider: "p", model: "LOW" }, { provider: "p", model: "vision", input: ["image"] },
-    { provider: "provider-a", model: "model-a" }, { provider: "provider-b", model: "model-b" },
+    { provider: "provider-a", model: "model-a" }, { provider: "provider-b", model: "model-b" }, { provider: "provider-xhigh", model: "model-xhigh" },
   ]).valid, true);
   const unavailable = validateModelCatalog(resolved, []);
-  assert.deepEqual(unavailable.diagnostics.filter(({ path }) => path[1].startsWith("adversary")).map(({ code, path }) => [code, path]), [
+  assert.deepEqual(unavailable.diagnostics.filter(({ path }) => ["adversaryA", "adversaryB", "XHIGH"].includes(path[1])).map(({ code, path }) => [code, path]), [
     ["config_model_unavailable", ["models", "adversaryA"]],
     ["config_model_unavailable", ["models", "adversaryB"]],
+    ["config_model_unavailable", ["models", "XHIGH"]],
   ]);
 });
 
@@ -268,7 +292,7 @@ test("loads the highest-precedence selected profile and applies trusted project 
   const defaults = JSON.stringify(layer({}, null));
   const user = JSON.stringify({ schemaVersion: 1, profile: "shared", phases: { document: role("user", "document") } });
   const project = JSON.stringify({ schemaVersion: 1, models: { MID: role("project", "mid") } });
-  const shared = JSON.stringify({ schemaVersion: 1, models: Object.fromEntries(IMA_MODEL_ROLES.map((name) => [name, role("project-profile", name)])), phases: { implement: role("project-profile", "implement") } });
+  const shared = JSON.stringify({ schemaVersion: 1, models: { ...Object.fromEntries(IMA_MODEL_ROLES.map((name) => [name, role("project-profile", name)])), XHIGH: role("project-profile", "xhigh", "xhigh") }, phases: { implement: role("project-profile", "implement") } });
   const files = new Map([[paths.packageDefaults, defaults], [paths.user, user], [paths.project, project], [`${paths.projectProfiles}/shared.json`, shared]]);
   const loaded = await loadImaConfig({
     packageRoot: "/package", agentDir: "/agent", cwd: "/project", projectTrusted: true,
@@ -276,8 +300,25 @@ test("loads the highest-precedence selected profile and applies trusted project 
   });
   assert.equal(loaded.diagnostics.length, 0);
   assert.equal(loaded.config.models.MID.provider, "project");
+  assert.deepEqual(loaded.config.models.XHIGH, { provider: "project-profile", model: "xhigh", thinking: "xhigh", source: "preset" });
   assert.equal(loaded.config.phases.implement.model, "implement");
   assert.equal(loaded.config.phases.document.provider, "user");
+});
+
+test("validates the approved XHIGH mapping in every bundled preset", async () => {
+  const expected = {
+    anthropic: { provider: "anthropic", model: "claude-opus-4-7", thinking: "high" },
+    hybrid: { provider: "openai-codex", model: "gpt-5.6-sol", thinking: "xhigh" },
+    "openai-codex": { provider: "openai-codex", model: "gpt-5.5", thinking: "high" },
+    "openai-codex-56": { provider: "openai-codex", model: "gpt-5.6-sol", thinking: "high" },
+    "openai-codex-56-max": { provider: "openai-codex", model: "gpt-5.6-sol", thinking: "xhigh" },
+  };
+  for (const [name, mapping] of Object.entries(expected)) {
+    const parsed = JSON.parse(await readFile(join(root, "config", "presets", `${name}.json`), "utf8"));
+    const result = validateConfigLayer(parsed, "preset");
+    assert.equal(result.valid, true, JSON.stringify(result.diagnostics));
+    assert.deepEqual(result.value?.models?.XHIGH, mapping, name);
+  }
 });
 
 test("reports an explicit profile override as active", async () => {

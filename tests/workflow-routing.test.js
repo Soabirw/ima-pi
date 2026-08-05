@@ -21,6 +21,7 @@ const config = {
   profile: "test-profile",
   models: {
     HIGH: { provider: "terra", model: "high", thinking: "max", source: "preset" },
+    XHIGH: { provider: "terra", model: "xhigh", thinking: "xhigh", source: "preset" },
   },
   phases: {
     plan: { provider: "terra", model: "plan", thinking: "max", source: "preset" },
@@ -74,7 +75,9 @@ test("resolves explicit phase routes without a runtime tier fallback", () => {
 
 test("resolves and applies the effective HIGH role route with shared safeguards", async () => {
   assert.deepEqual(resolveRoleRoute(config, "HIGH"), { ok: true, route: { role: "HIGH", provider: "terra", model: "high", thinking: "max" } });
+  assert.deepEqual(resolveRoleRoute(config, "XHIGH"), { ok: true, route: { role: "XHIGH", provider: "terra", model: "xhigh", thinking: "xhigh" } });
   assert.equal(resolveRoleRoute({ models: {} }, "HIGH").error, "role_route_missing");
+  assert.equal(resolveRoleRoute({ models: {} }, "XHIGH").error, "role_route_missing");
 
   const current = state();
   const result = await applyRoleRoute(config, "HIGH", {
@@ -87,6 +90,18 @@ test("resolves and applies the effective HIGH role route with shared safeguards"
   assert.deepEqual(current.model, { provider: "terra", id: "high" });
   assert.equal(current.thinking, "max");
   assert.deepEqual(current.entries, [{ type: IMA_ROLE_ROUTE_ENTRY, data: { profile: "test-profile", role: "HIGH", provider: "terra", model: "high", thinking: "max" } }]);
+
+  const xhigh = state();
+  const xhighResult = await applyRoleRoute(config, "XHIGH", {
+    ...xhigh,
+    previousModel: xhigh.model,
+    previousThinking: xhigh.thinking,
+    profile: "test-profile",
+  });
+  assert.equal(xhighResult.ok, true);
+  assert.deepEqual(xhigh.model, { provider: "terra", id: "xhigh" });
+  assert.equal(xhigh.thinking, "xhigh");
+  assert.deepEqual(xhigh.entries, [{ type: IMA_ROLE_ROUTE_ENTRY, data: { profile: "test-profile", role: "XHIGH", provider: "terra", model: "xhigh", thinking: "xhigh" } }]);
 
   const busy = state();
   const blocked = await applyRoleRoute(config, "HIGH", { ...busy, previousModel: busy.model, previousThinking: busy.thinking, isIdle: () => false });

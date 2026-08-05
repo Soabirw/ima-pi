@@ -2,6 +2,7 @@
   "schemaVersion": 1,
   "models": {
     "HIGH": { "provider": "anthropic", "model": "claude-opus-4-7", "thinking": "high" },
+    "XHIGH": { "provider": "anthropic", "model": "claude-opus-4-7", "thinking": "high" },
     "MID": { "provider": "anthropic", "model": "claude-sonnet-4-6", "thinking": "medium" },
     "LOW": { "provider": "anthropic", "model": "claude-haiku-4-5", "thinking": "low" },
     "vision": { "provider": "anthropic", "model": "claude-sonnet-4-6", "thinking": "medium" },

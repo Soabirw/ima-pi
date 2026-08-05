@@ -2,6 +2,7 @@
   "schemaVersion": 1,
   "models": {
     "HIGH": { "provider": "openai-codex", "model": "gpt-5.6-sol", "thinking": "high" },
+    "XHIGH": { "provider": "openai-codex", "model": "gpt-5.6-sol", "thinking": "xhigh" },
     "MID": { "provider": "openai-codex", "model": "gpt-5.6-terra", "thinking": "max" },
     "LOW": { "provider": "openai-codex", "model": "gpt-5.6-luna", "thinking": "max" },
     "vision": { "provider": "openai-codex", "model": "gpt-5.6-luna", "thinking": "max" },

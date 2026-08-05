@@ -3,7 +3,7 @@ import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 export const IMA_CONFIG_SCHEMA_VERSION = 1;
 export const IMA_MODEL_ROLES = ["HIGH", "MID", "LOW", "vision"] as const;
-export const IMA_OPTIONAL_MODEL_ROLES = ["reviewVerify", "adversaryA", "adversaryB"] as const;
+export const IMA_OPTIONAL_MODEL_ROLES = ["reviewVerify", "adversaryA", "adversaryB", "XHIGH"] as const;
 export const IMA_ALL_MODEL_ROLES = [...IMA_MODEL_ROLES, ...IMA_OPTIONAL_MODEL_ROLES] as const;
 export const IMA_PHASES = ["brainstorm", "plan", "implement", "test", "review", "resolution", "rereview", "document"] as const;
 export const IMA_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;

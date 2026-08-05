@@ -2,7 +2,7 @@
 
 ## Outcome
 
-IMA Pi phase profiles bind each manual workflow to an exact provider, model, and optional thinking level without reinstalling package resources. `/ima:profile` selects a named matrix for its current session (including reload/resume) and atomically updates the user default; a new session uses that default unless its trusted project configuration selects a profile. `--save` remains a compatibility alias. Workflow input is routed before Pi expands the prompt template, and delegated agents with phase metadata load the same session profile.
+IMA Pi phase profiles bind each manual workflow and configurable model role to an exact provider, model, and optional thinking level without reinstalling package resources. Required roles remain `HIGH`, `MID`, `LOW`, and `vision`; optional `XHIGH` is a distinct role and is never a `HIGH` thinking override. `/ima:profile` selects a named matrix for its current session (including reload/resume) and atomically updates the user default; a new session uses that default unless its trusted project configuration selects a profile. `--save` remains a compatibility alias. Workflow input is routed before Pi expands the prompt template, and delegated agents with phase metadata load the same session profile.
 
 ## Resolution
 
@@ -33,7 +33,7 @@ For a routed command, the extension resolves the phase mapping, verifies the exa
 
 No runtime fallback or downgrade occurs. Unrelated prompts and manual model selection are not intercepted. `reviewVerify`, vision, adversarial, exploration, and preflight routes retain their existing special/tier behavior; explicit agent `phase` metadata controls only the matching lifecycle agents while `tier` continues to express capability and authority.
 
-TUI-only `/ima:new` requires its parent path to be an existing regular file and creates a parent-linked replacement session with a closed selector: no selector applies no explicit role or phase route, `high` applies the effective `HIGH` role, and `plan` applies the effective `plan` phase route. Under `--no-session`, or when the path is missing, unwritten, inaccessible, or not a file, it fails closed before resource resolution, routing, or bootstrap. The fresh session records only the selector and a sanitized route result, applies any selected route before ordered Serena and Vestige bootstrap messages, and leaves an unsubmitted `/ima:plan <story-or-task-source>` hint. Any route, cancellation, or bootstrap failure blocks without fallback or automatic planning.
+TUI-only `/ima:new` requires its parent path to be an existing regular file and creates a parent-linked replacement session with a closed selector: no selector applies no explicit role or phase route, `high` applies the effective `HIGH` role, `xhigh` applies only the effective `XHIGH` role, and `plan` applies the effective `plan` phase route. Under `--no-session`, or when the path is missing, unwritten, inaccessible, or not a file, it fails closed before resource resolution, routing, or bootstrap. The fresh session records only the selector and a sanitized route result, rejects selector/route mismatches, applies any selected route before ordered Serena and Vestige bootstrap messages, and leaves an unsubmitted `/ima:plan <story-or-task-source>` hint. Any route, cancellation, or bootstrap failure blocks without fallback or automatic planning.
 
 ## Built-in experiment
 
