@@ -2,6 +2,14 @@
 
 All notable changes to `ima-pi` are documented here. This history is being backfilled: `1.0.0` is the release baseline, and `1.1.0` collects the current feature push. Release dates and tags are added when a release is cut.
 
+## [Unreleased]
+
+## [1.3.1] - 2026-08-05
+
+### Fixed
+
+- `/ima:new` now accepts every canonical role and phase selector, dispatches the exact configured route before bootstrap, and creates an unlinked replacement when no verified regular-file parent exists.
+
 ## [1.3.0] - 2026-08-05
 
 ### Added
