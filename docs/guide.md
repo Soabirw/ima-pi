@@ -24,7 +24,7 @@ Start Pi from the installed environment and confirm an `/ima:*` command and `/sk
 
 ## Configuration and model roles
 
-Opt-in IMA configuration can live in `~/.pi/agent/ima/config.json` or trusted `.pi/ima/config.json`; project-local configuration takes precedence as documented in [`../config/README.md`](../config/README.md). Presets express abstract `HIGH`, `MID`, `LOW`, and `vision` roles. A selected role is configuration intent, not proof that a provider is available or authenticated.
+Opt-in IMA configuration can live in `~/.pi/agent/ima/config.json` or trusted `.pi/ima/config.json`; project-local configuration takes precedence as documented in [`../config/README.md`](../config/README.md). Presets express abstract `HIGH`, `MID`, `LOW`, and `vision` roles. A selected role is configuration intent, not proof that a provider is available or authenticated. In TUI mode, only after its parent session exists as a regular file, `/ima:new`, `/ima:new high`, and `/ima:new plan` create a parent-linked fresh session with no explicit route, the effective `HIGH` role, or the effective `plan` route respectively. Under `--no-session`, or before the parent session is persisted, `/ima:new` fails closed and requires restarting Pi without `--no-session`; it does not resolve resources, routes, or bootstrap. The replacement applies any selected route before sending resolved Serena then Vestige bootstrap bodies, then leaves `/ima:plan <story-or-task-source>` in the editor without submitting it; invalid, busy, unavailable, unauthenticated, unsupported, or rolled-back routes block fail-closed.
 
 ## Workflow, commands, agents, and skills
 

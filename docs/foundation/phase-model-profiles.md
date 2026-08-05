@@ -33,6 +33,8 @@ For a routed command, the extension resolves the phase mapping, verifies the exa
 
 No runtime fallback or downgrade occurs. Unrelated prompts and manual model selection are not intercepted. `reviewVerify`, vision, adversarial, exploration, and preflight routes retain their existing special/tier behavior; explicit agent `phase` metadata controls only the matching lifecycle agents while `tier` continues to express capability and authority.
 
+TUI-only `/ima:new` requires its parent path to be an existing regular file and creates a parent-linked replacement session with a closed selector: no selector applies no explicit role or phase route, `high` applies the effective `HIGH` role, and `plan` applies the effective `plan` phase route. Under `--no-session`, or when the path is missing, unwritten, inaccessible, or not a file, it fails closed before resource resolution, routing, or bootstrap. The fresh session records only the selector and a sanitized route result, applies any selected route before ordered Serena and Vestige bootstrap messages, and leaves an unsubmitted `/ima:plan <story-or-task-source>` hint. Any route, cancellation, or bootstrap failure blocks without fallback or automatic planning.
+
 ## Built-in experiment
 
 `openai-codex-56-max` is intentionally explicit:

@@ -5,17 +5,23 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   IMA_PHASE_ROUTE_ENTRY,
+  IMA_ROLE_ROUTE_ENTRY,
   applyPhaseRoute,
+  applyRoleRoute,
   formatPhaseMatrix,
   latestSessionProfile,
   parseProfileCommand,
   parseWorkflowCommand,
   persistUserProfileSelection,
   resolvePhaseRoute,
+  resolveRoleRoute,
 } from "../extensions/workflow-routing.ts";
 
 const config = {
   profile: "test-profile",
+  models: {
+    HIGH: { provider: "terra", model: "high", thinking: "max", source: "preset" },
+  },
   phases: {
     plan: { provider: "terra", model: "plan", thinking: "max", source: "preset" },
     implement: { provider: "luna", model: "implement", thinking: "max", source: "preset" },
@@ -64,6 +70,27 @@ test("resolves explicit phase routes without a runtime tier fallback", () => {
   assert.deepEqual(resolvePhaseRoute(config, "resolution"), { ok: true, route: { phase: "resolution", provider: "luna", model: "resolution", thinking: "max" } });
   assert.equal(resolvePhaseRoute({ phases: {} }, "implement").error, "phase_route_missing");
   assert.match(formatPhaseMatrix(config), /review: sol\/review \(xhigh\)/);
+});
+
+test("resolves and applies the effective HIGH role route with shared safeguards", async () => {
+  assert.deepEqual(resolveRoleRoute(config, "HIGH"), { ok: true, route: { role: "HIGH", provider: "terra", model: "high", thinking: "max" } });
+  assert.equal(resolveRoleRoute({ models: {} }, "HIGH").error, "role_route_missing");
+
+  const current = state();
+  const result = await applyRoleRoute(config, "HIGH", {
+    ...current,
+    previousModel: current.model,
+    previousThinking: current.thinking,
+    profile: "test-profile",
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(current.model, { provider: "terra", id: "high" });
+  assert.equal(current.thinking, "max");
+  assert.deepEqual(current.entries, [{ type: IMA_ROLE_ROUTE_ENTRY, data: { profile: "test-profile", role: "HIGH", provider: "terra", model: "high", thinking: "max" } }]);
+
+  const busy = state();
+  const blocked = await applyRoleRoute(config, "HIGH", { ...busy, previousModel: busy.model, previousThinking: busy.thinking, isIdle: () => false });
+  assert.equal(blocked.error, "route_busy");
 });
 
 test("applies an exact route and persists sanitized route evidence", async () => {

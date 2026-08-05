@@ -12,6 +12,7 @@ import {
   validateConfigLayer,
   type ImaPhase,
   type ImaProfile,
+  type ImaRole,
   type ResolvedImaConfig,
   type ThinkingLevel,
   type ValidConfigLayer,
@@ -19,6 +20,7 @@ import {
 
 export const IMA_PROFILE_ENTRY = "ima-profile-state";
 export const IMA_PHASE_ROUTE_ENTRY = "ima-phase-route";
+export const IMA_ROLE_ROUTE_ENTRY = "ima-role-route";
 export const WORKFLOW_PHASES = IMA_PHASES;
 export const WORKFLOW_COMMAND_PHASES: Readonly<Record<string, ImaPhase>> = {
   "ima:brainstorm": "brainstorm",
@@ -36,8 +38,9 @@ export const WORKFLOW_COMMAND_PHASES: Readonly<Record<string, ImaPhase>> = {
 export type ParsedWorkflowCommand = { command: string; phase: ImaPhase; args: string };
 export type ParsedProfileCommand = { mode: "list" } | { mode: "activate"; name: string } | { mode: "invalid"; error: string };
 export type WorkflowRoute = { phase: ImaPhase; provider: string; model: string; thinking?: ThinkingLevel };
+export type RoleRoute = { role: ImaRole; provider: string; model: string; thinking?: ThinkingLevel };
 export type RouteSwitchResult =
-  | { ok: true; route: WorkflowRoute }
+  | { ok: true; route: WorkflowRoute | RoleRoute }
   | { ok: false; error: string; message: string; rollback?: "succeeded" | "failed" | "not-needed" };
 
 const PROFILE_USAGE = "usage: /ima:profile | /ima:profile <name>";
@@ -70,6 +73,12 @@ export function resolvePhaseRoute(config: Pick<ResolvedImaConfig, "phases"> | nu
   const mapping = config?.phases?.[phase];
   if (!mapping || !text(mapping.provider) || !text(mapping.model)) return { ok: false, error: "phase_route_missing", message: `${phase} phase route is not configured.` };
   return { ok: true, route: { phase, provider: mapping.provider, model: mapping.model, ...(mapping.thinking ? { thinking: mapping.thinking } : {}) } };
+}
+
+export function resolveRoleRoute(config: Pick<ResolvedImaConfig, "models"> | null | undefined, role: ImaRole): { ok: true; route: RoleRoute } | { ok: false; error: "role_route_missing"; message: string } {
+  const mapping = config?.models?.[role];
+  if (!mapping || !text(mapping.provider) || !text(mapping.model)) return { ok: false, error: "role_route_missing", message: `${role} role route is not configured.` };
+  return { ok: true, route: { role, provider: mapping.provider, model: mapping.model, ...(mapping.thinking ? { thinking: mapping.thinking } : {}) } };
 }
 
 export function formatPhaseMatrix(config: Pick<ResolvedImaConfig, "profile" | "phases"> | null | undefined): string {
@@ -163,13 +172,22 @@ const rollbackRoute = async (input: RouteSwitchDependencies): Promise<boolean> =
   }
 };
 
-export async function applyPhaseRoute(config: Pick<ResolvedImaConfig, "phases"> | null | undefined, phase: ImaPhase, input: RouteSwitchDependencies): Promise<RouteSwitchResult> {
-  if (input.isIdle && !input.isIdle()) return { ok: false, error: "route_busy", message: "Phase routing is unavailable while the session is busy.", rollback: "not-needed" };
-  const resolved = resolvePhaseRoute(config, phase);
-  if (!resolved.ok) return resolved;
-  const model = input.findModel(resolved.route.provider, resolved.route.model);
-  if (!model) return { ok: false, error: "model_unavailable", message: `Configured ${phase} model is unavailable.`, rollback: "not-needed" };
-  const authFailure = (): RouteSwitchResult => ({ ok: false, error: "auth_unavailable", message: `Configured ${phase} model is unauthenticated.`, rollback: "not-needed" });
+type ResolvedRouteTarget =
+  | { kind: "phase"; route: WorkflowRoute }
+  | { kind: "role"; route: RoleRoute };
+
+const routeBusy = (kind: ResolvedRouteTarget["kind"]): RouteSwitchResult => ({
+  ok: false,
+  error: "route_busy",
+  message: `${kind === "phase" ? "Phase" : "Role"} routing is unavailable while the session is busy.`,
+  rollback: "not-needed",
+});
+
+const applyResolvedRoute = async (target: ResolvedRouteTarget, input: RouteSwitchDependencies): Promise<RouteSwitchResult> => {
+  const name = target.kind === "phase" ? target.route.phase : target.route.role;
+  const model = input.findModel(target.route.provider, target.route.model);
+  if (!model) return { ok: false, error: "model_unavailable", message: `Configured ${name} model is unavailable.`, rollback: "not-needed" };
+  const authFailure = (): RouteSwitchResult => ({ ok: false, error: "auth_unavailable", message: `Configured ${name} model is unauthenticated.`, rollback: "not-needed" });
   if (input.hasConfiguredAuth) {
     try {
       if (!await input.hasConfiguredAuth(model)) return authFailure();
@@ -180,45 +198,67 @@ export async function applyPhaseRoute(config: Pick<ResolvedImaConfig, "phases"> 
   let modelAttempted = false;
   try {
     modelAttempted = true;
-    if (!await input.setModel(model)) return { ok: false, error: "auth_unavailable", message: `Configured ${phase} model is unauthenticated.`, rollback: "not-needed" };
-    if (resolved.route.thinking) {
-      input.setThinkingLevel(resolved.route.thinking);
-      if (input.getThinkingLevel() !== resolved.route.thinking) throw new Error("thinking_unsupported");
+    if (!await input.setModel(model)) return authFailure();
+    if (target.route.thinking) {
+      input.setThinkingLevel(target.route.thinking);
+      if (input.getThinkingLevel() !== target.route.thinking) throw new Error("thinking_unsupported");
     }
-    input.appendEntry?.(IMA_PHASE_ROUTE_ENTRY, {
+    input.appendEntry?.(target.kind === "phase" ? IMA_PHASE_ROUTE_ENTRY : IMA_ROLE_ROUTE_ENTRY, {
       profile: input.profile ?? null,
-      phase,
-      provider: resolved.route.provider,
-      model: resolved.route.model,
-      ...(resolved.route.thinking ? { thinking: resolved.route.thinking } : {}),
+      ...(target.kind === "phase" ? { phase: target.route.phase } : { role: target.route.role }),
+      provider: target.route.provider,
+      model: target.route.model,
+      ...(target.route.thinking ? { thinking: target.route.thinking } : {}),
     });
-    return { ok: true, route: resolved.route };
+    return { ok: true, route: target.route };
   } catch (error) {
     const restored = modelAttempted ? await rollbackRoute(input) : true;
-    if (!restored) return { ok: false, error: "route_rollback_failed", message: "Phase routing failed and the previous model could not be restored; select a model manually.", rollback: "failed" };
+    if (!restored) return { ok: false, error: "route_rollback_failed", message: `${target.kind === "phase" ? "Phase" : "Role"} routing failed and the previous model could not be restored; select a model manually.`, rollback: "failed" };
     const errorCode = error instanceof Error && error.message === "thinking_unsupported" ? "thinking_unsupported" : "route_apply_failed";
-    return { ok: false, error: errorCode, message: errorCode === "thinking_unsupported" ? `Configured ${phase} thinking level is unsupported by the selected model.` : `Configured ${phase} route could not be applied.`, rollback: "succeeded" };
+    return { ok: false, error: errorCode, message: errorCode === "thinking_unsupported" ? `Configured ${name} thinking level is unsupported by the selected model.` : `Configured ${name} route could not be applied.`, rollback: "succeeded" };
   }
+};
+
+export async function applyPhaseRoute(config: Pick<ResolvedImaConfig, "phases"> | null | undefined, phase: ImaPhase, input: RouteSwitchDependencies): Promise<RouteSwitchResult> {
+  if (input.isIdle && !input.isIdle()) return routeBusy("phase");
+  const resolved = resolvePhaseRoute(config, phase);
+  if (!resolved.ok) return resolved;
+  return applyResolvedRoute({ kind: "phase", route: resolved.route }, input);
+}
+
+export async function applyRoleRoute(config: Pick<ResolvedImaConfig, "models"> | null | undefined, role: ImaRole, input: RouteSwitchDependencies): Promise<RouteSwitchResult> {
+  if (input.isIdle && !input.isIdle()) return routeBusy("role");
+  const resolved = resolveRoleRoute(config, role);
+  if (!resolved.ok) return resolved;
+  return applyResolvedRoute({ kind: "role", route: resolved.route }, input);
 }
 
 const projectTrusted = (ctx: ExtensionContext) => typeof ctx.isProjectTrusted === "function" ? ctx.isProjectTrusted() : process.env.IMA_PI_PROJECT_TRUSTED === "true";
 const notify = (ctx: ExtensionContext, message: string, level: "info" | "warning" | "error" = "info") => { if (ctx.hasUI) ctx.ui.notify(message, level); };
 
+const routeDependencies = (pi: ExtensionAPI, ctx: ExtensionContext, profile: string | null): RouteSwitchDependencies => ({
+  findModel: (provider, model) => ctx.modelRegistry.find(provider, model),
+  hasConfiguredAuth: (model) => ctx.modelRegistry.hasConfiguredAuth(model as any),
+  previousModel: ctx.model,
+  previousThinking: pi.getThinkingLevel(),
+  getThinkingLevel: () => pi.getThinkingLevel(),
+  setModel: (model) => pi.setModel(model as any),
+  setThinkingLevel: (level) => pi.setThinkingLevel(level),
+  appendEntry: (customType, data) => pi.appendEntry(customType, data),
+  isIdle: () => ctx.isIdle(),
+  profile,
+});
+
 export async function applyConfiguredPhaseRoute(pi: ExtensionAPI, ctx: ExtensionContext, phase: ImaPhase, profileOverride?: string | null): Promise<RouteSwitchResult> {
   const loaded = await loadImaConfig({ packageRoot, agentDir, cwd: ctx.cwd, projectTrusted: projectTrusted(ctx), ...(profileOverride ? { profileOverride } : {}) });
   if (!loaded.config) return { ok: false, error: "phase_config_unavailable", message: `${phase} phase routing is unavailable: ${loaded.diagnostics.map(({ code }) => code).join(", ") || "invalid configuration"}.`, rollback: "not-needed" };
-  return applyPhaseRoute(loaded.config, phase, {
-    findModel: (provider, model) => ctx.modelRegistry.find(provider, model),
-    hasConfiguredAuth: (model) => ctx.modelRegistry.hasConfiguredAuth(model as any),
-    previousModel: ctx.model,
-    previousThinking: pi.getThinkingLevel(),
-    getThinkingLevel: () => pi.getThinkingLevel(),
-    setModel: (model) => pi.setModel(model as any),
-    setThinkingLevel: (level) => pi.setThinkingLevel(level),
-    appendEntry: (customType, data) => pi.appendEntry(customType, data),
-    isIdle: () => ctx.isIdle(),
-    profile: profileOverride ?? loaded.config.profile,
-  });
+  return applyPhaseRoute(loaded.config, phase, routeDependencies(pi, ctx, profileOverride ?? loaded.config.profile));
+}
+
+export async function applyConfiguredRoleRoute(pi: ExtensionAPI, ctx: ExtensionContext, role: ImaRole, profileOverride?: string | null): Promise<RouteSwitchResult> {
+  const loaded = await loadImaConfig({ packageRoot, agentDir, cwd: ctx.cwd, projectTrusted: projectTrusted(ctx), ...(profileOverride ? { profileOverride } : {}) });
+  if (!loaded.config) return { ok: false, error: "role_config_unavailable", message: `${role} role routing is unavailable: ${loaded.diagnostics.map(({ code }) => code).join(", ") || "invalid configuration"}.`, rollback: "not-needed" };
+  return applyRoleRoute(loaded.config, role, routeDependencies(pi, ctx, profileOverride ?? loaded.config.profile));
 }
 
 export default function workflowRouting(pi: ExtensionAPI) {

@@ -2,6 +2,22 @@
 
 All notable changes to `ima-pi` are documented here. This history is being backfilled: `1.0.0` is the release baseline, and `1.1.0` collects the current feature push. Release dates and tags are added when a release is cut.
 
+## [1.2.0] - 2026-08-05
+
+### Added
+
+- TUI-only `/ima:new [high|plan]` for a native parent-linked fresh session: bare invocation applies no explicit route, while `high` and `plan` apply the configured `HIGH` and `plan` routes.
+- Ordered Serena then Vestige bootstrap bodies and an unsubmitted `/ima:plan <story-or-task-source>` hint after a successful replacement.
+
+### Safety
+
+- `/ima:new` requires an existing regular-file parent session and fails closed before resource lookup or replacement for `--no-session`, allocated-but-unwritten, inaccessible, or non-file paths.
+- Route, cancellation, and bootstrap failures do not fall back or submit a planning prompt.
+
+### Known limitations
+
+- Live TUI timing, native replacement, provider/model availability, and external bootstrap acceptance remain human verification paths.
+
 ## [1.1.0] - 2026-08-04
 
 ### Added

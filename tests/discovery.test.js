@@ -33,11 +33,12 @@ export default function (pi: ExtensionAPI) {
 
 test("package exposes namespaced extension, prompt, and skill commands", async () => {
   const directory = await mkdtemp(join(tmpdir(), "ima-pi-package-"));
+  const agentDir = join(directory, "agent");
   const resultPath = join(directory, "result.json");
 
   await runPi(["--no-session", "-e", root, "-p", "/ima:probe package"], {
     cwd: root,
-    env: { ...process.env, IMA_PI_PROBE_RESULT: resultPath },
+    env: { ...process.env, PI_CODING_AGENT_DIR: agentDir, IMA_PI_PROBE_RESULT: resultPath },
   });
 
   const result = JSON.parse(await readFile(resultPath, "utf8"));
@@ -48,6 +49,7 @@ test("package exposes namespaced extension, prompt, and skill commands", async (
   assert.equal(commands.get("ima:delegate-probe")?.source, "extension");
   assert.equal(commands.get("ima:control-probe")?.source, "extension");
   assert.equal(commands.get("ima:profile")?.source, "extension");
+  assert.equal(commands.get("ima:new")?.source, "extension");
   assert.equal(commands.get("ima:cycle")?.source, "extension");
   assert.equal(commands.get("ima:prompt")?.source, "prompt");
   for (const [name, description] of [["serena-bootstrap", "Serena project instructions"], ["vestige-bootstrap", "Vestige.*without mutation"], ["ship-it", "Prepare and validate staging release branches"], ["memorize", "stable project fact"], ["preflight", "read-only Pi and IMA diagnostic"], ["migrate", "legacy configuration"], ["brainstorm", "product requirements"], ["decompose", "two-tier delivery units"], ["plan", "technical implementation contract"], ["architect", "bounded evidence-oriented architecture assessment"], ["investigate", "Investigate and trace a problem without applying a fix"], ["instruct", "Research and teach what the user should do and why"], ["prompt-start", "Turn rough context into a clear prompt for a dedicated workflow"], ["test", "formal test phase"], ["review", "independent product-read-only review"], ["resolve-review", "Resolve approved review findings"], ["rereview", "Independently rereview one resolved lifecycle finding set"], ["review-verify", "Verify exactly one review finding"], ["document", "documentation and learning closeout"], ["ui-ux-review", "read-only UI/UX review"], ["design-to-code", "WordPress and Bootstrap design-to-code"], ["medical-research", "current primary-source verification"], ["patristic-research", "early Christianity through Augustine"]]) {
