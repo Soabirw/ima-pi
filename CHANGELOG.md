@@ -2,6 +2,22 @@
 
 All notable changes to `ima-pi` are documented here. This history is being backfilled: `1.0.0` is the release baseline, and `1.1.0` collects the current feature push. Release dates and tags are added when a release is cut.
 
+## [1.3.0] - 2026-08-05
+
+### Added
+
+- Optional `XHIGH` model role with source-backed mappings in every bundled preset; it remains distinct from `HIGH` thinking overrides.
+- TUI-only `/ima:new xhigh` for a native parent-linked fresh session; it applies only the configured `XHIGH` route.
+- Selector-to-route validation that rejects persisted XHIGH mismatches before bootstrap.
+
+### Safety
+
+- Missing, unavailable, unauthenticated, unsupported, clamped, cancelled, or mismatched XHIGH routes fail closed without fallback or bootstrap.
+
+### Known limitations
+
+- Live XHIGH provider availability, authentication, thinking support, TUI timing, native replacement, and external bootstrap acceptance remain human verification paths.
+
 ## [1.2.0] - 2026-08-05
 
 ### Added
