@@ -188,8 +188,9 @@ All five are advisory and non-mutating, and they stop without implementing. They
 - `/ima:brainstorm [source]` turns an idea or evidence into approved product requirements; it does not decompose or technically design.
 - `/ima:decompose [requirements-source]` creates exactly a Taskwarrior Project → Task or Jira Epic → Story/Task hierarchy, with lower-level work kept as checklists. It previews one PM destination and requires approval before persistence.
 - `/ima:plan [story-or-task-source]` creates an approved technical implementation contract for one bounded delivery unit; it does not implement or execute work.
+- `/ima:cycle start [--review-cap 0-10] [--implementation generic|js|wp] <source>` starts one explicit, branch-aware lifecycle (default review cap: two). A source is one Jira key/supported browse URL or `taskwarrior <project> <uuid>`; a Story is the lifecycle unit, not each checklist. Generic is the new-cycle default, the selected implementation mode persists, and all modes use the configured `implement` route. `status`, `stop`, `resume`, and `close` remain user-gated; normal close requires TUI confirmation, while `close --commit-prep` is read-only.
 
-Each resulting Story/Task independently enters `plan -> implement -> test -> review -> document`. See [`docs/foundation/FNR-3017.md`](docs/foundation/FNR-3017.md) for authority, integration, safeguards, limitations, and human acceptance.
+Each selected Story follows `plan -> implement -> test -> review -> resolution/rereview -> document -> close`. `/ima:cycle` coordinates that fixed lifecycle without becoming a workflow DSL, automatically progressing, or mutating unrelated trackers. See [`docs/foundation/FNR-3017.md`](docs/foundation/FNR-3017.md) and [`docs/foundation/FNR-3036.md`](docs/foundation/FNR-3036.md) for authority, integration, safeguards, limitations, and human acceptance.
 
 - `/ima:implement [approved-plan-source]` executes a plan for mixed, ambiguous, or non-JavaScript/non-WordPress stacks.
 - `/ima:implement-js [approved-plan-source]` executes a plan for known JavaScript/TypeScript work.
@@ -199,9 +200,11 @@ All implementation prompts require an approved implementation-grade plan, work i
 
 - `/ima:test [implementation-source]` performs bounded test work without silently changing production behavior.
 - `/ima:review [implementation-and-test-source]` runs a fresh product-read-only review and fresh second opinions for Critical/Warning candidates.
+- `/ima:resolve-review [review-and-implementation-source]` resolves only confirmed review findings within the fixed review-loop cap.
+- `/ima:rereview [resolution-and-review-source]` independently verifies the resolution without editing.
 - `/ima:review-verify [finding-brief]` returns exactly one narrow finding verdict.
 - `/ima:document [completed-lifecycle-source]` updates only exact local documentation targets and prepares parent-owned external update manifests.
-- `/ima:profile [name] [--save]` lists or activates the configured phase model matrix without changing ordinary prompt/model flexibility.
+- `/ima:profile [name]` lists or activates the configured phase model matrix and persists explicit selections to the user default without changing ordinary prompt/model flexibility.
 
 See [`docs/foundation/FNR-3019.md`](docs/foundation/FNR-3019.md) for authority, review verification fallback, knowledge routing, and limitations. See [`docs/foundation/phase-model-profiles.md`](docs/foundation/phase-model-profiles.md) for phase routing and fail-closed behavior.
 
@@ -236,7 +239,7 @@ Inspect resolved definitions with `/ima:agents`, session metadata with `/ima:age
 
 `ima_context` is a model-callable tool that activates Serena, loads its instructions and standard project memories, then normalizes exactly one Jira, Taskwarrior, project-file, Vestige-memory, or free-text source into a versioned phase context. An optional Qdrant lookup is read-only. `ima_lifecycle` validates a complete lifecycle artifact, saves it only through `ima-mcp vestige save`, and requires a single semantic recall hit before reporting completion.
 
-Both tools call externally installed/configured IMA gateway services; they do not provide service SDKs, mutate Jira or Taskwarrior, index Qdrant, or implement phase commands/cycle automation. Later stories own production phase commands. See [`docs/foundation/FNR-3016.md`](docs/foundation/FNR-3016.md) for contracts, ordering, security boundaries, limitations, and live acceptance.
+Both tools call externally installed/configured IMA gateway services; they do not provide service SDKs, mutate Jira or Taskwarrior, or index Qdrant. `/ima:cycle` reuses these boundaries and independently verifies lifecycle evidence before its explicitly confirmed single-tracker close. See [`docs/foundation/FNR-3016.md`](docs/foundation/FNR-3016.md) and [`docs/foundation/FNR-3036.md`](docs/foundation/FNR-3036.md) for contracts, ordering, security boundaries, limitations, and live acceptance.
 
 ## Configure model roles
 

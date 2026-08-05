@@ -21,6 +21,8 @@ const config = {
     implement: { provider: "luna", model: "implement", thinking: "max", source: "preset" },
     test: { provider: "luna", model: "test", thinking: "max", source: "preset" },
     review: { provider: "sol", model: "review", thinking: "xhigh", source: "preset" },
+    resolution: { provider: "luna", model: "resolution", thinking: "max", source: "preset" },
+    rereview: { provider: "sol", model: "rereview", thinking: "xhigh", source: "preset" },
     document: { provider: "terra", model: "document", thinking: "max", source: "preset" },
   },
 };
@@ -46,16 +48,20 @@ test("maps only exact workflow commands and leaves ordinary input unchanged", ()
   assert.deepEqual(parseWorkflowCommand("/ima:brainstorm idea"), { command: "ima:brainstorm", phase: "brainstorm", args: "idea" });
   assert.deepEqual(parseWorkflowCommand("/ima:plan source"), { command: "ima:plan", phase: "plan", args: "source" });
   assert.deepEqual(parseWorkflowCommand("  /ima:implement-js plan"), { command: "ima:implement-js", phase: "implement", args: "plan" });
+  assert.deepEqual(parseWorkflowCommand("/ima:resolve-review review"), { command: "ima:resolve-review", phase: "resolution", args: "review" });
+  assert.deepEqual(parseWorkflowCommand("/ima:rereview resolution"), { command: "ima:rereview", phase: "rereview", args: "resolution" });
   assert.equal(parseWorkflowCommand("/ima:planner source"), null);
   assert.equal(parseWorkflowCommand("ordinary /ima:plan text"), null);
   assert.deepEqual(parseProfileCommand(""), { mode: "list" });
-  assert.deepEqual(parseProfileCommand("openai-codex-56-max --save"), { mode: "activate", name: "openai-codex-56-max", save: true });
+  assert.deepEqual(parseProfileCommand("openai-codex-56-max"), { mode: "activate", name: "openai-codex-56-max" });
+  assert.deepEqual(parseProfileCommand("openai-codex-56-max --save"), { mode: "activate", name: "openai-codex-56-max" });
   assert.equal(parseProfileCommand("../unsafe").mode, "invalid");
   assert.equal(parseProfileCommand("profile --save extra").mode, "invalid");
 });
 
 test("resolves explicit phase routes without a runtime tier fallback", () => {
   assert.deepEqual(resolvePhaseRoute(config, "review"), { ok: true, route: { phase: "review", provider: "sol", model: "review", thinking: "xhigh" } });
+  assert.deepEqual(resolvePhaseRoute(config, "resolution"), { ok: true, route: { phase: "resolution", provider: "luna", model: "resolution", thinking: "max" } });
   assert.equal(resolvePhaseRoute({ phases: {} }, "implement").error, "phase_route_missing");
   assert.match(formatPhaseMatrix(config), /review: sol\/review \(xhigh\)/);
 });
@@ -136,6 +142,14 @@ test("saves a user profile atomically while retaining valid overrides", async ()
     models: { HIGH: { provider: "p", model: "m" } },
     phases: { test: { provider: "p", model: "test" } },
   });
+});
+
+test("creates a user profile default", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ima-profile-test-"));
+  const path = join(directory, "ima", "config.json");
+  const result = await persistUserProfileSelection({ path, profile: "new-profile" });
+  assert.deepEqual(result, { ok: true, path });
+  assert.deepEqual(JSON.parse(await readFile(path, "utf8")), { schemaVersion: 1, profile: "new-profile" });
 });
 
 test("restores only valid session profile entries", () => {

@@ -6,12 +6,23 @@ const root = resolve(dirname(new URL(import.meta.url).pathname), "..");
 const prompt = (name) => readFile(join(root, "prompts", `ima:${name}.md`), "utf8");
 const skill = (name) => readFile(join(root, "skills", name, "SKILL.md"), "utf8");
 const has = (text, value) => assert.match(text, new RegExp(value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
-test("production workflow prompts have distinct Pi frontmatter and HIGH-tier authority", async () => { for (const name of ["brainstorm", "decompose", "plan"]) { const text = await prompt(name); has(text, "description:"); has(text, "argument-hint:"); has(text, "HIGH-tier"); has(text, "explicit approval"); assert.doesNotMatch(text, /\/ima:cycle|workflow DSL/i); } });
+test("production planning prompts have distinct Pi frontmatter and HIGH-tier authority", async () => { for (const name of ["brainstorm", "decompose"]) { const text = await prompt(name); has(text, "description:"); has(text, "argument-hint:"); has(text, "HIGH-tier"); has(text, "explicit approval"); assert.doesNotMatch(text, /\/ima:cycle|workflow DSL/i); } const planText = await prompt("plan"); for (const value of ["description:", "argument-hint:", "HIGH-tier", "explicit approval", "ima-cycle outcome: phase=plan"]) has(planText, value); assert.doesNotMatch(planText, /workflow DSL/i); });
 test("brainstorm owns approved product requirements and stops before decomposition or design", async () => { const text = await prompt("brainstorm"); for (const value of ["problem or opportunity", "users and use cases", "business rules", "product acceptance criteria", "vision-handoff", "lifecycle type `decision`", "/ima:decompose", "stop"]) has(text, value); has(text, "Do **not** decompose PM work"); });
 test("decompose enforces two tiers, one PM destination, preview, and checklist-only work", async () => { const text = await prompt("decompose"); for (const value of ["Taskwarrior Project -> Task", "Jira Epic -> Story/Task", "checklist", "exactly one destination", "never dual-write", "exact persistence preview", "explicit approval", "lifecycle unit", "as `decision`", "stop"]) has(text, value); has(text, "technical files, functions, control flow"); });
 test("plan enforces one-unit Serena-first technical planning without implementation", async () => { const text = await prompt("plan"); for (const value of ["exactly one", "/ima:decompose", "ima_context", "Serena-first", "files, modules, symbols, APIs", "pure/effect boundaries", "verification commands", "rollback", "as `plan`", "stop"]) has(text, value); has(text, "Do not edit code/config/content"); });
 
 const implementationPrompts = ["implement", "implement-js", "implement-wp"];
+
+test("cycle resolution prompts expose exact phase markers and bounded handoffs", async () => {
+  const resolution = await prompt("resolve-review");
+  const rereview = await prompt("rereview");
+  for (const [text, marker, phase] of [[resolution, "phase=resolution", "RESOLVED"], [rereview, "phase=rereview", "APPROVED"]]) {
+    has(text, marker);
+    has(text, `outcome=${phase}`);
+    has(text, "ima_lifecycle");
+    has(text, "/ima:cycle");
+  }
+});
 test("implementation prompts expose a MID current-session, plan-bound terminal contract", async () => {
   for (const name of implementationPrompts) {
     const text = await prompt(name);

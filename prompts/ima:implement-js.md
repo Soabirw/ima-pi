@@ -10,6 +10,8 @@ Execute only an explicitly approved plan that supplies one bounded outcome; scop
 
 Before implementation, summarize scope/non-goals, targets, acceptance criteria, and verification. Use Node 24+ built-ins and existing dependencies where sufficient; do not add a package unnecessarily. Keep business logic pure and I/O at boundaries, validate external input, use parameterized SQL for dynamic values, and preserve project/framework conventions discovered from Serena evidence. Make minimal plan-bound edits only.
 
+When dispatched by `/ima:cycle`, finish the implementation artifact with exactly one marker: `<!-- ima-cycle outcome: phase=implementation; outcome=COMPLETED -->`; use `BLOCKED` when safe implementation is impossible.
+
 You may use the existing `js-developer` role and `ima_delegate` for self-contained bounded work, but current-session ownership does not require a redundant child. Parallel writers must own disjoint files and child briefs must carry applicable plan/security/reporting context. Add or change tests only when included in the approved plan. Run immediate existing verification only; do not automatically enter formal test or review.
 
 A material plan/repository conflict, missing capability, architecture/security/data-integrity concern, material expansion, irreversible operation, non-goal violation, or unsafe partial state is a contradiction. Stop rather than redesign. Report the contradicted statement, exact evidence, changed files, verification run, why implementation discretion cannot resolve it, the smallest needed decision/revision, and safe next action. Do not claim success.

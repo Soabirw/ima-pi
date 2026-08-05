@@ -10,4 +10,6 @@ This entire session is planning-only. Use `ima_context` and Serena-first evidenc
 
 Produce an implementation-grade contract: source and approved outcome; scope and non-goals; exact files, modules, symbols, APIs; data/control flow; pure/effect boundaries; error paths; security; implementation order; test strategy; observable acceptance criteria; verification commands and expected signals; rollback; blockers; residual risks; prior artifacts; and recommended next phase.
 
+When dispatched by `/ima:cycle`, finish the saved plan artifact with exactly one marker and no other cycle outcome marker: `<!-- ima-cycle outcome: phase=plan; outcome=APPROVED -->`. Use `BLOCKED` only when the plan cannot be safely approved.
+
 Do not edit code/config/content, run tests/builds/migrations/formatters/generators/servers, commit, branch, implement, or automatically execute another phase. Show the complete contract and wait for explicit approval. After approval, save through `ima_lifecycle` as `plan`, point to the appropriate implementation phase, and stop. HIGH-tier ownership describes judgment authority; it does not claim to change the current session model.

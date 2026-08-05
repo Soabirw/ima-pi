@@ -1,0 +1,35 @@
+# Changelog
+
+All notable changes to `ima-pi` are documented here. This history is being backfilled: `1.0.0` is the release baseline, and `1.1.0` collects the current feature push. Release dates and tags are added when a release is cut.
+
+## [1.1.0] - 2026-08-04
+
+### Added
+
+- `/ima:cycle`, an explicit, user-gated coordinator for one Story from a Jira key/browse URL or exact Taskwarrior project/UUID.
+- The fixed `plan -> implement -> test -> review -> resolution/rereview -> document -> close` lifecycle, with explicit `status`, `stop`, `resume`, and `close` commands rather than automatic progression.
+- Persisted `generic`, `js`, and `wp` implementation modes, selecting the matching implementation prompt through the configured route.
+- Provider-free coverage of production cycle registration, lifecycle-evidence buffering, terminal settlement, and failed-dispatch cleanup.
+
+### Changed
+
+- Phase routing selects the configured route before prompt expansion, including the document phase.
+- README and operational guidance now describe cycle commands, safety gates, verification coverage, and required human acceptance.
+
+### Safety
+
+- Normal close requires TUI confirmation and mutates only the selected tracker; `close --commit-prep` performs read-only Git checks.
+- Lifecycle evidence is buffered until safe terminal settlement. Tracker mutation and lifecycle persistence remain intentionally non-atomic and are never automatically retried after a partial close.
+
+### Known limitations
+
+- Live provider/TUI acceptance, provider retries/compaction/queued follow-ups, and external Jira/Taskwarrior behavior remain to be exercised by a human before tracker closeout.
+
+## [1.0.0] - Baseline
+
+### Added
+
+- Pi-native package discovery for namespaced prompts, extensions, skills, agents, policies, and opt-in configuration.
+- Bounded planning, implementation, testing, review, documentation, advisory, research, visual, release-preparation, and operational workflows.
+- First-class delegation, model-role configuration, Serena/Vestige lifecycle integration, and provider-free package verification.
+- Packaged engineering, JavaScript, WordPress/PHP, IMA content, research, MCP, Git, and testing skills.

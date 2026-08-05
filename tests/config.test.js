@@ -258,7 +258,9 @@ test("validates phase mappings and preserves legacy role-only inheritance", () =
   assert.deepEqual(resolved.phases.brainstorm, { provider: "role", model: "HIGH", thinking: "medium", source: "inherited", inheritedFrom: "HIGH" });
   assert.deepEqual(resolved.phases.review, { provider: "role", model: "HIGH", thinking: "medium", source: "inherited", inheritedFrom: "HIGH" });
   assert.deepEqual(resolved.phases.test, { provider: "role", model: "MID", thinking: "medium", source: "inherited", inheritedFrom: "MID" });
-  assert.deepEqual(IMA_PHASES, ["brainstorm", "plan", "implement", "test", "review", "document"]);
+  assert.deepEqual(resolved.phases.resolution, { provider: "role", model: "MID", thinking: "medium", source: "inherited", inheritedFrom: "MID" });
+  assert.deepEqual(resolved.phases.rereview, { provider: "role", model: "HIGH", thinking: "medium", source: "inherited", inheritedFrom: "HIGH" });
+  assert.deepEqual(IMA_PHASES, ["brainstorm", "plan", "implement", "test", "review", "resolution", "rereview", "document"]);
 });
 
 test("loads the highest-precedence selected profile and applies trusted project overrides", async () => {
@@ -276,6 +278,21 @@ test("loads the highest-precedence selected profile and applies trusted project 
   assert.equal(loaded.config.models.MID.provider, "project");
   assert.equal(loaded.config.phases.implement.model, "implement");
   assert.equal(loaded.config.phases.document.provider, "user");
+});
+
+test("reports an explicit profile override as active", async () => {
+  const paths = deriveImaConfigPaths({ packageRoot: "/package", agentDir: "/agent", cwd: "/project" });
+  const files = new Map([
+    [paths.packageDefaults, JSON.stringify(layer({}, null))],
+    [`${paths.presets}/session-profile.json`, JSON.stringify(completeLayer("session"))],
+  ]);
+  const loaded = await loadImaConfig({
+    packageRoot: "/package", agentDir: "/agent", cwd: "/project", projectTrusted: false, profileOverride: "session-profile",
+    readText: async (path) => { if (!files.has(path)) throw Object.assign(new Error("missing"), { code: "ENOENT" }); return files.get(path); },
+  });
+  assert.equal(loaded.diagnostics.length, 0);
+  assert.equal(loaded.config?.profile, "session-profile");
+  assert.equal(loaded.config?.sources.preset, "session-profile");
 });
 
 test("discovers profile files by trusted project, user, then package precedence", async () => {

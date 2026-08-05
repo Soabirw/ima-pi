@@ -28,7 +28,7 @@ Opt-in IMA configuration can live in `~/.pi/agent/ima/config.json` or trusted `.
 
 ## Workflow, commands, agents, and skills
 
-The packaged `/ima:*` prompts provide phase or bounded-operation entry points. Use the manual lifecycle—plan, implement, test, review, document—rather than assuming a separate cycle executable. Packaged agents provide bounded roles, authority, and result contracts; `ima_delegate` creates bounded child sessions and reports cancellation or partial state explicitly. Pi's native `/skill:*` discovery resolves reusable knowledge with normal package/user/project precedence.
+The packaged `/ima:*` prompts provide phase or bounded-operation entry points. Use the manual lifecycle—plan, implement, test, review, resolution/rereview, document, close—or `/ima:cycle` for one explicit, user-gated Story. The cycle coordinator uses Pi custom entries and the existing lifecycle tools; it is not a generic workflow DSL or automatic progression engine. See [`foundation/FNR-3036.md`](foundation/FNR-3036.md) for its exact command syntax, source forms, safety gates, and required human acceptance. Packaged agents provide bounded roles, authority, and result contracts; `ima_delegate` creates bounded child sessions and reports cancellation or partial state explicitly. Pi's native `/skill:*` discovery resolves reusable knowledge with normal package/user/project precedence.
 
 ## Memory and integrations
 

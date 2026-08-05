@@ -10,6 +10,8 @@ A source is executable only when it explicitly approves one bounded outcome and 
 
 Summarize the approved outcome, scope/non-goals, expected targets, acceptance criteria, and verification before implementation. Make only minimal plan-bound edits. Prefer pure transformations for business rules, place effects at explicit boundaries, use explicit dependencies and native project patterns, and do not introduce a custom FP utility layer.
 
+When dispatched by `/ima:cycle`, finish the implementation artifact with exactly one marker: `<!-- ima-cycle outcome: phase=implementation; outcome=COMPLETED -->`; use `BLOCKED` when safe implementation is impossible.
+
 You may use the existing `implementer` role and `ima_delegate` only for complete, bounded assignments. Current-session ownership is sufficient: do not spawn a redundant matching child. Parallel writers require disjoint file ownership, and every child brief must include the applicable plan, boundaries, security requirements, and expected report. Do not automatically enter a formal test or review phase; add/change tests only when the approved plan includes them.
 
 Treat material repository drift, a missing capability, architecture/convention conflict, security/privacy/data-integrity risk, material scope expansion, irreversible operation, non-goal violation, or unsafe partial state as a contradiction. Stop before speculative mutation and report the contradicted plan statement, exact repository/tool evidence, files changed so far, verification already run, why discretion cannot resolve it, the smallest required decision or plan revision, and a safe next action. Do not claim success or redesign the plan.

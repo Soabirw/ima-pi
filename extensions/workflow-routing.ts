@@ -28,17 +28,19 @@ export const WORKFLOW_COMMAND_PHASES: Readonly<Record<string, ImaPhase>> = {
   "ima:implement-wp": "implement",
   "ima:test": "test",
   "ima:review": "review",
+  "ima:resolve-review": "resolution",
+  "ima:rereview": "rereview",
   "ima:document": "document",
 };
 
 export type ParsedWorkflowCommand = { command: string; phase: ImaPhase; args: string };
-export type ParsedProfileCommand = { mode: "list" } | { mode: "activate"; name: string; save: boolean } | { mode: "invalid"; error: string };
+export type ParsedProfileCommand = { mode: "list" } | { mode: "activate"; name: string } | { mode: "invalid"; error: string };
 export type WorkflowRoute = { phase: ImaPhase; provider: string; model: string; thinking?: ThinkingLevel };
 export type RouteSwitchResult =
   | { ok: true; route: WorkflowRoute }
   | { ok: false; error: string; message: string; rollback?: "succeeded" | "failed" | "not-needed" };
 
-const PROFILE_USAGE = "usage: /ima:profile | /ima:profile <name> [--save]";
+const PROFILE_USAGE = "usage: /ima:profile | /ima:profile <name>";
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const agentDir = getAgentDir();
 const text = (value: unknown) => typeof value === "string" ? value.trim() : "";
@@ -59,10 +61,9 @@ export function parseProfileCommand(input: unknown): ParsedProfileCommand {
   const raw = text(input);
   if (!raw) return { mode: "list" };
   const tokens = raw.split(/\s+/).filter(Boolean);
-  const save = tokens.includes("--save");
   const names = tokens.filter((token) => token !== "--save");
-  if (names.length !== 1 || names[0] === "--save" || !isImaProfileName(names[0])) return { mode: "invalid", error: PROFILE_USAGE };
-  return { mode: "activate", name: names[0], save };
+  if (names.length !== 1 || !isImaProfileName(names[0])) return { mode: "invalid", error: PROFILE_USAGE };
+  return { mode: "activate", name: names[0] };
 }
 
 export function resolvePhaseRoute(config: Pick<ResolvedImaConfig, "phases"> | null | undefined, phase: ImaPhase): { ok: true; route: WorkflowRoute } | { ok: false; error: "phase_route_missing"; message: string } {
@@ -203,6 +204,23 @@ export async function applyPhaseRoute(config: Pick<ResolvedImaConfig, "phases"> 
 const projectTrusted = (ctx: ExtensionContext) => typeof ctx.isProjectTrusted === "function" ? ctx.isProjectTrusted() : process.env.IMA_PI_PROJECT_TRUSTED === "true";
 const notify = (ctx: ExtensionContext, message: string, level: "info" | "warning" | "error" = "info") => { if (ctx.hasUI) ctx.ui.notify(message, level); };
 
+export async function applyConfiguredPhaseRoute(pi: ExtensionAPI, ctx: ExtensionContext, phase: ImaPhase, profileOverride?: string | null): Promise<RouteSwitchResult> {
+  const loaded = await loadImaConfig({ packageRoot, agentDir, cwd: ctx.cwd, projectTrusted: projectTrusted(ctx), ...(profileOverride ? { profileOverride } : {}) });
+  if (!loaded.config) return { ok: false, error: "phase_config_unavailable", message: `${phase} phase routing is unavailable: ${loaded.diagnostics.map(({ code }) => code).join(", ") || "invalid configuration"}.`, rollback: "not-needed" };
+  return applyPhaseRoute(loaded.config, phase, {
+    findModel: (provider, model) => ctx.modelRegistry.find(provider, model),
+    hasConfiguredAuth: (model) => ctx.modelRegistry.hasConfiguredAuth(model as any),
+    previousModel: ctx.model,
+    previousThinking: pi.getThinkingLevel(),
+    getThinkingLevel: () => pi.getThinkingLevel(),
+    setModel: (model) => pi.setModel(model as any),
+    setThinkingLevel: (level) => pi.setThinkingLevel(level),
+    appendEntry: (customType, data) => pi.appendEntry(customType, data),
+    isIdle: () => ctx.isIdle(),
+    profile: profileOverride ?? loaded.config.profile,
+  });
+}
+
 export default function workflowRouting(pi: ExtensionAPI) {
   let sessionProfile: string | null = null;
   const load = (ctx: ExtensionContext, override = sessionProfile) => loadImaConfig({ packageRoot, agentDir, cwd: ctx.cwd, projectTrusted: projectTrusted(ctx), ...(override ? { profileOverride: override } : {}) });
@@ -210,16 +228,14 @@ export default function workflowRouting(pi: ExtensionAPI) {
     const paths = deriveImaConfigPaths({ packageRoot, agentDir, cwd: ctx.cwd });
     return discoverImaProfiles({ paths, projectTrusted: projectTrusted(ctx) });
   };
-  const activate = async (name: string, save: boolean, ctx: ExtensionContext) => {
+  const activate = async (name: string, ctx: ExtensionContext) => {
     const loaded = await load(ctx, name);
     if (!loaded.config) { notify(ctx, `Profile "${name}" blocked: ${loaded.diagnostics.map(({ code }) => code).join(", ") || "invalid configuration"}.`, "warning"); return false; }
-    if (save) {
-      const saved = await persistUserProfileSelection({ path: loaded.paths.user, profile: name });
-      if (!saved.ok) { notify(ctx, `Profile "${name}" was not activated: ${saved.error}.`, "warning"); return false; }
-    }
+    const saved = await persistUserProfileSelection({ path: loaded.paths.user, profile: name });
+    if (!saved.ok) { notify(ctx, `Profile "${name}" was not activated: ${saved.error}.`, "warning"); return false; }
     sessionProfile = name;
     pi.appendEntry(IMA_PROFILE_ENTRY, { profile: name });
-    notify(ctx, `IMA profile "${name}" activated.\n${formatPhaseMatrix(loaded.config)}`, "info");
+    notify(ctx, `IMA profile "${name}" activated and saved as your user default.\n${formatPhaseMatrix(loaded.config)}`, "info");
     return true;
   };
 
@@ -228,14 +244,14 @@ export default function workflowRouting(pi: ExtensionAPI) {
     handler: async (args, ctx) => {
       const parsed = parseProfileCommand(args);
       if (parsed.mode === "invalid") { notify(ctx, parsed.error, "warning"); return; }
-      if (parsed.mode === "activate") { await activate(parsed.name, parsed.save, ctx); return; }
+      if (parsed.mode === "activate") { await activate(parsed.name, ctx); return; }
       const [profiles, loaded] = await Promise.all([showProfiles(ctx), load(ctx)]);
       if (profiles.diagnostics.length) { notify(ctx, `IMA profile discovery blocked: ${profiles.diagnostics.map(({ code }) => code).join(", ")}.`, "warning"); return; }
       const listing = formatProfileList(profiles.profiles, sessionProfile ?? loaded.config?.profile ?? null);
       if (!ctx.hasUI) { notify(ctx, listing, "info"); return; }
       const choice = await ctx.ui.select("Select IMA profile", profiles.profiles.map((profile) => `${profile.name}${profile.name === (sessionProfile ?? loaded.config?.profile) ? " (active)" : ""}`));
       if (!choice) { notify(ctx, listing, "info"); return; }
-      await activate(choice.replace(/ \(active\)$/, ""), false, ctx);
+      await activate(choice.replace(/ \(active\)$/, ""), ctx);
     },
   });
 

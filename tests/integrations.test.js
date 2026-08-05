@@ -15,6 +15,8 @@ test("context registration advertises the exact provider-compatible request cont
   const tools = [];
   integrations({ registerTool: (tool) => tools.push(tool) });
   const contextTool = tools.find((tool) => tool.name === "ima_context");
+  const lifecycleTool = tools.find((tool) => tool.name === "ima_lifecycle");
+  assert.match(String(lifecycleTool.execute), /details: result/);
   const parameters = contextTool.parameters;
   const source = parameters.properties.source;
   const sources = [{ type: "jira", key: "FNR-3016" }, { type: "taskwarrior", project: "FNR-3007", uuid: "689fa7ac-84b7-42d0-8912-b8ef76041370" }, { type: "file", path: "README.md" }, { type: "vestige", id: "7027acec-43d3-4fa4-83ec-16e993551720" }, { type: "text", title: "Brief", content: "Scope" }];
