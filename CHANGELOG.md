@@ -4,6 +4,15 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ## [Unreleased]
 
+### Added
+
+- Four Pi-native shared-instruction skills for memory workflow, security guardrails, visual-evidence handoff, and bounded delegation.
+- A prompt-restoration foundation document that defines the reference-by-name wiring pattern and the persona/MOIM and FP-principles fold-ins.
+
+### Changed
+
+- The `vision-handoff` agent now declares `ima-vision-handoff`, and package discovery verifies all four shared skills.
+
 ## [1.4.0] - 2026-08-05
 
 ### Added
