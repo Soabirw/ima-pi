@@ -9,7 +9,17 @@ const has = (text, value) => assert.match(text, new RegExp(value.replace(/[.*+?^
 test("production planning prompts have distinct Pi frontmatter and HIGH-tier authority", async () => { for (const name of ["brainstorm", "decompose"]) { const text = await prompt(name); has(text, "description:"); has(text, "argument-hint:"); has(text, "HIGH-tier"); has(text, "explicit approval"); assert.doesNotMatch(text, /\/ima:cycle|workflow DSL/i); } const planText = await prompt("plan"); for (const value of ["description:", "argument-hint:", "HIGH-tier", "explicit approval", "ima-cycle outcome: phase=plan"]) has(planText, value); assert.doesNotMatch(planText, /workflow DSL/i); });
 test("brainstorm owns approved product requirements and stops before decomposition or design", async () => { const text = await prompt("brainstorm"); for (const value of ["problem or opportunity", "users and use cases", "business rules", "product acceptance criteria", "vision-handoff", "lifecycle type `decision`", "/ima:decompose", "stop"]) has(text, value); has(text, "Do **not** decompose PM work"); });
 test("decompose enforces two tiers, one PM destination, preview, and checklist-only work", async () => { const text = await prompt("decompose"); for (const value of ["Taskwarrior Project -> Task", "Jira Epic -> Story/Task", "checklist", "exactly one destination", "never dual-write", "exact persistence preview", "explicit approval", "lifecycle unit", "as `decision`", "stop"]) has(text, value); has(text, "technical files, functions, control flow"); });
-test("plan enforces one-unit Serena-first technical planning without implementation", async () => { const text = await prompt("plan"); for (const value of ["exactly one", "/ima:decompose", "ima_context", "Serena-first", "files, modules, symbols, APIs", "pure/effect boundaries", "verification commands", "rollback", "as `plan`", "stop"]) has(text, value); has(text, "Do not edit code/config/content"); });
+test("plan enforces one-unit Serena-first technical planning without implementation", async () => {
+  const text = await prompt("plan");
+  for (const value of ["exactly one", "/ima:decompose", "ima_context", "Serena-first", "files, modules, symbols, APIs", "pure/effect boundaries", "verification commands", "rollback", "as `plan`", "stop", "ima-lifecycle-contract", "Vestige preferences", "two or three", "I will not make code changes in this planning session.", "Problem, Prior Work"]) has(text, value);
+  has(text, "Do not edit code/config/content");
+});
+
+test("shared lifecycle skill keeps artifact, identity, and cycle-marker boundaries in one source", async () => {
+  const text = await skill("ima-lifecycle-contract");
+  for (const value of ["name: ima-lifecycle-contract", "artifact is the detailed source of truth", "ima_lifecycle", "generated SDK namespace", "lifecycle_key", "prior_artifact_ids", "Do not create a disconnected lifecycle thread", "exactly one cycle outcome marker"]) has(text, value);
+  assert.doesNotMatch(text, /ima-mcp serena/i);
+});
 
 const implementationPrompts = ["implement", "implement-js", "implement-wp"];
 

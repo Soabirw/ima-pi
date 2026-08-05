@@ -7,6 +7,7 @@ import test from "node:test";
 import { IMA_PHASES } from "../lib/ima-config.ts";
 import {
   IMA_NEW_BOOTSTRAP_COMMANDS,
+  IMA_NEW_PHASE_SKILLS,
   IMA_NEW_PLAN_HINT,
   IMA_NEW_REQUEST_ENTRY,
   IMA_NEW_RESULT_ENTRY,
@@ -24,11 +25,18 @@ import {
 const ready = (selector = null, route = null) => ({ selector, ok: true, route });
 const root = fileURLToPath(new URL("..", import.meta.url));
 const defaultParentSession = fileURLToPath(import.meta.url);
-const defaultBootstrapCommands = IMA_NEW_BOOTSTRAP_COMMANDS.map((name) => ({
-  name,
-  source: "prompt",
-  sourceInfo: { path: join(root, "prompts", `${name}.md`) },
-}));
+const defaultBootstrapCommands = [
+  ...IMA_NEW_BOOTSTRAP_COMMANDS.map((name) => ({
+    name,
+    source: "prompt",
+    sourceInfo: { path: join(root, "prompts", `${name}.md`) },
+  })),
+  ...IMA_NEW_PHASE_SKILLS.plan.map((name) => ({
+    name: `skill:${name}`,
+    source: "skill",
+    sourceInfo: { path: join(root, "skills", name, "SKILL.md") },
+  })),
+];
 const roleSelectors = { low: "LOW", mid: "MID", high: "HIGH", xhigh: "XHIGH" };
 const allSelectors = [...Object.keys(roleSelectors), ...IMA_PHASES];
 
@@ -216,20 +224,32 @@ test("injects resolved Serena before Vestige bodies, waits between turns, and le
   assert.equal(harness.calls.some(([type, value]) => type === "send" && typeof value === "string" && value.startsWith("/ima:")), false);
 });
 
-test("resolves exact prompt resources through sourceInfo.path and strips frontmatter", async () => {
+test("resolves planned prompt and skill resources through sourceInfo.path and strips frontmatter", async () => {
   const directory = await mkdtemp(join(tmpdir(), "ima-new-bootstrap-"));
   const paths = IMA_NEW_BOOTSTRAP_COMMANDS.map((name) => join(directory, `${name}.md`));
+  const skillPath = join(directory, "ima-lifecycle-contract.md");
   await writeFile(paths[0], "---\ndescription: Serena\n---\nSerena bootstrap body\n");
   await writeFile(paths[1], "---\ndescription: Vestige\n---\nVestige bootstrap body\n");
-
-  const messages = await resolveImaNewBootstrapMessages({
-    getCommands: () => IMA_NEW_BOOTSTRAP_COMMANDS.map((name, index) => ({
+  await writeFile(skillPath, "---\nname: ima-lifecycle-contract\ndescription: Lifecycle\n---\nLifecycle contract body\n");
+  const commands = [
+    ...IMA_NEW_BOOTSTRAP_COMMANDS.map((name, index) => ({
       name,
       source: "prompt",
       sourceInfo: { path: paths[index] },
     })),
-  });
-  assert.deepEqual(messages, ["Serena bootstrap body", "Vestige bootstrap body"]);
+    { name: "skill:ima-lifecycle-contract", source: "skill", sourceInfo: { path: skillPath } },
+  ];
+
+  assert.deepEqual(IMA_NEW_PHASE_SKILLS.plan, ["ima-lifecycle-contract"]);
+  for (const phase of IMA_PHASES.filter((phase) => phase !== "plan")) assert.deepEqual(IMA_NEW_PHASE_SKILLS[phase], []);
+  assert.deepEqual(
+    await resolveImaNewBootstrapMessages({ getCommands: () => commands }),
+    ["Serena bootstrap body", "Vestige bootstrap body"],
+  );
+  assert.deepEqual(
+    await resolveImaNewBootstrapMessages({ getCommands: () => commands }, "plan"),
+    ["Serena bootstrap body", "Vestige bootstrap body", "Lifecycle contract body"],
+  );
 });
 
 test("rejects missing, ambiguous, wrong-source, unreadable, and empty bootstrap resources", async () => {
@@ -248,6 +268,11 @@ test("rejects missing, ambiguous, wrong-source, unreadable, and empty bootstrap 
     [validCommands[0], { ...validCommands[1], source: "extension" }],
     [validCommands[0], { ...validCommands[1], sourceInfo: { path: join(directory, "missing.md") } }],
   ];
+
+  await assert.rejects(
+    () => resolveImaNewBootstrapMessages({ getCommands: () => validCommands }, "plan"),
+    /bootstrap_resource_unavailable/,
+  );
 
   await writeFile(paths[1], "");
   cases.push(validCommands);
@@ -342,6 +367,17 @@ test("does not replace or prefill when bootstrap resources are unavailable", asy
   assert.equal(harness.notifications.at(-1)?.message, "Fresh session bootstrap resources were unavailable.");
 });
 
+test("does not replace or prefill a plan session when its lifecycle skill is unavailable", async () => {
+  const harness = createHarness({ availableCommands: defaultBootstrapCommands.filter(({ source }) => source !== "skill") });
+  const { default: registerImaNew } = await import("../extensions/ima-new.ts");
+  registerImaNew(harness.pi);
+  await harness.commands.get("ima:new").handler("plan", harness.ctx);
+
+  assert.equal(harness.replacementOptions, undefined);
+  assert.deepEqual(harness.editor, []);
+  assert.equal(harness.notifications.at(-1)?.message, "Fresh session bootstrap resources were unavailable.");
+});
+
 test("stops after a partial bootstrap failure without injecting a plan hint", async () => {
   const harness = createBootstrapHarness();
   harness.context.sendUserMessage = async (message) => {
@@ -393,6 +429,24 @@ test("stops after a failed Vestige terminal result without injecting a plan hint
     ["send", "Serena bootstrap body"],
     ["wait"],
     ["send", "Vestige bootstrap body"],
+    ["wait"],
+  ]);
+  assert.deepEqual(harness.editor, []);
+});
+
+test("stops after a failed plan-skill terminal result without injecting a plan hint", async () => {
+  const harness = createBootstrapHarness(["stop", "stop", "error"]);
+  const messages = ["Serena bootstrap body", "Vestige bootstrap body", "Lifecycle contract body"];
+  await assert.rejects(
+    () => injectImaNewBootstrap(harness.context, ready(), messages, [...IMA_NEW_BOOTSTRAP_COMMANDS, "skill:ima-lifecycle-contract"]),
+    /bootstrap_turn_failed/,
+  );
+  assert.deepEqual(harness.calls, [
+    ["send", "Serena bootstrap body"],
+    ["wait"],
+    ["send", "Vestige bootstrap body"],
+    ["wait"],
+    ["send", "Lifecycle contract body"],
     ["wait"],
   ]);
   assert.deepEqual(harness.editor, []);
@@ -479,7 +533,7 @@ test("dispatches every canonical phase selector to its exact configured phase be
       { type: "custom", customType: "ima-phase-route", data: route },
       { type: "custom", customType: IMA_NEW_RESULT_ENTRY, data: { selector: phase, ok: true, route: evidence } },
     ]);
-    assert.deepEqual(harness.messages, await resolveImaNewBootstrapMessages(harness.pi));
+    assert.deepEqual(harness.messages, await resolveImaNewBootstrapMessages(harness.pi, phase));
     assert.deepEqual(harness.editor, [IMA_NEW_PLAN_HINT]);
   }
 });

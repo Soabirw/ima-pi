@@ -12,6 +12,16 @@ import {
 export const IMA_NEW_REQUEST_ENTRY = "ima-new-request";
 export const IMA_NEW_RESULT_ENTRY = "ima-new-result";
 export const IMA_NEW_BOOTSTRAP_COMMANDS = ["ima:serena-bootstrap", "ima:vestige-bootstrap"] as const;
+export const IMA_NEW_PHASE_SKILLS: Readonly<Record<ImaPhase, readonly string[]>> = {
+  brainstorm: [],
+  plan: ["ima-lifecycle-contract"],
+  implement: [],
+  test: [],
+  review: [],
+  resolution: [],
+  rereview: [],
+  document: [],
+};
 export const IMA_NEW_PLAN_HINT = "/ima:plan <story-or-task-source>";
 
 const IMA_NEW_ROLE_SELECTORS = Object.freeze({
@@ -46,6 +56,14 @@ const nonEmptyText = (value: unknown): value is string => typeof value === "stri
 const isImaNewRoleSelector = (value: unknown): value is ImaNewRoleSelector => typeof value === "string" && Object.hasOwn(IMA_NEW_ROLE_SELECTORS, value);
 const isImaNewRole = (value: unknown): value is ImaNewRole => typeof value === "string" && Object.values(IMA_NEW_ROLE_SELECTORS).some((role) => role === value);
 const isImaNewPhase = (value: unknown): value is ImaPhase => typeof value === "string" && IMA_NEW_PHASE_SELECTORS.has(value as ImaPhase);
+type BootstrapResource = { name: string; source: "prompt" | "skill" };
+const bootstrapResources = (selector: ImaNewSelector): readonly BootstrapResource[] => [
+  ...IMA_NEW_BOOTSTRAP_COMMANDS.map((name) => ({ name, source: "prompt" as const })),
+  ...(isImaNewPhase(selector)
+    ? IMA_NEW_PHASE_SKILLS[selector].map((name) => ({ name: `skill:${name}`, source: "skill" as const }))
+    : []),
+];
+const bootstrapCommandNames = (selector: ImaNewSelector): readonly string[] => bootstrapResources(selector).map(({ name }) => name);
 const resolvePersistedParentSession = async (value: unknown): Promise<string | undefined> => {
   if (!nonEmptyText(value)) return undefined;
   try {
@@ -170,12 +188,12 @@ export function buildImaNewResult(selector: ImaNewSelector, result: RouteSwitchR
 
 const invalidBootstrapResource = () => new Error("bootstrap_resource_unavailable");
 
-const promptSourcePath = (command: unknown): string | null => {
-  if (!object(command) || command.source !== "prompt" || !object(command.sourceInfo)) return null;
+const resourceSourcePath = (command: unknown, source: BootstrapResource["source"]): string | null => {
+  if (!object(command) || command.source !== source || !object(command.sourceInfo)) return null;
   return typeof command.sourceInfo.path === "string" && command.sourceInfo.path.trim() ? command.sourceInfo.path : null;
 };
 
-const readPromptBody = async (path: string): Promise<string> => {
+const readResourceBody = async (path: string): Promise<string> => {
   try {
     const body = stripFrontmatter(await readFile(path, "utf8")).trim();
     if (!body) throw invalidBootstrapResource();
@@ -185,17 +203,22 @@ const readPromptBody = async (path: string): Promise<string> => {
   }
 };
 
-export async function resolveImaNewBootstrapMessages(pi: Pick<ExtensionAPI, "getCommands">): Promise<readonly string[]> {
+export async function resolveImaNewBootstrapMessages(
+  pi: Pick<ExtensionAPI, "getCommands">,
+  selector: ImaNewSelector = null,
+): Promise<readonly string[]> {
   const commands = pi.getCommands();
   if (!Array.isArray(commands)) throw invalidBootstrapResource();
 
   const messages: string[] = [];
-  for (const name of IMA_NEW_BOOTSTRAP_COMMANDS) {
-    const matches = commands.filter((command) => object(command) && command.name === name);
+  for (const resource of bootstrapResources(selector)) {
+    const matches = commands.filter((command) => object(command) && command.name === resource.name);
     if (matches.length !== 1) throw invalidBootstrapResource();
-    const path = promptSourcePath(matches[0]);
+    const path = resourceSourcePath(matches[0], resource.source);
     if (!path) throw invalidBootstrapResource();
-    messages.push(await readPromptBody(path));
+    const message = await readResourceBody(path);
+    if (message === `/${resource.name}`) throw invalidBootstrapResource();
+    messages.push(message);
   }
   return messages;
 }
@@ -247,17 +270,18 @@ const bootstrapTurnSucceeded = (sessionManager: ReplacementSessionManager, bound
   return assistants.at(-1)?.stopReason === "stop";
 };
 
-const validBootstrapMessages = (messages: readonly string[]) =>
+const validBootstrapMessages = (messages: readonly string[], commandNames: readonly string[]) =>
   Array.isArray(messages) &&
-  messages.length === IMA_NEW_BOOTSTRAP_COMMANDS.length &&
-  messages.every((message, index) => nonEmptyText(message) && message !== `/${IMA_NEW_BOOTSTRAP_COMMANDS[index]}`);
+  messages.length === commandNames.length &&
+  messages.every((message, index) => nonEmptyText(message) && message !== `/${commandNames[index]}`);
 
 export async function injectImaNewBootstrap(
   ctx: ReplacementSessionContext,
   result: ImaNewResult,
   messages: readonly string[],
+  commandNames: readonly string[] = IMA_NEW_BOOTSTRAP_COMMANDS,
 ): Promise<void> {
-  if (!result.ok || !validBootstrapMessages(messages)) throw invalidBootstrapResource();
+  if (!result.ok || !validBootstrapMessages(messages, commandNames)) throw invalidBootstrapResource();
   for (const message of buildImaNewBootstrapSequence(result, messages)) {
     const boundary = snapshotBootstrapBoundary(ctx.sessionManager);
     await ctx.sendUserMessage(message);
@@ -283,7 +307,7 @@ const prepareResult = async (pi: ExtensionAPI, ctx: ExtensionContext, selector: 
   }
 };
 
-const handleReplacement = async (ctx: ReplacementSessionContext, messages: readonly string[]) => {
+const handleReplacement = async (ctx: ReplacementSessionContext, messages: readonly string[], commandNames: readonly string[]) => {
   const result = latestImaNewResult(ctx.sessionManager.getBranch());
   if (!result) {
     notify(ctx as Pick<ExtensionContext, "hasUI" | "ui">, "Fresh session route result was unavailable.");
@@ -294,7 +318,7 @@ const handleReplacement = async (ctx: ReplacementSessionContext, messages: reado
     return;
   }
   try {
-    await injectImaNewBootstrap(ctx, result, messages);
+    await injectImaNewBootstrap(ctx, result, messages, commandNames);
   } catch {
     notify(ctx as Pick<ExtensionContext, "hasUI" | "ui">, "Fresh session bootstrap failed; no planning prompt was injected.");
   }
@@ -318,9 +342,10 @@ export default function imaNew(pi: ExtensionAPI) {
         return;
       }
       const parentSession = await resolvePersistedParentSession(ctx.sessionManager.getSessionFile());
+      const commandNames = bootstrapCommandNames(parsed.selector);
       let bootstrapMessages: readonly string[];
       try {
-        bootstrapMessages = await resolveImaNewBootstrapMessages(pi);
+        bootstrapMessages = await resolveImaNewBootstrapMessages(pi, parsed.selector);
       } catch {
         notify(ctx, "Fresh session bootstrap resources were unavailable.");
         return;
@@ -332,7 +357,7 @@ export default function imaNew(pi: ExtensionAPI) {
             sessionManager.appendCustomEntry(IMA_NEW_REQUEST_ENTRY, { selector: parsed.selector });
           },
           withSession: async (replacementCtx) => {
-            await handleReplacement(replacementCtx, bootstrapMessages);
+            await handleReplacement(replacementCtx, bootstrapMessages, commandNames);
           },
         });
         if (result.cancelled) notify(ctx, "New session cancelled.", "info");
