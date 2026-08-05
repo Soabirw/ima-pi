@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { IMA_PHASES } from "../lib/ima-config.ts";
 import {
   IMA_NEW_BOOTSTRAP_COMMANDS,
   IMA_NEW_PLAN_HINT,
@@ -28,6 +29,8 @@ const defaultBootstrapCommands = IMA_NEW_BOOTSTRAP_COMMANDS.map((name) => ({
   source: "prompt",
   sourceInfo: { path: join(root, "prompts", `${name}.md`) },
 }));
+const roleSelectors = { low: "LOW", mid: "MID", high: "HIGH", xhigh: "XHIGH" };
+const allSelectors = [...Object.keys(roleSelectors), ...IMA_PHASES];
 
 const createHarness = (options = {}) => {
   const availableCommands = Object.hasOwn(options, "availableCommands") ? options.availableCommands : defaultBootstrapCommands;
@@ -137,53 +140,62 @@ const createBootstrapHarness = (outcomes = ["stop", "stop"], initialEntries = []
   return { context, calls, editor, get branch() { return branch; } };
 };
 
-test("accepts only the closed ima:new selector set", () => {
+test("accepts every canonical ima:new selector and rejects unknown selectors", () => {
   assert.deepEqual(parseImaNewSelector(""), { ok: true, selector: null });
-  assert.deepEqual(parseImaNewSelector("  high  "), { ok: true, selector: "high" });
-  assert.deepEqual(parseImaNewSelector("xhigh"), { ok: true, selector: "xhigh" });
-  assert.deepEqual(parseImaNewSelector("plan"), { ok: true, selector: "plan" });
-  for (const value of ["HIGH", "xhigh extra", "plan extra", "/ima:plan", "high\nplan", "--save", null, 1]) {
+  for (const selector of allSelectors) {
+    assert.deepEqual(parseImaNewSelector(`  ${selector}  `), { ok: true, selector });
+  }
+  for (const value of ["HIGH", "xhigh extra", "plan extra", "/ima:plan", "high\nplan", "--save", "unknown", null, 1]) {
     assert.deepEqual(parseImaNewSelector(value), { ok: false, error: "selector_invalid" });
   }
 });
 
-test("validates and restores only sanitized request and result entries", () => {
-  assert.deepEqual(validateImaNewRequest({ selector: "high" }), { valid: true, value: { selector: "high" } });
-  assert.deepEqual(validateImaNewRequest({ selector: "xhigh" }), { valid: true, value: { selector: "xhigh" } });
+test("validates and restores only sanitized canonical request and result entries", () => {
+  for (const selector of allSelectors) {
+    assert.deepEqual(validateImaNewRequest({ selector }), { valid: true, value: { selector } });
+  }
   assert.equal(validateImaNewRequest({ selector: "high", extra: true }).valid, false);
-  assert.deepEqual(validateImaNewResult(ready("high", { role: "HIGH", provider: "p", model: "m", thinking: "high" })), {
-    valid: true,
-    value: { selector: "high", ok: true, route: { role: "HIGH", provider: "p", model: "m", thinking: "high" } },
-  });
-  assert.deepEqual(validateImaNewResult(ready("xhigh", { role: "XHIGH", provider: "p", model: "m", thinking: "xhigh" })), {
-    valid: true,
-    value: { selector: "xhigh", ok: true, route: { role: "XHIGH", provider: "p", model: "m", thinking: "xhigh" } },
-  });
+  for (const [selector, role] of Object.entries(roleSelectors)) {
+    const route = { role, provider: "p", model: "m", thinking: "high" };
+    assert.deepEqual(validateImaNewResult(ready(selector, route)), { valid: true, value: { selector, ok: true, route } });
+  }
+  for (const phase of IMA_PHASES) {
+    const route = { phase, provider: "p", model: "m" };
+    assert.deepEqual(validateImaNewResult(ready(phase, route)), { valid: true, value: { selector: phase, ok: true, route } });
+  }
   assert.equal(validateImaNewResult(ready("xhigh", { role: "HIGH", provider: "p", model: "m" })).valid, false);
-  assert.equal(validateImaNewResult(ready("xhigh", { phase: "plan", provider: "p", model: "m" })).valid, false);
-  assert.equal(validateImaNewResult(ready("high", { role: "XHIGH", provider: "p", model: "m" })).valid, false);
+  assert.equal(validateImaNewResult(ready("low", { role: "MID", provider: "p", model: "m" })).valid, false);
+  assert.equal(validateImaNewResult(ready("plan", { role: "HIGH", provider: "p", model: "m" })).valid, false);
+  assert.equal(validateImaNewResult(ready("implement", { phase: "plan", provider: "p", model: "m" })).valid, false);
+  assert.equal(validateImaNewResult(ready("plan", { phase: "unsupported", provider: "p", model: "m" })).valid, false);
   assert.equal(validateImaNewResult(ready("xhigh")).valid, false);
   assert.deepEqual(validateImaNewResult({ selector: "high", ok: false, error: "secret-token" }), { valid: false, error: "result_invalid" });
   const entries = [
     { type: "custom", customType: IMA_NEW_REQUEST_ENTRY, data: { selector: "unsafe" } },
-    { type: "custom", customType: IMA_NEW_REQUEST_ENTRY, data: { selector: "plan" } },
-    { type: "custom", customType: IMA_NEW_RESULT_ENTRY, data: { selector: "plan", ok: false, error: "secret-token" } },
-    { type: "custom", customType: IMA_NEW_RESULT_ENTRY, data: { selector: "plan", ok: true, route: { phase: "plan", provider: "p", model: "m" } } },
+    { type: "custom", customType: IMA_NEW_REQUEST_ENTRY, data: { selector: "document" } },
+    { type: "custom", customType: IMA_NEW_RESULT_ENTRY, data: { selector: "document", ok: false, error: "secret-token" } },
+    { type: "custom", customType: IMA_NEW_RESULT_ENTRY, data: { selector: "document", ok: true, route: { phase: "document", provider: "p", model: "m" } } },
   ];
-  assert.deepEqual(latestImaNewRequest(entries), { selector: "plan" });
-  assert.deepEqual(latestImaNewResult(entries), ready("plan", { phase: "plan", provider: "p", model: "m" }));
+  assert.deepEqual(latestImaNewRequest(entries), { selector: "document" });
+  assert.deepEqual(latestImaNewResult(entries), ready("document", { phase: "document", provider: "p", model: "m" }));
 });
 
 test("shares route result sanitization and keeps resolved bootstrap bodies in order", () => {
-  const role = buildImaNewResult("high", { ok: true, route: { role: "HIGH", provider: "p", model: "m", thinking: "max" } });
-  const xhigh = buildImaNewResult("xhigh", { ok: true, route: { role: "XHIGH", provider: "p", model: "m", thinking: "xhigh" } });
-  const phase = buildImaNewResult("plan", { ok: true, route: { phase: "plan", provider: "p", model: "m" } });
+  for (const [selector, role] of Object.entries(roleSelectors)) {
+    assert.deepEqual(
+      buildImaNewResult(selector, { ok: true, route: { role, provider: "p", model: "m", thinking: "max" } }),
+      { selector, ok: true, route: { role, provider: "p", model: "m", thinking: "max" } },
+    );
+  }
+  for (const phase of IMA_PHASES) {
+    assert.deepEqual(
+      buildImaNewResult(phase, { ok: true, route: { phase, provider: "p", model: "m" } }),
+      { selector: phase, ok: true, route: { phase, provider: "p", model: "m" } },
+    );
+  }
   const failed = buildImaNewResult("high", { ok: false, error: "unexpected secret" });
   const mismatched = buildImaNewResult("xhigh", { ok: true, route: { role: "HIGH", provider: "p", model: "m" } });
   const bodies = ["Serena bootstrap body", "Vestige bootstrap body"];
-  assert.deepEqual(role, { selector: "high", ok: true, route: { role: "HIGH", provider: "p", model: "m", thinking: "max" } });
-  assert.deepEqual(xhigh, { selector: "xhigh", ok: true, route: { role: "XHIGH", provider: "p", model: "m", thinking: "xhigh" } });
-  assert.deepEqual(phase, { selector: "plan", ok: true, route: { phase: "plan", provider: "p", model: "m" } });
   assert.deepEqual(failed, { selector: "high", ok: false, error: "route_apply_failed" });
   assert.deepEqual(mismatched, { selector: "xhigh", ok: false, error: "route_apply_failed" });
   assert.deepEqual(buildImaNewBootstrapSequence(ready(), bodies), bodies);
@@ -248,42 +260,75 @@ test("rejects missing, ambiguous, wrong-source, unreadable, and empty bootstrap 
   }
 });
 
-test("requires a persisted parent before resource lookup or replacement", async () => {
-  const harness = createHarness({ availableCommands: null, sessionFile: undefined });
+test("creates an unlinked fresh session when the parent is absent", async () => {
+  const harness = createHarness({ sessionFile: undefined });
   const { default: registerImaNew } = await import("../extensions/ima-new.ts");
   registerImaNew(harness.pi);
   await harness.commands.get("ima:new").handler("", harness.ctx);
 
-  assert.equal(harness.commandLookups, 0);
-  assert.equal(harness.replacementOptions, undefined);
-  assert.deepEqual(harness.branch, []);
-  assert.deepEqual(harness.messages, []);
-  assert.deepEqual(harness.editor, []);
-  assert.deepEqual(harness.notifications, [{
-    message: "ima:new requires a persisted parent session; restart Pi without --no-session.",
-    level: "warning",
-  }]);
+  assert.equal(Object.hasOwn(harness.replacementOptions, "parentSession"), false);
+  assert.deepEqual(harness.branch.filter(({ type }) => type === "custom").map(({ type, customType, data }) => ({ type, customType, data })), [
+    { type: "custom", customType: IMA_NEW_REQUEST_ENTRY, data: { selector: null } },
+    { type: "custom", customType: IMA_NEW_RESULT_ENTRY, data: { selector: null, ok: true, route: null } },
+  ]);
+  assert.deepEqual(harness.messages, await resolveImaNewBootstrapMessages(harness.pi));
+  assert.deepEqual(harness.editor, [IMA_NEW_PLAN_HINT]);
+  assert.deepEqual(harness.notifications, []);
 });
 
-test("rejects an allocated but unwritten parent before routing or replacement", async () => {
+test("creates an unlinked fresh session when the parent is allocated but unwritten", async () => {
   const directory = await mkdtemp(join(tmpdir(), "ima-new-parent-"));
   const sessionFile = join(directory, "allocated-session.jsonl");
   await assert.rejects(() => stat(sessionFile));
-  const harness = createHarness({ availableCommands: null, sessionFile });
+  const harness = createHarness({ sessionFile });
   const { default: registerImaNew } = await import("../extensions/ima-new.ts");
   registerImaNew(harness.pi);
-  await harness.commands.get("ima:new").handler("high", harness.ctx);
+  await harness.commands.get("ima:new").handler("", harness.ctx);
 
-  assert.equal(harness.commandLookups, 0);
-  assert.equal(harness.sessionStarts, 0);
-  assert.equal(harness.replacementOptions, undefined);
-  assert.deepEqual(harness.branch, []);
-  assert.deepEqual(harness.messages, []);
-  assert.deepEqual(harness.editor, []);
-  assert.deepEqual(harness.notifications, [{
-    message: "ima:new requires a persisted parent session; restart Pi without --no-session.",
-    level: "warning",
-  }]);
+  assert.equal(Object.hasOwn(harness.replacementOptions, "parentSession"), false);
+  assert.equal(harness.sessionStarts, 1);
+  assert.deepEqual(harness.messages, await resolveImaNewBootstrapMessages(harness.pi));
+  assert.deepEqual(harness.editor, [IMA_NEW_PLAN_HINT]);
+  assert.deepEqual(harness.notifications, []);
+});
+
+test("creates an unlinked fresh session when the parent is a non-file", async () => {
+  const sessionDirectory = await mkdtemp(join(tmpdir(), "ima-new-parent-directory-"));
+  assert.equal((await stat(sessionDirectory)).isFile(), false);
+  const harness = createHarness({ sessionFile: sessionDirectory });
+  const { default: registerImaNew } = await import("../extensions/ima-new.ts");
+  registerImaNew(harness.pi);
+  await harness.commands.get("ima:new").handler("", harness.ctx);
+
+  assert.equal(Object.hasOwn(harness.replacementOptions, "parentSession"), false);
+  assert.equal(harness.sessionStarts, 1);
+  assert.deepEqual(harness.messages, await resolveImaNewBootstrapMessages(harness.pi));
+  assert.deepEqual(harness.editor, [IMA_NEW_PLAN_HINT]);
+  assert.deepEqual(harness.notifications, []);
+});
+
+test("creates an unlinked fresh session when the parent is inaccessible", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ima-new-parent-inaccessible-"));
+  const inaccessibleDirectory = join(directory, "inaccessible");
+  const sessionFile = join(inaccessibleDirectory, "session.jsonl");
+  await mkdir(inaccessibleDirectory);
+  await writeFile(sessionFile, "session");
+  await chmod(inaccessibleDirectory, 0o000);
+  try {
+    await assert.rejects(() => stat(sessionFile), { code: "EACCES" });
+    const harness = createHarness({ sessionFile });
+    const { default: registerImaNew } = await import("../extensions/ima-new.ts");
+    registerImaNew(harness.pi);
+    await harness.commands.get("ima:new").handler("", harness.ctx);
+
+    assert.equal(Object.hasOwn(harness.replacementOptions, "parentSession"), false);
+    assert.equal(harness.sessionStarts, 1);
+    assert.deepEqual(harness.messages, await resolveImaNewBootstrapMessages(harness.pi));
+    assert.deepEqual(harness.editor, [IMA_NEW_PLAN_HINT]);
+    assert.deepEqual(harness.notifications, []);
+  } finally {
+    await chmod(inaccessibleDirectory, 0o700);
+  }
 });
 
 test("does not replace or prefill when bootstrap resources are unavailable", async () => {
@@ -371,8 +416,7 @@ test("creates a parent-linked bare fresh session and runs the replacement lifecy
   assert.equal(harness.messages.includes("/ima:plan"), false);
 });
 
-test("dispatches xhigh to the exact XHIGH role before bootstrap", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "ima-new-xhigh-"));
+const writeCompleteRouteConfig = async (directory) => {
   const configDirectory = join(directory, ".pi", "ima");
   await mkdir(configDirectory, { recursive: true });
   await writeFile(join(configDirectory, "config.json"), JSON.stringify({
@@ -385,26 +429,59 @@ test("dispatches xhigh to the exact XHIGH role before bootstrap", async () => {
       vision: { provider: "provider", model: "vision" },
       XHIGH: { provider: "provider", model: "xhigh", thinking: "xhigh" },
     },
+    phases: Object.fromEntries(IMA_PHASES.map((phase) => [phase, { provider: "provider", model: phase }])),
   }));
-  const harness = createHarness({
-    cwd: directory,
-    projectTrusted: true,
-    modelRegistry: {
-      find: (provider, model) => ({ provider, id: model }),
-      hasConfiguredAuth: () => true,
-    },
-  });
-  const { default: registerImaNew } = await import("../extensions/ima-new.ts");
-  registerImaNew(harness.pi);
-  await harness.commands.get("ima:new").handler("xhigh", harness.ctx);
+};
 
-  assert.deepEqual(harness.branch.filter(({ type }) => type === "custom").map(({ type, customType, data }) => ({ type, customType, data })), [
-    { type: "custom", customType: IMA_NEW_REQUEST_ENTRY, data: { selector: "xhigh" } },
-    { type: "custom", customType: "ima-role-route", data: { profile: null, role: "XHIGH", provider: "provider", model: "xhigh", thinking: "xhigh" } },
-    { type: "custom", customType: IMA_NEW_RESULT_ENTRY, data: { selector: "xhigh", ok: true, route: { role: "XHIGH", provider: "provider", model: "xhigh", thinking: "xhigh" } } },
-  ]);
-  assert.deepEqual(harness.messages, await resolveImaNewBootstrapMessages(harness.pi));
-  assert.deepEqual(harness.editor, [IMA_NEW_PLAN_HINT]);
+const routedHarnessOptions = (directory) => ({
+  cwd: directory,
+  projectTrusted: true,
+  modelRegistry: {
+    find: (provider, model) => ({ provider, id: model }),
+    hasConfiguredAuth: () => true,
+  },
+});
+
+test("dispatches every role selector to its exact configured role before bootstrap", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ima-new-roles-"));
+  await writeCompleteRouteConfig(directory);
+  const { default: registerImaNew } = await import("../extensions/ima-new.ts");
+
+  for (const [selector, role] of Object.entries(roleSelectors)) {
+    const harness = createHarness(routedHarnessOptions(directory));
+    registerImaNew(harness.pi);
+    await harness.commands.get("ima:new").handler(selector, harness.ctx);
+    const route = { profile: null, role, provider: "provider", model: selector, ...(selector === "xhigh" ? { thinking: "xhigh" } : {}) };
+    const evidence = { role, provider: "provider", model: selector, ...(selector === "xhigh" ? { thinking: "xhigh" } : {}) };
+    assert.deepEqual(harness.branch.filter(({ type }) => type === "custom").map(({ type, customType, data }) => ({ type, customType, data })), [
+      { type: "custom", customType: IMA_NEW_REQUEST_ENTRY, data: { selector } },
+      { type: "custom", customType: "ima-role-route", data: route },
+      { type: "custom", customType: IMA_NEW_RESULT_ENTRY, data: { selector, ok: true, route: evidence } },
+    ]);
+    assert.deepEqual(harness.messages, await resolveImaNewBootstrapMessages(harness.pi));
+    assert.deepEqual(harness.editor, [IMA_NEW_PLAN_HINT]);
+  }
+});
+
+test("dispatches every canonical phase selector to its exact configured phase before bootstrap", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ima-new-phases-"));
+  await writeCompleteRouteConfig(directory);
+  const { default: registerImaNew } = await import("../extensions/ima-new.ts");
+
+  for (const phase of IMA_PHASES) {
+    const harness = createHarness(routedHarnessOptions(directory));
+    registerImaNew(harness.pi);
+    await harness.commands.get("ima:new").handler(phase, harness.ctx);
+    const route = { profile: null, phase, provider: "provider", model: phase };
+    const evidence = { phase, provider: "provider", model: phase };
+    assert.deepEqual(harness.branch.filter(({ type }) => type === "custom").map(({ type, customType, data }) => ({ type, customType, data })), [
+      { type: "custom", customType: IMA_NEW_REQUEST_ENTRY, data: { selector: phase } },
+      { type: "custom", customType: "ima-phase-route", data: route },
+      { type: "custom", customType: IMA_NEW_RESULT_ENTRY, data: { selector: phase, ok: true, route: evidence } },
+    ]);
+    assert.deepEqual(harness.messages, await resolveImaNewBootstrapMessages(harness.pi));
+    assert.deepEqual(harness.editor, [IMA_NEW_PLAN_HINT]);
+  }
 });
 
 test("rejects non-TUI, busy, and invalid invocations before replacement", async () => {

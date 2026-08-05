@@ -1,6 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
 import { stripFrontmatter, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { ThinkingLevel } from "../lib/ima-config.ts";
+import { IMA_PHASES, type ImaPhase, type ThinkingLevel } from "../lib/ima-config.ts";
 import {
   applyConfiguredPhaseRoute,
   applyConfiguredRoleRoute,
@@ -14,11 +14,22 @@ export const IMA_NEW_RESULT_ENTRY = "ima-new-result";
 export const IMA_NEW_BOOTSTRAP_COMMANDS = ["ima:serena-bootstrap", "ima:vestige-bootstrap"] as const;
 export const IMA_NEW_PLAN_HINT = "/ima:plan <story-or-task-source>";
 
-export type ImaNewSelector = "high" | "xhigh" | "plan" | null;
+const IMA_NEW_ROLE_SELECTORS = Object.freeze({
+  low: "LOW",
+  mid: "MID",
+  high: "HIGH",
+  xhigh: "XHIGH",
+} as const);
+type ImaNewRoleSelector = keyof typeof IMA_NEW_ROLE_SELECTORS;
+type ImaNewRole = (typeof IMA_NEW_ROLE_SELECTORS)[ImaNewRoleSelector];
+const IMA_NEW_PHASE_SELECTORS: ReadonlySet<ImaPhase> = new Set(IMA_PHASES);
+const IMA_NEW_SELECTOR_USAGE = [...Object.keys(IMA_NEW_ROLE_SELECTORS), ...IMA_PHASES].join("|");
+
+export type ImaNewSelector = ImaNewRoleSelector | ImaPhase | null;
 export type ImaNewRequest = { selector: ImaNewSelector };
 export type ImaNewRouteEvidence =
-  | { role: "HIGH" | "XHIGH"; provider: string; model: string; thinking?: ThinkingLevel }
-  | { phase: "plan"; provider: string; model: string; thinking?: ThinkingLevel };
+  | { role: ImaNewRole; provider: string; model: string; thinking?: ThinkingLevel }
+  | { phase: ImaPhase; provider: string; model: string; thinking?: ThinkingLevel };
 export type ImaNewResult =
   | { selector: ImaNewSelector; ok: true; route: ImaNewRouteEvidence | null }
   | { selector: ImaNewSelector; ok: false; error: string };
@@ -32,12 +43,15 @@ const exactKeys = (value: Record<string, unknown>, keys: readonly string[]) => {
   return actual.length === keys.length && actual.every((key) => keys.includes(key));
 };
 const nonEmptyText = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0;
-const isPersistedParentSession = async (value: unknown): Promise<boolean> => {
-  if (!nonEmptyText(value)) return false;
+const isImaNewRoleSelector = (value: unknown): value is ImaNewRoleSelector => typeof value === "string" && Object.hasOwn(IMA_NEW_ROLE_SELECTORS, value);
+const isImaNewRole = (value: unknown): value is ImaNewRole => typeof value === "string" && Object.values(IMA_NEW_ROLE_SELECTORS).some((role) => role === value);
+const isImaNewPhase = (value: unknown): value is ImaPhase => typeof value === "string" && IMA_NEW_PHASE_SELECTORS.has(value as ImaPhase);
+const resolvePersistedParentSession = async (value: unknown): Promise<string | undefined> => {
+  if (!nonEmptyText(value)) return undefined;
   try {
-    return (await stat(value)).isFile();
+    return (await stat(value)).isFile() ? value : undefined;
   } catch {
-    return false;
+    return undefined;
   }
 };
 const thinkingLevels = new Set<ThinkingLevel>(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
@@ -62,7 +76,7 @@ export function parseImaNewSelector(input: unknown): ParsedImaNewSelector {
   if (typeof input !== "string") return { ok: false, error: "selector_invalid" };
   const value = input.trim();
   if (!value) return { ok: true, selector: null };
-  if (value === "high" || value === "xhigh" || value === "plan") return { ok: true, selector: value };
+  if (isImaNewRoleSelector(value) || isImaNewPhase(value)) return { ok: true, selector: value };
   return { ok: false, error: "selector_invalid" };
 }
 
@@ -78,21 +92,19 @@ const validateRouteEvidence = (input: unknown): ImaNewRouteEvidence | null => {
   if (!object(input) || !nonEmptyText(input.provider) || !nonEmptyText(input.model)) return null;
   if (input.thinking !== undefined && (!nonEmptyText(input.thinking) || !thinkingLevels.has(input.thinking as ThinkingLevel))) return null;
   const thinking = input.thinking === undefined ? {} : { thinking: input.thinking as ThinkingLevel };
-  const role = input.role;
-  if ((role === "HIGH" || role === "XHIGH") && exactKeys(input, ["role", "provider", "model", ...(input.thinking === undefined ? [] : ["thinking"])]) ) {
-    return { role, provider: input.provider, model: input.model, ...thinking };
+  if (isImaNewRole(input.role) && exactKeys(input, ["role", "provider", "model", ...(input.thinking === undefined ? [] : ["thinking"])]) ) {
+    return { role: input.role, provider: input.provider, model: input.model, ...thinking };
   }
-  if (input.phase === "plan" && exactKeys(input, ["phase", "provider", "model", ...(input.thinking === undefined ? [] : ["thinking"])]) ) {
-    return { phase: "plan", provider: input.provider, model: input.model, ...thinking };
+  if (isImaNewPhase(input.phase) && exactKeys(input, ["phase", "provider", "model", ...(input.thinking === undefined ? [] : ["thinking"])]) ) {
+    return { phase: input.phase, provider: input.provider, model: input.model, ...thinking };
   }
   return null;
 };
 
 const selectorMatchesRoute = (selector: ImaNewSelector, route: ImaNewRouteEvidence | null): boolean => {
   if (selector === null) return route === null;
-  if (selector === "high") return route !== null && "role" in route && route.role === "HIGH";
-  if (selector === "xhigh") return route !== null && "role" in route && route.role === "XHIGH";
-  return route !== null && "phase" in route && route.phase === "plan";
+  if (isImaNewRoleSelector(selector)) return route !== null && "role" in route && route.role === IMA_NEW_ROLE_SELECTORS[selector];
+  return route !== null && "phase" in route && route.phase === selector;
 };
 
 export function validateImaNewResult(input: unknown): Validation<ImaNewResult> {
@@ -137,12 +149,12 @@ const pendingImaNewRequest = (entries: readonly unknown[]): ImaNewRequest | null
 const routeEvidence = (route: WorkflowRoute | RoleRoute): ImaNewRouteEvidence | null => {
   if ("role" in route) {
     const role = route.role;
-    return (role === "HIGH" || role === "XHIGH") && nonEmptyText(route.provider) && nonEmptyText(route.model)
+    return isImaNewRole(role) && nonEmptyText(route.provider) && nonEmptyText(route.model)
       ? { role, provider: route.provider, model: route.model, ...(route.thinking ? { thinking: route.thinking } : {}) }
       : null;
   }
-  return route.phase === "plan" && nonEmptyText(route.provider) && nonEmptyText(route.model)
-    ? { phase: "plan", provider: route.provider, model: route.model, ...(route.thinking ? { thinking: route.thinking } : {}) }
+  return isImaNewPhase(route.phase) && nonEmptyText(route.provider) && nonEmptyText(route.model)
+    ? { phase: route.phase, provider: route.provider, model: route.model, ...(route.thinking ? { thinking: route.thinking } : {}) }
     : null;
 };
 
@@ -262,11 +274,9 @@ const notify = (ctx: Pick<ExtensionContext, "hasUI" | "ui">, message: string, le
 const prepareResult = async (pi: ExtensionAPI, ctx: ExtensionContext, selector: ImaNewSelector): Promise<ImaNewResult> => {
   if (selector === null) return { selector, ok: true, route: null };
   try {
-    let result: RouteSwitchResult;
-    if (selector === "high") result = await applyConfiguredRoleRoute(pi, ctx, "HIGH");
-    else if (selector === "xhigh") result = await applyConfiguredRoleRoute(pi, ctx, "XHIGH");
-    else if (selector === "plan") result = await applyConfiguredPhaseRoute(pi, ctx, "plan");
-    else return { selector, ok: false, error: "route_apply_failed" };
+    const result = isImaNewRoleSelector(selector)
+      ? await applyConfiguredRoleRoute(pi, ctx, IMA_NEW_ROLE_SELECTORS[selector])
+      : await applyConfiguredPhaseRoute(pi, ctx, selector);
     return buildImaNewResult(selector, result);
   } catch {
     return { selector, ok: false, error: "route_apply_failed" };
@@ -292,7 +302,7 @@ const handleReplacement = async (ctx: ReplacementSessionContext, messages: reado
 
 export default function imaNew(pi: ExtensionAPI) {
   pi.registerCommand("ima:new", {
-    description: "Create a fresh TUI session with an optional HIGH, XHIGH, or plan route.",
+    description: "Create a fresh TUI session with an optional role or phase route.",
     handler: async (args, ctx) => {
       if (ctx.mode !== "tui") {
         notify(ctx, "ima:new requires TUI mode.");
@@ -304,14 +314,10 @@ export default function imaNew(pi: ExtensionAPI) {
       }
       const parsed = parseImaNewSelector(args);
       if (!parsed.ok) {
-        notify(ctx, "Usage: /ima:new [high|xhigh|plan].");
+        notify(ctx, `Usage: /ima:new [${IMA_NEW_SELECTOR_USAGE}].`);
         return;
       }
-      const parentSession = ctx.sessionManager.getSessionFile();
-      if (!nonEmptyText(parentSession) || !(await isPersistedParentSession(parentSession))) {
-        notify(ctx, "ima:new requires a persisted parent session; restart Pi without --no-session.");
-        return;
-      }
+      const parentSession = await resolvePersistedParentSession(ctx.sessionManager.getSessionFile());
       let bootstrapMessages: readonly string[];
       try {
         bootstrapMessages = await resolveImaNewBootstrapMessages(pi);
@@ -321,7 +327,7 @@ export default function imaNew(pi: ExtensionAPI) {
       }
       try {
         const result = await ctx.newSession({
-          parentSession,
+          ...(parentSession ? { parentSession } : {}),
           setup: async (sessionManager) => {
             sessionManager.appendCustomEntry(IMA_NEW_REQUEST_ENTRY, { selector: parsed.selector });
           },
