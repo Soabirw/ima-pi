@@ -33,6 +33,18 @@ test("validates bounded assignments, path safety, and disjoint writers", () => {
   assert.equal(writeScopesOverlap(["lib/a"], ["lib/ab"]), false);
 });
 
+test("permits read-only documentation assessment without a write scope", () => {
+  const assessor = { ...agent, name: "document-assessor", authority: "read", tools: ["read", "grep", "find", "ls"], result: { kind: "documentation", requiredSections: ["evidence", "external-update-manifest", "residual-risk"] } };
+  const assessorAssignment = { ...assignment, agent: "document-assessor", paths: ["agents/document-assessor.md"], writeScope: [] };
+  assert.equal(validateDelegationRequest({ title: "assess", assignments: [assessorAssignment] }, [assessor]).valid, true);
+  const withWriteScope = validateDelegationRequest({ title: "assess", assignments: [{ ...assessorAssignment, writeScope: ["agents/document-assessor.md"] }] }, [assessor]);
+  assert.ok(withWriteScope.errors.includes("delegation_read_write_scope:a"));
+
+  const documenter = { ...agent, name: "documenter", authority: "document-write", result: { kind: "documentation", requiredSections: ["local-changes", "evidence", "external-update-manifest", "residual-risk"] } };
+  const withoutWriteScope = validateDelegationRequest({ title: "document", assignments: [{ ...assignment, agent: "documenter", paths: ["README.md"], writeScope: [] }] }, [documenter]);
+  assert.ok(withoutWriteScope.errors.includes("delegation_write_scope_required:a"));
+});
+
 test("normalizes ownership and enforces path-segment containment", () => {
   assert.equal(normalizeOwnershipTarget("lib/a/"), "lib/a");
   assert.equal(normalizeOwnershipTarget("../lib/a"), null);

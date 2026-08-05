@@ -45,7 +45,7 @@ test("loads the packaged agent catalog without treating README.md as an agent", 
     paths: deriveAgentPaths({ packageRoot, agentDir: resolve(packageRoot, ".missing-agent-home"), cwd: packageRoot }),
     projectTrusted: false,
   });
-  assert.deepEqual(loaded.definitions.map(({ name }) => name), ["adversary-a", "adversary-b", "documenter", "explore", "implementer", "js-developer", "preflight-probe", "review-verifier", "reviewer", "tester", "vision-handoff", "wordpress-developer"]);
+  assert.deepEqual(loaded.definitions.map(({ name }) => name), ["adversary-a", "adversary-b", "document-assessor", "documenter", "explore", "implementer", "js-developer", "preflight-probe", "review-verifier", "reviewer", "tester", "vision-handoff", "wordpress-developer"]);
   assert.deepEqual(loaded.diagnostics, []);
 });
 
@@ -80,6 +80,12 @@ test("quality agents enforce fresh verification and exact documentation authorit
   assert.equal(byName.get("review-verifier").tier, "reviewVerify");
   assert.equal(byName.get("tester").phase, "test");
   assert.equal(byName.get("reviewer").phase, "review");
+  const assessor = byName.get("document-assessor");
+  assert.equal(assessor.phase, "document");
+  assert.equal(assessor.authority, "read");
+  assert.equal(assessor.result.kind, "documentation");
+  assert.deepEqual(assessor.result.requiredSections, ["evidence", "external-update-manifest", "residual-risk"]);
+  for (const tool of ["write", "edit", "bash", "test"]) assert.equal(assessor.tools.includes(tool), false, tool);
   assert.equal(byName.get("documenter").phase, "document");
   assert.equal(byName.get("review-verifier").independence.freshInitial, true);
   assert.equal(byName.get("review-verifier").authority, "review-read");
