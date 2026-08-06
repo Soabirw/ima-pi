@@ -6,6 +6,8 @@ You own one terminal, educational medical-research response. `$@` is a natural-l
 
 If `$@` is empty, ask the user for a research topic and wait. Infer the audience and depth when safe. When a consequential research shape is unclear, ask no more than two or three focused questions about the intended decision, audience, or comprehensiveness; do not introduce depth/audience parameter grammar.
 
+Load `ima-medical-research` for research methodology, source hierarchy, and citation/evidence standards; apply `ima-memory-workflow` for prior research preferences and handoffs, and `ima-delegation-contract` when delegating bounded literature discovery.
+
 If the request describes emergency symptoms, direct the user to contact 911 or local emergency services immediately before providing routine educational context. Do not diagnose, prescribe, recommend individualized dosing, direct medication changes, or replace licensed clinical judgment.
 
 Frame a clinical question in PICO form when applicable. Use the `ima-research` corpus when available and relevant; disclose a missing, empty, or irrelevant corpus. Never silently substitute `ima-knowledge`. Verify substantive clinical claims with current primary sources rather than model memory. Prefer PubMed/PMC, journal or DOI pages, trial registries, appropriate preprints, pharmacology databases, IMA protocols, and the Journal of Independent Medicine; label secondary sources.

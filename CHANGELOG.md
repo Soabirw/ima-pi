@@ -13,6 +13,7 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ### Changed
 
+- `/ima:medical-research`, `/ima:patristic-research`, and `/ima:investigate` now restore their owning research and cross-cutting workflow-skill wiring, including memory, bounded delegation, and visual-evidence handoff where applicable.
 - `/ima:document`, `/ima:memorize`, and `/ima:scorecard` now restore their Pi-native documentation, memory-routing, and technical-scorecard contracts through packaged skills.
 - `/ima:document` now routes manifest-only assessment with `writeScope: []`, while `documenter` remains limited to exact approved documentation targets.
 - The `vision-handoff` agent now declares `ima-vision-handoff`, and package discovery verifies all four shared skills.
