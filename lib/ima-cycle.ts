@@ -39,6 +39,27 @@ export type CycleEvidence = {
   timestamp: string;
 };
 
+export type LifecycleSearchSelection = {
+  lifecycleKey: string;
+  phase: CyclePhase;
+  jiraKey: string;
+  taskwarriorUuid: string;
+};
+
+export type LifecycleSearchRecord = {
+  artifactId: string | null;
+  artifact: string;
+  verified: boolean;
+};
+
+export type LifecycleSearchParse =
+  | { valid: true; records: LifecycleSearchRecord[] }
+  | { valid: false; records: [] };
+
+export type CycleLifecycleReconciliation =
+  | { ok: true; state: CycleState; reconciled: boolean; artifactId: string | null }
+  | { ok: false; state: CycleState | null; error: ReturnType<typeof sanitizeCycleError>; artifactId: string | null };
+
 export type CycleState = {
   schemaVersion: 1;
   source: CycleSource;
@@ -70,6 +91,10 @@ const PROJECT = /^[\w.-]+$/;
 const LIFECYCLE_KEY = /^[^\r\n]{1,512}$/;
 const JIRA_URL = /^https:\/\/flccc\.atlassian\.net\/browse\/([A-Z][A-Z0-9]+-\d+)$/;
 const CYCLE_MARKER = /<!--\s*ima-cycle outcome:\s*phase=(plan|implementation|test|review|resolution|rereview|document);\s*outcome=([A-Z_]+)\s*-->/g;
+const LIFECYCLE_VERIFICATION = /<!--\s*ima-lifecycle verification:\s*([\s\S]*?)\s*-->/g;
+const MAX_PHASE_ARTIFACT_LENGTH = 128_000;
+const MAX_PERSISTED_ARTIFACT_LENGTH = 160_000;
+const MAX_SEARCH_RECORDS = 32;
 const object = (value: unknown): Record<string, unknown> | null => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 const text = (value: unknown) => typeof value === "string" ? value.trim() : "";
 const boundedText = (value: unknown, maximum: number) => text(value).length > 0 && text(value).length <= maximum;
@@ -185,7 +210,7 @@ export function buildCycleOutcomeMarker(input: { phase: CyclePhase; outcome: str
 }
 
 export function extractPhaseOutcome(artifact: unknown): { ok: true; phase: CyclePhase; outcome: string; marker: string } | { ok: false; error: ReturnType<typeof sanitizeCycleError> } {
-  if (typeof artifact !== "string" || artifact.length > 128_000) return { ok: false, error: sanitizeCycleError("phase_artifact_invalid") };
+  if (typeof artifact !== "string" || artifact.length > MAX_PHASE_ARTIFACT_LENGTH) return { ok: false, error: sanitizeCycleError("phase_artifact_invalid") };
   const matches = [...artifact.matchAll(CYCLE_MARKER)];
   if (!matches.length) return { ok: false, error: sanitizeCycleError("phase_marker_missing") };
   if (matches.length !== 1) return { ok: false, error: sanitizeCycleError("phase_marker_ambiguous") };
@@ -193,6 +218,196 @@ export function extractPhaseOutcome(artifact: unknown): { ok: true; phase: Cycle
   const outcome = matches[0][2];
   if (!validPhase(phase) || !validOutcome(phase, outcome)) return { ok: false, error: sanitizeCycleError("phase_marker_invalid") };
   return { ok: true, phase, outcome, marker: matches[0][0] };
+}
+
+export function lifecycleTypeForPhase(phase: CyclePhase): Exclude<CyclePhase, "document"> | "closeout" {
+  return phase === "document" ? "closeout" : phase;
+}
+
+export function resolvePhaseOutcome(artifact: unknown, expectedPhase: CyclePhase): { ok: true; phase: CyclePhase; outcome: string; marker: string } | { ok: false; error: ReturnType<typeof sanitizeCycleError> } {
+  if (typeof artifact !== "string" || artifact.length > MAX_PHASE_ARTIFACT_LENGTH) return { ok: false, error: sanitizeCycleError("phase_artifact_invalid") };
+  if (!validPhase(expectedPhase)) return { ok: false, error: sanitizeCycleError("phase_marker_invalid") };
+  const matches = [...artifact.matchAll(CYCLE_MARKER)].filter((match) => match[1] === expectedPhase);
+  if (!matches.length) return { ok: false, error: sanitizeCycleError("phase_marker_missing") };
+  if (matches.some((match) => !validOutcome(expectedPhase, match[2]))) return { ok: false, error: sanitizeCycleError("phase_marker_invalid") };
+  if (new Set(matches.map((match) => match[2])).size !== 1) return { ok: false, error: sanitizeCycleError("phase_marker_ambiguous") };
+  const marker = matches[matches.length - 1];
+  return { ok: true, phase: expectedPhase, outcome: marker[2], marker: marker[0] };
+}
+
+const searchResults = (envelope: unknown): unknown[] | null => {
+  if (Array.isArray(envelope)) return envelope.slice(0, MAX_SEARCH_RECORDS);
+  const input = object(envelope);
+  if (!input) return null;
+  const data = input.data;
+  const nested = object(data);
+  for (const candidate of [nested?.results, nested?.memories, input.results, input.memories, data]) {
+    if (Array.isArray(candidate)) return candidate.slice(0, MAX_SEARCH_RECORDS);
+  }
+  return null;
+};
+
+const persistedContentValues = (value: unknown): string[] => {
+  const values: string[] = [];
+  const seen = new Set<object>();
+  const visit = (candidate: unknown, depth: number) => {
+    if (values.length >= MAX_SEARCH_RECORDS || depth > 4) return;
+    if (typeof candidate === "string") { values.push(candidate); return; }
+    if (Array.isArray(candidate)) { candidate.slice(0, 8).forEach((item) => visit(item, depth + 1)); return; }
+    const entry = object(candidate);
+    if (!entry || seen.has(entry)) return;
+    seen.add(entry);
+    for (const key of ["content", "artifact", "text", "body", "markdown"]) if (key in entry) visit(entry[key], depth + 1);
+    for (const key of ["memory", "node", "document", "result", "data"]) if (key in entry) visit(entry[key], depth + 1);
+  };
+  visit(value, 0);
+  return values;
+};
+
+const boundedJoined = (values: readonly string[], maximum: number) => {
+  let result = "";
+  for (const value of values) {
+    if (result.length >= maximum) break;
+    const separator = result ? "\n" : "";
+    const remaining = maximum - result.length - separator.length;
+    if (remaining <= 0) break;
+    result += separator + value.slice(0, remaining);
+  }
+  return result.trim();
+};
+
+const searchArtifactId = (value: unknown, depth = 0, seen = new Set<object>()): string | null => {
+  if (depth > 3) return null;
+  const entry = object(value);
+  if (!entry || seen.has(entry)) return null;
+  seen.add(entry);
+  for (const key of ["artifactId", "id", "memoryId"]) {
+    const candidate = cleanLine(entry[key], 512);
+    if (candidate) return candidate;
+  }
+  for (const key of ["memory", "node", "document", "result", "data"]) {
+    const nested = searchArtifactId(entry[key], depth + 1, seen);
+    if (nested) return nested;
+  }
+  return null;
+};
+
+const verificationFields = (value: string) => {
+  const fields = new Map<string, string>();
+  for (const field of value.split(";")) {
+    const separator = field.indexOf("=");
+    if (separator < 1) continue;
+    fields.set(text(field.slice(0, separator)), text(field.slice(separator + 1)));
+  }
+  return fields;
+};
+
+const validLifecycleSearchSelection = (value: unknown): value is LifecycleSearchSelection => {
+  const selection = object(value);
+  return Boolean(selection && LIFECYCLE_KEY.test(text(selection.lifecycleKey)) && validPhase(selection.phase) && text(selection.jiraKey).length <= 128 && text(selection.taskwarriorUuid).length <= 128);
+};
+
+const terminalLifecycleVerification = (content: string) => {
+  const bounded = content.slice(0, MAX_PERSISTED_ARTIFACT_LENGTH);
+  const match = [...bounded.matchAll(LIFECYCLE_VERIFICATION)].at(-1);
+  if (!match || match.index === undefined || bounded.slice(match.index + match[0].length).trim()) return null;
+  return match;
+};
+
+const verifiedLifecycleContent = (content: string, selection: LifecycleSearchSelection) => {
+  const verification = terminalLifecycleVerification(content);
+  if (!verification) return false;
+  const fields = verificationFields(verification[1]);
+  return fields.get("lifecycle_key") === selection.lifecycleKey
+    && fields.get("phase") === lifecycleTypeForPhase(selection.phase)
+    && fields.get("outcome") === "completed"
+    && (!selection.jiraKey || fields.get("jira_key") === selection.jiraKey)
+    && (!selection.taskwarriorUuid || fields.get("taskwarrior_uuid") === selection.taskwarriorUuid);
+};
+
+const phaseArtifact = (content: string) => {
+  let artifact = content;
+  if (artifact.startsWith("---")) {
+    const frontmatterEnd = artifact.indexOf("\n---", 3);
+    if (frontmatterEnd >= 0) artifact = artifact.slice(frontmatterEnd + 4);
+  }
+  const lifecycleMarker = terminalLifecycleVerification(artifact);
+  if (lifecycleMarker?.index !== undefined) artifact = artifact.slice(0, lifecycleMarker.index);
+  return artifact.trim().slice(0, MAX_PHASE_ARTIFACT_LENGTH + 1);
+};
+
+export function parseLifecycleSearchRecords(envelope: unknown, selectionValue: LifecycleSearchSelection): LifecycleSearchParse {
+  const records = searchResults(envelope);
+  if (!records || !validLifecycleSearchSelection(selectionValue)) return { valid: false, records: [] };
+  return {
+    valid: true,
+    records: records.flatMap((record) => {
+      const content = boundedJoined(persistedContentValues(record), MAX_PERSISTED_ARTIFACT_LENGTH);
+      if (!content) return [];
+      return [{ artifactId: searchArtifactId(record), artifact: phaseArtifact(content), verified: verifiedLifecycleContent(content, selectionValue) }];
+    }),
+  };
+}
+
+const reconciliationToolCallId = (record: LifecycleSearchRecord) => {
+  if (record.artifactId) return `reconcile:${cleanLine(record.artifactId, 240)}`;
+  let hash = 2_166_136_261;
+  for (let index = 0; index < record.artifact.length; index += 1) {
+    hash ^= record.artifact.charCodeAt(index);
+    hash = Math.imul(hash, 16_777_619);
+  }
+  return `reconcile:${(hash >>> 0).toString(36)}`;
+};
+
+export function reconcileCycleFromLifecycle(stateValue: unknown, recordsValue: unknown, options: { timestamp?: string } = {}): CycleLifecycleReconciliation {
+  const valid = validateCycleState(stateValue);
+  if (!valid.valid) return { ok: false, state: null, error: valid.error, artifactId: null };
+  const state = valid.state;
+  if (state.status !== "awaiting-evidence") return { ok: true, state, reconciled: false, artifactId: null };
+  const records = (Array.isArray(recordsValue) ? recordsValue : []).flatMap((value) => {
+    const record = object(value);
+    if (record?.verified !== true) return [];
+    return [{ artifactId: searchArtifactId(record), artifact: typeof record.artifact === "string" ? record.artifact.slice(0, MAX_PHASE_ARTIFACT_LENGTH + 1) : "", verified: true } satisfies LifecycleSearchRecord];
+  });
+  if (!records.length) return { ok: true, state, reconciled: false, artifactId: null };
+  const consumedArtifactIds = new Set(state.evidence.flatMap((item) => item.artifactId ? [cleanLine(item.artifactId, 512)] : []));
+  const consumedToolCallIds = new Set(state.evidence.map((item) => cleanLine(item.toolCallId, 256)));
+  const currentPhaseSeen = state.evidence.some((item) => item.phase === state.phase);
+  const freshRecords: LifecycleSearchRecord[] = [];
+  let unidentified: LifecycleSearchRecord | null = null;
+  for (const record of records) {
+    const toolCallId = reconciliationToolCallId(record);
+    if (record.artifactId) {
+      if (consumedArtifactIds.has(record.artifactId) || consumedToolCallIds.has(toolCallId)) continue;
+      freshRecords.push(record);
+      continue;
+    }
+    if (currentPhaseSeen) {
+      unidentified ??= record;
+      continue;
+    }
+    if (consumedToolCallIds.has(toolCallId)) continue;
+    freshRecords.push(record);
+  }
+  if (unidentified) return { ok: false, state, error: sanitizeCycleError("lifecycle_outcome_undetermined"), artifactId: unidentified.artifactId };
+  if (!freshRecords.length) return { ok: true, state, reconciled: false, artifactId: null };
+  const resolved = freshRecords.map((record) => ({ record, outcome: resolvePhaseOutcome(record.artifact, state.phase) }));
+  const unresolved = resolved.find((value) => !value.outcome.ok);
+  if (unresolved) return { ok: false, state, error: sanitizeCycleError("lifecycle_outcome_undetermined"), artifactId: unresolved.record.artifactId };
+  const outcomes = new Set(resolved.map(({ outcome }) => outcome.ok ? outcome.outcome : ""));
+  if (outcomes.size !== 1) return { ok: false, state, error: sanitizeCycleError("lifecycle_outcome_undetermined"), artifactId: resolved[0].record.artifactId };
+  const selected = resolved[0];
+  if (!selected.outcome.ok) return { ok: false, state, error: sanitizeCycleError("lifecycle_outcome_undetermined"), artifactId: selected.record.artifactId };
+  const reduced = reduceCycleState(state, {
+    phase: selected.outcome.phase,
+    outcome: selected.outcome.outcome,
+    marker: selected.outcome.marker,
+    artifactId: selected.record.artifactId,
+    toolCallId: reconciliationToolCallId(selected.record),
+    timestamp: options.timestamp,
+  }, options);
+  if (!reduced.ok) return { ok: false, state: reduced.state, error: reduced.error, artifactId: selected.record.artifactId };
+  return { ok: true, state: reduced.state, reconciled: true, artifactId: selected.record.artifactId };
 }
 
 const validateEvidence = (value: unknown): value is CycleEvidence => {
@@ -332,6 +547,7 @@ export function buildResumeSource(stateValue: unknown): string | null {
     `artifactId: ${item.artifactId === null ? "none" : cleanLine(item.artifactId)}`,
     `toolCallId: ${cleanLine(item.toolCallId)}`,
   ]);
+  const validOutcomes = CYCLE_PHASE_OUTCOMES[state.phase];
   return [
     `${phaseCommand(state.phase, state.implementationMode)} ${cleanLine(source)}`,
     "Lifecycle evidence packet:",
@@ -347,6 +563,12 @@ export function buildResumeSource(stateValue: unknown): string | null {
     "orderedPhaseEvidence:",
     ...orderedEvidence,
     `priorArtifactIds: ${priorArtifactIds.length ? priorArtifactIds.join(", ") : "none"}`,
+    "Cycle dispatch contract (non-negotiable):",
+    "cycleDispatch: true",
+    `cyclePhase: ${state.phase}`,
+    `validOutcomes: ${validOutcomes.join(", ")}`,
+    "Persist this phase through ima_lifecycle. Finish the saved artifact with exactly one cycle outcome marker for cyclePhase using one validOutcomes value; do not include any other cycle outcome marker.",
+    `requiredMarker: <!-- ima-cycle outcome: phase=${state.phase}; outcome=<valid-outcome> -->`,
   ].join("\n");
 }
 

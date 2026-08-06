@@ -1,23 +1,29 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  CYCLE_PHASE_OUTCOMES,
   buildCycleOutcomeMarker,
   buildCycleStatus,
   buildResumeSource,
   createCycleState,
   IMA_PROJECT,
   extractPhaseOutcome,
+  lifecycleTypeForPhase,
   normalizeCycleSource,
   parseCycleCommand,
   parseJiraTracker,
+  parseLifecycleSearchRecords,
   parseTaskwarriorTracker,
   prepareCycleResume,
+  reconcileCycleFromLifecycle,
   reduceCycleState,
   requiredCloseoutEvidence,
+  resolvePhaseOutcome,
   validateCycleState,
 } from "../lib/ima-cycle.ts";
 import {
   coordinateCycleClose,
+  coordinateCycleReconcile,
   coordinateCycleStart,
   coordinateCycleStop,
   createCycleDispatchConfirmation,
@@ -53,6 +59,36 @@ const lifecycleObservation = (state, phase, outcome, toolCallId = `${phase}-tool
   timestamp: at,
 });
 
+const lifecycleVerification = (state, phase, options = {}) => {
+  const jiraKey = state.source.type === "jira" ? state.source.key : "";
+  const taskwarriorUuid = state.source.type === "taskwarrior" ? state.source.uuid : "";
+  return `<!-- ima-lifecycle verification: lifecycle_key=${options.lifecycleKey ?? state.lifecycleKey}; nonce=test-nonce; phase=${options.lifecyclePhase ?? lifecycleTypeForPhase(phase)}; jira_key=${options.jiraKey ?? jiraKey}; taskwarrior_uuid=${options.taskwarriorUuid ?? taskwarriorUuid}; outcome=${options.lifecycleOutcome ?? "completed"} -->`;
+};
+
+const persistedRecord = (state, phase, outcome, options = {}) => ({
+  id: options.id ?? `${phase}-persisted`,
+  content: `---\nlifecycle: {}\n---\n\n${options.artifact ?? marker(phase, outcome)}\n\n${lifecycleVerification(state, phase, options)}`,
+});
+
+const vestigeSearch = (results = []) => ({ ok: true, command: "vestige.search", data: { results } });
+
+const awaitingPhaseState = (phase) => {
+  let state = createCycleState(jira, { timestamp: at });
+  if (phase === "plan") return state;
+  state = evidence(state, "plan", "APPROVED");
+  if (phase === "implementation") return awaitingEvidence(state);
+  state = evidence(awaitingEvidence(state), "implementation", "COMPLETED");
+  if (phase === "test") return awaitingEvidence(state);
+  state = evidence(awaitingEvidence(state), "test", "PASSED");
+  if (phase === "review") return awaitingEvidence(state);
+  if (phase === "document") return awaitingEvidence(evidence(awaitingEvidence(state), "review", "APPROVED"));
+  state = evidence(awaitingEvidence(state), "review", "REQUEST_CHANGES");
+  if (phase === "resolution") return awaitingEvidence(state);
+  state = evidence(awaitingEvidence(state), "resolution", "RESOLVED");
+  if (phase === "rereview") return awaitingEvidence(state);
+  throw new Error(`unsupported phase ${phase}`);
+};
+
 const deferred = () => {
   let resolve;
   let reject;
@@ -60,7 +96,7 @@ const deferred = () => {
   return { promise, resolve, reject };
 };
 
-const createCycleExtensionHarness = (branch) => {
+const createCycleExtensionHarness = (branch, run = async () => vestigeSearch()) => {
   const handlers = new Map();
   const commands = new Map();
   const entries = [];
@@ -72,6 +108,7 @@ const createCycleExtensionHarness = (branch) => {
     on: (event, handler) => handlers.set(event, handler),
     registerCommand: (name, command) => commands.set(name, command),
     appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }),
+    exec: (program, args) => run(program, args),
     sendUserMessage: (message) => {
       messages.push(message);
       sendWaiters.shift()?.resolve(message);
@@ -300,9 +337,10 @@ test("renders ordered sanitized evidence with explicit source fields", () => {
   ]);
   assert.match(packet, /phase: plan\noutcome: APPROVED\ntimestamp: 2026-08-04T18:00:00.000Z\nartifactId: none\ntoolCallId: plan/);
   assert.match(packet, /phase: implementation\noutcome: COMPLETED\ntimestamp: 2026-08-04T18:00:00.000Z\nartifactId: implementation-artifact\ntoolCallId: implementation/);
-  assert.match(packet, /priorArtifactIds: implementation-artifact$/);
+  assert.match(packet, /priorArtifactIds: implementation-artifact/);
   assert.ok(packet.indexOf("phase: plan") < packet.indexOf("phase: implementation"));
   assert.ok(packet.indexOf("orderedPhaseEvidence:") < packet.indexOf("priorArtifactIds:"));
+  assert.ok(packet.indexOf("priorArtifactIds:") < packet.indexOf("Cycle dispatch contract"));
 });
 
 test("caps review request-change loops and rejects out-of-order or duplicate evidence", () => {
@@ -818,4 +856,367 @@ test("default cycle wiring discards buffered evidence after terminal failure", a
 
   assert.equal(harness.entries.length, 0);
   assert.deepEqual(harness.statuses.at(-1).value, "Cycle awaiting-resume: FNR-3036; phase implementation; review 0/2.");
+});
+
+test("resolves advisory current-phase markers while preserving exact extraction compatibility", () => {
+  const first = "<!-- ima-cycle outcome: phase=implementation; outcome=COMPLETED -->";
+  const last = "<!-- ima-cycle outcome: phase=implementation; outcome=COMPLETED  -->";
+  assert.deepEqual(resolvePhaseOutcome(`${marker("plan", "APPROVED")}\n${first}\n${last}`, "implementation"), {
+    ok: true,
+    phase: "implementation",
+    outcome: "COMPLETED",
+    marker: last,
+  });
+  assert.equal(resolvePhaseOutcome(marker("plan", "APPROVED"), "implementation").error.code, "phase_marker_missing");
+  assert.equal(resolvePhaseOutcome(`${marker("implementation", "COMPLETED")}\n${marker("implementation", "BLOCKED")}`, "implementation").error.code, "phase_marker_ambiguous");
+  assert.equal(resolvePhaseOutcome(marker("implementation", "COMPLETED").replace("COMPLETED", "READY"), "implementation").error.code, "phase_marker_invalid");
+  assert.equal(extractPhaseOutcome(`${first}\n${last}`).error.code, "phase_marker_ambiguous");
+});
+
+test("parses only persisted lifecycle records with exact identity, phase, and completion evidence", () => {
+  const state = createCycleState(jira, { timestamp: at });
+  const selection = { lifecycleKey: state.lifecycleKey, phase: state.phase, jiraKey: state.source.key, taskwarriorUuid: "" };
+  const parsed = parseLifecycleSearchRecords({ data: { results: [
+    persistedRecord(state, "plan", "APPROVED", { id: "good" }),
+    persistedRecord(state, "plan", "APPROVED", { id: "wrong-key", lifecycleKey: "other" }),
+    persistedRecord(state, "plan", "APPROVED", { id: "wrong-phase", lifecyclePhase: "implementation" }),
+    persistedRecord(state, "plan", "APPROVED", { id: "wrong-outcome", lifecycleOutcome: "failed" }),
+    persistedRecord(state, "plan", "APPROVED", { id: "wrong-source", jiraKey: "FNR-9999" }),
+  ] } }, selection);
+  assert.equal(parsed.valid, true);
+  assert.deepEqual(parsed.records.map(({ artifactId, verified }) => [artifactId, verified]), [["good", true], ["wrong-key", false], ["wrong-phase", false], ["wrong-outcome", false], ["wrong-source", false]]);
+
+  const nested = parseLifecycleSearchRecords({ results: [{ node: persistedRecord(state, "plan", "APPROVED", { id: "nested" }) }] }, selection);
+  assert.equal(nested.valid, true);
+  assert.deepEqual(nested.records[0].artifactId, "nested");
+  assert.equal(nested.records[0].verified, true);
+
+  const documentState = awaitingPhaseState("document");
+  const documentSelection = { lifecycleKey: documentState.lifecycleKey, phase: "document", jiraKey: documentState.source.key, taskwarriorUuid: "" };
+  const document = parseLifecycleSearchRecords({ data: { results: [persistedRecord(documentState, "document", "READY")] } }, documentSelection);
+  assert.equal(document.valid, true);
+  assert.equal(document.records[0].verified, true);
+});
+
+test("requires an authoritative terminal lifecycle verification marker", () => {
+  const state = createCycleState(jira, { timestamp: at });
+  const selection = { lifecycleKey: state.lifecycleKey, phase: "plan", jiraKey: state.source.key, taskwarriorUuid: "" };
+  const matching = persistedRecord(state, "plan", "APPROVED", { id: "matching-terminal" });
+  const inlineCurrentThenForeignTerminal = persistedRecord(state, "plan", "APPROVED", {
+    id: "inline-current-terminal-foreign",
+    artifact: `${marker("plan", "APPROVED")}\n${lifecycleVerification(state, "plan")}`,
+    lifecyclePhase: "implementation",
+  });
+  const nonterminalBase = persistedRecord(state, "plan", "APPROVED", { id: "nonterminal" });
+  const nonterminal = { ...nonterminalBase, content: `${nonterminalBase.content}\ntrailing text` };
+  const parsed = parseLifecycleSearchRecords({ data: { results: [matching, inlineCurrentThenForeignTerminal, nonterminal] } }, selection);
+  assert.equal(parsed.valid, true);
+  assert.deepEqual(parsed.records.map(({ artifactId, verified }) => [artifactId, verified]), [
+    ["matching-terminal", true],
+    ["inline-current-terminal-foreign", false],
+    ["nonterminal", false],
+  ]);
+  assert.doesNotMatch(parsed.records[0].artifact, /ima-lifecycle verification/);
+
+  const reconciled = reconcileCycleFromLifecycle(state, [parsed.records[0]], { timestamp: at });
+  assert.equal(reconciled.ok, true);
+  assert.equal(reconciled.reconciled, true);
+
+  const rejected = reconcileCycleFromLifecycle(state, [parsed.records[1]], { timestamp: at });
+  assert.equal(rejected.ok, true);
+  assert.equal(rejected.reconciled, false);
+  assert.deepEqual(rejected.state, state);
+});
+
+test("reconciles verified lifecycle records through the existing phase transitions", () => {
+  const transitions = [
+    ["plan", "APPROVED", "implementation", "awaiting-resume"],
+    ["implementation", "COMPLETED", "test", "awaiting-resume"],
+    ["test", "PASSED", "review", "awaiting-resume"],
+    ["review", "APPROVED", "document", "awaiting-resume"],
+    ["review", "REQUEST_CHANGES", "resolution", "awaiting-resume"],
+    ["resolution", "RESOLVED", "rereview", "awaiting-resume"],
+    ["rereview", "APPROVED", "document", "awaiting-resume"],
+    ["rereview", "REQUEST_CHANGES", "resolution", "awaiting-resume"],
+    ["document", "READY", "document", "closeout-ready"],
+  ];
+  for (const [phase, outcome, nextPhase, status] of transitions) {
+    const state = awaitingPhaseState(phase);
+    const parsed = parseLifecycleSearchRecords({ data: { results: [persistedRecord(state, phase, outcome)] } }, { lifecycleKey: state.lifecycleKey, phase, jiraKey: state.source.key, taskwarriorUuid: "" });
+    assert.equal(parsed.valid, true);
+    const reconciled = reconcileCycleFromLifecycle(state, parsed.records, { timestamp: at });
+    assert.equal(reconciled.ok, true, JSON.stringify(reconciled));
+    assert.equal(reconciled.reconciled, true);
+    assert.deepEqual({ phase: reconciled.state.phase, status: reconciled.state.status }, { phase: nextPhase, status });
+  }
+
+  const blocked = awaitingPhaseState("implementation");
+  const blockedParsed = parseLifecycleSearchRecords({ data: { results: [persistedRecord(blocked, "implementation", "BLOCKED")] } }, { lifecycleKey: blocked.lifecycleKey, phase: "implementation", jiraKey: blocked.source.key, taskwarriorUuid: "" });
+  const blockedResult = reconcileCycleFromLifecycle(blocked, blockedParsed.records, { timestamp: at });
+  assert.equal(blockedResult.ok, true);
+  assert.deepEqual(blockedResult.state.blockers, ["implementation:BLOCKED"]);
+
+  const defects = awaitingPhaseState("test");
+  const defectsParsed = parseLifecycleSearchRecords({ data: { results: [persistedRecord(defects, "test", "DEFECTS")] } }, { lifecycleKey: defects.lifecycleKey, phase: "test", jiraKey: defects.source.key, taskwarriorUuid: "" });
+  const defectsResult = reconcileCycleFromLifecycle(defects, defectsParsed.records, { timestamp: at });
+  assert.equal(defectsResult.ok, true);
+  assert.deepEqual(defectsResult.state.blockers, ["test:DEFECTS"]);
+});
+
+test("keeps reconciliation idempotent and fails loudly for verified unresolved or conflicting evidence", () => {
+  const state = createCycleState(jira, { timestamp: at });
+  const selection = { lifecycleKey: state.lifecycleKey, phase: "plan", jiraKey: state.source.key, taskwarriorUuid: "" };
+  const parsed = parseLifecycleSearchRecords({ data: { results: [persistedRecord(state, "plan", "APPROVED", { id: "plan-proof" })] } }, selection);
+  const recovered = reconcileCycleFromLifecycle(state, parsed.records, { timestamp: at });
+  assert.equal(recovered.ok, true);
+  const repeated = reconcileCycleFromLifecycle(recovered.state, parsed.records, { timestamp: at });
+  assert.equal(repeated.ok, true);
+  assert.equal(repeated.reconciled, false);
+  assert.deepEqual(repeated.state, recovered.state);
+
+  const noEvidence = reconcileCycleFromLifecycle(state, [], { timestamp: at });
+  assert.equal(noEvidence.ok, true);
+  assert.equal(noEvidence.reconciled, false);
+
+  const unresolved = parseLifecycleSearchRecords({ data: { results: [persistedRecord(state, "plan", "APPROVED", { id: "unclear", artifact: "Saved artifact without a cycle outcome." })] } }, selection);
+  const unresolvedResult = reconcileCycleFromLifecycle(state, unresolved.records, { timestamp: at });
+  assert.equal(unresolvedResult.ok, false);
+  assert.equal(unresolvedResult.error.code, "lifecycle_outcome_undetermined");
+  assert.equal(unresolvedResult.artifactId, "unclear");
+  assert.deepEqual(unresolvedResult.state, state);
+
+  const conflicting = parseLifecycleSearchRecords({ data: { results: [persistedRecord(state, "plan", "APPROVED", { id: "approved" }), persistedRecord(state, "plan", "BLOCKED", { id: "blocked" })] } }, selection);
+  const conflict = reconcileCycleFromLifecycle(state, conflicting.records, { timestamp: at });
+  assert.equal(conflict.ok, false);
+  assert.equal(conflict.error.code, "lifecycle_outcome_undetermined");
+});
+
+test("uses only fresh identified records for repeated phase reconciliation", () => {
+  const firstAttempt = awaitingPhaseState("resolution");
+  const firstSelection = { lifecycleKey: firstAttempt.lifecycleKey, phase: "resolution", jiraKey: firstAttempt.source.key, taskwarriorUuid: "" };
+  const firstArtifact = parseLifecycleSearchRecords({ data: { results: [persistedRecord(firstAttempt, "resolution", "RESOLVED", { id: "resolution-first" })] } }, firstSelection);
+  const firstRecovery = reconcileCycleFromLifecycle(firstAttempt, firstArtifact.records, { timestamp: at });
+  assert.equal(firstRecovery.ok, true);
+
+  const rereviewAttempt = awaitingEvidence(firstRecovery.state);
+  const secondAttempt = awaitingEvidence(evidence(rereviewAttempt, "rereview", "REQUEST_CHANGES", "rereview-second"));
+  const replay = reconcileCycleFromLifecycle(secondAttempt, firstArtifact.records, { timestamp: at });
+  assert.equal(replay.ok, true);
+  assert.equal(replay.reconciled, false);
+  assert.deepEqual(replay.state, secondAttempt);
+
+  const toolCallOnly = {
+    ...secondAttempt,
+    evidence: secondAttempt.evidence.map((item) => item.artifactId === "resolution-first" ? { ...item, artifactId: null } : item),
+  };
+  const toolCallReplay = reconcileCycleFromLifecycle(toolCallOnly, firstArtifact.records, { timestamp: at });
+  assert.equal(toolCallReplay.ok, true);
+  assert.equal(toolCallReplay.reconciled, false);
+  assert.deepEqual(toolCallReplay.state, toolCallOnly);
+
+  const idlessBase = persistedRecord(secondAttempt, "resolution", "RESOLVED", { id: "idless" });
+  const idless = parseLifecycleSearchRecords({ data: { results: [{ content: idlessBase.content }] } }, { lifecycleKey: secondAttempt.lifecycleKey, phase: "resolution", jiraKey: secondAttempt.source.key, taskwarriorUuid: "" });
+  const unresolved = reconcileCycleFromLifecycle(secondAttempt, idless.records, { timestamp: at });
+  assert.equal(unresolved.ok, false);
+  assert.equal(unresolved.error.code, "lifecycle_outcome_undetermined");
+  assert.deepEqual(unresolved.state, secondAttempt);
+
+  const fresh = parseLifecycleSearchRecords({ data: { results: [persistedRecord(secondAttempt, "resolution", "RESOLVED", { id: "resolution-second" })] } }, { lifecycleKey: secondAttempt.lifecycleKey, phase: "resolution", jiraKey: secondAttempt.source.key, taskwarriorUuid: "" });
+  const recovered = reconcileCycleFromLifecycle(secondAttempt, [...firstArtifact.records, ...fresh.records], { timestamp: at });
+  assert.equal(recovered.ok, true);
+  assert.equal(recovered.reconciled, true);
+  assert.deepEqual({ phase: recovered.state.phase, status: recovered.state.status }, { phase: "rereview", status: "awaiting-resume" });
+
+  const blockedAttempt = awaitingPhaseState("implementation");
+  const blockedArtifact = parseLifecycleSearchRecords({ data: { results: [persistedRecord(blockedAttempt, "implementation", "BLOCKED", { id: "implementation-blocked" })] } }, { lifecycleKey: blockedAttempt.lifecycleKey, phase: "implementation", jiraKey: blockedAttempt.source.key, taskwarriorUuid: "" });
+  const blocked = reconcileCycleFromLifecycle(blockedAttempt, blockedArtifact.records, { timestamp: at });
+  assert.equal(blocked.ok, true);
+  const resumed = prepareCycleResume(blocked.state);
+  assert.equal(resumed.ok, true);
+  const retry = awaitingEvidence(resumed.state);
+  const blockedReplay = reconcileCycleFromLifecycle(retry, blockedArtifact.records, { timestamp: at });
+  assert.equal(blockedReplay.ok, true);
+  assert.equal(blockedReplay.reconciled, false);
+  assert.deepEqual(blockedReplay.state, retry);
+});
+
+test("buildResumeSource always supplies the central cycle reporting contract", () => {
+  for (const [phase, outcomes] of Object.entries(CYCLE_PHASE_OUTCOMES)) {
+    const state = { ...awaitingPhaseState(phase), status: "awaiting-resume" };
+    const packet = buildResumeSource(state);
+    assert.match(packet, /Cycle dispatch contract \(non-negotiable\):/);
+    assert.match(packet, /cycleDispatch: true/);
+    assert.match(packet, new RegExp(`cyclePhase: ${phase}`));
+    assert.match(packet, new RegExp(`validOutcomes: ${outcomes.join(", ")}`));
+    assert.match(packet, new RegExp(`requiredMarker: <!-- ima-cycle outcome: phase=${phase}; outcome=<valid-outcome> -->`));
+    assert.match(packet, /Persist this phase through ima_lifecycle/);
+  }
+});
+
+test("keeps verified live writes advisory and reports unresolved outcomes with an artifact reference", () => {
+  const state = createCycleState(jira, { timestamp: at });
+  const duplicate = `${marker("plan", "APPROVED")}\n${marker("plan", "APPROVED")}`;
+  const matched = observeLifecycleResult({ ...lifecycleObservation(state, "plan", "APPROVED"), input: { type: "plan", identity, artifact: duplicate } });
+  assert.equal(matched.matched, true);
+
+  const unresolved = observeLifecycleResult({
+    ...lifecycleObservation(state, "plan", "APPROVED"),
+    input: { type: "plan", identity, artifact: "No cycle marker." },
+    result: { details: { status: "completed", phase: "plan", lifecycleKey: state.lifecycleKey, artifactId: "persisted-plan", receiptAccepted: true, semanticRecall: { matched: true } }, content: [], isError: false },
+  });
+  assert.equal(unresolved.matched, false);
+  assert.equal(unresolved.diagnostic.phase, "plan");
+  assert.equal(unresolved.diagnostic.artifactId, "persisted-plan");
+});
+
+test("coordinates a read-only persisted-evidence reconciliation shell", async () => {
+  const state = createCycleState(jira, { timestamp: at });
+  const entries = [];
+  const calls = [];
+  const result = await coordinateCycleReconcile({
+    state,
+    run: async (program, args) => { calls.push([program, args]); return { code: 0, stdout: JSON.stringify(vestigeSearch([persistedRecord(state, "plan", "APPROVED", { id: "plan-proof" })])) }; },
+    appendState: (next) => entries.push(next),
+    timestamp: at,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.reconciled, true);
+  assert.deepEqual(calls, [["ima-mcp", ["vestige", "search", `${state.lifecycleKey} plan`, "--timeout-ms", "300000", "--json"]]]);
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].phase, "implementation");
+
+  const noEvidence = await coordinateCycleReconcile({ state, run: async () => vestigeSearch(), appendState: () => { throw new Error("must not append"); }, timestamp: at });
+  assert.equal(noEvidence.ok, true);
+  assert.equal(noEvidence.reconciled, false);
+
+  const malformed = await coordinateCycleReconcile({ state, run: async () => ({ ok: true, command: "vestige.search", data: {} }), appendState: () => {}, timestamp: at });
+  assert.equal(malformed.ok, false);
+  assert.equal(malformed.error.code, "cycle_reconcile_read_failed");
+
+  const unresolved = await coordinateCycleReconcile({ state, run: async () => vestigeSearch([persistedRecord(state, "plan", "APPROVED", { id: "unclear", artifact: "No cycle marker." })]), appendState: () => {}, timestamp: at });
+  assert.equal(unresolved.ok, false);
+  assert.equal(unresolved.error.code, "lifecycle_outcome_undetermined");
+  assert.deepEqual(unresolved.diagnostic, { phase: "plan", artifactId: "unclear" });
+});
+
+test("rejects unsuccessful or misidentified Vestige search envelopes", async () => {
+  const state = createCycleState(jira, { timestamp: at });
+  const candidate = persistedRecord(state, "plan", "APPROVED", { id: "envelope-proof" });
+  const rejectedEnvelopes = [
+    { code: 0, stdout: JSON.stringify({ ok: false, command: "vestige.search", data: { results: [candidate] } }) },
+    { code: 0, stdout: JSON.stringify({ ok: true, command: "vestige.get", data: { results: [candidate] } }) },
+    { code: 0, stdout: JSON.stringify({ ok: true, command: "vestige.search", error: "adapter failure", data: { results: [candidate] } }) },
+  ];
+  for (const response of rejectedEnvelopes) {
+    const entries = [];
+    const result = await coordinateCycleReconcile({ state, run: async () => response, appendState: (next) => entries.push(next), timestamp: at });
+    assert.equal(result.ok, false);
+    assert.equal(result.error.code, "cycle_reconcile_read_failed");
+    assert.deepEqual(result.state, state);
+    assert.deepEqual(entries, []);
+
+    const routed = [];
+    const harness = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: state }], async () => response);
+    registerCycleExtension(harness.pi, { applyRoute: async (_pi, _ctx, phase) => { routed.push(phase); return { ok: true }; }, expandPrompt: async () => "expanded prompt" });
+    await harness.handlers.get("session_start")({}, harness.ctx);
+    await harness.commands.get("ima:cycle").handler("resume", harness.ctx);
+    assert.deepEqual(routed, []);
+    assert.deepEqual(harness.entries, []);
+    assert.deepEqual(harness.messages, []);
+  }
+});
+
+test("preserves awaiting-evidence state when reconciliation reads fail", async () => {
+  const state = createCycleState(jira, { timestamp: at });
+  for (const run of [
+    async () => ({ code: 1 }),
+    async () => { throw new Error("vestige unavailable"); },
+  ]) {
+    const entries = [];
+    const result = await coordinateCycleReconcile({ state, run, appendState: (next) => entries.push(next), timestamp: at });
+    assert.equal(result.ok, false);
+    assert.equal(result.error.code, "cycle_reconcile_read_failed");
+    assert.deepEqual(result.state, state);
+    assert.deepEqual(entries, []);
+  }
+});
+
+test("status and resume self-heal from persisted lifecycle evidence", async () => {
+  const stuck = createCycleState(jira, { timestamp: at });
+  const search = async (program, args) => {
+    assert.equal(program, "ima-mcp");
+    assert.equal(args[1], "search");
+    return vestigeSearch([persistedRecord(stuck, "plan", "APPROVED", { id: "plan-proof" })]);
+  };
+  const statusHarness = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: stuck }], search);
+  registerCycleExtension(statusHarness.pi, { applyRoute: async () => ({ ok: true }), expandPrompt: async () => "expanded prompt" });
+  await statusHarness.handlers.get("session_start")({}, statusHarness.ctx);
+  await statusHarness.commands.get("ima:cycle").handler("status", statusHarness.ctx);
+  assert.equal(statusHarness.entries.length, 1);
+  assert.deepEqual({ phase: statusHarness.entries[0].data.phase, status: statusHarness.entries[0].data.status }, { phase: "implementation", status: "awaiting-resume" });
+
+  const resumeHarness = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: stuck }], search);
+  const routed = [];
+  registerCycleExtension(resumeHarness.pi, { applyRoute: async (_pi, _ctx, phase) => { routed.push(phase); return { ok: true }; }, expandPrompt: async () => "expanded prompt" });
+  await resumeHarness.handlers.get("session_start")({}, resumeHarness.ctx);
+  const command = resumeHarness.commands.get("ima:cycle");
+  const sent = resumeHarness.waitForSend();
+  const resumed = command.handler("resume", resumeHarness.ctx);
+  await sent;
+  assert.equal(resumeHarness.entries.length, 1);
+  assert.deepEqual(routed, ["implementation"]);
+  const recovered = resumeHarness.entries[0].data;
+  resumeHarness.handlers.get("input")({ source: "extension", text: "expanded prompt" });
+  resumeHarness.handlers.get("before_agent_start")({ prompt: "expanded prompt" });
+  resumeHarness.handlers.get("agent_start")();
+  await resumeHarness.handlers.get("tool_result")(lifecycleToolResult(awaitingEvidence(recovered), "implementation", "COMPLETED"), resumeHarness.ctx);
+  resumeHarness.handlers.get("agent_end")({ messages: [{ role: "assistant", stopReason: "stop" }] });
+  resumeHarness.handlers.get("agent_settled")();
+  await resumed;
+  assert.equal(resumeHarness.entries.at(-1).data.phase, "test");
+  assert.equal(resumeHarness.entries.at(-1).data.status, "awaiting-resume");
+});
+
+test("keeps status and resume non-advancing for unresolved persisted evidence", async () => {
+  const stuck = createCycleState(jira, { timestamp: at });
+  const search = async () => vestigeSearch([persistedRecord(stuck, "plan", "APPROVED", { id: "unclear", artifact: "Saved artifact without a cycle outcome." })]);
+
+  const statusHarness = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: stuck }], search);
+  registerCycleExtension(statusHarness.pi, { applyRoute: async () => ({ ok: true }), expandPrompt: async () => "expanded prompt" });
+  await statusHarness.handlers.get("session_start")({}, statusHarness.ctx);
+  await statusHarness.commands.get("ima:cycle").handler("status", statusHarness.ctx);
+  assert.deepEqual(statusHarness.entries, []);
+  assert.match(statusHarness.statuses.at(-1).value, /awaiting-evidence/);
+  const statusWarning = statusHarness.notifications.find(({ level }) => level === "warning");
+  assert.ok(statusWarning);
+  assert.match(statusWarning.message, /outcome is unresolved/);
+  assert.match(statusWarning.message, /unclear/);
+
+  const routed = [];
+  const resumeHarness = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: stuck }], search);
+  registerCycleExtension(resumeHarness.pi, { applyRoute: async (_pi, _ctx, phase) => { routed.push(phase); return { ok: true }; }, expandPrompt: async () => "expanded prompt" });
+  await resumeHarness.handlers.get("session_start")({}, resumeHarness.ctx);
+  await resumeHarness.commands.get("ima:cycle").handler("resume", resumeHarness.ctx);
+  assert.deepEqual(routed, []);
+  assert.deepEqual(resumeHarness.messages, []);
+  assert.deepEqual(resumeHarness.entries, []);
+  const resumeWarning = resumeHarness.notifications.find(({ level }) => level === "warning");
+  assert.ok(resumeWarning);
+  assert.match(resumeWarning.message, /outcome is unresolved/);
+  assert.match(resumeWarning.message, /unclear/);
+});
+
+test("warns instead of silently discarding a verified unresolved live write", async () => {
+  const state = createCycleState(jira, { timestamp: at });
+  const harness = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: state }]);
+  registerCycleExtension(harness.pi, { applyRoute: async () => ({ ok: true }), expandPrompt: async () => "expanded prompt" });
+  await harness.handlers.get("session_start")({}, harness.ctx);
+  await harness.handlers.get("tool_result")({
+    ...lifecycleToolResult(state, "plan", "APPROVED"),
+    input: { type: "plan", identity, artifact: "No cycle marker." },
+    details: { status: "completed", phase: "plan", lifecycleKey: state.lifecycleKey, artifactId: "persisted-plan", receiptAccepted: true, semanticRecall: { matched: true } },
+  }, harness.ctx);
+  assert.equal(harness.entries.length, 0);
+  assert.match(harness.notifications.at(-1).message, /outcome is unresolved/);
+  assert.match(harness.notifications.at(-1).message, /persisted-plan/);
 });
