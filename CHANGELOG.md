@@ -20,6 +20,7 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 - `/ima:review`, `/ima:rereview`, `/ima:review-verify`, `/ima:adversarial-review`, and `/ima:test` now restore their bounded review/test methodology through named Pi skills.
 - `/ima:review-verify` now limits inspection to the evidence range plus one named dependency hop, and `/ima:test` now requires terminal report fields and anti-pattern guards covered by focused assertions.
 - `/ima:implement`, `/ima:implement-js`, `/ima:implement-wp`, and `/ima:resolve-review` now restore Pi-native security, functional-programming, bounded-delegation, and review-handoff contracts, with focused workflow-prompt assertions protecting the critical boundaries.
+- `/ima:design-to-code` and `/ima:ui-ux-review` now restore Pi-native visual/design-to-code prompt contracts through named skills, guardrails, and focused static workflow-prompt coverage.
 
 ### Fixed
 

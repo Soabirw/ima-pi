@@ -121,6 +121,22 @@ test("visual workflows preserve external-browser evidence and terminal planning 
   for (const name of ["plan", "test", "review", "implement-wp"]) has(await prompt(name), name === "test" ? "visual-diff" : "vision-handoff");
 });
 
+test("visual prompt restorations name skills and guardrails", async () => {
+  const design = await prompt("design-to-code");
+  assert.match(design, /^Load installed skills only where evidence requires them\.[^\n]*`ima-vision-handoff`[^\n]*`ima-memory-workflow`[^\n]*`ima-brand`[^\n]*`ima-bootstrap`[^\n]*`livecanvas`[^\n]*`php-fp-wordpress`[^\n]*`mcp-atlassian`[^\n]*`mcp-context7`[^\n]*`playwright`[^\n]*`ima-delegation-contract`[^\n]*$/mi);
+  assert.match(design, /^Separate visual facts,[^\n]*Bootstrap utilities before custom CSS[^\n]*IMA SCSS variables and mixins before hard-coded values[^\n]*reusable components before new abstractions[^\n]*$/mi);
+  for (const value of ["Never hard-code IMA colors when brand variables exist.", "Never paraphrase design copy unless copywriting is requested.", "Verify asset paths before specifying implementation work.", "Do not duplicate site header, footer, or global components.", "Do not broaden the work into an unrelated redesign or refactor."]) assert.match(design, new RegExp(`^- ${value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "mi"));
+  for (const value of ["1. Goal", "2. Source Material", "3. Visual Requirements", "4. WordPress/Bootstrap Mapping", "5. Implementation Scope + non-goals", "6. Responsive & Accessibility Requirements", "7. Security & Data Boundaries", "8. Verification", "9. Open Questions"]) assert.match(design, new RegExp(`^${value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "mi"));
+  assert.doesNotMatch(design, /\b(?:ETA|sub_recipes)\b|ima-mcp serena/i);
+
+  const ui = await prompt("ui-ux-review");
+  assert.match(ui, /^For a live target,[^\n]*`mcp-chrome-devtools`[^\n]*$/mi);
+  assert.match(ui, /^Load only skills supported by the review evidence:[^\n]*`ima-vision-handoff`[^\n]*`ima-memory-workflow`[^\n]*`ima-bootstrap`[^\n]*`ima-brand`[^\n]*`mcp-context7`[^\n]*`playwright`[^\n]*(?:`mcp-serena`(?: or `rg`)?|`rg`)[^\n]*`ima-delegation-contract`[^\n]*$/mi);
+  assert.match(ui, /^Review accessibility for [^\n]*semantic landmarks[^\n]*keyboard reachability[^\n]*focus visibility[^\n]*control labels[^\n]*heading order[^\n]*target size[^\n]*contrast risk[^\n]*alt text[^\n]*reduced-motion risk[^\n]*screen-reader name\/role\/value\. Review responsive behavior for [^\n]*wrapping[^\n]*overflow[^\n]*stacking order[^\n]*sticky\/fixed elements[^\n]*tables[^\n]*forms[^\n]*media crops[^\n]*touch targets[^\n]*text fit\. Check interaction states: hover[^\n]*focus[^\n]*active[^\n]*disabled[^\n]*empty[^\n]*loading[^\n]*validation errors[^\n]*modal\/drawer[^\n]*navigation[^\n]*long content\.$/mi);
+  assert.match(ui, /^For CSS and Bootstrap guidance,[^\n]*utilities first[^\n]*IMA SCSS variables and mixins[^\n]*\.container\/\.row\/\.col-\{bp\}-\{n\}[^\n]*\.ima-row\/\.ima-col-\{bp\}-\{n\}[^\n]*Avoid hard-coded IMA colors[^\n]*one-off media queries[^\n]*nested or decorative card shells[^\n]*Apply a concise UX lens:[^\n]*primary user job[^\n]*next action obvious[^\n]*controls are discoverable[^\n]*labels are concrete[^\n]*long, missing, loading, or error content[^\n]*small widths with touch and keyboard input\.$/mi);
+  assert.doesNotMatch(ui, /\b(?:ETA|sub_recipes)\b|ima-mcp serena|review-and-patch/i);
+});
+
 test("code-review skill restores the Pi-native verified-review contract", async () => {
   const text = await skill("code-review");
   for (const value of ["name: code-review", "Four passes", "Integration Contract", "VERDICT: CONFIRMED|WITHDRAWN|PARTIAL", "REVIEW-NNN", "Request-changes gate", "refactor as needed"]) has(text, value);
