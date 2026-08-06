@@ -13,6 +13,7 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ### Changed
 
+- `/ima:document`, `/ima:memorize`, and `/ima:scorecard` now restore their Pi-native documentation, memory-routing, and technical-scorecard contracts through packaged skills.
 - `/ima:document` now routes manifest-only assessment with `writeScope: []`, while `documenter` remains limited to exact approved documentation targets.
 - The `vision-handoff` agent now declares `ima-vision-handoff`, and package discovery verifies all four shared skills.
 - `/ima:review`, `/ima:rereview`, `/ima:review-verify`, `/ima:adversarial-review`, and `/ima:test` now restore their bounded review/test methodology through named Pi skills.
@@ -20,6 +21,7 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ### Fixed
 
+- `/ima:scorecard` no longer names the unbundled `rails` skill; its contract test prevents reintroduction.
 - Lifecycle persistence and delegated completion no longer reject otherwise valid human-authored reports solely for missing or reordered headings or an exact verifier format.
 - Failed delegation and focused continuations now derive terminal state and text from the same latest assistant message, preventing stale prior text from appearing as current unverified output.
 - Secret redaction no longer expands an accepted 128,000-character lifecycle artifact past its persisted bound.

@@ -127,6 +127,7 @@ test("scorecard and adversarial-review retain bounded quality contracts", async 
   const scorecard = await prompt("scorecard");
   for (const value of ["Serena-first", "non-mutating validators", "Code Standards", "Security", "Test Coverage", "Documentation", "Maintainability", "A/B/C/D/F", "cap Code Standards at C", "Scorecard", "later explicit request", "stop read-only"]) has(scorecard, value);
   for (const value of ["code-review", "php-fp", "js-fp", "mcp-serena", "composer.json", "package.json", "Top Improvements"]) has(scorecard, value);
+  assert.doesNotMatch(scorecard, /\brails\b/i);
   assert.doesNotMatch(scorecard, /ima-editorial-scorecard/i);
   const adversarial = await prompt("adversarial-review");
   for (const value of ["one complete packet", "adversary-a", "adversary-b", "parallel", "distinct", "provider, model", "one-sided", "Dropped Adversarial Claims", "REVIEW-NNN", "advisory", "/ima:review", "code-review", "ima-delegation-contract"]) has(adversarial, value);
