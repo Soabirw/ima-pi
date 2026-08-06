@@ -35,11 +35,14 @@ test("cycle resolution prompts expose exact phase markers and bounded handoffs",
     has(text, "ima_lifecycle");
     has(text, "/ima:cycle");
   }
+  for (const value of ["code-review", "ima-security-guardrails", "functional-programmer", "ima-delegation-contract", "REVIEW-NNN", "retained and not withdrawn", "precise evidence", "required observable outcome", "decided files/symbols", "control/data/error behavior", "tests and acceptance checks", "constraints/non-goals", "CONFIRMED", "resolution ordering/dependencies", "resolved", "blocked", "not attempted", "Mechanical line-number adjustment"]) has(resolution, value);
+  assert.doesNotMatch(resolution, /remediation brief is `SUFFICIENT`/i);
 });
 test("implementation prompts expose a MID current-session, plan-bound terminal contract", async () => {
   for (const name of implementationPrompts) {
     const text = await prompt(name);
     for (const value of ["description:", "argument-hint: \"[approved-plan-source]\"", "MID-tier", "current session", "approved", "scope", "non-goals", "ima_context", "Serena-first", "ima_delegate", "ima_lifecycle", "implementation", "contradiction", "verification", "/ima:plan", "/ima:test", "formal test or review"]) has(text, value);
+    for (const sharedSkill of ["ima-security-guardrails", "functional-programmer", "ima-delegation-contract"]) has(text, sharedSkill);
     for (const prohibition of ["Do not invoke `/ima:cycle`", "a workflow DSL", "Goose recipes", "subrecipe mechanics", "does not change the active model"]) has(text, prohibition);
   }
 });
@@ -61,7 +64,9 @@ test("JavaScript implementation prompt preserves Node, FP, security, and visual 
 
 test("WordPress implementation prompt treats security as a primary production contract", async () => {
   const text = await prompt("implement-wp");
-  for (const value of ["primary production", "nonce", "capability", "Sanitize", "escape output", "$wpdb->prepare()", "WordPress APIs", "hooks", "actions/filters", "vision-handoff"]) has(text, value);
+  for (const value of ["primary production", "nonce", "capability", "Sanitize", "escape output", "$wpdb->prepare()", "declare(strict_types=1)", "do_action()", "apply_filters()", "function_exists()", "WordPress APIs", "hooks", "actions/filters", "vision-handoff"]) has(text, value);
+  for (const value of ["For AJAX handlers, verify a nonce with `wp_verify_nonce()` or `check_ajax_referer()` before processing", "privileged operations additionally authorize the caller with `current_user_can()`", "intentional public handlers do not require an authenticated capability check"]) has(text, value);
+  assert.doesNotMatch(text, /For every state-changing or privileged action, verify a nonce and separately enforce capability\/authorization checks/i);
 });
 
 
