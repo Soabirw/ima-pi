@@ -11,6 +11,7 @@ import {
   parseCycleCommand,
   parseJiraTracker,
   parseTaskwarriorTracker,
+  prepareCycleResume,
   reduceCycleState,
   requiredCloseoutEvidence,
   validateCycleState,
@@ -229,6 +230,51 @@ test("reduces the fixed lifecycle and holds for explicit resume", () => {
   state = evidence(awaitingEvidence(state), "review", "APPROVED");
   state = evidence(awaitingEvidence(state), "document", "READY");
   assert.equal(requiredCloseoutEvidence(state).valid, true);
+});
+
+test("prepares stopped and recoverable phase blocks for explicit resume", () => {
+  const resumable = implementationAwaitingResumeState();
+  assert.equal(prepareCycleResume(resumable).state.status, "awaiting-resume");
+
+  const stopped = prepareCycleResume({ ...resumable, status: "stopped", stoppedAt: at, stoppedPhase: resumable.phase });
+  assert.equal(stopped.ok, true);
+  assert.equal(stopped.state.status, "awaiting-resume");
+  assert.equal(stopped.state.stoppedAt, undefined);
+  assert.equal(stopped.state.stoppedPhase, undefined);
+
+  let blocked = createCycleState(jira, { timestamp: at });
+  blocked = evidence(blocked, "plan", "APPROVED");
+  blocked = evidence(awaitingEvidence(blocked), "implementation", "COMPLETED");
+  blocked = evidence(awaitingEvidence(blocked), "test", "PASSED");
+  blocked = evidence(awaitingEvidence(blocked), "review", "BLOCKED");
+  const snapshot = structuredClone(blocked);
+  const retry = prepareCycleResume(blocked);
+  assert.equal(retry.ok, true);
+  assert.equal(retry.state.status, "awaiting-resume");
+  assert.deepEqual(retry.state.blockers, []);
+  assert.equal(retry.state.evidence.at(-1).outcome, "BLOCKED");
+  assert.deepEqual(blocked, snapshot);
+
+  const blockedAgain = evidence(awaitingEvidence(retry.state), "review", "BLOCKED", "review-blocked-again");
+  assert.equal(blockedAgain.status, "blocked");
+  assert.equal(blockedAgain.evidence.filter((item) => item.phase === "review" && item.outcome === "BLOCKED").length, 2);
+  assert.equal(prepareCycleResume(blockedAgain).ok, true);
+
+  let capped = createCycleState(jira, { timestamp: at, reviewCap: 0 });
+  capped = evidence(capped, "plan", "APPROVED");
+  capped = evidence(awaitingEvidence(capped), "implementation", "COMPLETED");
+  capped = evidence(awaitingEvidence(capped), "test", "PASSED");
+  capped = evidence(awaitingEvidence(capped), "review", "REQUEST_CHANGES");
+  assert.deepEqual(capped.blockers, ["review_cap_exceeded"]);
+  assert.equal(prepareCycleResume(capped).error.code, "cycle_resume_unavailable");
+
+  let defects = createCycleState(jira, { timestamp: at });
+  defects = evidence(defects, "plan", "APPROVED");
+  defects = evidence(awaitingEvidence(defects), "implementation", "COMPLETED");
+  defects = evidence(awaitingEvidence(defects), "test", "DEFECTS");
+  assert.deepEqual(defects.blockers, ["test:DEFECTS"]);
+  assert.equal(prepareCycleResume(defects).error.code, "cycle_resume_unavailable");
+  assert.equal(prepareCycleResume({ ...blocked, status: "blocked-after-tracker-close", blockers: [] }).error.code, "cycle_resume_unavailable");
 });
 
 test("renders ordered sanitized evidence with explicit source fields", () => {
@@ -686,6 +732,46 @@ test("default cycle wiring buffers lifecycle evidence until settlement", async (
   assert.equal(harness.entries[0].data.evidence.at(-1).outcome, "COMPLETED");
   assert.equal(harness.entries[0].data.evidence.at(-1).toolCallId, "implementation-tool");
   assert.equal(harness.entries.length, 1);
+});
+
+test("default cycle wiring retries a recoverable blocked phase", async () => {
+  let blocked = createCycleState(jira, { timestamp: at });
+  blocked = evidence(blocked, "plan", "APPROVED");
+  blocked = evidence(awaitingEvidence(blocked), "implementation", "COMPLETED");
+  blocked = evidence(awaitingEvidence(blocked), "test", "PASSED");
+  blocked = evidence(awaitingEvidence(blocked), "review", "BLOCKED");
+  const recovered = prepareCycleResume(blocked);
+  assert.equal(recovered.ok, true);
+
+  const harness = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: blocked }]);
+  const routedPhases = [];
+  const expandedPrompts = [];
+  registerCycleExtension(harness.pi, {
+    applyRoute: async (_pi, _ctx, phase) => { routedPhases.push(phase); return { ok: true }; },
+    expandPrompt: async (value) => { expandedPrompts.push(value); return "expanded prompt"; },
+  });
+  await harness.handlers.get("session_start")({}, harness.ctx);
+
+  const command = harness.commands.get("ima:cycle");
+  const sendCalled = harness.waitForSend();
+  const commandPromise = command.handler("resume", harness.ctx);
+  await sendCalled;
+  assert.deepEqual(routedPhases, ["review"]);
+  assert.deepEqual(expandedPrompts, [buildResumeSource(recovered.state)]);
+
+  harness.handlers.get("input")({ source: "extension", text: "expanded prompt" });
+  harness.handlers.get("before_agent_start")({ prompt: "expanded prompt" });
+  harness.handlers.get("agent_start")();
+  await harness.handlers.get("tool_result")(lifecycleToolResult(awaitingEvidence(recovered.state), "review", "REQUEST_CHANGES", "review-retry-tool"), harness.ctx);
+  harness.handlers.get("agent_end")({ messages: [{ role: "assistant", stopReason: "stop" }] });
+  harness.handlers.get("agent_settled")();
+  await commandPromise;
+
+  assert.equal(harness.entries.length, 1);
+  assert.equal(harness.entries[0].data.phase, "resolution");
+  assert.equal(harness.entries[0].data.status, "awaiting-resume");
+  assert.equal(harness.entries[0].data.reviewAttempts, 1);
+  assert.equal(harness.entries[0].data.evidence.at(-1).outcome, "REQUEST_CHANGES");
 });
 
 test("default cycle wiring discards buffered evidence after terminal failure", async () => {

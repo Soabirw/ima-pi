@@ -17,6 +17,7 @@ import {
   parseCycleCommand,
   parseJiraTracker,
   parseTaskwarriorTracker,
+  prepareCycleResume,
   reduceCycleState,
   requiredCloseoutEvidence,
   sanitizeCycleError,
@@ -544,8 +545,9 @@ export function registerCycleExtension(pi: ExtensionAPI, dependencies: CycleExte
         return;
       }
       if (parsed.command === "resume") {
-        const resumable = state.status === "stopped" ? { ...copyState(state), status: "awaiting-resume" as const, stoppedAt: undefined, stoppedPhase: undefined } : state;
-        const result = await dispatchCyclePhase({ state: resumable, applyRoute: (phase) => dependencies.applyRoute(pi, ctx, phase), appendState: appendFor(pi), sendUserMessage: sendCycleUserMessage, expandPrompt: (value) => dependencies.expandPrompt(value, ctx.cwd) });
+        const resumable = prepareCycleResume(state);
+        if (!resumable.ok) { notify(ctx, resumable.error.message, "warning"); return; }
+        const result = await dispatchCyclePhase({ state: resumable.state, applyRoute: (phase) => dependencies.applyRoute(pi, ctx, phase), appendState: appendFor(pi), sendUserMessage: sendCycleUserMessage, expandPrompt: (value) => dependencies.expandPrompt(value, ctx.cwd) });
         if (result.ok) { state = result.state; notifyState(ctx); } else notify(ctx, result.error.message, "warning");
         return;
       }

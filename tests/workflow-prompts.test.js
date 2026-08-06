@@ -72,6 +72,7 @@ test("quality and learning prompts retain distinct bounded terminal contracts", 
   const rereview = await prompt("rereview"); for (const value of ["code-review", "regression", "next unused ID"]) has(rereview, value);
   const verify = await prompt("review-verify"); for (const value of ["CONFIRMED|WITHDRAWN|PARTIAL", "Do not edit", "one dependency hop", "only that evidence range", "code-review", "malformed brief"]) has(verify, value); assert.doesNotMatch(verify, /range, named remediation surface/i);
   const document = await prompt("document"); for (const value of ["exact approved", "external-update manifest", "Serena", "Vestige", "Qdrant", "ima_lifecycle"]) has(document, value);
+  for (const value of ["ima-memory-workflow", "ima-vision-handoff", "ima-delegation-contract", "active docs", "archive docs", "transient notes", "high-signal", "document-assessor", "documenter", "writeScope"]) has(document, value);
 });
 
 
@@ -125,6 +126,8 @@ test("code-review skill restores the Pi-native verified-review contract", async 
 test("scorecard and adversarial-review retain bounded quality contracts", async () => {
   const scorecard = await prompt("scorecard");
   for (const value of ["Serena-first", "non-mutating validators", "Code Standards", "Security", "Test Coverage", "Documentation", "Maintainability", "A/B/C/D/F", "cap Code Standards at C", "Scorecard", "later explicit request", "stop read-only"]) has(scorecard, value);
+  for (const value of ["code-review", "php-fp", "js-fp", "mcp-serena", "composer.json", "package.json", "Top Improvements"]) has(scorecard, value);
+  assert.doesNotMatch(scorecard, /ima-editorial-scorecard/i);
   const adversarial = await prompt("adversarial-review");
   for (const value of ["one complete packet", "adversary-a", "adversary-b", "parallel", "distinct", "provider, model", "one-sided", "Dropped Adversarial Claims", "REVIEW-NNN", "advisory", "/ima:review", "code-review", "ima-delegation-contract"]) has(adversarial, value);
   assert.doesNotMatch(adversarial, /ima_lifecycle/);
@@ -162,6 +165,7 @@ test("FNR-3025 support prompts encode gateway, safety, and terminal contracts", 
   for (const value of ["session_start", "recall", "Discover Vestige", "PASS, EMPTY, FAIL, or SKIP", "Never ingest", "Stop after"]) has(vestige, value);
   const memorize = await prompt("memorize");
   for (const value of ["natural language", "parameter grammar", "Vestige preference", "Serena `core`", "`conventions`", "`tech_stack`", "`suggested_commands`", "`task_completion`", "`memory_maintenance`", "ima_lifecycle", "Qdrant", "secrets", "exact preview", "explicit approval", "preferences save", "ima-mcp serena tools call edit_memory", "mode\":\"literal", "allow_multiple_occurrences\":false", "--allow-write", "verify", "Stop after one"]) has(memorize, value);
+  for (const value of ["ima-memory-workflow", "relevant standard memories", "Do not inspect repository files", "unless the user explicitly asks"]) has(memorize, value);
   const preflight = await prompt("preflight");
   for (const value of ["offline", "quick", "full", "PASS, WARN, FAIL, BLOCKED, SKIP, NOT_CONFIGURED", "0700", "bounded line/byte chunks", "redact", "cleanup", "retained", "ima_delegate", "IMA_PI_PREFLIGHT_CHILD_OK", "preflight-probe", "Goose subrecipe", "Stop after"]) has(preflight, value);
   const migrate = await prompt("migrate");

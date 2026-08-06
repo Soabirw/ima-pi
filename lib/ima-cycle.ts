@@ -275,7 +275,8 @@ export function reduceCycleState(stateValue: unknown, evidenceValue: unknown, op
   if (extracted && !extracted.ok) return { ok: false, state, error: extracted.error };
   if (!validPhase(phase) || !validOutcome(phase, outcome) || !boundedText(marker, 512) || !boundedText(toolCallId, 256)) return { ok: false, state, error: sanitizeCycleError("phase_evidence_invalid") };
   if (phase !== state.phase) return { ok: false, state, error: sanitizeCycleError("phase_evidence_out_of_order") };
-  const repeatableMarkerPhase = phase === "resolution" || phase === "rereview";
+  const previous = lastEvidence(state);
+  const repeatableMarkerPhase = phase === "resolution" || phase === "rereview" || (previous?.phase === phase && previous.outcome === "BLOCKED");
   if (state.evidence.some((item) => item.toolCallId === toolCallId || (!repeatableMarkerPhase && item.marker === marker))) return { ok: false, state, error: sanitizeCycleError("phase_evidence_duplicate") };
   const evidence: CycleEvidence = { phase, outcome, marker, toolCallId, artifactId: text(input?.artifactId) || null, timestamp: timestamp(input?.timestamp, options.timestamp ?? nowIso()) };
   const next = transition(state, outcome);
@@ -301,6 +302,18 @@ export function nextCyclePhase(stateValue: unknown, outcome?: string): CyclePhas
   if (!resolvedOutcome) return state.phase;
   const next = transition(state, resolvedOutcome);
   return next.status === "blocked" ? null : next.phase;
+}
+
+export function prepareCycleResume(stateValue: unknown): { ok: true; state: CycleState } | { ok: false; error: ReturnType<typeof sanitizeCycleError> } {
+  const valid = validateCycleState(stateValue);
+  if (!valid.valid) return { ok: false, error: valid.error };
+  const state = valid.state;
+  if (state.status === "awaiting-resume") return { ok: true, state };
+  if (state.status === "stopped") return { ok: true, state: { ...state, status: "awaiting-resume", stoppedAt: undefined, stoppedPhase: undefined } };
+  if (state.status === "blocked" && state.blockers.length === 1 && state.blockers[0] === `${state.phase}:BLOCKED`) {
+    return { ok: true, state: { ...state, status: "awaiting-resume", blockers: [] } };
+  }
+  return { ok: false, error: sanitizeCycleError("cycle_resume_unavailable") };
 }
 
 export function buildResumeSource(stateValue: unknown): string | null {
