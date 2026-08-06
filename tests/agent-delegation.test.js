@@ -78,15 +78,15 @@ test("builds a self-contained brief and immutable event state", () => {
   assert.equal(unsafe.partialEffects, true);
 });
 
-test("requires normal terminal reports, sections, observed identity, and session identity", () => {
+test("accepts non-empty reports regardless of heading wording or order while preserving terminal and identity gates", () => {
   const base = {
     final: { stopReason: "stop" },
-    text: "## Files\nlib/x.ts\n\n## Verification\npassed",
+    text: "Completed normally without headings.",
     requiredSections: ["files", "verification"],
     expected: { provider: "p", model: "m", thinking: "high" },
     observed: { provider: "p", model: "m", thinking: "high", sessionId: "s", sessionFile: "/sessions/s.jsonl" },
   };
-  assert.deepEqual(validateDelegationCompletion(base), { ok: true, failures: [] });
+  for (const text of ["Completed normally without headings.", "## Verification\npassed\n\n## Files\nlib/x.ts", "## Outcome\nThe work is complete."]) assert.deepEqual(validateDelegationCompletion({ ...base, text }), { ok: true, failures: [] }, text);
   const cases = [
     [{ ...base, final: undefined }, "assistant_missing"],
     [{ ...base, final: { stopReason: "error", isError: true } }, "assistant_error"],
@@ -94,10 +94,10 @@ test("requires normal terminal reports, sections, observed identity, and session
     [{ ...base, final: { stopReason: "length" } }, "assistant_truncated"],
     [{ ...base, final: { stopReason: "toolUse", hasPendingToolUse: true } }, "assistant_tool_use"],
     [{ ...base, text: "" }, "report_empty"],
-    [{ ...base, text: "## Files\nlib/x.ts" }, "report_section_missing"],
     [{ ...base, observed: { ...base.observed, provider: "other" } }, "runtime_identity_mismatch"],
     [{ ...base, observed: { ...base.observed, provider: "" } }, "runtime_identity_missing"],
     [{ ...base, observed: { ...base.observed, sessionFile: "" } }, "session_identity_missing"],
+    [{ ...base, expected: { ...base.expected, sessionId: "s", sessionFile: "/sessions/s.jsonl" }, observed: { ...base.observed, sessionId: "other" } }, "session_identity_mismatch"],
   ];
   for (const [input, code] of cases) assert.ok(validateDelegationCompletion(input).failures.includes(code), code);
 });
@@ -113,21 +113,15 @@ test("validates provider, model, and thinking identity independently of completi
   ]) assert.deepEqual(validateDelegationRouteIdentity({ expected, observed }), { ok: false, failures: ["runtime_identity_mismatch"] });
 });
 
-test("validates only the exact review verifier result format", () => {
-  const base = {
-    final: { stopReason: "stop" }, requiredSections: ["verdict", "reason"], resultFormat: "review-verdict-v1",
+test("accepts non-empty verifier-style prose reports", () => {
+  const input = {
+    final: { stopReason: "stop" },
+    text: "The finding is confirmed because the supplied evidence supports it.",
+    requiredSections: ["verdict", "reason"],
     expected: { provider: "p", model: "m", thinking: "high" },
     observed: { provider: "p", model: "m", thinking: "high", sessionId: "s", sessionFile: "/sessions/s.jsonl" },
   };
-  for (const verdict of ["CONFIRMED", "WITHDRAWN", "PARTIAL"]) {
-    assert.deepEqual(validateDelegationCompletion({ ...base, text: `VERDICT: ${verdict}\nREASON: supported by evidence` }), { ok: true, failures: [] });
-  }
-  for (const reason of ["x", "a b"]) {
-    assert.deepEqual(validateDelegationCompletion({ ...base, text: `VERDICT: CONFIRMED\nREASON: ${reason}` }), { ok: true, failures: [] });
-  }
-  for (const text of ["## Verdict\nCONFIRMED\n## Reason\nevidence", "VERDICT: INVALID\nREASON: evidence", "VERDICT: CONFIRMED\nREASON: ", "VERDICT: CONFIRMED\nREASON: evidence\nextra", "\nVERDICT: CONFIRMED\nREASON: evidence", "VERDICT: CONFIRMED\nREASON: evidence\n", "VERDICT: CONFIRMED\nREASON: evidence ", "VERDICT: CONFIRMED\nREASON: evidence\t"]) {
-    assert.ok(validateDelegationCompletion({ ...base, text }).failures.includes("report_format_invalid"), text);
-  }
+  assert.deepEqual(validateDelegationCompletion(input), { ok: true, failures: [] });
 });
 
 test("fingerprints canonical agent authority and ownership contracts", () => {

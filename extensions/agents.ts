@@ -157,12 +157,19 @@ export function createScopedTools(input: ScopedToolInput): ToolDefinition[] {
 
 const finalAssistant = (session: any) => {
   const message = [...(session.messages ?? [])].reverse().find((item: any) => item?.role === "assistant");
-  return message ? {
+  if (!message) return undefined;
+  const report = (Array.isArray(message.content) ? message.content : [])
+    .filter((item: any) => item?.type === "text")
+    .map((item: any) => typeof item.text === "string" ? item.text : "")
+    .join("")
+    .trim();
+  return {
     stopReason: message.stopReason,
     isError: message.stopReason === "error",
     hasPendingToolUse: message.stopReason === "toolUse" || message.content?.some((item: any) => item?.type === "toolCall"),
     errorMessage: message.errorMessage,
-  } : undefined;
+    report,
+  };
 };
 
 const observedIdentity = (session: any) => ({
@@ -316,9 +323,9 @@ export async function coordinateDelegation(input: CoordinatorInput) {
         await session.waitForIdle();
         if (cancelled || unsafe) throw new Error(cancelled ? "cancelled" : "unsafe-partial-state");
         const final = finalAssistant(session);
-        const report = session.getLastAssistantText?.() ?? "";
+        const report = final?.report ?? "";
         const observed = observedIdentity(session);
-        const completion = validateDelegationCompletion({ final, text: report, requiredSections: agent.result.requiredSections, resultFormat: agent.result.format, expected: route.route, observed });
+        const completion = validateDelegationCompletion({ final, text: report, requiredSections: agent.result.requiredSections, expected: route.route, observed });
         if (!completion.ok) {
           const providerError = final?.errorMessage;
           const error = providerError || completion.failures.join(",");
@@ -329,9 +336,10 @@ export async function coordinateDelegation(input: CoordinatorInput) {
             continue;
           }
           const detail = sanitizeDelegationError(error);
+          const unverifiedReport = report.trim();
           emit({ type: cancelled ? "cancelled" : "failed", id: assignment.id, at: deps.activityClock(), blocker: detail, possiblePartialWriteScopes: cancelled && assignment.writeScope.length ? assignment.writeScope : [] });
           state = reduceDelegationEvent(state, { type: cancelled ? "cancelled" : "failed", id: assignment.id, detail, partialEffects: unsafe || (cancelled && assignment.writeScope.length > 0) });
-          return { id: assignment.id, status: cancelled ? "cancelled" : "failed", attempts: attempt, error: detail, failure, completion: completion.failures, resumeReference: null };
+          return { id: assignment.id, status: cancelled ? "cancelled" : "failed", attempts: attempt, error: detail, failure, completion: completion.failures, resumeReference: null, ...(unverifiedReport ? { unverifiedReport: report, unverifiedReason: detail } : {}) };
         }
         const timestamp = deps.clock();
         const record: SessionRecord = {
@@ -441,13 +449,15 @@ export async function runFocusedContinuation(input: ContinuationInput) {
       await session.waitForIdle();
       if (unsafe) return { status: "failed", error: "unsafe-partial-state" };
       const final = finalAssistant(session);
-      const report = session.getLastAssistantText?.() ?? "";
+      const report = final?.report ?? "";
       const observed = observedIdentity(session);
-      const completion = validateDelegationCompletion({ final, text: report, requiredSections: input.agent.result.requiredSections, resultFormat: input.agent.result.format, expected: { provider: input.record.provider, model: input.record.model, thinking: input.record.thinking, sessionId: input.record.sessionId, sessionFile: input.record.sessionFile }, observed });
+      const completion = validateDelegationCompletion({ final, text: report, requiredSections: input.agent.result.requiredSections, expected: { provider: input.record.provider, model: input.record.model, thinking: input.record.thinking, sessionId: input.record.sessionId, sessionFile: input.record.sessionFile }, observed });
       if (!completion.ok) {
         const failure = final?.errorMessage ? classifyChildFailure(final.errorMessage) : "agent-contract";
         if (attempt === 0 && decideRecovery({ failure, retries: 0 }).retry) continue;
-        return { status: "failed", error: final?.errorMessage ? sanitizeDelegationError(final.errorMessage) : completion.failures.join(","), completion: completion.failures };
+        const detail = final?.errorMessage ? sanitizeDelegationError(final.errorMessage) : completion.failures.join(",");
+        const unverifiedReport = report.trim();
+        return { status: "failed", error: detail, completion: completion.failures, ...(unverifiedReport ? { unverifiedReport: report, unverifiedReason: detail } : {}) };
       }
       const updated = { ...input.record, status: "succeeded" as const, updatedAt: deps.clock() };
       store.set(updated.reference, updated);

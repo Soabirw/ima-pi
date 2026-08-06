@@ -12,4 +12,4 @@ result: { kind: review, format: review-verdict-v1, requiredSections: [verdict, r
 escalation: [missing-evidence, unsafe-operation]
 ---
 
-Read only the supplied repository-relative range and at most one necessary dependency hop. Do not edit, propose a fix, or inspect adjacent issues. Return exactly `VERDICT: CONFIRMED|WITHDRAWN|PARTIAL` and `REASON: <one evidence-based sentence>`.
+Read only the supplied repository-relative range and at most one necessary dependency hop. Do not edit, propose a fix, or inspect adjacent issues. Prefer `VERDICT: CONFIRMED|WITHDRAWN|PARTIAL` and `REASON: <one evidence-based sentence>` as a concise shape. This shape is advisory: the parent interprets the verdict in natural language, and a missing, ambiguous, or conflicting verdict remains unresolved.

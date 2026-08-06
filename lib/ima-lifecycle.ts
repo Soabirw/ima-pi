@@ -3,16 +3,17 @@ export type LifecyclePhase = typeof LIFECYCLE_PHASES[number];
 export type LifecycleIdentity = { project: string; lifecycleKey: string; lifecycleRootMemoryId: string; taskwarriorProject: string; taskwarriorTask: string; taskwarriorUuid: string; jiraKey: string; sourceRefs: string[]; priorArtifactIds: string[] };
 const object = (value: unknown): Record<string, unknown> | null => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 const text = (value: unknown) => typeof value === "string" ? value.trim() : "";
-const clean = (value: unknown, maximum = 128_000) => typeof value === "string" ? value.replace(/(?:authorization|token|secret|password)\s*[:=]\s*\S+/gi, "[redacted]").slice(0, maximum) : "";
+const REDACTED = "[redacted]";
+const clean = (value: unknown) => typeof value === "string" ? value.replace(/(?:authorization|token|secret|password)\s*[:=]\s*\S+/gi, (match) => match.length < REDACTED.length ? "*".repeat(match.length) : REDACTED) : "";
 export function sanitizeLifecycleError(code: string, _value: unknown) { return { code, message: `Lifecycle integration failed: ${code}.` }; }
 const validIdentity = (value: unknown): value is LifecycleIdentity => { const i = object(value); return Boolean(i && ["project", "lifecycleKey"].every((key) => text(i[key]).length > 0) && ["lifecycleRootMemoryId", "taskwarriorProject", "taskwarriorTask", "taskwarriorUuid", "jiraKey"].every((key) => typeof i[key] === "string") && Array.isArray(i.sourceRefs) && Array.isArray(i.priorArtifactIds)); };
 export function validateLifecycleRequest(value: unknown): { valid: true; type: LifecyclePhase; identity: LifecycleIdentity; artifact: string } | { valid: false; error: ReturnType<typeof sanitizeLifecycleError> } {
- const input = object(value); const type = text(input?.type); const artifact = clean(input?.artifact);
- if (!input || !LIFECYCLE_PHASES.includes(type as LifecyclePhase) || !validIdentity(input.identity) || !artifact || artifact.length > 128_000) return { valid: false, error: sanitizeLifecycleError("invalid_lifecycle_request", value) };
+ const input = object(value); const type = text(input?.type); const rawArtifact = typeof input?.artifact === "string" ? input.artifact : "";
+ if (!input || !LIFECYCLE_PHASES.includes(type as LifecyclePhase) || !validIdentity(input.identity) || rawArtifact.length > 128_000) return { valid: false, error: sanitizeLifecycleError("invalid_lifecycle_request", value) };
+ const artifact = clean(rawArtifact);
+ if (artifact.length > 128_000 || !text(artifact)) return { valid: false, error: sanitizeLifecycleError("invalid_lifecycle_request", value) };
  return { valid: true, type: type as LifecyclePhase, identity: input.identity as LifecycleIdentity, artifact };
 }
-const requiredHeadings = ["source", "approved outcome", "scope", "non goals", "phase result", "changed", "decisions", "verification", "blockers", "residual risk", "prior artifact", "recommended next phase"];
-export function artifactIsComplete(artifact: string) { const headings = artifact.toLowerCase().replace(/[^a-z0-9\n ]/g, " "); return requiredHeadings.every((heading) => headings.includes(heading)); }
 export function buildLifecycleNonceMarker(input: { lifecycleKey: string; nonce: string; type: LifecyclePhase; jiraKey: string; taskwarriorUuid: string }) { return `<!-- ima-lifecycle verification: lifecycle_key=${input.lifecycleKey}; nonce=${input.nonce}; phase=${input.type}; jira_key=${input.jiraKey}; taskwarrior_uuid=${input.taskwarriorUuid}; outcome=completed -->`; }
 const quoted = (value: string) => `'${value.replace(/'/g, "''")}'`;
 export function buildLifecycleArtifact(input: { type: LifecyclePhase; identity: LifecycleIdentity; artifact: string; nonce: string }) {

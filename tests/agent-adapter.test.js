@@ -18,9 +18,10 @@ const runtime = { getModels: () => [{ provider: "p", id: "m", input: ["text"] }]
 const report = "## Files\nowned/file.txt\n\n## Verification\npassed";
 
 const fakeSession = (overrides = {}) => {
+  const reportText = overrides.text ?? report;
   const state = {
     aborts: 0, disposes: 0, prompts: [], unsubscribes: 0,
-    messages: [{ role: "assistant", stopReason: "stop", content: [] }],
+    messages: [{ role: "assistant", stopReason: "stop", content: reportText ? [{ type: "text", text: reportText }] : [] }],
     ...overrides.state,
   };
   const listeners = [];
@@ -30,19 +31,19 @@ const fakeSession = (overrides = {}) => {
     subscribe: (listener) => { listeners.push(listener); return () => { state.unsubscribes += 1; }; },
     prompt: async (brief, options) => { state.prompts.push({ brief, options }); await overrides.prompt?.({ state, listeners, session }); },
     waitForIdle: async () => overrides.waitForIdle?.({ state, listeners, session }),
-    getLastAssistantText: () => overrides.text ?? report,
+    getLastAssistantText: () => reportText,
     abort: async () => { state.aborts += 1; await overrides.abort?.({ state, listeners, session }); },
     dispose: () => { state.disposes += 1; },
   };
   return { session, state };
 };
 
-const run = ({ assignments = [assignment("a")], sessions, signal, onActivity, selectedConfig = config, selectedRuntime = runtime } = {}) => {
+const run = ({ assignments = [assignment("a")], sessions, signal, onActivity, selectedConfig = config, selectedRuntime = runtime, sessionStore = new Map() } = {}) => {
   let index = 0;
   let tick = 1_000;
   return coordinateDelegation({
     cwd: "/repo", request: { title: "work", assignments }, agents: [agent], config: selectedConfig, runtime: selectedRuntime, runId: "tool-call", onActivity, signal,
-    sessionStore: new Map(), dependencies: {
+    sessionStore, dependencies: {
       createManager: () => ({}), scopedTools: () => [], clock: () => "2026-07-31T20:00:00.000Z", activityClock: () => tick += 10,
       createSession: async () => sessions[index++],
     },
@@ -135,10 +136,10 @@ test("coordinates concurrent children but returns results in request order with 
   assert.equal(first.state.unsubscribes, 1); assert.equal(second.state.unsubscribes, 1);
 });
 
-test("coordinates an exact review verifier response as succeeded", async () => {
+test("coordinates advisory review-verifier prose as succeeded", async () => {
   const verifier = { ...agent, name: "review-verifier", tier: "reviewVerify", authority: "review-read", tools: ["read"], result: { kind: "review", format: "review-verdict-v1", requiredSections: ["verdict", "reason"] } };
   const verifierAssignment = { ...assignment("verify", []), agent: "review-verifier" };
-  const child = fakeSession({ text: "VERDICT: CONFIRMED\nREASON: supported by direct evidence" });
+  const child = fakeSession({ text: "The candidate is confirmed by the supplied direct evidence." });
   const result = await coordinateDelegation({
     cwd: "/repo", request: { title: "verify", assignments: [verifierAssignment] }, agents: [verifier], config: { models: { ...config.models, HIGH: config.models.MID } }, runtime, runId: "verify",
     sessionStore: new Map(), dependencies: { createManager: () => ({}), scopedTools: () => [], clock: () => "2026-07-31T20:00:00.000Z", activityClock: () => 1_000, createSession: async () => ({ session: child.session }) },
@@ -185,20 +186,26 @@ test("retries one transient provider failure in a fresh session and never retrie
   assert.equal(recovered.results[0].sessionId, "fresh");
   assert.equal(transient.state.disposes, 1); assert.equal(success.state.disposes, 1);
 
-  const malformed = fakeSession({ text: "no required headings" });
+  const contractFailure = fakeSession({ text: "normal child report" });
+  contractFailure.session.model = { provider: "p", id: "other" };
   const notUsed = fakeSession();
-  const failed = await run({ sessions: [{ session: malformed.session }, { session: notUsed.session }] });
+  const failed = await run({ sessions: [{ session: contractFailure.session }, { session: notUsed.session }] });
   assert.equal(failed.status, "failed");
   assert.equal(failed.results[0].attempts, 1);
   assert.equal(notUsed.state.prompts.length, 0);
 });
 
 test("idle is not success when terminal report or observed identity is invalid", async () => {
-  const wrongIdentity = fakeSession();
-  wrongIdentity.session.model = { provider: "p", id: "other" };
-  const result = await run({ sessions: [{ session: wrongIdentity.session }] });
+  const wrongIdentity = fakeSession({ text: "Child report that remains unverified.", prompt: ({ session }) => { session.model = { provider: "p", id: "other" }; } });
+  const sessionStore = new Map();
+  const result = await run({ sessions: [{ session: wrongIdentity.session }], sessionStore });
   assert.equal(result.status, "failed");
   assert.ok(result.results[0].completion.includes("runtime_identity_mismatch"));
+  assert.equal(result.results[0].report, undefined);
+  assert.equal(result.results[0].unverifiedReport, "Child report that remains unverified.");
+  assert.equal(result.results[0].unverifiedReason, "runtime_identity_mismatch");
+  assert.equal(result.results[0].resumeReference, null);
+  assert.equal(sessionStore.has("a"), false);
 });
 
 test("emits ordered sanitized route, start, tool, and success activity with a final report", async () => {

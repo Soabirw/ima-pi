@@ -37,7 +37,7 @@ Before requesting approval, show one self-contained contract with:
 
 The handoff MUST state approved decisions concretely, name known implementation surfaces, and give checkable acceptance criteria. It MUST NOT leave settled product or architecture choices to the implementation agent, invite redesign, use vague directives, omit known constraints, or broaden scope.
 
-Use these lifecycle-complete headings in every persisted artifact: Source and Approved Outcome, Scope and Non Goals, Phase Result, Changed Files, Decisions, Verification Commands and Results, Blockers, Residual Risk, Prior Artifacts, and Recommended Next Phase. Add Problem, Prior Work, Context, Approach, Boundaries, API Contracts, Detailed Code Instructions, Test Strategy, Acceptance Criteria, Implementation Order, Security Checklist, Risk Register, Open Questions, Files to Update, and Memory & Docs Hits when applicable.
+These lifecycle-complete headings are recommended for persisted artifacts; equivalent organization is acceptable, and persistence requires only a non-empty bounded artifact with valid lifecycle identity: Source and Approved Outcome, Scope and Non Goals, Phase Result, Changed Files, Decisions, Verification Commands and Results, Blockers, Residual Risk, Prior Artifacts, and Recommended Next Phase. Add Problem, Prior Work, Context, Approach, Boundaries, API Contracts, Detailed Code Instructions, Test Strategy, Acceptance Criteria, Implementation Order, Security Checklist, Risk Register, Open Questions, Files to Update, and Memory & Docs Hits when applicable.
 
 Show the complete contract and wait for explicit approval. After approval, persist it through `ima_lifecycle` as `plan`, then point to the appropriate implementation phase and stop.
 

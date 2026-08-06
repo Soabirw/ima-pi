@@ -184,7 +184,7 @@ export function renderDelegationActivity(state: DelegationActivityState, at: num
   return lines.slice(0, 5);
 }
 
-type CoordinatorResult = { id: string; status: string; attempts?: number; error?: string; failure?: DelegationFailure; escalation?: string | null; resumeReference?: string | null };
+type CoordinatorResult = { id: string; status: string; attempts?: number; error?: string; failure?: DelegationFailure; escalation?: string | null; resumeReference?: string | null; report?: string; unverifiedReport?: string; unverifiedReason?: string };
 const actionFor = (input: { state: DelegationOutcomeReport["state"]; failures: DelegationFailure[]; possibleScopes: string[] }) => {
   if (input.state === "cancelled") return { code: "inspect-partial-state", text: "Inspect git status and diffs limited to the reported write scopes before rerunning; cancellation does not roll back effects.", inspectScopes: input.possibleScopes };
   if (input.failures.includes("unsafe-partial-state")) return { code: "correct-safety-boundary", text: "Stop, inspect the reported scopes, and correct assignment ownership or the requested operation before rerunning.", inspectScopes: input.possibleScopes };

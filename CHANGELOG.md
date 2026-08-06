@@ -18,6 +18,16 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 - `/ima:review`, `/ima:rereview`, `/ima:review-verify`, `/ima:adversarial-review`, and `/ima:test` now restore their bounded review/test methodology through named Pi skills.
 - `/ima:review-verify` now limits inspection to the evidence range plus one named dependency hop, and `/ima:test` now requires terminal report fields and anti-pattern guards covered by focused assertions.
 
+### Fixed
+
+- Lifecycle persistence and delegated completion no longer reject otherwise valid human-authored reports solely for missing or reordered headings or an exact verifier format.
+- Failed delegation and focused continuations now derive terminal state and text from the same latest assistant message, preventing stale prior text from appearing as current unverified output.
+- Secret redaction no longer expands an accepted 128,000-character lifecycle artifact past its persisted bound.
+
+### Safety
+
+- Strict terminal, identity, receipt/recall, write-ownership, cycle-marker, non-empty, and artifact-boundary validation remains fail-closed.
+
 ## [1.4.0] - 2026-08-05
 
 ### Added

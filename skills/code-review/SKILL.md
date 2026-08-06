@@ -61,14 +61,14 @@ Constraints and non-goals: <preserved behavior and prohibited alternatives>
 Acceptance checks: <tests or observable checks>
 ```
 
-The verifier reads the exact range and at most one needed dependency hop, then returns exactly:
+The verifier reads the exact range and at most one needed dependency hop, then should prefer this concise shape:
 
 ```
 VERDICT: CONFIRMED|WITHDRAWN|PARTIAL
 REASON: <one evidence-based sentence>
 ```
 
-Missing or inaccessible evidence is `PARTIAL`; do not guess. Only `CONFIRMED` candidates become formal Critical or Warning findings. For `PARTIAL`, retain only an independently supported concern after correcting its exact claim or severity and obtaining confirmation; otherwise exclude it. `WITHDRAWN` candidates are excluded.
+The parent interprets the verdict in natural language; a missing, ambiguous, or conflicting verdict remains unresolved. Missing or inaccessible evidence is `PARTIAL`; do not guess. Only `CONFIRMED` candidates become formal Critical or Warning findings. For `PARTIAL`, retain only an independently supported concern after correcting its exact claim or severity and obtaining confirmation; otherwise exclude it. `WITHDRAWN` candidates are excluded.
 
 ### 4. Final report
 

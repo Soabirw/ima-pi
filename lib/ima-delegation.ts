@@ -9,7 +9,7 @@ export type DelegationFailure = "brief-correctable" | "transient-provider" | "mo
 export type DelegationEvent = { type: "started" | "succeeded" | "failed" | "cancelled"; id: string; detail?: string; partialEffects?: boolean };
 export type SessionRecord = { reference: string; agent: string; role: string; resultKind: string; provider: string; model: string; thinking?: string; sessionId: string; sessionFile: string; writeScope: string[]; contractFingerprint: string; status: "running" | "succeeded" | "failed" | "cancelled"; fresh: boolean; followUpAllowed: boolean; createdAt: string; updatedAt: string };
 export type BashClassification = { kind: "read-only" | "owned-mutation" | "unsafe-ambiguous"; paths: string[]; reason?: string };
-export type CompletionFailureCode = "assistant_missing" | "assistant_error" | "assistant_aborted" | "assistant_truncated" | "assistant_tool_use" | "assistant_not_terminal" | "report_empty" | "report_section_missing" | "report_format_invalid" | "runtime_identity_missing" | "runtime_identity_mismatch" | "session_identity_missing" | "session_identity_mismatch";
+export type CompletionFailureCode = "assistant_missing" | "assistant_error" | "assistant_aborted" | "assistant_truncated" | "assistant_tool_use" | "assistant_not_terminal" | "report_empty" | "runtime_identity_missing" | "runtime_identity_mismatch" | "session_identity_missing" | "session_identity_mismatch";
 
 const clean = (value: unknown) => typeof value === "string" ? value.trim() : value instanceof Error ? value.message.trim() : "";
 const invalidSegments = (path: string) => path.split("/").some((segment) => !segment || segment === "." || segment === "..");
@@ -159,14 +159,7 @@ export function reduceDelegationEvent(state: ReturnType<typeof createDelegationS
 export function sanitizeDelegationError(error: unknown) { return clean(error).replace(/(api[_ -]?key|token|authorization|password)\s*[:=]\s*[^\s,]+/gi, "$1=[redacted]").slice(0, 500); }
 
 // REVIEW-003: pure terminal-completion validator. Idle alone is not success; require a normal
-// terminal assistant report satisfying declared sections and exact observed runtime/session identity.
-const headingPresent = (text: string, section: string) => {
-  const normalizedSection = section.trim().toLowerCase();
-  return text.split("\n").some((line) => {
-    const heading = line.match(/^#{1,6}\s+(.*)$/);
-    return !!heading && heading[1].trim().toLowerCase().replace(/[:*_`]/g, "").startsWith(normalizedSection);
-  });
-};
+// terminal assistant report and exact observed runtime/session identity.
 
 export function validateDelegationRouteIdentity(input: {
   expected: { provider: string; model: string; thinking?: string };
@@ -183,7 +176,6 @@ export function validateDelegationCompletion(input: {
   final: { stopReason?: string; isError?: boolean; hasPendingToolUse?: boolean } | undefined | null;
   text: unknown;
   requiredSections: string[];
-  resultFormat?: "review-verdict-v1";
   expected: { provider: string; model: string; thinking?: string; sessionId?: string; sessionFile?: string };
   observed: { provider?: string; model?: string; thinking?: string; sessionId?: string; sessionFile?: string };
 }): { ok: boolean; failures: CompletionFailureCode[] } {
@@ -199,9 +191,6 @@ export function validateDelegationCompletion(input: {
   }
   const text = clean(input.text);
   if (!text) failures.push("report_empty");
-  else if (input.resultFormat === "review-verdict-v1") {
-    if (typeof input.text !== "string" || !/^VERDICT: (CONFIRMED|WITHDRAWN|PARTIAL)\nREASON: \S(?:.*\S)?$/.test(input.text)) failures.push("report_format_invalid");
-  } else for (const section of input.requiredSections) if (!headingPresent(text, section)) failures.push("report_section_missing");
   const observed = input.observed;
   failures.push(...validateDelegationRouteIdentity({ expected: input.expected, observed }).failures);
   if (!clean(observed.sessionId) || !clean(observed.sessionFile)) failures.push("session_identity_missing");

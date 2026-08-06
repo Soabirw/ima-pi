@@ -21,17 +21,18 @@ const runtime = { getModel: (provider, model) => provider === "p" && model === "
 const report = "## Files\nlib/a/file.ts\n\n## Verification\npassed";
 
 const fakeSession = (overrides = {}) => {
+  const reportText = overrides.text ?? report;
   const state = { prompts: [], disposes: 0, unsubscribes: 0 };
   return {
     state,
     session: {
-      messages: overrides.messages ?? [{ role: "assistant", stopReason: "stop", content: [] }],
+      messages: overrides.messages ?? [{ role: "assistant", stopReason: "stop", content: reportText ? [{ type: "text", text: reportText }] : [] }],
       model: overrides.model ?? { provider: "p", id: "m" }, thinkingLevel: overrides.thinking ?? "high",
       sessionId: overrides.sessionId ?? "s", sessionFile: overrides.sessionFile ?? "/sessions/a.jsonl",
       subscribe: () => () => { state.unsubscribes += 1; },
       prompt: async (brief) => { state.prompts.push(brief); await overrides.prompt?.(); },
       waitForIdle: async () => overrides.waitForIdle?.(),
-      getLastAssistantText: () => overrides.text ?? report,
+      getLastAssistantText: () => reportText,
       dispose: () => { state.disposes += 1; }, abort: async () => undefined,
     },
   };
@@ -109,12 +110,35 @@ test("refuses agent identity mismatch and preserves reviewer/vision isolation wi
   assert.deepEqual(visionRun.counts(), { opened: 1, created: 1 });
 });
 
-test("fails closed on terminal contract or observed identity mismatch without updating the stored record", async () => {
+test("fails closed on observed identity mismatch, exposes unverified context, and preserves the stored record", async () => {
   const wrong = fakeSession({ model: { provider: "p", id: "other" } });
   const run = continuation({ fake: wrong });
   const result = await run.promise;
   assert.equal(result.status, "failed");
   assert.ok(result.completion.includes("runtime_identity_mismatch"));
+  assert.equal(result.report, undefined);
+  assert.equal(result.unverifiedReport, report);
+  assert.equal(result.unverifiedReason, "runtime_identity_mismatch");
   assert.equal(run.store.get("a").updatedAt, "old");
   assert.equal(wrong.state.disposes, 1);
+});
+
+test("does not relabel prior session text after an empty aborted continuation", async () => {
+  const aborted = fakeSession({
+    messages: [
+      { role: "assistant", stopReason: "stop", content: [{ type: "text", text: report }] },
+      { role: "assistant", stopReason: "aborted", content: [] },
+    ],
+    text: report,
+  });
+  const run = continuation({ fake: aborted });
+  const result = await run.promise;
+  assert.equal(result.status, "failed");
+  assert.ok(result.completion.includes("assistant_aborted"));
+  assert.ok(result.completion.includes("report_empty"));
+  assert.equal(result.report, undefined);
+  assert.equal(result.unverifiedReport, undefined);
+  assert.equal(result.unverifiedReason, undefined);
+  assert.equal(run.store.get("a").updatedAt, "old");
+  assert.equal(aborted.state.disposes, 1);
 });

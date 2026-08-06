@@ -9,7 +9,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { derivePhaseContext, evaluateSerenaBootstrap, normalizeSourcePayload, prepareContextArguments, sanitizeContextError, sanitizeContextText, validateContextRequest } from "../lib/ima-context.ts";
-import { artifactIsComplete, buildLifecycleArtifact, deriveLifecycleResult, evaluateLifecycleRecall, sanitizeLifecycleError, validateLifecycleRequest, validateVestigeSaveReceipt } from "../lib/ima-lifecycle.ts";
+import { buildLifecycleArtifact, deriveLifecycleResult, evaluateLifecycleRecall, sanitizeLifecycleError, validateLifecycleRequest, validateVestigeSaveReceipt } from "../lib/ima-lifecycle.ts";
 
 const execFile = promisify(execFileCallback);
 const TIMEOUT = 30_000;
@@ -83,7 +83,6 @@ export async function coordinateContext(request: unknown, cwd: string, supplied?
 
 export async function coordinateLifecycle(request: unknown, supplied?: IntegrationDependencies) {
   const valid = validateLifecycleRequest(request); if (!valid.valid) return { status: "failed", error: valid.error };
-  if (!artifactIsComplete(valid.artifact)) return { status: "failed", error: sanitizeLifecycleError("artifact_incomplete", "") };
   const deps = depsFor(supplied); let path = "";
   let result: ReturnType<typeof deriveLifecycleResult> | { status: "failed"; error: ReturnType<typeof sanitizeLifecycleError> };
   try {

@@ -62,7 +62,7 @@ lifecycle:
 
 Persist lifecycle artifacts through `ima_lifecycle`; do not substitute a generated SDK namespace, direct service storage, or an undocumented fallback.
 
-A complete artifact includes the approved outcome, scope and non-goals, phase result, changed/reviewed/tested files, decisions, verification commands and results, blockers, residual risk, prior artifact IDs, and the recommended next phase.
+A complete artifact includes the approved outcome, scope and non-goals, phase result, changed/reviewed/tested files, decisions, verification commands and results, blockers, residual risk, prior artifact IDs, and the recommended next phase. These sections are recommended rather than required headings: equivalent organization is accepted, and persistence requires only a non-empty bounded artifact with valid lifecycle identity.
 
 When a concrete next phase is appropriate, emit a compact pointer containing only the next command, one-line outcome, lifecycle key, and latest artifact reference. Do not duplicate the detailed artifact or prescribe the destination phase's work.
 
