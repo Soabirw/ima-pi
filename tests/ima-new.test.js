@@ -8,7 +8,6 @@ import { IMA_PHASES } from "../lib/ima-config.ts";
 import {
   IMA_NEW_BOOTSTRAP_COMMANDS,
   IMA_NEW_PHASE_SKILLS,
-  IMA_NEW_PLAN_HINT,
   IMA_NEW_REQUEST_ENTRY,
   IMA_NEW_RESULT_ENTRY,
   buildImaNewBootstrapSequence,
@@ -210,7 +209,7 @@ test("shares route result sanitization and keeps resolved bootstrap bodies in or
   assert.deepEqual(buildImaNewBootstrapSequence(failed, bodies), []);
 });
 
-test("injects resolved Serena before Vestige bodies, waits between turns, and leaves an unsubmitted plan hint", async () => {
+test("injects resolved Serena before Vestige bodies, waits between turns, and never writes the editor", async () => {
   const harness = createBootstrapHarness();
   const bodies = ["Serena bootstrap body", "Vestige bootstrap body"];
   await injectImaNewBootstrap(harness.context, ready(), bodies);
@@ -219,7 +218,6 @@ test("injects resolved Serena before Vestige bodies, waits between turns, and le
     ["wait"],
     ["send", bodies[1]],
     ["wait"],
-    ["editor", IMA_NEW_PLAN_HINT],
   ]);
   assert.equal(harness.calls.some(([type, value]) => type === "send" && typeof value === "string" && value.startsWith("/ima:")), false);
 });
@@ -297,7 +295,7 @@ test("creates an unlinked fresh session when the parent is absent", async () => 
     { type: "custom", customType: IMA_NEW_RESULT_ENTRY, data: { selector: null, ok: true, route: null } },
   ]);
   assert.deepEqual(harness.messages, await resolveImaNewBootstrapMessages(harness.pi));
-  assert.deepEqual(harness.editor, [IMA_NEW_PLAN_HINT]);
+  assert.deepEqual(harness.editor, []);
   assert.deepEqual(harness.notifications, []);
 });
 
@@ -313,7 +311,7 @@ test("creates an unlinked fresh session when the parent is allocated but unwritt
   assert.equal(Object.hasOwn(harness.replacementOptions, "parentSession"), false);
   assert.equal(harness.sessionStarts, 1);
   assert.deepEqual(harness.messages, await resolveImaNewBootstrapMessages(harness.pi));
-  assert.deepEqual(harness.editor, [IMA_NEW_PLAN_HINT]);
+  assert.deepEqual(harness.editor, []);
   assert.deepEqual(harness.notifications, []);
 });
 
@@ -328,7 +326,7 @@ test("creates an unlinked fresh session when the parent is a non-file", async ()
   assert.equal(Object.hasOwn(harness.replacementOptions, "parentSession"), false);
   assert.equal(harness.sessionStarts, 1);
   assert.deepEqual(harness.messages, await resolveImaNewBootstrapMessages(harness.pi));
-  assert.deepEqual(harness.editor, [IMA_NEW_PLAN_HINT]);
+  assert.deepEqual(harness.editor, []);
   assert.deepEqual(harness.notifications, []);
 });
 
@@ -349,7 +347,7 @@ test("creates an unlinked fresh session when the parent is inaccessible", async 
     assert.equal(Object.hasOwn(harness.replacementOptions, "parentSession"), false);
     assert.equal(harness.sessionStarts, 1);
     assert.deepEqual(harness.messages, await resolveImaNewBootstrapMessages(harness.pi));
-    assert.deepEqual(harness.editor, [IMA_NEW_PLAN_HINT]);
+    assert.deepEqual(harness.editor, []);
     assert.deepEqual(harness.notifications, []);
   } finally {
     await chmod(inaccessibleDirectory, 0o700);
@@ -378,7 +376,7 @@ test("does not replace or prefill a plan session when its lifecycle skill is una
   assert.equal(harness.notifications.at(-1)?.message, "Fresh session bootstrap resources were unavailable.");
 });
 
-test("stops after a partial bootstrap failure without injecting a plan hint", async () => {
+test("stops after a partial bootstrap failure without writing the editor", async () => {
   const harness = createBootstrapHarness();
   harness.context.sendUserMessage = async (message) => {
     harness.calls.push(["send", message]);
@@ -395,7 +393,7 @@ test("stops after a partial bootstrap failure without injecting a plan hint", as
   assert.equal(harness.calls.some(([type]) => type === "editor"), false);
 });
 
-test("rejects unsuccessful Serena terminal states before sending Vestige or setting the hint", async () => {
+test("rejects unsuccessful Serena terminal states before sending Vestige or writing the editor", async () => {
   for (const stopReason of ["error", "aborted", "length", "pending", "toolUse", "unexpected", "missing"]) {
     const harness = createBootstrapHarness([stopReason, "stop"]);
     await assert.rejects(
@@ -419,7 +417,7 @@ test("does not accept a stale prior assistant stop for a new bootstrap turn", as
   assert.deepEqual(harness.editor, []);
 });
 
-test("stops after a failed Vestige terminal result without injecting a plan hint", async () => {
+test("stops after a failed Vestige terminal result without writing the editor", async () => {
   const harness = createBootstrapHarness(["stop", "error"]);
   await assert.rejects(
     () => injectImaNewBootstrap(harness.context, ready(), ["Serena bootstrap body", "Vestige bootstrap body"]),
@@ -434,7 +432,7 @@ test("stops after a failed Vestige terminal result without injecting a plan hint
   assert.deepEqual(harness.editor, []);
 });
 
-test("stops after a failed plan-skill terminal result without injecting a plan hint", async () => {
+test("stops after a failed plan-skill terminal result without writing the editor", async () => {
   const harness = createBootstrapHarness(["stop", "stop", "error"]);
   const messages = ["Serena bootstrap body", "Vestige bootstrap body", "Lifecycle contract body"];
   await assert.rejects(
@@ -466,7 +464,7 @@ test("creates a parent-linked bare fresh session and runs the replacement lifecy
     { type: "custom", customType: IMA_NEW_RESULT_ENTRY, data: { selector: null, ok: true, route: null } },
   ]);
   assert.deepEqual(harness.messages, await resolveImaNewBootstrapMessages(harness.pi));
-  assert.deepEqual(harness.editor, [IMA_NEW_PLAN_HINT]);
+  assert.deepEqual(harness.editor, []);
   assert.equal(harness.messages.includes("/ima:plan"), false);
 });
 
@@ -513,7 +511,7 @@ test("dispatches every role selector to its exact configured role before bootstr
       { type: "custom", customType: IMA_NEW_RESULT_ENTRY, data: { selector, ok: true, route: evidence } },
     ]);
     assert.deepEqual(harness.messages, await resolveImaNewBootstrapMessages(harness.pi));
-    assert.deepEqual(harness.editor, [IMA_NEW_PLAN_HINT]);
+    assert.deepEqual(harness.editor, []);
   }
 });
 
@@ -534,7 +532,7 @@ test("dispatches every canonical phase selector to its exact configured phase be
       { type: "custom", customType: IMA_NEW_RESULT_ENTRY, data: { selector: phase, ok: true, route: evidence } },
     ]);
     assert.deepEqual(harness.messages, await resolveImaNewBootstrapMessages(harness.pi, phase));
-    assert.deepEqual(harness.editor, [IMA_NEW_PLAN_HINT]);
+    assert.deepEqual(harness.editor, []);
   }
 });
 

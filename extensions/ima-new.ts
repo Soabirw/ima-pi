@@ -22,7 +22,6 @@ export const IMA_NEW_PHASE_SKILLS: Readonly<Record<ImaPhase, readonly string[]>>
   rereview: [],
   document: [],
 };
-export const IMA_NEW_PLAN_HINT = "/ima:plan <story-or-task-source>";
 
 const IMA_NEW_ROLE_SELECTORS = Object.freeze({
   low: "LOW",
@@ -236,7 +235,7 @@ type ReplacementSessionContext = {
   sendUserMessage: (message: string) => Promise<unknown> | unknown;
   waitForIdle: () => Promise<unknown>;
   sessionManager: ReplacementSessionManager;
-  ui: { setEditorText: (text: string) => unknown; notify?: (message: string, level: "info" | "warning" | "error") => unknown };
+  ui: { notify?: (message: string, level: "info" | "warning" | "error") => unknown };
 };
 
 type BootstrapBoundary = { leafId: string | null; branchLength: number };
@@ -288,7 +287,6 @@ export async function injectImaNewBootstrap(
     await ctx.waitForIdle();
     if (!bootstrapTurnSucceeded(ctx.sessionManager, boundary)) throw new Error("bootstrap_turn_failed");
   }
-  ctx.ui.setEditorText(IMA_NEW_PLAN_HINT);
 }
 
 const notify = (ctx: Pick<ExtensionContext, "hasUI" | "ui">, message: string, level: "info" | "warning" | "error" = "warning") => {

@@ -21,6 +21,7 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ### Fixed
 
+- `/ima:new` no longer overwrites the editor with a hardcoded `/ima:plan` hint after bootstrap, preserving text typed while bootstrap runs.
 - `/ima:scorecard` no longer names the unbundled `rails` skill; its contract test prevents reintroduction.
 - Lifecycle persistence and delegated completion no longer reject otherwise valid human-authored reports solely for missing or reordered headings or an exact verifier format.
 - Failed delegation and focused continuations now derive terminal state and text from the same latest assistant message, preventing stale prior text from appearing as current unverified output.
