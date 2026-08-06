@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 const root = resolve(dirname(new URL(import.meta.url).pathname), "..");
 const prompt = (name) => readFile(join(root, "prompts", `ima:${name}.md`), "utf8");
 const skill = (name) => readFile(join(root, "skills", name, "SKILL.md"), "utf8");
 const has = (text, value) => assert.match(text, new RegExp(value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
+const localMarkdownTargets = (content) => [...content.matchAll(/\[[^\]]+\]\(([^)]+)\)/g)]
+  .map(([, target]) => target.trim().split("#", 1)[0])
+  .filter((target) => target && !target.includes("$") && !/^(?:[a-z]+:|\/)/i.test(target));
 test("production planning prompts have distinct Pi frontmatter and HIGH-tier authority", async () => { for (const name of ["brainstorm", "decompose"]) { const text = await prompt(name); has(text, "description:"); has(text, "argument-hint:"); has(text, "HIGH-tier"); has(text, "explicit approval"); assert.doesNotMatch(text, /\/ima:cycle|workflow DSL/i); } const planText = await prompt("plan"); for (const value of ["description:", "argument-hint:", "HIGH-tier", "explicit approval", "ima-cycle outcome: phase=plan"]) has(planText, value); assert.doesNotMatch(planText, /workflow DSL/i); });
 test("brainstorm owns approved product requirements and stops before decomposition or design", async () => { const text = await prompt("brainstorm"); for (const value of ["problem or opportunity", "users and use cases", "business rules", "product acceptance criteria", "vision-handoff", "lifecycle type `decision`", "/ima:decompose", "stop"]) has(text, value); has(text, "Do **not** decompose PM work"); });
 test("decompose enforces two tiers, one PM destination, preview, and checklist-only work", async () => { const text = await prompt("decompose"); for (const value of ["Taskwarrior Project -> Task", "Jira Epic -> Story/Task", "checklist", "exactly one destination", "never dual-write", "exact persistence preview", "explicit approval", "lifecycle unit", "as `decision`", "stop"]) has(text, value); has(text, "technical files, functions, control flow"); });
@@ -64,9 +67,10 @@ test("WordPress implementation prompt treats security as a primary production co
 
 test("quality and learning prompts retain distinct bounded terminal contracts", async () => {
   for (const name of ["test", "review", "review-verify", "document"]) { const text = await prompt(name); has(text, "description:"); has(text, "argument-hint:"); has(text, "stop"); has(text, "/ima:cycle"); }
-  const testing = await prompt("test"); has(testing, "Do not redesign or edit production behavior"); has(testing, "ima_lifecycle");
-  const review = await prompt("review"); for (const value of ["fresh", "product-read-only", "Critical or Warning", "review-verifier", "REVIEW-NNN", "ima_lifecycle"]) has(review, value);
-  const verify = await prompt("review-verify"); for (const value of ["CONFIRMED|WITHDRAWN|PARTIAL", "Do not edit", "one dependency hop"]) has(verify, value);
+  const testing = await prompt("test"); for (const value of ["Do not redesign or edit production behavior", "ima_lifecycle", "unit-testing", "evidence", "smallest project-supported", "ima-security-guardrails", "detected testing contract", "tests or test support added or repaired", "changed files", "commands and results", "behaviors covered", "defects or blockers", "evidence gaps and residual risk", "phase outcome", "recommended next phase", "implementation details", "deep mock chains", "real timers, network, or filesystem", "weaken assertions", "skip markers"]) has(testing, value);
+  const review = await prompt("review"); for (const value of ["fresh", "product-read-only", "Critical or Warning", "review-verifier", "REVIEW-NNN", "ima_lifecycle", "code-review", "Integration Contract", "request-changes gate"]) has(review, value);
+  const rereview = await prompt("rereview"); for (const value of ["code-review", "regression", "next unused ID"]) has(rereview, value);
+  const verify = await prompt("review-verify"); for (const value of ["CONFIRMED|WITHDRAWN|PARTIAL", "Do not edit", "one dependency hop", "only that evidence range", "code-review", "malformed brief"]) has(verify, value); assert.doesNotMatch(verify, /range, named remediation surface/i);
   const document = await prompt("document"); for (const value of ["exact approved", "external-update manifest", "Serena", "Vestige", "Qdrant", "ima_lifecycle"]) has(document, value);
 });
 
@@ -111,11 +115,18 @@ test("visual workflows preserve external-browser evidence and terminal planning 
   for (const name of ["plan", "test", "review", "implement-wp"]) has(await prompt(name), name === "test" ? "visual-diff" : "vision-handoff");
 });
 
+test("code-review skill restores the Pi-native verified-review contract", async () => {
+  const text = await skill("code-review");
+  for (const value of ["name: code-review", "Four passes", "Integration Contract", "VERDICT: CONFIRMED|WITHDRAWN|PARTIAL", "REVIEW-NNN", "Request-changes gate", "refactor as needed"]) has(text, value);
+  assert.doesNotMatch(text, /sub_recipes|\.eta|ima-mcp serena/i);
+  await Promise.all(localMarkdownTargets(text).map((target) => access(resolve(root, "skills", "code-review", target))));
+});
+
 test("scorecard and adversarial-review retain bounded quality contracts", async () => {
   const scorecard = await prompt("scorecard");
   for (const value of ["Serena-first", "non-mutating validators", "Code Standards", "Security", "Test Coverage", "Documentation", "Maintainability", "A/B/C/D/F", "cap Code Standards at C", "Scorecard", "later explicit request", "stop read-only"]) has(scorecard, value);
   const adversarial = await prompt("adversarial-review");
-  for (const value of ["one complete packet", "adversary-a", "adversary-b", "parallel", "distinct", "provider, model", "one-sided", "Dropped Adversarial Claims", "REVIEW-NNN", "advisory", "/ima:review"]) has(adversarial, value);
+  for (const value of ["one complete packet", "adversary-a", "adversary-b", "parallel", "distinct", "provider, model", "one-sided", "Dropped Adversarial Claims", "REVIEW-NNN", "advisory", "/ima:review", "code-review", "ima-delegation-contract"]) has(adversarial, value);
   assert.doesNotMatch(adversarial, /ima_lifecycle/);
 });
 

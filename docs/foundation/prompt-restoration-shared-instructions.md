@@ -13,7 +13,8 @@ This document is the wire pattern, not a runtime include and not a replacement f
 | `ima-memory-workflow` | Route task context and preservation between Serena, Vestige, and Qdrant. | Planned for later prompt units. |
 | `ima-security-guardrails` | Apply WordPress/PHP, JavaScript/TypeScript, FP, and Bootstrap security boundaries. | Planned for later prompt units. |
 | `ima-vision-handoff` | Route visual evidence through `ima_delegate` to the evidence-only `vision-handoff` agent. | `agents/vision-handoff.md` declares it. |
-| `ima-delegation-contract` | Bound specialist delegation, self-contained briefs, ownership, and failure escalation. | Planned for later prompt units. |
+| `ima-delegation-contract` | Bound specialist delegation, self-contained briefs, ownership, and failure escalation. | Unit 3 `ima:review`, `ima:adversarial-review`, and `ima:test` reference it. |
+| `code-review` | FP-aware, security-first, read-only review methodology with verified findings and implementation-grade remediation. | `reviewer`, `review-verifier`, `adversary-a`, and `adversary-b` declare it; Unit 3 review prompts reference it. |
 
 ## Consumption pattern
 
@@ -29,7 +30,7 @@ No prompt body is changed by this unit. Later units own their own prompt edits a
 | Follow-on unit | Prompts | Skills to reference after that unit is approved |
 | --- | --- | --- |
 | Unit 2 — implementation | `ima:implement`, `ima:implement-js`, `ima:implement-wp`, `ima:resolve-review` | `ima-security-guardrails`, `ima-delegation-contract`, and `ima-memory-workflow` when task continuity matters. |
-| Unit 3 — review and test | `ima:review`, `ima:rereview`, `ima:review-verify`, `ima:adversarial-review`, `ima:test` | `ima-security-guardrails`, `ima-delegation-contract`, and `ima-memory-workflow`. |
+| Unit 3 — review and test | `ima:review`, `ima:rereview`, `ima:review-verify`, `ima:adversarial-review`, `ima:test` | `code-review`, `ima-security-guardrails`, `ima-delegation-contract`, and `ima-memory-workflow`; `ima:test` also uses `unit-testing`, `functional-programmer`, and `ima-vision-handoff` when applicable. |
 | Unit 4 — documentation and knowledge | `ima:document`, `ima:memorize`, `ima:scorecard` | `ima-memory-workflow`. |
 | Unit 5 — research | `ima:medical-research`, `ima:patristic-research`, `ima:investigate` | `ima-memory-workflow` and `ima-delegation-contract` where bounded discovery is needed. |
 | Unit 6 — web and visual | `ima:design-to-code`, `ima:ui-ux-review` | `ima-vision-handoff`, `ima-delegation-contract`, and `ima-memory-workflow`. |

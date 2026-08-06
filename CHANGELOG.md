@@ -9,11 +9,14 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 - A read-only `document-assessor` agent for manifest-only documentation assessment without local write authority.
 - Four Pi-native shared-instruction skills for memory workflow, security guardrails, visual-evidence handoff, and bounded delegation.
 - A prompt-restoration foundation document that defines the reference-by-name wiring pattern and the persona/MOIM and FP-principles fold-ins.
+- A Pi-native `code-review` skill with integration-contract discovery, independent verifier protocol, implementation-grade finding handoffs, and adversarial reconciliation.
 
 ### Changed
 
 - `/ima:document` now routes manifest-only assessment with `writeScope: []`, while `documenter` remains limited to exact approved documentation targets.
 - The `vision-handoff` agent now declares `ima-vision-handoff`, and package discovery verifies all four shared skills.
+- `/ima:review`, `/ima:rereview`, `/ima:review-verify`, `/ima:adversarial-review`, and `/ima:test` now restore their bounded review/test methodology through named Pi skills.
+- `/ima:review-verify` now limits inspection to the evidence range plus one named dependency hop, and `/ima:test` now requires terminal report fields and anti-pattern guards covered by focused assertions.
 
 ## [1.4.0] - 2026-08-05
 
