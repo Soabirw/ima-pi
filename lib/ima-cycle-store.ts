@@ -10,7 +10,7 @@ type CycleStorePaths = { dir: string; file: string; gitignore: string };
 type CycleRootMark = { dir: string; hasMarker: boolean };
 
 const object = (value: unknown): Record<string, unknown> | null => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
-const CYCLE_STATE_KEYS = ["schemaVersion", "source", "lifecycleKey", "implementationMode", "phase", "status", "reviewAttempts", "reviewCap", "evidence", "blockers", "updatedAt", "stoppedAt", "stoppedPhase", "trackerClosed", "branchId"] as const;
+const CYCLE_STATE_KEYS = ["schemaVersion", "source", "lifecycleKey", "implementationMode", "mode", "phase", "status", "reviewAttempts", "reviewCap", "evidence", "blockers", "updatedAt", "stoppedAt", "stoppedPhase", "trackerClosed", "branchId"] as const;
 const hasOnlyCycleStateKeys = (value: unknown) => {
   const state = object(value);
   return Boolean(state && Object.keys(state).every((key) => (CYCLE_STATE_KEYS as readonly string[]).includes(key)));

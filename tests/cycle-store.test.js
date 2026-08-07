@@ -14,7 +14,7 @@ const at = "2026-08-07T02:30:00.000Z";
 const source = normalizeCycleSource("FNR-3036");
 
 test("serializes and parses a valid durable cycle record", () => {
-  const state = createCycleState(source, { timestamp: at });
+  const state = createCycleState(source, { timestamp: at, mode: "autonomous" });
 
   assert.deepEqual(parseCycleRecord(serializeCycleRecord(state)), state);
 });
@@ -32,10 +32,13 @@ test("rejects undeclared state fields while preserving current and legacy record
 
   const legacy = { ...state };
   delete legacy.implementationMode;
-  assert.equal(parseCycleRecord(JSON.stringify({ schemaVersion: 1, state: legacy }))?.implementationMode, "js");
+  delete legacy.mode;
+  const parsedLegacy = parseCycleRecord(JSON.stringify({ schemaVersion: 1, state: legacy }));
+  assert.equal(parsedLegacy?.implementationMode, "js");
+  assert.equal(parsedLegacy?.mode, "guided");
 
   const record = JSON.parse(serializeCycleRecord(state));
-  assert.deepEqual(Object.keys(record.state).sort(), ["blockers", "evidence", "implementationMode", "lifecycleKey", "phase", "reviewAttempts", "reviewCap", "schemaVersion", "source", "status", "updatedAt"].sort());
+  assert.deepEqual(Object.keys(record.state).sort(), ["blockers", "evidence", "implementationMode", "lifecycleKey", "mode", "phase", "reviewAttempts", "reviewCap", "schemaVersion", "source", "status", "updatedAt"].sort());
 });
 
 test("builds durable cycle store paths", () => {

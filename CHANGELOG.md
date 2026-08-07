@@ -4,6 +4,22 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ## [Unreleased]
 
+### Added
+
+- `/ima:cycle` supports persisted `guided` and `autonomous` cycle modes, including `start --mode autonomous` and `resume --autonomous|--guided`.
+- Verified autonomous progression chains implementation through document without auto-closing the tracker.
+
+### Changed
+
+- The default cycle review cap is now five; explicit existing caps remain unchanged.
+- Cycle status reports the persisted cycle mode alongside phase and review state.
+
+### Safety
+
+- Autonomous progression stops on unverified, blocked, defect, review-cap, ceiling, and interrupt paths; autonomous stop preserves `stopped` state without requiring `--ack`.
+- A generation guard prevents a late first autonomous-resume dispatch from overwriting the authoritative `stopped` state or restarting autonomous progression.
+- Close remains human-gated in every cycle mode.
+
 ## [1.6.0] - 2026-08-07
 
 ### Changed

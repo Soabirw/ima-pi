@@ -31,6 +31,7 @@ import {
   type CycleCommand,
   type CycleEvidence,
   type CycleImplementationMode,
+  type CycleMode,
   type CyclePhase,
   type CycleSource,
   type CycleState,
@@ -172,6 +173,7 @@ export type CycleStartInput = {
   lifecycleKey?: string;
   reviewCap?: number;
   implementationMode?: CycleImplementationMode;
+  mode?: CycleMode;
   branchId?: string;
   context?: (request: unknown, cwd: string) => Promise<CycleContextResult>;
   applyRoute: CycleRoute;
@@ -198,7 +200,7 @@ export async function coordinateCycleStart(input: CycleStartInput): Promise<Cycl
   if (hydrated.status !== "ready") return safeError("cycle_context_not_ready");
   let state: CycleState;
   try {
-    state = createCycleState(source, { lifecycleKey: input.lifecycleKey, reviewCap: input.reviewCap, implementationMode: input.implementationMode, branchId: input.branchId, timestamp: input.timestamp });
+    state = createCycleState(source, { lifecycleKey: input.lifecycleKey, reviewCap: input.reviewCap, implementationMode: input.implementationMode, mode: input.mode, branchId: input.branchId, timestamp: input.timestamp });
   } catch (error) {
     return safeError(error instanceof Error ? error.message : "cycle_state_invalid");
   }
@@ -283,7 +285,7 @@ export type CycleStopInput = {
 
 export async function coordinateCycleStop(input: CycleStopInput): Promise<{ ok: true; state: CycleState; message: string } | { ok: false; error: ReturnType<typeof sanitizeCycleError> }> {
   if (!["awaiting-evidence", "awaiting-resume"].includes(input.state.status)) return safeError("cycle_stop_unavailable");
-  if (WRITE_CAPABLE_PHASES.has(input.state.phase) && !input.acknowledge) return safeError("cycle_stop_ack_required");
+  if (WRITE_CAPABLE_PHASES.has(input.state.phase) && input.state.mode !== "autonomous" && !input.acknowledge) return safeError("cycle_stop_ack_required");
   const state: CycleState = {
     ...copyState(input.state),
     status: "stopped",
@@ -555,7 +557,7 @@ export function restoreCycleState(entries: readonly unknown[]): CycleState | nul
 const statusText = (state: CycleState | null) => {
   if (!state) return "No active cycle.";
   const status = buildCycleStatus(state);
-  return status.status === "invalid" ? "Cycle state is invalid." : `Cycle ${status.status}: ${status.source}; phase ${status.phase}; review ${status.reviewAttempts}/${status.reviewCap}.`;
+  return status.status === "invalid" ? "Cycle state is invalid." : `Cycle ${status.status}: ${status.source}; phase ${status.phase}; mode ${status.mode}; review ${status.reviewAttempts}/${status.reviewCap}.`;
 };
 
 const routeFor = (pi: ExtensionAPI, ctx: ExtensionContext): CycleRoute => (phase) => applyConfiguredPhaseRoute(pi, ctx, cycleRoutePhase(phase), latestSessionProfile(ctx.sessionManager.getBranch()));
@@ -709,6 +711,8 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
   let state: CycleState | null = null;
   type PendingDispatch = { confirmation: CycleDispatchConfirmationState; state: CycleState; provisionalState: CycleState; finish: (state?: CycleState) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> | null };
   let pendingDispatch: PendingDispatch | null = null;
+  let autonomousRun: { aborted: boolean; dispatches: number } | null = null;
+  let dispatchGeneration = 0;
   const reducePendingDispatch = (event: CycleDispatchConfirmationEvent) => {
     const pending = pendingDispatch;
     if (!pending) return;
@@ -747,6 +751,49 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
     if (ctx.hasUI) {
       ctx.ui.setStatus(CYCLE_STATUS_KEY, stateText(value));
       ctx.ui.notify(stateText(value), "info");
+    }
+  };
+  const notifyAutonomousStop = (ctx: ExtensionContext, value: CycleState | null = state) => {
+    if (value?.mode === "autonomous" && value.status === "blocked") notify(ctx, `Autonomous cycle stopped: ${value.blockers.join(", ") || "phase blocked"}.`, "warning");
+  };
+  const runAutonomousTail = async (ctx: ExtensionContext) => {
+    if (!state || state.mode !== "autonomous") return;
+    const run = { aborted: false, dispatches: 0 };
+    const ceiling = CYCLE_PHASES.length + state.reviewCap * 2;
+    autonomousRun = run;
+    try {
+      while (!run.aborted && state && state.mode === "autonomous" && state.status === "awaiting-resume") {
+        if (run.dispatches >= ceiling) {
+          notify(ctx, "Autonomous cycle dispatch ceiling reached; cycle state was preserved.", "warning");
+          break;
+        }
+        const resumable = prepareCycleResume(state);
+        if (!resumable.ok) break;
+        run.dispatches += 1;
+        const generation = dispatchGeneration;
+        const appendState: CycleAppend = async (next) => {
+          if (!run.aborted && generation === dispatchGeneration) await appendFor(pi, ctx, dependencies.persistDurableState)(next);
+        };
+        const result = await dispatchCyclePhase({
+          state: resumable.state,
+          applyRoute: (phase) => dependencies.applyRoute(pi, ctx, phase),
+          appendState,
+          sendUserMessage: sendCycleUserMessage,
+          expandPrompt: (value) => dependencies.expandPrompt(value, ctx.cwd),
+        });
+        if (run.aborted || generation !== dispatchGeneration) return;
+        if (!result.ok) {
+          if (result.state) state = copyState(result.state);
+          notifyState(ctx);
+          notify(ctx, result.error.message, "warning");
+          break;
+        }
+        state = copyState(result.state);
+        notifyState(ctx);
+        notifyAutonomousStop(ctx);
+      }
+    } finally {
+      if (autonomousRun === run) autonomousRun = null;
     }
   };
   const reconcile = async (ctx: ExtensionContext) => {
@@ -804,11 +851,16 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
     description: "Start, inspect, stop, resume, or explicitly close one IMA lifecycle Story.",
     handler: async (args, ctx) => {
       const parsed = parseCycleCommand(args);
-      if (!parsed) { notify(ctx, "Usage: /ima:cycle start [--review-cap 0-10] [--implementation generic|js|wp] <Jira key|browse URL|taskwarrior project uuid> | status | stop [--ack] | resume | close [--commit-prep].", "warning"); return; }
+      if (!parsed) { notify(ctx, "Usage: /ima:cycle start [--review-cap 0-10] [--implementation generic|js|wp] [--mode guided|autonomous] <Jira key|browse URL|taskwarrior project uuid> | status | stop [--ack] | resume [--autonomous|--guided] | close [--commit-prep].", "warning"); return; }
       if (parsed.command === "status") { await reconcile(ctx); notifyState(ctx); return; }
       if (parsed.command === "start") {
-        const result = await coordinateCycleStart({ source: parsed.source, reviewCap: parsed.reviewCap, implementationMode: parsed.implementationMode, cwd: ctx.cwd, activeState: state, context: (request, cwd) => coordinateContext(request, cwd) as Promise<CycleContextResult>, applyRoute: (phase) => dependencies.applyRoute(pi, ctx, phase), appendState: appendFor(pi, ctx, dependencies.persistDurableState), sendUserMessage: sendCycleUserMessage, expandPrompt: (message) => dependencies.expandPrompt(message, ctx.cwd), branchId: ctx.sessionManager.getLeafId() ?? undefined });
-        if (result.ok) { state = result.state; notifyState(ctx); } else {
+        const result = await coordinateCycleStart({ source: parsed.source, reviewCap: parsed.reviewCap, implementationMode: parsed.implementationMode, mode: parsed.mode, cwd: ctx.cwd, activeState: state, context: (request, cwd) => coordinateContext(request, cwd) as Promise<CycleContextResult>, applyRoute: (phase) => dependencies.applyRoute(pi, ctx, phase), appendState: appendFor(pi, ctx, dependencies.persistDurableState), sendUserMessage: sendCycleUserMessage, expandPrompt: (message) => dependencies.expandPrompt(message, ctx.cwd), branchId: ctx.sessionManager.getLeafId() ?? undefined });
+        if (result.ok) {
+          state = result.state;
+          notifyState(ctx);
+          notifyAutonomousStop(ctx);
+          if (state.mode === "autonomous") await runAutonomousTail(ctx);
+        } else {
           if (result.state) { state = copyState(result.state); notifyState(ctx); }
           notify(ctx, result.error.message, "warning");
         }
@@ -816,6 +868,8 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
       }
       if (!state) { notify(ctx, "No active cycle. Start one first.", "warning"); return; }
       if (parsed.command === "stop") {
+        dispatchGeneration += 1;
+        if (autonomousRun) autonomousRun.aborted = true;
         const result = await coordinateCycleStop({ state, acknowledge: parsed.acknowledge, appendState: appendFor(pi, ctx, dependencies.persistDurableState), abort: () => ctx.abort() });
         if (result.ok) { state = result.state; notifyState(ctx); } else notify(ctx, result.error.message, "warning");
         return;
@@ -823,10 +877,24 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
       if (parsed.command === "resume") {
         if (!(await reconcile(ctx))) return;
         if (!state) return;
+        if (parsed.mode) {
+          state = { ...state, mode: parsed.mode, updatedAt: nowIso() };
+          await appendFor(pi, ctx, dependencies.persistDurableState)(state);
+        }
         const resumable = prepareCycleResume(state);
         if (!resumable.ok) { notify(ctx, resumable.error.message, "warning"); return; }
-        const result = await dispatchCyclePhase({ state: resumable.state, applyRoute: (phase) => dependencies.applyRoute(pi, ctx, phase), appendState: appendFor(pi, ctx, dependencies.persistDurableState), sendUserMessage: sendCycleUserMessage, expandPrompt: (value) => dependencies.expandPrompt(value, ctx.cwd) });
-        if (result.ok) { state = result.state; notifyState(ctx); } else {
+        const generation = dispatchGeneration;
+        const appendState: CycleAppend = async (next) => {
+          if (generation === dispatchGeneration) await appendFor(pi, ctx, dependencies.persistDurableState)(next);
+        };
+        const result = await dispatchCyclePhase({ state: resumable.state, applyRoute: (phase) => dependencies.applyRoute(pi, ctx, phase), appendState, sendUserMessage: sendCycleUserMessage, expandPrompt: (value) => dependencies.expandPrompt(value, ctx.cwd) });
+        if (generation !== dispatchGeneration) return;
+        if (result.ok) {
+          state = result.state;
+          notifyState(ctx);
+          notifyAutonomousStop(ctx);
+          if (state.mode === "autonomous") await runAutonomousTail(ctx);
+        } else {
           if (result.state) { state = copyState(result.state); notifyState(ctx); }
           notify(ctx, result.error.message, "warning");
         }

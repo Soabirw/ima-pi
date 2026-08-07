@@ -3,9 +3,12 @@
 export const CYCLE_SCHEMA_VERSION = 1;
 export const CYCLE_ENTRY = "ima-cycle-state";
 export const IMA_PROJECT = "ima-pi";
-export const CYCLE_REVIEW_CAP_DEFAULT = 2;
+export const CYCLE_REVIEW_CAP_DEFAULT = 5;
 export const CYCLE_REVIEW_CAP_MIN = 0;
 export const CYCLE_REVIEW_CAP_MAX = 10;
+
+export const CYCLE_MODES = ["guided", "autonomous"] as const;
+export type CycleMode = typeof CYCLE_MODES[number];
 
 export const CYCLE_IMPLEMENTATION_MODES = ["generic", "js", "wp"] as const;
 export type CycleImplementationMode = typeof CYCLE_IMPLEMENTATION_MODES[number];
@@ -65,6 +68,7 @@ export type CycleState = {
   source: CycleSource;
   lifecycleKey: string;
   implementationMode: CycleImplementationMode;
+  mode: CycleMode;
   phase: CyclePhase;
   status: CycleStatus;
   reviewAttempts: number;
@@ -79,10 +83,10 @@ export type CycleState = {
 };
 
 export type CycleCommand =
-  | { command: "start"; source: CycleSource; reviewCap?: number; implementationMode?: CycleImplementationMode }
+  | { command: "start"; source: CycleSource; reviewCap?: number; implementationMode?: CycleImplementationMode; mode?: CycleMode }
   | { command: "status" }
   | { command: "stop"; acknowledge: boolean }
-  | { command: "resume" }
+  | { command: "resume"; mode?: CycleMode }
   | { command: "close"; commitPrep: boolean };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f-]{27}$/i;
@@ -106,6 +110,7 @@ const cleanLine = (value: unknown, maximum = 512) => text(value).replace(/[\r\n]
 const validPhase = (value: unknown): value is CyclePhase => CYCLE_PHASES.includes(value as CyclePhase);
 const validStatus = (value: unknown): value is CycleStatus => CYCLE_STATUSES.includes(value as CycleStatus);
 const validImplementationMode = (value: unknown): value is CycleImplementationMode => CYCLE_IMPLEMENTATION_MODES.includes(value as CycleImplementationMode);
+const validCycleMode = (value: unknown): value is CycleMode => CYCLE_MODES.includes(value as CycleMode);
 const validOutcome = (phase: CyclePhase, value: unknown) => typeof value === "string" && CYCLE_PHASE_OUTCOMES[phase].includes(value);
 
 export function sanitizeCycleError(code: string, _value?: unknown) {
@@ -152,13 +157,24 @@ export function parseCycleCommand(input: unknown): CycleCommand | null {
   if (!tokens.length) return null;
   const command = tokens.shift();
   if (command === "status" && tokens.length === 0) return { command: "status" };
-  if (command === "resume" && tokens.length === 0) return { command: "resume" };
+  if (command === "resume") {
+    if (tokens.length === 0) return { command: "resume" };
+    if (tokens.length === 1 && tokens[0] === "--autonomous") return { command: "resume", mode: "autonomous" };
+    if (tokens.length === 1 && tokens[0] === "--guided") return { command: "resume", mode: "guided" };
+    if (tokens.length === 1 && tokens[0].startsWith("--mode=")) {
+      const mode = tokens[0].slice("--mode=".length);
+      return validCycleMode(mode) ? { command: "resume", mode } : null;
+    }
+    if (tokens.length === 2 && tokens[0] === "--mode" && validCycleMode(tokens[1])) return { command: "resume", mode: tokens[1] };
+    return null;
+  }
   if (command === "stop" && (tokens.length === 0 || (tokens.length === 1 && ["--ack", "--acknowledge"].includes(tokens[0])))) return { command: "stop", acknowledge: tokens.length === 1 };
   if (command === "close" && (tokens.length === 0 || (tokens.length === 1 && tokens[0] === "--commit-prep"))) return { command: "close", commitPrep: tokens[0] === "--commit-prep" };
   if (command !== "start") return null;
 
   let reviewCap: number | undefined;
   let implementationMode: CycleImplementationMode | undefined;
+  let mode: CycleMode | undefined;
   const sourceTokens: string[] = [];
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index];
@@ -178,6 +194,19 @@ export function parseCycleCommand(input: unknown): CycleCommand | null {
       implementationMode = raw;
       continue;
     }
+    if (token === "--mode" || token.startsWith("--mode=")) {
+      if (mode !== undefined) return null;
+      const raw = token === "--mode" ? tokens[++index] : token.slice("--mode=".length);
+      if (!validCycleMode(raw)) return null;
+      mode = raw;
+      continue;
+    }
+    const shorthandMode = token === "--autonomous" ? "autonomous" : token === "--guided" ? "guided" : null;
+    if (shorthandMode) {
+      if (mode !== undefined) return null;
+      mode = shorthandMode;
+      continue;
+    }
     if (token.startsWith("--")) return null;
     sourceTokens.push(token);
   }
@@ -188,7 +217,7 @@ export function parseCycleCommand(input: unknown): CycleCommand | null {
       ? normalizeCycleSource({ type: "taskwarrior", project: sourceTokens[1], uuid: sourceTokens[2] })
       : null;
   return source
-    ? { command: "start", source, ...(reviewCap === undefined ? {} : { reviewCap }), ...(implementationMode === undefined ? {} : { implementationMode }) }
+    ? { command: "start", source, ...(reviewCap === undefined ? {} : { reviewCap }), ...(implementationMode === undefined ? {} : { implementationMode }), ...(mode === undefined ? {} : { mode }) }
     : null;
 }
 
@@ -415,13 +444,15 @@ const validateEvidence = (value: unknown): value is CycleEvidence => {
   return Boolean(evidence && validPhase(evidence.phase) && validOutcome(evidence.phase, evidence.outcome) && boundedText(evidence.marker, 512) && boundedText(evidence.toolCallId, 256) && (evidence.artifactId === null || boundedText(evidence.artifactId, 512)) && validTimestamp(evidence.timestamp));
 };
 
-export function createCycleState(sourceValue: unknown, options: { lifecycleKey?: string; reviewCap?: number; implementationMode?: CycleImplementationMode; timestamp?: string; branchId?: string } = {}): CycleState {
+export function createCycleState(sourceValue: unknown, options: { lifecycleKey?: string; reviewCap?: number; implementationMode?: CycleImplementationMode; mode?: CycleMode; timestamp?: string; branchId?: string } = {}): CycleState {
   const source = normalizeCycleSource(sourceValue);
   if (!source) throw new Error("cycle_source_invalid");
   const reviewCap = options.reviewCap ?? CYCLE_REVIEW_CAP_DEFAULT;
   if (!Number.isInteger(reviewCap) || reviewCap < CYCLE_REVIEW_CAP_MIN || reviewCap > CYCLE_REVIEW_CAP_MAX) throw new Error("review_cap_invalid");
   const implementationMode = options.implementationMode ?? "generic";
   if (!validImplementationMode(implementationMode)) throw new Error("implementation_mode_invalid");
+  const mode = options.mode ?? "guided";
+  if (!validCycleMode(mode)) throw new Error("cycle_mode_invalid");
   const lifecycleKey = text(options.lifecycleKey) || cycleLifecycleKey(source);
   if (!LIFECYCLE_KEY.test(lifecycleKey)) throw new Error("lifecycle_key_invalid");
   return {
@@ -429,6 +460,7 @@ export function createCycleState(sourceValue: unknown, options: { lifecycleKey?:
     source,
     lifecycleKey,
     implementationMode,
+    mode,
     phase: "plan",
     status: "awaiting-evidence",
     reviewAttempts: 0,
@@ -443,7 +475,8 @@ export function createCycleState(sourceValue: unknown, options: { lifecycleKey?:
 export function validateCycleState(value: unknown): { valid: true; state: CycleState } | { valid: false; error: ReturnType<typeof sanitizeCycleError> } {
   const state = object(value);
   const implementationMode = state?.implementationMode === undefined ? "js" : state.implementationMode;
-  if (!state || state.schemaVersion !== CYCLE_SCHEMA_VERSION || !normalizeCycleSource(state.source) || !LIFECYCLE_KEY.test(text(state.lifecycleKey)) || !validImplementationMode(implementationMode) || !validPhase(state.phase) || !validStatus(state.status) || !Number.isInteger(state.reviewAttempts) || !Number.isInteger(state.reviewCap) || state.reviewCap < CYCLE_REVIEW_CAP_MIN || state.reviewCap > CYCLE_REVIEW_CAP_MAX || state.reviewAttempts < 0 || state.reviewAttempts > state.reviewCap || !Array.isArray(state.evidence) || !state.evidence.every(validateEvidence) || !Array.isArray(state.blockers) || !state.blockers.every((item) => typeof item === "string" && item.length <= 512) || !validTimestamp(state.updatedAt)) return { valid: false, error: sanitizeCycleError("cycle_state_invalid") };
+  const mode = state?.mode === undefined ? "guided" : state.mode;
+  if (!state || state.schemaVersion !== CYCLE_SCHEMA_VERSION || !normalizeCycleSource(state.source) || !LIFECYCLE_KEY.test(text(state.lifecycleKey)) || !validImplementationMode(implementationMode) || !validCycleMode(mode) || !validPhase(state.phase) || !validStatus(state.status) || !Number.isInteger(state.reviewAttempts) || !Number.isInteger(state.reviewCap) || state.reviewCap < CYCLE_REVIEW_CAP_MIN || state.reviewCap > CYCLE_REVIEW_CAP_MAX || state.reviewAttempts < 0 || state.reviewAttempts > state.reviewCap || !Array.isArray(state.evidence) || !state.evidence.every(validateEvidence) || !Array.isArray(state.blockers) || !state.blockers.every((item) => typeof item === "string" && item.length <= 512) || !validTimestamp(state.updatedAt)) return { valid: false, error: sanitizeCycleError("cycle_state_invalid") };
   if (state.stoppedAt !== undefined && !validTimestamp(state.stoppedAt)) return { valid: false, error: sanitizeCycleError("cycle_state_invalid") };
   if (state.stoppedPhase !== undefined && !validPhase(state.stoppedPhase)) return { valid: false, error: sanitizeCycleError("cycle_state_invalid") };
   if (state.trackerClosed !== undefined && typeof state.trackerClosed !== "boolean") return { valid: false, error: sanitizeCycleError("cycle_state_invalid") };
@@ -454,7 +487,7 @@ export function validateCycleState(value: unknown): { valid: true; state: CycleS
     if (duplicateToolCall.has(evidence.toolCallId)) return { valid: false, error: sanitizeCycleError("cycle_evidence_duplicate") };
     duplicateToolCall.add(evidence.toolCallId);
   }
-  return { valid: true, state: { ...state, source, implementationMode, evidence: state.evidence.map((item) => ({ ...item })), blockers: state.blockers.map((item) => cleanLine(item)) } as CycleState };
+  return { valid: true, state: { ...state, source, implementationMode, mode, evidence: state.evidence.map((item) => ({ ...item })), blockers: state.blockers.map((item) => cleanLine(item)) } as CycleState };
 }
 
 const lastEvidence = (state: CycleState) => state.evidence[state.evidence.length - 1] ?? null;
@@ -572,7 +605,7 @@ export function buildResumeSource(stateValue: unknown): string | null {
   ].join("\n");
 }
 
-export function buildCycleStatus(stateValue: unknown): { status: "invalid"; error: ReturnType<typeof sanitizeCycleError> } | { status: CycleStatus; source: string; phase: CyclePhase; nextPhase: CyclePhase | null; implementationMode: CycleImplementationMode; reviewAttempts: number; reviewCap: number; evidence: Array<Pick<CycleEvidence, "phase" | "outcome" | "artifactId" | "timestamp">>; blockers: string[] } {
+export function buildCycleStatus(stateValue: unknown): { status: "invalid"; error: ReturnType<typeof sanitizeCycleError> } | { status: CycleStatus; source: string; phase: CyclePhase; nextPhase: CyclePhase | null; implementationMode: CycleImplementationMode; mode: CycleMode; reviewAttempts: number; reviewCap: number; evidence: Array<Pick<CycleEvidence, "phase" | "outcome" | "artifactId" | "timestamp">>; blockers: string[] } {
   const valid = validateCycleState(stateValue);
   if (!valid.valid) return { status: "invalid", error: valid.error };
   const state = valid.state;
@@ -582,6 +615,7 @@ export function buildCycleStatus(stateValue: unknown): { status: "invalid"; erro
     phase: state.phase,
     nextPhase: nextCyclePhase(state),
     implementationMode: state.implementationMode,
+    mode: state.mode,
     reviewAttempts: state.reviewAttempts,
     reviewCap: state.reviewCap,
     evidence: state.evidence.map(({ phase, outcome, artifactId, timestamp: at }) => ({ phase, outcome, artifactId, timestamp: at })),
