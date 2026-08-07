@@ -105,12 +105,12 @@ test("investigate traces evidence and hypotheses without applying fixes", async 
 
 test("instruct teaches safe action without performing it", async () => {
   const text = await prompt("instruct");
-  for (const value of ["what to do", "why it matters", "read-only", "low-risk", "state-changing", "destructive", "explore", "vision-handoff", "never performs the work", "Stop after the teaching response"]) has(text, value);
+  for (const value of ["what to do", "why it matters", "read-only", "low-risk", "state-changing", "destructive", "explore", "vision-handoff", "ima-memory-workflow", "ima-pi-guide", "before making domain-specific claims", "never performs the work", "Stop after the teaching response"]) has(text, value);
 });
 
 test("prompt-start builds one inline ready-to-paste prompt without executing it", async () => {
   const text = await prompt("prompt-start");
-  for (const value of ["prompt-building", "not execution", "inline in the current Pi conversation", "ask one focused clarification", "standalone, ready-to-paste prompt", "GUI editor", "write files", "invoke the generated workflow", "Stop after presenting the refined prompt"]) has(text, value);
+  for (const value of ["prompt-building", "not execution", "inline in the current Pi conversation", "pre-approved", "/ima:plan", "ask one focused clarification", "standalone, ready-to-paste prompt", "GUI editor", "write files", "invoke the generated workflow", "Stop after presenting the refined prompt"]) has(text, value);
 });
 
 test("visual workflows preserve external-browser evidence and terminal planning boundaries", async () => {
@@ -189,7 +189,7 @@ test("FNR-3025 support prompts encode gateway, safety, and terminal contracts", 
   for (const value of ["natural language", "parameter grammar", "Vestige preference", "Serena `core`", "`conventions`", "`tech_stack`", "`suggested_commands`", "`task_completion`", "`memory_maintenance`", "ima_lifecycle", "Qdrant", "secrets", "exact preview", "explicit approval", "preferences save", "ima-mcp serena tools call edit_memory", "mode\":\"literal", "allow_multiple_occurrences\":false", "--allow-write", "verify", "Stop after one"]) has(memorize, value);
   for (const value of ["ima-memory-workflow", "relevant standard memories", "Do not inspect repository files", "unless the user explicitly asks"]) has(memorize, value);
   const preflight = await prompt("preflight");
-  for (const value of ["offline", "quick", "full", "PASS, WARN, FAIL, BLOCKED, SKIP, NOT_CONFIGURED", "0700", "bounded line/byte chunks", "redact", "cleanup", "retained", "ima_delegate", "IMA_PI_PREFLIGHT_CHILD_OK", "preflight-probe", "Goose subrecipe", "Stop after"]) has(preflight, value);
+  for (const value of ["offline", "quick", "full", "PASS, WARN, FAIL, BLOCKED, SKIP, NOT_CONFIGURED", "0700", "bounded line/byte chunks", "redact", "cleanup", "retained", "ima_delegate", "IMA_PI_PREFLIGHT_CHILD_OK", "preflight-probe", "pi-preflight", "Goose subrecipe", "Stop after"]) has(preflight, value);
   const migrate = await prompt("migrate");
   for (const value of ["Pi-native", "external through `ima-mcp`", "Serena, Vestige, or Qdrant", "~/.pi/agent/ima/config.json", "trusted `.pi/ima/config.json`", "exact redacted preview", "explicit approval", "atomically", "secret", "Validate JSON", "Stop after"]) has(migrate, value);
 });

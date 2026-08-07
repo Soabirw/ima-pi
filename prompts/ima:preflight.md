@@ -2,7 +2,7 @@
 description: Run bounded read-only Pi and IMA diagnostic preflight
 argument-hint: "[offline, quick, full, or natural-language diagnostic request]"
 ---
-Run a terminal, diagnostically read-only preflight. Interpret `$@` as natural language; supported scopes are `offline`, `quick`, and `full`, defaulting to `quick`. Never install, repair, configure OAuth, mutate project/config/service/memory/tracker state, or migrate anything.
+Run a terminal, diagnostically read-only preflight. Interpret `$@` as natural language; supported scopes are `offline`, `quick`, and `full`, defaulting to `quick`. Load the `pi-preflight` skill and use it as the authoritative checklist and routing guidance. Never install, repair, configure OAuth, mutate project/config/service/memory/tracker state, or migrate anything.
 
 In every scope inspect appropriate direct evidence for current path, `pi`, Node/npm, Git status, `ima-mcp`, Taskwarrior, package resources, and configured skills/agents. In quick/full run read-only `ima-mcp` doctor/status/bootstrap-style checks for Serena, Vestige, Qdrant, and gateway availability. Respect brokered-service semantics: `configured:false` is not degradation where direct gateway evidence is healthy. Full may add configured external/auth/browser checks; unavailable optional capability is WARN unless explicitly required. Probe independent areas after failures. PASS needs direct evidence. Use only PASS, WARN, FAIL, BLOCKED, SKIP, NOT_CONFIGURED.
 
