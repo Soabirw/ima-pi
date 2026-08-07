@@ -4,6 +4,8 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-08-07
+
 ### Added
 
 - `/ima:cycle` supports persisted `guided` and `autonomous` cycle modes, including `start --mode autonomous` and `resume --autonomous|--guided`.
@@ -20,6 +22,7 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 - Autonomous progression stops on unverified, blocked, defect, review-cap, ceiling, and interrupt paths; autonomous stop preserves `stopped` state without requiring `--ack`.
 - A generation guard prevents a late first autonomous-resume dispatch from overwriting the authoritative `stopped` state or restarting autonomous progression.
 - Close remains human-gated in every cycle mode.
+- Autonomous plan self-approval is authorized only by the exact standalone `autonomousPlan: true` directive in the cycle dispatch contract; matching lifecycle metadata is non-authoritative.
 
 ## [1.6.0] - 2026-08-07
 
