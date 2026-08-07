@@ -50,6 +50,12 @@ Test: Does this abstraction pay for itself? Would a junior dev understand it?
 
 **File size smell**: >500 lines = likely multiple responsibilities. Split by cohesion, not line count.
 
+### Function-size heuristic
+
+Aim for roughly 50 lines or fewer per function as a soft heuristic, not an automatic failure. Split by responsibility and cohesion rather than merely to hit a count. A justified exception is appropriate when extraction would obscure control flow or force a worse abstraction.
+
+For universal naming, structure, commenting, and readability guidance, see [readable-code](../readable-code/SKILL.md).
+
 **Match complexity to context**: CLI script ≠ production API ≠ weekend project. Simple problem + complex solution = over-engineering.
 
 ## Architecture

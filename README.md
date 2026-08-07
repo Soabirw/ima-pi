@@ -48,6 +48,7 @@ Pi discovers these package skills directly:
 ```text
 /skill:architect
 /skill:functional-programmer
+/skill:readable-code
 /skill:js-fp
 /skill:php-fp
 /skill:py-fp

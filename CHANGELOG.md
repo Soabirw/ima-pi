@@ -4,6 +4,14 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ## [Unreleased]
 
+### Added
+
+- Universal `readable-code` skill for language-agnostic implementation and review guidance, including FP and security deference.
+
+### Changed
+
+- `functional-programmer` now owns the soft, non-automatic roughly-50-line function-size heuristic and links to `readable-code`.
+
 ## [1.7.0] - 2026-08-07
 
 ### Added
