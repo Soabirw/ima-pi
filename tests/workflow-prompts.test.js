@@ -44,10 +44,16 @@ test("cycle resolution prompts expose exact phase markers and bounded handoffs",
   assert.doesNotMatch(resolution, /remediation brief is `SUFFICIENT`/i);
 });
 test("implementation prompts expose a MID current-session, plan-bound terminal contract", async () => {
+  const readableCodeDirectives = {
+    implement: "Always load `readable-code` for universal readability standards before editing, regardless of stack.",
+    "implement-js": "Before editing, load `ima-security-guardrails` for applicable security constraints, `readable-code` for universal readability standards, and `functional-programmer` with `js-fp`;",
+    "implement-wp": "Before editing, load `ima-security-guardrails` for applicable security constraints, `readable-code` for universal readability standards, and `functional-programmer` with `php-fp` or `php-fp-wordpress`;"
+  };
   for (const name of implementationPrompts) {
     const text = await prompt(name);
     for (const value of ["description:", "argument-hint: \"[approved-plan-source]\"", "MID-tier", "current session", "approved", "scope", "non-goals", "ima_context", "Serena-first", "ima_delegate", "ima_lifecycle", "implementation", "contradiction", "verification", "/ima:plan", "/ima:test", "formal test or review"]) has(text, value);
-    for (const sharedSkill of ["ima-security-guardrails", "functional-programmer", "ima-delegation-contract"]) has(text, sharedSkill);
+    for (const sharedSkill of ["ima-security-guardrails", "readable-code", "functional-programmer", "ima-delegation-contract"]) has(text, sharedSkill);
+    has(text, readableCodeDirectives[name]);
     for (const prohibition of ["Do not invoke `/ima:cycle`", "a workflow DSL", "Goose recipes", "subrecipe mechanics", "does not change the active model"]) has(text, prohibition);
   }
 });

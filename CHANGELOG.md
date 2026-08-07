@@ -10,6 +10,7 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ### Changed
 
+- `/ima:implement`, `/ima:implement-js`, and `/ima:implement-wp` now explicitly load `readable-code`; `/ima:new implement` seeds it after Serena and Vestige bootstrap with prompt and bootstrap-content coverage.
 - `functional-programmer` now owns the soft, non-automatic roughly-50-line function-size heuristic and links to `readable-code`.
 
 ## [1.7.0] - 2026-08-07

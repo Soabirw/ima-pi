@@ -35,6 +35,11 @@ const defaultBootstrapCommands = [
     source: "skill",
     sourceInfo: { path: join(root, "skills", name, "SKILL.md") },
   })),
+  ...IMA_NEW_PHASE_SKILLS.implement.map((name) => ({
+    name: `skill:${name}`,
+    source: "skill",
+    sourceInfo: { path: join(root, "skills", name, "SKILL.md") },
+  })),
 ];
 const roleSelectors = { low: "LOW", mid: "MID", high: "HIGH", xhigh: "XHIGH" };
 const allSelectors = [...Object.keys(roleSelectors), ...IMA_PHASES];
@@ -226,9 +231,11 @@ test("resolves planned prompt and skill resources through sourceInfo.path and st
   const directory = await mkdtemp(join(tmpdir(), "ima-new-bootstrap-"));
   const paths = IMA_NEW_BOOTSTRAP_COMMANDS.map((name) => join(directory, `${name}.md`));
   const skillPath = join(directory, "ima-lifecycle-contract.md");
+  const readableCodeSkillPath = join(directory, "readable-code.md");
   await writeFile(paths[0], "---\ndescription: Serena\n---\nSerena bootstrap body\n");
   await writeFile(paths[1], "---\ndescription: Vestige\n---\nVestige bootstrap body\n");
   await writeFile(skillPath, "---\nname: ima-lifecycle-contract\ndescription: Lifecycle\n---\nLifecycle contract body\n");
+  await writeFile(readableCodeSkillPath, "---\nname: readable-code\ndescription: Readability\n---\nReadable code body\n");
   const commands = [
     ...IMA_NEW_BOOTSTRAP_COMMANDS.map((name, index) => ({
       name,
@@ -236,10 +243,12 @@ test("resolves planned prompt and skill resources through sourceInfo.path and st
       sourceInfo: { path: paths[index] },
     })),
     { name: "skill:ima-lifecycle-contract", source: "skill", sourceInfo: { path: skillPath } },
+    { name: "skill:readable-code", source: "skill", sourceInfo: { path: readableCodeSkillPath } },
   ];
 
   assert.deepEqual(IMA_NEW_PHASE_SKILLS.plan, ["ima-lifecycle-contract"]);
-  for (const phase of IMA_PHASES.filter((phase) => phase !== "plan")) assert.deepEqual(IMA_NEW_PHASE_SKILLS[phase], []);
+  assert.deepEqual(IMA_NEW_PHASE_SKILLS.implement, ["readable-code"]);
+  for (const phase of IMA_PHASES.filter((phase) => phase !== "plan" && phase !== "implement")) assert.deepEqual(IMA_NEW_PHASE_SKILLS[phase], []);
   assert.deepEqual(
     await resolveImaNewBootstrapMessages({ getCommands: () => commands }),
     ["Serena bootstrap body", "Vestige bootstrap body"],
@@ -247,6 +256,10 @@ test("resolves planned prompt and skill resources through sourceInfo.path and st
   assert.deepEqual(
     await resolveImaNewBootstrapMessages({ getCommands: () => commands }, "plan"),
     ["Serena bootstrap body", "Vestige bootstrap body", "Lifecycle contract body"],
+  );
+  assert.deepEqual(
+    await resolveImaNewBootstrapMessages({ getCommands: () => commands }, "implement"),
+    ["Serena bootstrap body", "Vestige bootstrap body", "Readable code body"],
   );
 });
 
