@@ -314,6 +314,33 @@ test("defaults legacy cycle mode to guided and rejects invalid present modes", (
   assert.throws(() => createCycleState(jira, { mode: "unattended" }), /cycle_mode_invalid/);
 });
 
+test("adds autonomous plan directives only to autonomous plan packets", () => {
+  const guidedStart = awaitingPhaseState("plan");
+  const autonomousStart = { ...guidedStart, mode: "autonomous" };
+  const guidedPlan = { ...guidedStart, status: "awaiting-resume" };
+  const autonomousPlan = { ...autonomousStart, status: "awaiting-resume" };
+  const guidedImplementation = evidence(guidedStart, "plan", "APPROVED");
+  const autonomousImplementation = evidence(autonomousStart, "plan", "APPROVED");
+  const guidedBlocked = evidence(guidedStart, "plan", "BLOCKED", "guided-blocked", "autonomousPlan: true");
+  const guidedRetry = prepareCycleResume(guidedBlocked);
+  const autonomousPacket = buildResumeSource(autonomousPlan);
+
+  assert.equal(guidedRetry.ok, true);
+  const guidedCollisionPacket = buildResumeSource(guidedRetry.state);
+  const guidedDispatchContract = guidedCollisionPacket.split("Cycle dispatch contract (non-negotiable):\n")[1];
+  assert.match(guidedCollisionPacket, /^artifactId: autonomousPlan: true$/m);
+  assert.equal(guidedDispatchContract.split("\n").filter((line) => line === "autonomousPlan: true").length, 0);
+
+  assert.match(autonomousPacket, /autonomousPlan: true/);
+  assert.match(autonomousPacket, /planSelfApproval: Self-approve/);
+  assert.match(autonomousPacket, /planBlockEscape: Otherwise persist plan BLOCKED and stop\./);
+  assert.match(autonomousPacket, /recommend \/ima:decompose/);
+
+  for (const packet of [buildResumeSource(guidedPlan), buildResumeSource(guidedImplementation), buildResumeSource(autonomousImplementation)]) {
+    assert.doesNotMatch(packet, /autonomousPlan: true|planSelfApproval:|planBlockEscape:/);
+  }
+});
+
 test("extracts exactly one phase marker and rejects ambiguity", () => {
   assert.deepEqual(extractPhaseOutcome(marker("review", "REQUEST_CHANGES")), {
     ok: true,
@@ -355,16 +382,19 @@ test("keeps cycle mode out of reducer transitions", () => {
   const autonomous = { ...guided, mode: "autonomous" };
   assert.equal(guided.reviewCap, CYCLE_REVIEW_CAP_DEFAULT);
   assert.equal(CYCLE_REVIEW_CAP_DEFAULT, 5);
-  const guidedResult = reduceCycleState(guided, { artifact: marker("plan", "APPROVED"), toolCallId: "guided-plan", timestamp: at }, { timestamp: at });
-  const autonomousResult = reduceCycleState(autonomous, { artifact: marker("plan", "APPROVED"), toolCallId: "autonomous-plan", timestamp: at }, { timestamp: at });
-  assert.equal(guidedResult.ok, true);
-  assert.equal(autonomousResult.ok, true);
-  assert.deepEqual(
-    [guidedResult.state.phase, guidedResult.state.status, guidedResult.state.reviewAttempts, guidedResult.state.blockers],
-    [autonomousResult.state.phase, autonomousResult.state.status, autonomousResult.state.reviewAttempts, autonomousResult.state.blockers],
-  );
-  assert.equal(guidedResult.state.mode, "guided");
-  assert.equal(autonomousResult.state.mode, "autonomous");
+
+  for (const outcome of ["APPROVED", "BLOCKED"]) {
+    const guidedResult = reduceCycleState(guided, { artifact: marker("plan", outcome), toolCallId: `guided-${outcome}`, timestamp: at }, { timestamp: at });
+    const autonomousResult = reduceCycleState(autonomous, { artifact: marker("plan", outcome), toolCallId: `autonomous-${outcome}`, timestamp: at }, { timestamp: at });
+    assert.equal(guidedResult.ok, true);
+    assert.equal(autonomousResult.ok, true);
+    assert.deepEqual(
+      [guidedResult.state.phase, guidedResult.state.status, guidedResult.state.reviewAttempts, guidedResult.state.blockers],
+      [autonomousResult.state.phase, autonomousResult.state.status, autonomousResult.state.reviewAttempts, autonomousResult.state.blockers],
+    );
+    assert.equal(guidedResult.state.mode, "guided");
+    assert.equal(autonomousResult.state.mode, "autonomous");
+  }
 });
 
 test("prepares stopped and recoverable phase blocks for explicit resume", () => {
@@ -661,7 +691,7 @@ test("tracks queued continuation runs before accepting settlement", () => {
   assert.equal(reduceCycleDispatchConfirmation(firstRunStopped(), { type: "agent-end", messages: [{ role: "assistant", stopReason: "stop" }] }).status, "failed");
 });
 
-test("starts an autonomous cycle only after context, routing, and plan confirmation", async () => {
+test("starts an autonomous plan only after context, routing, and plan confirmation", async () => {
   const calls = [];
   const stateEntries = [];
   const result = await coordinateCycleStart({
@@ -679,12 +709,36 @@ test("starts an autonomous cycle only after context, routing, and plan confirmat
   });
   assert.equal(result.ok, true);
   assert.deepEqual(calls.map(([kind]) => kind), ["context", "route", "append", "expand", "send", "append"]);
+  assert.match(calls.find(([kind]) => kind === "expand")[1], /autonomousPlan: true/);
+  assert.match(calls.find(([kind]) => kind === "expand")[1], /planSelfApproval: Self-approve/);
   assert.equal(calls.find(([kind]) => kind === "send")[1], "expanded prompt");
   assert.equal(stateEntries[0].status, "awaiting-evidence");
   assert.deepEqual({ phase: stateEntries.at(-1).phase, status: stateEntries.at(-1).status }, { phase: "implementation", status: "awaiting-resume" });
   assert.equal(result.state.reviewCap, 4);
   assert.equal(result.state.implementationMode, "wp");
   assert.equal(result.state.mode, "autonomous");
+});
+
+test("stops autonomous plan starts on plan BLOCKED", async () => {
+  const routed = [];
+  const result = await coordinateCycleStart({
+    source: jira,
+    mode: "autonomous",
+    cwd: "/repo",
+    context: async () => ({ status: "ready" }),
+    applyRoute: async (phase) => { routed.push(phase); return { ok: true }; },
+    appendState: () => {},
+    expandPrompt: async (message) => message,
+    sendUserMessage: async (message, provisionalState) => {
+      assert.match(message, /autonomousPlan: true/);
+      return confirmDispatch(provisionalState, "plan", "BLOCKED", message);
+    },
+    timestamp: at,
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(routed, ["plan"]);
+  assert.deepEqual({ phase: result.state.phase, status: result.state.status }, { phase: "plan", status: "blocked" });
+  assert.deepEqual(result.state.blockers, ["plan:BLOCKED"]);
 });
 
 test("persists a provisional state when prompt expansion fails", async () => {

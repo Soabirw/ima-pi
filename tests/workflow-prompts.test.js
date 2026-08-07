@@ -10,6 +10,11 @@ const localMarkdownTargets = (content) => [...content.matchAll(/\[[^\]]+\]\(([^)
   .map(([, target]) => target.trim().split("#", 1)[0])
   .filter((target) => target && !target.includes("$") && !/^(?:[a-z]+:|\/)/i.test(target));
 test("production planning prompts have distinct Pi frontmatter and HIGH-tier authority", async () => { for (const name of ["brainstorm", "decompose"]) { const text = await prompt(name); has(text, "description:"); has(text, "argument-hint:"); has(text, "HIGH-tier"); has(text, "explicit approval"); assert.doesNotMatch(text, /\/ima:cycle|workflow DSL/i); } const planText = await prompt("plan"); for (const value of ["description:", "argument-hint:", "HIGH-tier", "explicit approval", "ima-cycle outcome: phase=plan"]) has(planText, value); assert.doesNotMatch(planText, /workflow DSL/i); });
+test("plan prompt makes autonomous self-approval fail safe", async () => {
+  const text = await prompt("plan");
+  for (const value of ["autonomousPlan", "Self-approve", "BLOCKED", "/ima:decompose", "unresolved questions", "explicit approval", "exact standalone", "Cycle dispatch contract", "source, lifecycle, or evidence field values"]) has(text, value);
+});
+
 test("brainstorm owns approved product requirements and stops before decomposition or design", async () => { const text = await prompt("brainstorm"); for (const value of ["problem or opportunity", "users and use cases", "business rules", "product acceptance criteria", "vision-handoff", "lifecycle type `decision`", "/ima:decompose", "stop"]) has(text, value); has(text, "Do **not** decompose PM work"); });
 test("decompose enforces two tiers, one PM destination, preview, and checklist-only work", async () => { const text = await prompt("decompose"); for (const value of ["Taskwarrior Project -> Task", "Jira Epic -> Story/Task", "checklist", "exactly one destination", "never dual-write", "exact persistence preview", "explicit approval", "lifecycle unit", "as `decision`", "stop"]) has(text, value); has(text, "technical files, functions, control flow"); });
 test("plan enforces one-unit Serena-first technical planning without implementation", async () => {

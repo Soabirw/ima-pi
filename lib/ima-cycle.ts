@@ -581,6 +581,13 @@ export function buildResumeSource(stateValue: unknown): string | null {
     `toolCallId: ${cleanLine(item.toolCallId)}`,
   ]);
   const validOutcomes = CYCLE_PHASE_OUTCOMES[state.phase];
+  const autonomousPlanDirectives = state.phase === "plan" && state.mode === "autonomous"
+    ? [
+      "autonomousPlan: true",
+      "planSelfApproval: Self-approve (persist plan APPROVED without waiting for human approval) ONLY when this is exactly one bounded, conflict-free, low-risk delivery unit with no unresolved product/architecture/security/rollout/verification questions.",
+      "planBlockEscape: Otherwise persist plan BLOCKED and stop. If multiple independent delivery units, recommend /ima:decompose; if unresolved questions remain, enumerate them.",
+    ]
+    : [];
   return [
     `${phaseCommand(state.phase, state.implementationMode)} ${cleanLine(source)}`,
     "Lifecycle evidence packet:",
@@ -600,6 +607,7 @@ export function buildResumeSource(stateValue: unknown): string | null {
     "cycleDispatch: true",
     `cyclePhase: ${state.phase}`,
     `validOutcomes: ${validOutcomes.join(", ")}`,
+    ...autonomousPlanDirectives,
     "Persist this phase through ima_lifecycle. Finish the saved artifact with exactly one cycle outcome marker for cyclePhase using one validOutcomes value; do not include any other cycle outcome marker.",
     `requiredMarker: <!-- ima-cycle outcome: phase=${state.phase}; outcome=<valid-outcome> -->`,
   ].join("\n");

@@ -8,6 +8,7 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 - `/ima:cycle` supports persisted `guided` and `autonomous` cycle modes, including `start --mode autonomous` and `resume --autonomous|--guided`.
 - Verified autonomous progression chains implementation through document without auto-closing the tracker.
+- `start --mode autonomous` lets the plan phase self-approve one bounded, conflict-free, low-risk delivery unit or persist `plan BLOCKED`; guided starts remain human-gated.
 
 ### Changed
 
