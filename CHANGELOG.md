@@ -21,6 +21,7 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 - `/ima:review-verify` now limits inspection to the evidence range plus one named dependency hop, and `/ima:test` now requires terminal report fields and anti-pattern guards covered by focused assertions.
 - `/ima:implement`, `/ima:implement-js`, `/ima:implement-wp`, and `/ima:resolve-review` now restore Pi-native security, functional-programming, bounded-delegation, and review-handoff contracts, with focused workflow-prompt assertions protecting the critical boundaries.
 - `/ima:design-to-code` and `/ima:ui-ux-review` now restore Pi-native visual/design-to-code prompt contracts through named skills, guardrails, and focused static workflow-prompt coverage.
+- `/ima:architect`, `/ima:brainstorm`, and `/ima:decompose` now restore evidence-led architecture, ideation, and decomposition guidance through packaged skill and agent references.
 
 ### Fixed
 
@@ -34,6 +35,7 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 ### Safety
 
 - Strict terminal, identity, receipt/recall, write-ownership, cycle-marker, non-empty, and artifact-boundary validation remains fail-closed.
+- `/ima:decompose` now capability-gates Jira hierarchy persistence before approval and blocks unsupported issue create/update without substitute writes.
 
 ## [1.4.0] - 2026-08-05
 
