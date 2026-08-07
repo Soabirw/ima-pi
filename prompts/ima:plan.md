@@ -39,6 +39,6 @@ The handoff MUST state approved decisions concretely, name known implementation 
 
 These lifecycle-complete headings are recommended for persisted artifacts; equivalent organization is acceptable, and persistence requires only a non-empty bounded artifact with valid lifecycle identity: Source and Approved Outcome, Scope and Non Goals, Phase Result, Changed Files, Decisions, Verification Commands and Results, Blockers, Residual Risk, Prior Artifacts, and Recommended Next Phase. Add Problem, Prior Work, Context, Approach, Boundaries, API Contracts, Detailed Code Instructions, Test Strategy, Acceptance Criteria, Implementation Order, Security Checklist, Risk Register, Open Questions, Files to Update, and Memory & Docs Hits when applicable.
 
-Show the complete contract and wait for explicit approval. After approval, persist it through `ima_lifecycle` as `plan`, then point to the appropriate implementation phase and stop.
+Show the complete contract and wait for explicit approval. After approval, persist it through `ima_lifecycle` as `plan`. The handoff pointer must use the canonical hydratable source form: `/ima:implement taskwarrior <project> <uuid>` or `/ima:implement <JIRA-KEY>`, never a raw colon lifecycle key. Then point to the appropriate implementation phase and stop.
 
 When dispatched by `/ima:cycle`, finish the saved plan artifact with exactly one marker and no other cycle outcome marker: `<!-- ima-cycle outcome: phase=plan; outcome=APPROVED -->`. Use `BLOCKED` only when the plan cannot be safely approved.

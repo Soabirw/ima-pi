@@ -47,6 +47,18 @@ test("implementation prompts expose a MID current-session, plan-bound terminal c
   }
 });
 
+test("lifecycle prompts recall verified plans by canonical source lifecycle key", async () => {
+  for (const name of ["implement", "implement-js", "implement-wp", "test", "review", "resolve-review", "rereview"]) {
+    const text = await prompt(name);
+    for (const value of ["ima-memory-workflow", "latest VERIFIED lifecycle artifact", "ima-pi:taskwarrior:<project>:<uuid>", "ima-pi:jira:<KEY>"]) has(text, value);
+  }
+  const rereview = await prompt("rereview");
+  has(rereview, "First call `ima_context`");
+  assert.ok(rereview.indexOf("First call `ima_context`") < rereview.indexOf("latest VERIFIED lifecycle artifact"));
+  const planning = await prompt("plan");
+  for (const value of ["canonical hydratable source form", "/ima:implement taskwarrior <project> <uuid>", "/ima:implement <JIRA-KEY>", "never a raw colon lifecycle key"]) has(planning, value);
+});
+
 test("workflow prompts declare their phase route without changing authority", async () => {
   const expected = { plan: "`plan` phase", implement: "`implement` phase", test: "`test` route", review: "`review` route", document: "`document` route" };
   for (const [name, phrase] of Object.entries(expected)) has(await prompt(name), phrase);
