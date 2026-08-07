@@ -4,6 +4,12 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-08-07
+
+### Changed
+
+- `/ima:cycle` now persists project-local `.ima-cycle/active.json` before phase prompt injection, treats dispatch handshake failures as advisory, restores/reconciles active state across sessions, and recalls lifecycle plans from manual phase prompts.
+
 ## [1.5.0] - 2026-08-07
 
 ### Added
