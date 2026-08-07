@@ -4,6 +4,8 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-08-07
+
 ### Added
 
 - A read-only `document-assessor` agent for manifest-only documentation assessment without local write authority.
@@ -13,6 +15,7 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ### Changed
 
+- `/ima:instruct`, `/ima:preflight`, and `/ima:prompt-start` now restore their evidence-gated Pi skill and workflow-template references, with focused static workflow-prompt assertions.
 - `/ima:medical-research`, `/ima:patristic-research`, and `/ima:investigate` now restore their owning research and cross-cutting workflow-skill wiring, including memory, bounded delegation, and visual-evidence handoff where applicable.
 - `/ima:document`, `/ima:memorize`, and `/ima:scorecard` now restore their Pi-native documentation, memory-routing, and technical-scorecard contracts through packaged skills.
 - `/ima:document` now routes manifest-only assessment with `writeScope: []`, while `documenter` remains limited to exact approved documentation targets.
