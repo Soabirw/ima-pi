@@ -4,6 +4,22 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-08-07
+
+### Added
+
+- Command-keyed profile routes through `commands`, including configured role shorthands for individual `/ima:*` commands.
+
+### Changed
+
+- Direct `/ima:*` commands, `/ima:cycle`, and `/ima:new` now share command-first routing with explicit legacy phase fallback and unchanged-model passthrough when no route exists.
+- Active configuration and workflow documentation now distinguishes direct command routes, legacy phase fallbacks, and cycle dispatch behavior.
+
+### Fixed
+
+- Unknown or malformed command/phase configuration warns and drops only the offending entry, while malformed known model-role mappings remain fail-closed.
+- Prototype-collision command names and inherited fallback aliases now preserve passthrough behavior in direct and fresh-session routing.
+
 ## [1.8.1] - 2026-08-08
 
 ### Fixed
