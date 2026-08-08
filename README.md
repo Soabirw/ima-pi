@@ -2,6 +2,16 @@
 
 Pi-native IMA agent harness, packaged through Pi's standard Git/npm package model.
 
+## Features
+
+- **52 packaged skills and 29 `/ima:*` prompt templates** for engineering, web, WordPress, IMA, MCP, research, and operational workflows.
+- **Pi-native package resources**—prompts, skills, agents, extensions, policies, and configuration guidance—distributed through Pi's normal Git/npm package model.
+- **Memory-aware project work:** Serena provides stable project context, Vestige preserves task decisions and lifecycle artifacts, and Qdrant stores durable reference knowledge. These are external integrations, not bundled services.
+- **A guided development lifecycle with bounded autonomy:** use the manual phases or the explicit, user-gated `/ima:cycle`; autonomous progression requires an approved bounded, conflict-free, low-risk plan and verified evidence, and it stops at `document`.
+- **Bounded specialist delegation** keeps work scoped while parent-owned lifecycle gates preserve accountability.
+
+Start with the [package guide](docs/guide.md). For the memory and lifecycle contracts, see [FNR-3016](docs/foundation/FNR-3016.md) and [FNR-3036](docs/foundation/FNR-3036.md).
+
 ## Install and get started
 
 Prerequisites: Node.js 24+ and a current Pi installation. Install the complete package through Pi's normal Git-package mechanism:
@@ -13,33 +23,6 @@ pi install ssh://git@gitea.theflccc.org:2222/IMA/ima-pi.git
 Open Pi after installation and use an `/ima:*` command (for example `/ima:plan`) or inspect packaged guidance through `/skill:*`. The full onboarding path—configuration, model roles, commands, agents, skills, integrations, degradation, troubleshooting, updates/removal, and checkout development—is in [`docs/guide.md`](docs/guide.md).
 
 `npm run install:skills` is **optional** cross-harness synchronization for `~/.agents/skills`; Pi installation, package discovery, and normal operation do not require it. Use installed-version Pi help for update/removal syntax. The team comparison is [Lesson 13: Claude Code, Goose, and Pi Workflows](https://flccc.atlassian.net/wiki/spaces/FNR/pages/845611010/Lesson+13+Claude+Code+Goose+and+Pi+Workflows).
-
-## Current status
-
-Technical spikes are validating Pi-native conventions before the runtime architecture is fixed.
-
-- **FNR-3008** proves package resource discovery, precedence, and namespaced commands.
-- **FNR-3009** adds an executable probe for independently routed child agents, bounded non-interactive tool authority, and persisted-session reuse through Pi's SDK. Live evidence currently proves exact cross-provider routing and session reopening; full authority and nonce-continuity acceptance is blocked until OpenAI API credits are restored.
-- **FNR-3010** adds a bounded parallel-control spike for concurrent child activity, exact cancellation with partial-effect disclosure, child-scoped destructive-action hooks, and explicit skill-load visibility.
-- **FNR-3011** adds a bounded parent/child `ima-mcp` gateway and semantic Vestige lifecycle proof.
-- **FNR-3012** adds a bounded dedicated vision-model image-routing and evidence-handoff probe.
-- **FNR-3013** adds package homes and explicit, opt-in model-role configuration.
-- **FNR-3014** adds bounded first-class agents, the `ima_delegate` production tool, source-aware discovery, and focused session inspection.
-- **FNR-3015** adds concise production delegation activity, cancellation/possible-partial-state disclosure, structured stopped-state reports, and visible focused safety interception.
-- **FNR-3016** adds Serena-first production context assembly and semantically verified Vestige lifecycle handoffs through external IMA service boundaries.
-- **FNR-3017** adds production prompts for approved product requirements, two-tier PM decomposition, and one-unit technical planning.
-- **FNR-3018** adds plan-bound MID implementation prompts for generic, JavaScript/TypeScript, and production WordPress/PHP work.
-- **FNR-3019** adds bounded testing, independent review, narrow finding verification, and documentation/learning closeout prompts.
-- **FNR-3020** adds bounded architecture, investigation, instruction, and inline prompt-building prompts while reusing the existing read-only `explore` agent.
-- **FNR-3021** adds bounded local-image vision delegation, read-only UI/UX review, and planning-only WordPress/Bootstrap design-to-code handoffs.
-- **FNR-3022** adds evidence-backed scorecards and advisory independent adversarial review with distinct configured routes.
-- **FNR-3023** adds terminal medical and patristic research prompts, reusable specialist skills, and packaged patristic indexes.
-- **FNR-3025** adds Pi-native Serena/Vestige bootstrap, natural-language stable memory updates, diagnostic preflight, supported configuration migration, and a package child-spawn canary.
-- **FNR-3026** adds `/ima:ship-it`, a Pi-native staging/production release-preparation prompt with reusable trunk/release/tag policy and human-owned deployment authority.
-- **FNR-3027** packages core architecture, functional-programming, search, and source-control skills for native Pi discovery.
-- **FNR-3029** packages WordPress, PHP integration, and IMA site-building skills for native Pi discovery.
-- **FNR-3031** packages IMA brand, editorial, email, and research skills for native Pi discovery.
-- **FNR-3033** adds Pi-native operational guidance skills for preflight, Pi documentation, and ima-pi operation.
 
 ## Core engineering skills
 
@@ -185,6 +168,19 @@ Both recommend, but never execute, the real deployment command after successful 
 All five are advisory and non-mutating, and they stop without implementing. They are optional bounded operations rather than stages in the formal delivery sequence. `/ima:prompt` remains the resource-discovery probe, while `/ima:prompt-start` is the production prompt builder. See [`docs/foundation/FNR-3020.md`](docs/foundation/FNR-3020.md) for source disposition, authority boundaries, integration, verification, and limitations.
 
 ## Production workflow prompts
+
+### Lifecycle at a glance
+
+Use the manual phases when you want to control each handoff, or use `/ima:cycle` to coordinate one explicit Story.
+
+```text
+main:    plan -> implement -> test -> review -- APPROVED --> document -- READY --> close (human-confirmed)
+changes: review -- REQUEST_CHANGES --> resolution -> rereview
+         rereview -- APPROVED --> document
+         rereview -- REQUEST_CHANGES --> resolution
+```
+
+Guided mode waits for an explicit human `resume` after each phase. Autonomous mode begins only when the strict plan gate accepts one bounded, conflict-free, low-risk unit; verified progression ends at `document`, and blockers stop it. `close` is always a separate, human-confirmed action. See [FNR-3036](docs/foundation/FNR-3036.md) for commands, safety gates, and lifecycle evidence.
 
 - `/ima:brainstorm [source]` turns an idea or evidence into approved product requirements; it does not decompose or technically design.
 - `/ima:decompose [requirements-source]` creates exactly a Taskwarrior Project → Task or Jira Epic → Story/Task hierarchy, with lower-level work kept as checklists. It previews one PM destination and requires approval before persistence.
