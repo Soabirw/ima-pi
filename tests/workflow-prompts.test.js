@@ -162,7 +162,23 @@ test("visual prompt restorations name skills and guardrails", async () => {
 
 test("code-review skill restores the Pi-native verified-review contract", async () => {
   const text = await skill("code-review");
-  for (const value of ["name: code-review", "Four passes", "Integration Contract", "VERDICT: CONFIRMED|WITHDRAWN|PARTIAL", "REVIEW-NNN", "Request-changes gate", "refactor as needed"]) has(text, value);
+  for (const value of [
+    "name: code-review",
+    "Four passes",
+    "Integration Contract",
+    "VERDICT: CONFIRMED|WITHDRAWN|PARTIAL",
+    "REVIEW-NNN",
+    "Request-changes gate",
+    "refactor as needed",
+    "readable-code",
+    "Readability:",
+    "rule-anchored",
+    "blocking under the closeout rule",
+  ]) has(text, value);
+  assert.match(
+    text,
+    /^- Readability:[^\n]*rule-anchored[^\n]*as a Warning \(blocking under the closeout rule\)/mi,
+  );
   assert.doesNotMatch(text, /sub_recipes|\.eta|ima-mcp serena/i);
   await Promise.all(localMarkdownTargets(text).map((target) => access(resolve(root, "skills", "code-review", target))));
 });

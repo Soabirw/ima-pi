@@ -17,7 +17,7 @@ Review behavior and contracts, not style preferences. Prefer one well-supported 
 
 ## Supporting skills
 
-Use [mcp-serena](../mcp-serena/SKILL.md) for narrow symbol and reference discovery, [ima-security-guardrails](../ima-security-guardrails/SKILL.md) for applicable security checks, and [functional-programmer](../functional-programmer/SKILL.md) for pure/effect and mutation concerns. Use [ima-delegation-contract](../ima-delegation-contract/SKILL.md) for bounded independent verification or adversarial assignments.
+Use [mcp-serena](../mcp-serena/SKILL.md) for narrow symbol and reference discovery, [ima-security-guardrails](../ima-security-guardrails/SKILL.md) for applicable security checks, and [functional-programmer](../functional-programmer/SKILL.md) for pure/effect and mutation concerns. Use [ima-delegation-contract](../ima-delegation-contract/SKILL.md) for bounded independent verification or adversarial assignments. Use [readable-code](../readable-code/SKILL.md) as the canonical rule set when reviewing readability.
 
 ## Four passes
 
@@ -43,6 +43,7 @@ Apply these lenses only when they match the target:
 - Correctness: null/undefined behavior, missing return or error paths, ordering, races, stale state, boundaries, and rollback behavior.
 - Security: input validation, authorization, secrets, injection, output handling, and framework-specific protections from `ima-security-guardrails`.
 - Functional design: pure core versus effect shell, argument or shared-state mutation, explicit dependencies, and unnecessary abstraction.
+- Readability: Check the change against the codified [readable-code](../readable-code/SKILL.md) principles — intent-revealing names, focused single-responsibility functions, flat control flow via guard clauses/early returns, named constants over magic values, comprehensible parameter lists, pure core with effects at boundaries, and no abstraction for its own sake. Emit each concrete, rule-anchored violation as a Warning (blocking under the closeout rule), citing the specific violated principle and `file:line`. These are codified readability rules, not ad-hoc style preferences: do not raise taste-based or style-only findings. Defer numeric function-size and FP depth to `functional-programmer`; do not impose an indentation width or a numeric nesting-depth limit.
 - WordPress: nonce/capability checks, prepared queries, contextual escaping, hook signatures, asset handling, and hook-based cross-plugin contracts.
 - Brand and public copy: load `ima-brand` for visible terminology; public-facing `Honest Medicine` is `Honest Medicine™` unless it is a source quote, URL, slug, identifier, filename, or historical/legal reference.
 
