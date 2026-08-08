@@ -12,6 +12,7 @@ import {
   discoverImaProfiles,
   loadImaConfig,
   mergeConfigLayers,
+  resolveCommandRoute,
   resolveNamedResources,
   resolveSelectedProfile,
   validateConfigLayer,
@@ -72,22 +73,20 @@ test("keeps XHIGH optional, case-sensitive, and independently validated", () => 
   ]);
 });
 
-test("rejects invalid schema shapes, unknown fields, unknown roles, and secret-bearing fields", () => {
+test("rejects fatal config shapes and foundational model mappings", () => {
   const cases = [
     [{}, "config_schema_version_unsupported"],
     [[], "config_json_invalid"],
     [null, "config_json_invalid"],
     ["config", "config_json_invalid"],
     [1, "config_json_invalid"],
-    [{ ...layer(), apiKey: "secret" }, "config_unknown_key"],
-    [layer({ unknown: role("p", "m") }), "config_unknown_role"],
     [layer({ HIGH: { provider: "", model: "m" } }), "config_invalid_provider"],
     [layer({ HIGH: { provider: "p", model: "" } }), "config_invalid_model"],
     [layer({ HIGH: { provider: "p", model: "m", thinking: "invalid" } }), "config_invalid_thinking"],
+    [layer({ HIGH: { provider: "p", model: "m", apiKey: "secret" } }), "config_unknown_key"],
     [{ ...layer(), profile: " " }, "config_invalid_profile"],
     [{ ...layer(), schemaVersion: 2 }, "config_schema_version_unsupported"],
     [{ schemaVersion: 1, models: [] }, "config_invalid_model"],
-    [layer({ HIGH: { provider: "p", model: "m", apiKey: "secret" } }), "config_unknown_key"],
   ];
 
   for (const [input, expected] of cases) {
@@ -95,6 +94,25 @@ test("rejects invalid schema shapes, unknown fields, unknown roles, and secret-b
     assert.equal(result.valid, false, `expected ${expected}`);
     assert.ok(codes(result).includes(expected));
   }
+});
+
+test("keeps unknown and malformed command or phase entries nonfatal while dropping them", () => {
+  const result = validateConfigLayer({
+    schemaVersion: 1,
+    apiKey: "secret",
+    models: { unknown: role("p", "m") },
+    phases: { plan: { provider: "", model: "" }, test: role("p", "test"), unknown: role("p", "m") },
+    commands: { "resolve-review": "high", good: role("p", "good"), broken: "unsupported", " ": "mid", unsafe: { provider: "p", model: "unsafe", apiKey: "secret" } },
+  }, "user");
+
+  assert.equal(result.valid, true);
+  assert.deepEqual(result.value, {
+    schemaVersion: 1,
+    models: {},
+    phases: { test: role("p", "test") },
+    commands: { "resolve-review": "high", good: role("p", "good") },
+  });
+  for (const code of ["config_unknown_key", "config_unknown_role", "config_invalid_provider", "config_invalid_phase", "config_unknown_phase", "config_invalid_command"]) assert.ok(codes(result).includes(code), code);
 });
 
 test("selects no profile by default and respects user, trusted project, and project null precedence", () => {
@@ -173,6 +191,18 @@ test("validates exact catalog identities and requires image input exclusively fo
   assert.equal(validateModelCatalog(config, IMA_MODEL_ROLES.map((name) => ({ provider: "provider", model: name, input: { image: true } }))).valid, true);
 });
 
+test("validates configured command routes against the model catalog", () => {
+  const config = mergeConfigLayers({
+    packageDefaults: valid(layer({}, null)),
+    preset: valid({ ...completeLayer("provider"), commands: { plan: role("provider", "command") } }, "preset"),
+    user: null,
+    project: null,
+  });
+  const catalog = [...IMA_MODEL_ROLES.map((name) => ({ provider: "provider", model: name, input: name === "vision" ? ["image"] : ["text"] })), { provider: "provider", model: "command" }];
+  assert.equal(validateModelCatalog(config, catalog).valid, true);
+  assert.deepEqual(validateModelCatalog(config, catalog.slice(0, -1)).diagnostics.map(({ path }) => path), [["commands", "plan"]]);
+});
+
 test("derives the exact package, user, and project configuration paths", () => {
   assert.deepEqual(deriveImaConfigPaths({ packageRoot: "/package", agentDir: "/agent", cwd: "/project" }), {
     packageDefaults: "/package/config/defaults.json",
@@ -229,6 +259,129 @@ test("fails explicit malformed or invalid higher-precedence input instead of fal
   assert.deepEqual(codes(loaded), ["config_json_invalid"]);
 });
 
+test("fails a malformed known role before exposing a lower-precedence route", async () => {
+  const paths = deriveImaConfigPaths({ packageRoot: "/package", agentDir: "/agent", cwd: "/project" });
+  const files = new Map([
+    [paths.packageDefaults, JSON.stringify(layer({}, "preset"))],
+    [paths.user, JSON.stringify(layer({ HIGH: { provider: "user", model: "high", apiKey: "secret" } }))],
+    [`${paths.presets}/preset.json`, JSON.stringify(completeLayer("preset"))],
+  ]);
+  const loaded = await loadImaConfig({
+    packageRoot: "/package",
+    agentDir: "/agent",
+    cwd: "/project",
+    projectTrusted: false,
+    readText: async (path) => {
+      if (!files.has(path)) throw Object.assign(new Error("missing"), { code: "ENOENT" });
+      return files.get(path);
+    },
+  });
+
+  assert.equal(loaded.config, null);
+  assert.ok(codes(loaded).includes("config_unknown_key"));
+  assert.equal(loaded.config?.models.HIGH, undefined);
+});
+
+test("loads nonfatal command and phase warnings without blocking configured siblings", async () => {
+  const paths = deriveImaConfigPaths({ packageRoot: "/package", agentDir: "/agent", cwd: "/project" });
+  const files = new Map([
+    [paths.packageDefaults, JSON.stringify(layer({}, null))],
+    [paths.user, JSON.stringify({
+      schemaVersion: 1,
+      stray: true,
+      phases: { plan: { provider: "", model: "" }, test: role("provider", "test") },
+      commands: { plan: role("provider", "plan"), typo: role("provider", "typo"), broken: "unsupported" },
+    })],
+  ]);
+  const loaded = await loadImaConfig({
+    packageRoot: "/package",
+    agentDir: "/agent",
+    cwd: "/project",
+    projectTrusted: false,
+    readText: async (path) => {
+      if (!files.has(path)) throw Object.assign(new Error("missing"), { code: "ENOENT" });
+      return files.get(path);
+    },
+    readDirectory: async (path) => {
+      if (path === "/package/prompts") return ["ima:plan.md"];
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    },
+  });
+
+  assert.ok(loaded.config);
+  assert.deepEqual(loaded.config.phases, { test: { provider: "provider", model: "test", thinking: "medium", source: "user" } });
+  assert.deepEqual(loaded.config.commands, { plan: { provider: "provider", model: "plan", thinking: "medium", source: "user" } });
+  for (const code of ["config_unknown_key", "config_invalid_provider", "config_invalid_phase", "config_invalid_command", "config_unknown_command"]) assert.ok(codes(loaded).includes(code), code);
+});
+
+test("drops prototype-collision command keys without inherited routes", async () => {
+  const paths = deriveImaConfigPaths({ packageRoot: "/package", agentDir: "/agent", cwd: "/project" });
+  const files = new Map([
+    [paths.packageDefaults, JSON.stringify(layer({}, null))],
+    [paths.user, '{"schemaVersion":1,"commands":{"constructor":{"provider":"provider","model":"constructor"},"toString":{"provider":"provider","model":"to-string"},"__proto__":{"provider":"provider","model":"proto"}}}'],
+  ]);
+  const loaded = await loadImaConfig({
+    packageRoot: "/package",
+    agentDir: "/agent",
+    cwd: "/project",
+    projectTrusted: false,
+    readText: async (path) => {
+      if (!files.has(path)) throw Object.assign(new Error("missing"), { code: "ENOENT" });
+      return files.get(path);
+    },
+    readDirectory: async (path) => {
+      if (path === "/package/prompts") return ["ima:plan.md"];
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    },
+  });
+
+  assert.ok(loaded.config);
+  assert.deepEqual(loaded.config.commands, {});
+  assert.equal(Object.getPrototypeOf(loaded.config.commands), Object.prototype);
+  for (const name of ["constructor", "toString", "__proto__"]) assert.equal(resolveCommandRoute(loaded.config, name), null);
+  assert.equal(codes(loaded).filter((code) => code === "config_unknown_command").length, 3);
+
+  Object.defineProperty(Object.prototype, "future-command", { configurable: true, value: "plan" });
+  try {
+    assert.equal(
+      resolveCommandRoute({ commands: {}, phases: { plan: role("provider", "plan") } }, "future-command"),
+      null,
+    );
+  } finally {
+    delete Object.prototype["future-command"];
+  }
+});
+
+test("exposes missing shorthand warnings without blocking sibling routes", async () => {
+  const paths = deriveImaConfigPaths({ packageRoot: "/package", agentDir: "/agent", cwd: "/project" });
+  const files = new Map([
+    [paths.packageDefaults, JSON.stringify(layer({}, "preset"))],
+    [paths.user, JSON.stringify({ schemaVersion: 1, commands: { review: "xhigh" } })],
+    [`${paths.presets}/preset.json`, JSON.stringify({ ...completeLayer("preset"), commands: { plan: role("preset", "plan") } })],
+  ]);
+  const loaded = await loadImaConfig({
+    packageRoot: "/package",
+    agentDir: "/agent",
+    cwd: "/project",
+    projectTrusted: false,
+    readText: async (path) => {
+      if (!files.has(path)) throw Object.assign(new Error("missing"), { code: "ENOENT" });
+      return files.get(path);
+    },
+    readDirectory: async (path) => {
+      if (path === "/package/prompts") return ["ima:plan.md", "ima:review.md"];
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    },
+  });
+
+  assert.ok(loaded.config);
+  const missing = [{ source: "user", path: ["commands", "review"] }];
+  const routeWarnings = (entries) => entries.filter(({ code }) => code === "config_route_role_missing").map(({ source, path }) => ({ source, path }));
+  assert.deepEqual(routeWarnings(loaded.diagnostics), missing);
+  assert.deepEqual(routeWarnings(loaded.config.diagnostics), missing);
+  assert.deepEqual(resolveCommandRoute(loaded.config, "plan"), { provider: "preset", model: "plan", thinking: "medium" });
+});
+
 test("reports missing required defaults and an unknown selected preset without exposing content", async () => {
   const missingDefaults = await loadImaConfig({ packageRoot: "/package", agentDir: "/agent", cwd: "/project", projectTrusted: false, readText: async () => { throw Object.assign(new Error("missing"), { code: "ENOENT" }); } });
   assert.deepEqual(codes(missingDefaults), ["config_required_file_missing"]);
@@ -271,20 +424,49 @@ test("accepts optional mappings and validates their catalog availability", () =>
   ]);
 });
 
-test("validates phase mappings and preserves legacy role-only inheritance", () => {
-  const phaseLayer = valid({ schemaVersion: 1, phases: { plan: role("phase", "plan", "max"), implement: role("phase", "impl") } }, "preset");
+test("resolves explicit phases and commands without inherited routes", () => {
+  const phaseLayer = valid({
+    schemaVersion: 1,
+    phases: { plan: role("phase", "plan", "max"), implement: "mid" },
+    commands: { "resolve-review": "high", "implement-js": role("command", "override"), custom: role("command", "custom") },
+  }, "user");
   assert.deepEqual(Object.keys(phaseLayer.phases), ["plan", "implement"]);
-  const invalid = validateConfigLayer({ schemaVersion: 1, phases: { plan: { provider: "p", model: "m", apiKey: "secret" }, unknown: role("p", "m") } }, "user");
-  assert.deepEqual(codes(invalid), ["config_unknown_key", "config_unknown_phase"]);
+  assert.deepEqual(phaseLayer.commands, { "resolve-review": "high", "implement-js": role("command", "override"), custom: role("command", "custom") });
 
   const resolved = mergeConfigLayers({ packageDefaults: valid(layer({}, null)), preset: valid(completeLayer("role"), "preset"), user: phaseLayer, project: null });
   assert.deepEqual(resolved.phases.plan, { provider: "phase", model: "plan", thinking: "max", source: "user" });
-  assert.deepEqual(resolved.phases.brainstorm, { provider: "role", model: "HIGH", thinking: "medium", source: "inherited", inheritedFrom: "HIGH" });
-  assert.deepEqual(resolved.phases.review, { provider: "role", model: "HIGH", thinking: "medium", source: "inherited", inheritedFrom: "HIGH" });
-  assert.deepEqual(resolved.phases.test, { provider: "role", model: "MID", thinking: "medium", source: "inherited", inheritedFrom: "MID" });
-  assert.deepEqual(resolved.phases.resolution, { provider: "role", model: "MID", thinking: "medium", source: "inherited", inheritedFrom: "MID" });
-  assert.deepEqual(resolved.phases.rereview, { provider: "role", model: "HIGH", thinking: "medium", source: "inherited", inheritedFrom: "HIGH" });
+  assert.deepEqual(resolved.phases.implement, { provider: "role", model: "MID", thinking: "medium", source: "user" });
+  assert.equal(resolved.phases.brainstorm, undefined);
+  assert.deepEqual(resolved.commands["resolve-review"], { provider: "role", model: "HIGH", thinking: "medium", source: "user" });
+  assert.deepEqual(resolveCommandRoute(resolved, "resolve-review"), { provider: "role", model: "HIGH", thinking: "medium" });
+  assert.deepEqual(resolveCommandRoute(resolved, "implement-js"), { provider: "command", model: "override", thinking: "medium" });
+  assert.deepEqual(resolveCommandRoute({ ...resolved, commands: {} }, "implement-js"), { provider: "role", model: "MID", thinking: "medium" });
+  assert.equal(resolveCommandRoute(resolved, "unconfigured"), null);
   assert.deepEqual(IMA_PHASES, ["brainstorm", "plan", "implement", "test", "review", "resolution", "rereview", "document"]);
+});
+
+test("warns and drops missing shorthand roles while preserving valid routes", () => {
+  const preset = valid({
+    ...completeLayer("preset"),
+    phases: { plan: role("preset", "phase-plan") },
+    commands: { review: role("preset", "review") },
+  }, "preset");
+  const user = valid({
+    schemaVersion: 1,
+    phases: { plan: "xhigh", test: role("user", "test") },
+    commands: { review: "xhigh", plan: role("user", "plan") },
+  }, "user");
+  const resolved = mergeConfigLayers({ packageDefaults: valid(layer({}, null)), preset, user, project: null });
+
+  assert.deepEqual(resolved.phases.plan, { provider: "preset", model: "phase-plan", thinking: "medium", source: "preset" });
+  assert.deepEqual(resolved.phases.test, { provider: "user", model: "test", thinking: "medium", source: "user" });
+  assert.deepEqual(resolved.commands.review, { provider: "preset", model: "review", thinking: "medium", source: "preset" });
+  assert.deepEqual(resolved.commands.plan, { provider: "user", model: "plan", thinking: "medium", source: "user" });
+  assert.deepEqual(resolved.diagnostics.filter(({ code }) => code === "config_route_role_missing").map(({ source, path }) => ({ source, path })), [
+    { source: "user", path: ["phases", "plan"] },
+    { source: "user", path: ["commands", "review"] },
+  ]);
+  assert.equal(mergeConfigLayers({ packageDefaults: valid(layer({}, null)), preset, user: null, project: null }).diagnostics.some(({ code }) => code === "config_route_role_missing"), false);
 });
 
 test("loads the highest-precedence selected profile and applies trusted project overrides", async () => {

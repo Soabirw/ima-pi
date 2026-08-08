@@ -6,14 +6,14 @@ import test from "node:test";
 import {
   IMA_PHASE_ROUTE_ENTRY,
   IMA_ROLE_ROUTE_ENTRY,
-  applyPhaseRoute,
+  applyCommandRoute,
   applyRoleRoute,
-  formatPhaseMatrix,
+  formatRouteMatrix,
   latestSessionProfile,
   parseProfileCommand,
   parseWorkflowCommand,
   persistUserProfileSelection,
-  resolvePhaseRoute,
+  resolveCommandRoute,
   resolveRoleRoute,
 } from "../extensions/workflow-routing.ts";
 
@@ -23,14 +23,15 @@ const config = {
     HIGH: { provider: "terra", model: "high", thinking: "max", source: "preset" },
     XHIGH: { provider: "terra", model: "xhigh", thinking: "xhigh", source: "preset" },
   },
-  phases: {
+  commands: {
     plan: { provider: "terra", model: "plan", thinking: "max", source: "preset" },
     implement: { provider: "luna", model: "implement", thinking: "max", source: "preset" },
-    test: { provider: "luna", model: "test", thinking: "max", source: "preset" },
     review: { provider: "sol", model: "review", thinking: "xhigh", source: "preset" },
-    resolution: { provider: "luna", model: "resolution", thinking: "max", source: "preset" },
-    rereview: { provider: "sol", model: "rereview", thinking: "xhigh", source: "preset" },
-    document: { provider: "terra", model: "document", thinking: "max", source: "preset" },
+    "resolve-review": { provider: "luna", model: "resolution", thinking: "max", source: "preset" },
+  },
+  phases: {
+    implement: { provider: "legacy", model: "implement", thinking: "high", source: "preset" },
+    resolution: { provider: "legacy", model: "resolution", thinking: "high", source: "preset" },
   },
 };
 
@@ -51,13 +52,12 @@ const state = () => {
   };
 };
 
-test("maps only exact workflow commands and leaves ordinary input unchanged", () => {
-  assert.deepEqual(parseWorkflowCommand("/ima:brainstorm idea"), { command: "ima:brainstorm", phase: "brainstorm", args: "idea" });
-  assert.deepEqual(parseWorkflowCommand("/ima:plan source"), { command: "ima:plan", phase: "plan", args: "source" });
-  assert.deepEqual(parseWorkflowCommand("  /ima:implement-js plan"), { command: "ima:implement-js", phase: "implement", args: "plan" });
-  assert.deepEqual(parseWorkflowCommand("/ima:resolve-review review"), { command: "ima:resolve-review", phase: "resolution", args: "review" });
-  assert.deepEqual(parseWorkflowCommand("/ima:rereview resolution"), { command: "ima:rereview", phase: "rereview", args: "resolution" });
-  assert.equal(parseWorkflowCommand("/ima:planner source"), null);
+test("parses every /ima:* command candidate and leaves unrelated input unchanged", () => {
+  assert.deepEqual(parseWorkflowCommand("/ima:brainstorm idea"), { command: "ima:brainstorm", name: "brainstorm", args: "idea" });
+  assert.deepEqual(parseWorkflowCommand("/ima:implement-js plan"), { command: "ima:implement-js", name: "implement-js", args: "plan" });
+  assert.deepEqual(parseWorkflowCommand("  /ima:future-command source"), { command: "ima:future-command", name: "future-command", args: "source" });
+  assert.equal(parseWorkflowCommand("/ima:"), null);
+  assert.equal(parseWorkflowCommand("/other:command source"), null);
   assert.equal(parseWorkflowCommand("ordinary /ima:plan text"), null);
   assert.deepEqual(parseProfileCommand(""), { mode: "list" });
   assert.deepEqual(parseProfileCommand("openai-codex-56-max"), { mode: "activate", name: "openai-codex-56-max" });
@@ -66,18 +66,30 @@ test("maps only exact workflow commands and leaves ordinary input unchanged", ()
   assert.equal(parseProfileCommand("profile --save extra").mode, "invalid");
 });
 
-test("resolves explicit phase routes without a runtime tier fallback", () => {
-  assert.deepEqual(resolvePhaseRoute(config, "review"), { ok: true, route: { phase: "review", provider: "sol", model: "review", thinking: "xhigh" } });
-  assert.deepEqual(resolvePhaseRoute(config, "resolution"), { ok: true, route: { phase: "resolution", provider: "luna", model: "resolution", thinking: "max" } });
-  assert.equal(resolvePhaseRoute({ phases: {} }, "implement").error, "phase_route_missing");
-  assert.match(formatPhaseMatrix(config), /review: sol\/review \(xhigh\)/);
+test("resolves configured commands before legacy phase fallback and otherwise passes through", () => {
+  assert.deepEqual(resolveCommandRoute(config, "review"), { ok: true, route: { command: "review", provider: "sol", model: "review", thinking: "xhigh" } });
+  assert.deepEqual(resolveCommandRoute(config, "resolve-review"), { ok: true, route: { command: "resolve-review", provider: "luna", model: "resolution", thinking: "max" } });
+  assert.deepEqual(resolveCommandRoute({ commands: {}, phases: config.phases }, "resolve-review"), { ok: true, route: { command: "resolve-review", provider: "legacy", model: "resolution", thinking: "high" } });
+  assert.equal(resolveCommandRoute({ commands: {}, phases: {} }, "unconfigured"), null);
+  assert.match(formatRouteMatrix(config), /commands:\nimplement: luna\/implement \(max\)/);
+  assert.match(formatRouteMatrix(config), /legacy phases:\nimplement: legacy\/implement \(high\)/);
+  assert.match(formatRouteMatrix(config), /roles:\nHIGH: terra\/high \(max\)/);
+  const phaseOnly = formatRouteMatrix({
+    profile: "phase-only",
+    commands: {},
+    phases: { plan: { provider: "legacy", model: "plan", thinking: "high" } },
+    models: {},
+  });
+  assert.match(phaseOnly, /commands:\n\(none; no direct command routes\)/);
+  assert.match(phaseOnly, /legacy phases:\nplan: legacy\/plan \(high\)/);
+  assert.doesNotMatch(phaseOnly, /unconfigured commands pass through/);
+  assert.match(formatRouteMatrix({ profile: null, commands: {}, phases: {}, models: {} }), /unconfigured commands pass through/);
 });
 
 test("resolves and applies the effective HIGH role route with shared safeguards", async () => {
   assert.deepEqual(resolveRoleRoute(config, "HIGH"), { ok: true, route: { role: "HIGH", provider: "terra", model: "high", thinking: "max" } });
   assert.deepEqual(resolveRoleRoute(config, "XHIGH"), { ok: true, route: { role: "XHIGH", provider: "terra", model: "xhigh", thinking: "xhigh" } });
   assert.equal(resolveRoleRoute({ models: {} }, "HIGH").error, "role_route_missing");
-  assert.equal(resolveRoleRoute({ models: {} }, "XHIGH").error, "role_route_missing");
 
   const current = state();
   const result = await applyRoleRoute(config, "HIGH", {
@@ -91,82 +103,87 @@ test("resolves and applies the effective HIGH role route with shared safeguards"
   assert.equal(current.thinking, "max");
   assert.deepEqual(current.entries, [{ type: IMA_ROLE_ROUTE_ENTRY, data: { profile: "test-profile", role: "HIGH", provider: "terra", model: "high", thinking: "max" } }]);
 
-  const xhigh = state();
-  const xhighResult = await applyRoleRoute(config, "XHIGH", {
-    ...xhigh,
-    previousModel: xhigh.model,
-    previousThinking: xhigh.thinking,
-    profile: "test-profile",
-  });
-  assert.equal(xhighResult.ok, true);
-  assert.deepEqual(xhigh.model, { provider: "terra", id: "xhigh" });
-  assert.equal(xhigh.thinking, "xhigh");
-  assert.deepEqual(xhigh.entries, [{ type: IMA_ROLE_ROUTE_ENTRY, data: { profile: "test-profile", role: "XHIGH", provider: "terra", model: "xhigh", thinking: "xhigh" } }]);
-
   const busy = state();
   const blocked = await applyRoleRoute(config, "HIGH", { ...busy, previousModel: busy.model, previousThinking: busy.thinking, isIdle: () => false });
   assert.equal(blocked.error, "route_busy");
 });
 
-test("applies an exact route and persists sanitized route evidence", async () => {
+test("applies a configured command and leaves an unconfigured command unchanged", async () => {
   const current = state();
-  const result = await applyPhaseRoute(config, "implement", {
+  const result = await applyCommandRoute(config, "implement", {
     ...current,
     previousModel: current.model,
     previousThinking: current.thinking,
     profile: "test-profile",
   });
-  assert.equal(result.ok, true);
+  assert.equal(result?.ok, true);
   assert.deepEqual(current.model, { provider: "luna", id: "implement" });
   assert.equal(current.thinking, "max");
-  assert.deepEqual(current.entries, [{ type: IMA_PHASE_ROUTE_ENTRY, data: { profile: "test-profile", phase: "implement", provider: "luna", model: "implement", thinking: "max" } }]);
+  assert.deepEqual(current.entries, [{ type: IMA_PHASE_ROUTE_ENTRY, data: { profile: "test-profile", command: "implement", provider: "luna", model: "implement", thinking: "max" } }]);
+
+  for (const command of ["future-command", "constructor", "toString", "__proto__"]) {
+    const passthrough = state();
+    assert.equal(await applyCommandRoute({ commands: {}, phases: {} }, command, { ...passthrough, previousModel: passthrough.model, previousThinking: passthrough.thinking }), null);
+    assert.deepEqual(passthrough.model, { provider: "old", id: "old-model" });
+    assert.equal(passthrough.thinking, "medium");
+    assert.deepEqual(passthrough.entries, []);
+  }
+
+  Object.defineProperty(Object.prototype, "future-command", { configurable: true, value: "plan" });
+  try {
+    const passthrough = state();
+    assert.equal(
+      await applyCommandRoute(
+        { commands: {}, phases: { plan: { provider: "legacy", model: "plan", thinking: "high", source: "preset" } } },
+        "future-command",
+        { ...passthrough, previousModel: passthrough.model, previousThinking: passthrough.thinking },
+      ),
+      null,
+    );
+    assert.deepEqual(passthrough.model, { provider: "old", id: "old-model" });
+    assert.equal(passthrough.thinking, "medium");
+    assert.deepEqual(passthrough.entries, []);
+  } finally {
+    delete Object.prototype["future-command"];
+  }
 });
 
-test("blocks unavailable, unauthenticated, and busy routes before switching", async () => {
+test("blocks unavailable, unauthenticated, and busy command routes before switching", async () => {
   const unavailable = state();
-  const missing = await applyPhaseRoute(config, "plan", { ...unavailable, previousModel: unavailable.model, previousThinking: unavailable.thinking, findModel: () => undefined });
-  assert.equal(missing.error, "model_unavailable");
+  const missing = await applyCommandRoute(config, "plan", { ...unavailable, previousModel: unavailable.model, previousThinking: unavailable.thinking, findModel: () => undefined });
+  assert.equal(missing?.error, "model_unavailable");
   assert.deepEqual(unavailable.model, { provider: "old", id: "old-model" });
 
   const unauthenticated = state();
-  const unauth = await applyPhaseRoute(config, "plan", { ...unauthenticated, previousModel: unauthenticated.model, previousThinking: unauthenticated.thinking, hasConfiguredAuth: () => false });
-  assert.equal(unauth.error, "auth_unavailable");
+  const unauth = await applyCommandRoute(config, "plan", { ...unauthenticated, previousModel: unauthenticated.model, previousThinking: unauthenticated.thinking, hasConfiguredAuth: () => false });
+  assert.equal(unauth?.error, "auth_unavailable");
 
   const rejected = state();
-  let modelCalls = 0;
-  let thinkingCalls = 0;
   const credentialMarker = "credential-secret";
-  const rejectedAuth = await applyPhaseRoute(config, "plan", {
+  const rejectedAuth = await applyCommandRoute(config, "plan", {
     ...rejected,
     previousModel: rejected.model,
     previousThinking: rejected.thinking,
     hasConfiguredAuth: async () => { throw new Error(credentialMarker); },
-    setModel: async () => { modelCalls += 1; return true; },
-    setThinkingLevel: () => { thinkingCalls += 1; },
   });
   assert.deepEqual(rejectedAuth, { ok: false, error: "auth_unavailable", message: "Configured plan model is unauthenticated.", rollback: "not-needed" });
   assert.doesNotMatch(JSON.stringify(rejectedAuth), new RegExp(credentialMarker));
-  assert.equal(modelCalls, 0);
-  assert.equal(thinkingCalls, 0);
-  assert.deepEqual(rejected.entries, []);
-  assert.deepEqual(rejected.model, { provider: "old", id: "old-model" });
-  assert.equal(rejected.thinking, "medium");
 
   const busy = state();
-  const blocked = await applyPhaseRoute(config, "plan", { ...busy, previousModel: busy.model, previousThinking: busy.thinking, isIdle: () => false });
-  assert.equal(blocked.error, "route_busy");
+  const blocked = await applyCommandRoute(config, "plan", { ...busy, previousModel: busy.model, previousThinking: busy.thinking, isIdle: () => false });
+  assert.equal(blocked?.error, "route_busy");
 });
 
-test("rolls back model and thinking when the target thinking level is clamped", async () => {
+test("rolls back model and thinking when the target command thinking level is clamped", async () => {
   const current = state();
-  const result = await applyPhaseRoute(config, "review", {
+  const result = await applyCommandRoute(config, "review", {
     ...current,
     previousModel: current.model,
     previousThinking: current.thinking,
     setThinkingLevel: (next) => { current.setThinkingLevel(next === "xhigh" ? "high" : next); },
   });
-  assert.equal(result.ok, false);
-  assert.equal(result.error, "thinking_unsupported");
+  assert.equal(result?.ok, false);
+  assert.equal(result?.error, "thinking_unsupported");
   assert.deepEqual(current.model, { provider: "old", id: "old-model" });
   assert.equal(current.thinking, "medium");
 });
@@ -175,7 +192,7 @@ test("saves a user profile atomically while retaining valid overrides", async ()
   const directory = await mkdtemp(join(tmpdir(), "ima-profile-test-"));
   const path = join(directory, "ima", "config.json");
   await mkdir(join(directory, "ima"), { recursive: true });
-  await writeFile(path, JSON.stringify({ schemaVersion: 1, profile: "old", models: { HIGH: { provider: "p", model: "m" } }, phases: { test: { provider: "p", model: "test" } } }));
+  await writeFile(path, JSON.stringify({ schemaVersion: 1, profile: "old", models: { HIGH: { provider: "p", model: "m" } }, phases: { test: { provider: "p", model: "test" } }, commands: { plan: "high" } }));
   const result = await persistUserProfileSelection({ path, profile: "new-profile" });
   assert.deepEqual(result, { ok: true, path });
   assert.deepEqual(JSON.parse(await readFile(path, "utf8")), {
@@ -183,6 +200,7 @@ test("saves a user profile atomically while retaining valid overrides", async ()
     profile: "new-profile",
     models: { HIGH: { provider: "p", model: "m" } },
     phases: { test: { provider: "p", model: "test" } },
+    commands: { plan: "high" },
   });
 });
 

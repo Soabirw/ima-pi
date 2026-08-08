@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DefaultResourceLoader, getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { applyConfiguredPhaseRoute, latestSessionProfile } from "./workflow-routing.ts";
+import { applyConfiguredCommandRoute, latestSessionProfile } from "./workflow-routing.ts";
 import { coordinateContext, coordinateLifecycle } from "./integrations.ts";
 import {
   CYCLE_ENTRY,
@@ -37,7 +37,6 @@ import {
   type CycleState,
 } from "../lib/ima-cycle.ts";
 import { CYCLE_ROOT_MARKERS, CYCLE_STORE_FILENAME, CYCLE_STORE_GITIGNORE_BODY, cycleStorePaths, parseCycleRecord, selectProjectRoot, serializeCycleRecord } from "../lib/ima-cycle-store.ts";
-import type { ImaPhase } from "../lib/ima-config.ts";
 import type { LifecycleIdentity } from "../lib/ima-lifecycle.ts";
 
 export const CYCLE_STATUS_KEY = "ima-cycle";
@@ -108,17 +107,17 @@ const expandCyclePromptFromResources = async (message: string, cwd: string) => {
   return expanded;
 };
 
-const CYCLE_ROUTE_PHASES: Readonly<Record<CyclePhase, ImaPhase>> = {
+const CYCLE_ROUTE_COMMANDS: Readonly<Record<CyclePhase, string>> = {
   plan: "plan",
   implementation: "implement",
   test: "test",
   review: "review",
-  resolution: "resolution",
+  resolution: "resolve-review",
   rereview: "rereview",
   document: "document",
 };
 
-export const cycleRoutePhase = (phase: CyclePhase): ImaPhase => CYCLE_ROUTE_PHASES[phase];
+export const cycleRoutePhase = (phase: CyclePhase): string => CYCLE_ROUTE_COMMANDS[phase];
 
 export type CycleContextResult = { status: string; source?: unknown; diagnostics?: unknown[] };
 export type CycleRouteResult = { ok: true; route?: unknown } | { ok: false; error: string; message?: string; rollback?: string };
@@ -560,7 +559,8 @@ const statusText = (state: CycleState | null) => {
   return status.status === "invalid" ? "Cycle state is invalid." : `Cycle ${status.status}: ${status.source}; phase ${status.phase}; mode ${status.mode}; review ${status.reviewAttempts}/${status.reviewCap}.`;
 };
 
-const routeFor = (pi: ExtensionAPI, ctx: ExtensionContext): CycleRoute => (phase) => applyConfiguredPhaseRoute(pi, ctx, cycleRoutePhase(phase), latestSessionProfile(ctx.sessionManager.getBranch()));
+const routeFor = (pi: ExtensionAPI, ctx: ExtensionContext): CycleRoute => async (phase) =>
+  await applyConfiguredCommandRoute(pi, ctx, cycleRoutePhase(phase), latestSessionProfile(ctx.sessionManager.getBranch())) ?? { ok: true };
 
 const pathExists = async (path: string): Promise<boolean> => {
   try {

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { access, readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
+import { parseWorkflowCommand } from "../extensions/workflow-routing.ts";
 const root = resolve(dirname(new URL(import.meta.url).pathname), "..");
 const prompt = (name) => readFile(join(root, "prompts", `ima:${name}.md`), "utf8");
 const skill = (name) => readFile(join(root, "skills", name, "SKILL.md"), "utf8");
@@ -68,6 +69,18 @@ test("lifecycle prompts recall verified plans by canonical source lifecycle key"
   assert.ok(rereview.indexOf("First call `ima_context`") < rereview.indexOf("latest VERIFIED lifecycle artifact"));
   const planning = await prompt("plan");
   for (const value of ["canonical hydratable source form", "/ima:implement taskwarrior <project> <uuid>", "/ima:implement <JIRA-KEY>", "never a raw colon lifecycle key"]) has(planning, value);
+});
+
+test("workflow routing treats arbitrary /ima:* tokens as command-keyed candidates", () => {
+  assert.deepEqual(parseWorkflowCommand("/ima:resolve-review source"), { command: "ima:resolve-review", name: "resolve-review", args: "source" });
+  assert.deepEqual(parseWorkflowCommand("/ima:future-command source"), { command: "ima:future-command", name: "future-command", args: "source" });
+  assert.equal(parseWorkflowCommand("/other:command source"), null);
+});
+
+test("README distinguishes direct implementation commands from cycle dispatch", async () => {
+  const readme = await readFile(join(root, "README.md"), "utf8");
+  for (const value of ["direct command `X` resolves `commands[X]`", "`implement-js` and `implement-wp` both use `phases.implement`", "The `/ima:cycle` implementation phase dispatches `implement`", "`commands.implement` then `phases.implement`"]) has(readme, value);
+  assert.doesNotMatch(readme, /command routing resolves `commands\.implement`, then explicit legacy `phases\.implement`/);
 });
 
 test("workflow prompts declare their phase route without changing authority", async () => {

@@ -1,12 +1,12 @@
 import { readFile, stat } from "node:fs/promises";
 import { stripFrontmatter, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { IMA_PHASES, type ImaPhase, type ThinkingLevel } from "../lib/ima-config.ts";
+import { COMMAND_PHASE_FALLBACK, IMA_PHASES, type ImaPhase, type ThinkingLevel } from "../lib/ima-config.ts";
 import {
-  applyConfiguredPhaseRoute,
+  applyConfiguredCommandRoute,
   applyConfiguredRoleRoute,
+  type CommandRoute,
   type RoleRoute,
   type RouteSwitchResult,
-  type WorkflowRoute,
 } from "./workflow-routing.ts";
 
 export const IMA_NEW_REQUEST_ENTRY = "ima-new-request";
@@ -32,13 +32,14 @@ const IMA_NEW_ROLE_SELECTORS = Object.freeze({
 type ImaNewRoleSelector = keyof typeof IMA_NEW_ROLE_SELECTORS;
 type ImaNewRole = (typeof IMA_NEW_ROLE_SELECTORS)[ImaNewRoleSelector];
 const IMA_NEW_PHASE_SELECTORS: ReadonlySet<ImaPhase> = new Set(IMA_PHASES);
-const IMA_NEW_SELECTOR_USAGE = [...Object.keys(IMA_NEW_ROLE_SELECTORS), ...IMA_PHASES].join("|");
+const IMA_NEW_COMMAND_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 
-export type ImaNewSelector = ImaNewRoleSelector | ImaPhase | null;
+export type ImaNewCommandSelector = string;
+export type ImaNewSelector = ImaNewRoleSelector | ImaNewCommandSelector | null;
 export type ImaNewRequest = { selector: ImaNewSelector };
 export type ImaNewRouteEvidence =
   | { role: ImaNewRole; provider: string; model: string; thinking?: ThinkingLevel }
-  | { phase: ImaPhase; provider: string; model: string; thinking?: ThinkingLevel };
+  | { command: ImaNewCommandSelector; provider: string; model: string; thinking?: ThinkingLevel };
 export type ImaNewResult =
   | { selector: ImaNewSelector; ok: true; route: ImaNewRouteEvidence | null }
   | { selector: ImaNewSelector; ok: false; error: string };
@@ -55,14 +56,32 @@ const nonEmptyText = (value: unknown): value is string => typeof value === "stri
 const isImaNewRoleSelector = (value: unknown): value is ImaNewRoleSelector => typeof value === "string" && Object.hasOwn(IMA_NEW_ROLE_SELECTORS, value);
 const isImaNewRole = (value: unknown): value is ImaNewRole => typeof value === "string" && Object.values(IMA_NEW_ROLE_SELECTORS).some((role) => role === value);
 const isImaNewPhase = (value: unknown): value is ImaPhase => typeof value === "string" && IMA_NEW_PHASE_SELECTORS.has(value as ImaPhase);
+const isImaNewCommand = (value: unknown): value is ImaNewCommandSelector => typeof value === "string" && IMA_NEW_COMMAND_PATTERN.test(value);
+const selectedPhase = (selector: ImaNewSelector): ImaPhase | null => {
+  if (!isImaNewCommand(selector) || isImaNewRoleSelector(selector)) return null;
+  const phase = Object.hasOwn(COMMAND_PHASE_FALLBACK, selector) ? COMMAND_PHASE_FALLBACK[selector] : selector;
+  return isImaNewPhase(phase) ? phase : null;
+};
 type BootstrapResource = { name: string; source: "prompt" | "skill" };
-const bootstrapResources = (selector: ImaNewSelector): readonly BootstrapResource[] => [
-  ...IMA_NEW_BOOTSTRAP_COMMANDS.map((name) => ({ name, source: "prompt" as const })),
-  ...(isImaNewPhase(selector)
-    ? IMA_NEW_PHASE_SKILLS[selector].map((name) => ({ name: `skill:${name}`, source: "skill" as const }))
-    : []),
-];
+const bootstrapResources = (selector: ImaNewSelector): readonly BootstrapResource[] => {
+  const phase = selectedPhase(selector);
+  return [
+    ...IMA_NEW_BOOTSTRAP_COMMANDS.map((name) => ({ name, source: "prompt" as const })),
+    ...(phase ? IMA_NEW_PHASE_SKILLS[phase].map((name) => ({ name: `skill:${name}`, source: "skill" as const })) : []),
+  ];
+};
 const bootstrapCommandNames = (selector: ImaNewSelector): readonly string[] => bootstrapResources(selector).map(({ name }) => name);
+const discoveredImaCommandNames = (pi: Pick<ExtensionAPI, "getCommands">): readonly string[] | null => {
+  const commands = pi.getCommands();
+  if (!Array.isArray(commands)) return null;
+  return [...new Set(commands
+    .filter((command) => object(command) && command.source === "prompt" && typeof command.name === "string")
+    .map((command) => (command as { name: string }).name)
+    .filter((name) => name.startsWith("ima:"))
+    .map((name) => name.slice("ima:".length))
+    .filter(isImaNewCommand))].sort();
+};
+const selectorUsage = (commandNames: readonly string[]) => [...Object.keys(IMA_NEW_ROLE_SELECTORS), ...commandNames].join("|");
 const resolvePersistedParentSession = async (value: unknown): Promise<string | undefined> => {
   if (!nonEmptyText(value)) return undefined;
   try {
@@ -74,6 +93,7 @@ const resolvePersistedParentSession = async (value: unknown): Promise<string | u
 const thinkingLevels = new Set<ThinkingLevel>(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 const safeRouteErrors = new Set([
   "route_busy",
+  "command_config_unavailable",
   "phase_config_unavailable",
   "role_config_unavailable",
   "phase_route_missing",
@@ -89,11 +109,12 @@ export type ParsedImaNewSelector =
   | { ok: true; selector: ImaNewSelector }
   | { ok: false; error: "selector_invalid" };
 
-export function parseImaNewSelector(input: unknown): ParsedImaNewSelector {
+export function parseImaNewSelector(input: unknown, commandNames: readonly string[] | null = null): ParsedImaNewSelector {
   if (typeof input !== "string") return { ok: false, error: "selector_invalid" };
   const value = input.trim();
   if (!value) return { ok: true, selector: null };
-  if (isImaNewRoleSelector(value) || isImaNewPhase(value)) return { ok: true, selector: value };
+  if (isImaNewRoleSelector(value)) return { ok: true, selector: value };
+  if (isImaNewCommand(value) && (commandNames === null || commandNames.includes(value))) return { ok: true, selector: value };
   return { ok: false, error: "selector_invalid" };
 }
 
@@ -112,8 +133,8 @@ const validateRouteEvidence = (input: unknown): ImaNewRouteEvidence | null => {
   if (isImaNewRole(input.role) && exactKeys(input, ["role", "provider", "model", ...(input.thinking === undefined ? [] : ["thinking"])]) ) {
     return { role: input.role, provider: input.provider, model: input.model, ...thinking };
   }
-  if (isImaNewPhase(input.phase) && exactKeys(input, ["phase", "provider", "model", ...(input.thinking === undefined ? [] : ["thinking"])]) ) {
-    return { phase: input.phase, provider: input.provider, model: input.model, ...thinking };
+  if (isImaNewCommand(input.command) && exactKeys(input, ["command", "provider", "model", ...(input.thinking === undefined ? [] : ["thinking"])]) ) {
+    return { command: input.command, provider: input.provider, model: input.model, ...thinking };
   }
   return null;
 };
@@ -121,7 +142,7 @@ const validateRouteEvidence = (input: unknown): ImaNewRouteEvidence | null => {
 const selectorMatchesRoute = (selector: ImaNewSelector, route: ImaNewRouteEvidence | null): boolean => {
   if (selector === null) return route === null;
   if (isImaNewRoleSelector(selector)) return route !== null && "role" in route && route.role === IMA_NEW_ROLE_SELECTORS[selector];
-  return route !== null && "phase" in route && route.phase === selector;
+  return route === null || ("command" in route && route.command === selector);
 };
 
 export function validateImaNewResult(input: unknown): Validation<ImaNewResult> {
@@ -163,21 +184,24 @@ const pendingImaNewRequest = (entries: readonly unknown[]): ImaNewRequest | null
   return request.value;
 };
 
-const routeEvidence = (route: WorkflowRoute | RoleRoute): ImaNewRouteEvidence | null => {
+const routeEvidence = (route: CommandRoute | RoleRoute): ImaNewRouteEvidence | null => {
   if ("role" in route) {
     const role = route.role;
     return isImaNewRole(role) && nonEmptyText(route.provider) && nonEmptyText(route.model)
       ? { role, provider: route.provider, model: route.model, ...(route.thinking ? { thinking: route.thinking } : {}) }
       : null;
   }
-  return isImaNewPhase(route.phase) && nonEmptyText(route.provider) && nonEmptyText(route.model)
-    ? { phase: route.phase, provider: route.provider, model: route.model, ...(route.thinking ? { thinking: route.thinking } : {}) }
+  return isImaNewCommand(route.command) && nonEmptyText(route.provider) && nonEmptyText(route.model)
+    ? { command: route.command, provider: route.provider, model: route.model, ...(route.thinking ? { thinking: route.thinking } : {}) }
     : null;
 };
 
 const safeRouteError = (error: unknown) => typeof error === "string" && safeRouteErrors.has(error) ? error : "route_apply_failed";
 
-export function buildImaNewResult(selector: ImaNewSelector, result: RouteSwitchResult): ImaNewResult {
+export function buildImaNewResult(selector: ImaNewSelector, result: RouteSwitchResult | null): ImaNewResult {
+  if (result === null) return selectorMatchesRoute(selector, null)
+    ? { selector, ok: true, route: null }
+    : { selector, ok: false, error: "route_apply_failed" };
   if (!result.ok) return { selector, ok: false, error: safeRouteError(result.error) };
   const route = routeEvidence(result.route);
   return !selectorMatchesRoute(selector, route)
@@ -298,7 +322,7 @@ const prepareResult = async (pi: ExtensionAPI, ctx: ExtensionContext, selector: 
   try {
     const result = isImaNewRoleSelector(selector)
       ? await applyConfiguredRoleRoute(pi, ctx, IMA_NEW_ROLE_SELECTORS[selector])
-      : await applyConfiguredPhaseRoute(pi, ctx, selector);
+      : await applyConfiguredCommandRoute(pi, ctx, selector);
     return buildImaNewResult(selector, result);
   } catch {
     return { selector, ok: false, error: "route_apply_failed" };
@@ -324,7 +348,7 @@ const handleReplacement = async (ctx: ReplacementSessionContext, messages: reado
 
 export default function imaNew(pi: ExtensionAPI) {
   pi.registerCommand("ima:new", {
-    description: "Create a fresh TUI session with an optional role or phase route.",
+    description: "Create a fresh TUI session with an optional role or command route.",
     handler: async (args, ctx) => {
       if (ctx.mode !== "tui") {
         notify(ctx, "ima:new requires TUI mode.");
@@ -334,9 +358,14 @@ export default function imaNew(pi: ExtensionAPI) {
         notify(ctx, "ima:new is unavailable while the session is busy.");
         return;
       }
-      const parsed = parseImaNewSelector(args);
+      const commandSelectors = discoveredImaCommandNames(pi);
+      if (commandSelectors === null) {
+        notify(ctx, "Fresh session command discovery was unavailable.");
+        return;
+      }
+      const parsed = parseImaNewSelector(args, commandSelectors);
       if (!parsed.ok) {
-        notify(ctx, `Usage: /ima:new [${IMA_NEW_SELECTOR_USAGE}].`);
+        notify(ctx, `Usage: /ima:new [${selectorUsage(commandSelectors)}].`);
         return;
       }
       const parentSession = await resolvePersistedParentSession(ctx.sessionManager.getSessionFile());

@@ -193,7 +193,7 @@ Each selected Story follows `plan -> implement -> test -> review -> resolution/r
 - `/ima:implement-js [approved-plan-source]` executes a plan for known JavaScript/TypeScript work.
 - `/ima:implement-wp [approved-plan-source]` executes a plan for production WordPress/PHP work with nonce, authorization, sanitization, contextual escaping, and prepared-query requirements.
 
-All implementation prompts require an approved implementation-grade plan, work in the current session with configured MID intent, may delegate bounded work, stop with evidence on material contradictions, and persist verified implementation lifecycle evidence. They run only immediate plan-authorized verification and never automatically enter formal testing or review. Before expansion, the phase router applies the configured `implement` model route. See [`docs/foundation/FNR-3018.md`](docs/foundation/FNR-3018.md) for source disposition, routing, safeguards, and live acceptance limitations.
+All implementation prompts require an approved implementation-grade plan, work in the current session with configured MID intent, may delegate bounded work, stop with evidence on material contradictions, and persist verified implementation lifecycle evidence. They run only immediate plan-authorized verification and never automatically enter formal testing or review. Before expansion, direct command `X` resolves `commands[X]`, then its explicit legacy phase fallback; `implement-js` and `implement-wp` both use `phases.implement` as that fallback, otherwise the session model remains unchanged. The `/ima:cycle` implementation phase dispatches `implement`, so it resolves `commands.implement` then `phases.implement`. See [`docs/foundation/FNR-3018.md`](docs/foundation/FNR-3018.md) for source disposition, routing, safeguards, and live acceptance limitations.
 
 - `/ima:test [implementation-source]` performs bounded test work without silently changing production behavior.
 - `/ima:review [implementation-and-test-source]` runs a fresh product-read-only review and fresh second opinions for Critical/Warning candidates.
@@ -201,10 +201,10 @@ All implementation prompts require an approved implementation-grade plan, work i
 - `/ima:rereview [resolution-and-review-source]` independently verifies the resolution without editing.
 - `/ima:review-verify [finding-brief]` returns exactly one narrow finding verdict.
 - `/ima:document [completed-lifecycle-source]` updates only exact local documentation targets and prepares parent-owned external update manifests.
-- `/ima:profile [name]` lists or activates the configured phase model matrix and persists explicit selections to the user default without changing ordinary prompt/model flexibility.
-- `/ima:new [low|mid|high|xhigh|brainstorm|plan|implement|test|review|resolution|rereview|document]` creates a TUI-only fresh session. Bare `/ima:new` applies no explicit route; role selectors apply the effective configured `LOW`, `MID`, `HIGH`, or `XHIGH` role, and phase selectors apply the effective canonical phase route. A verified regular-file parent is linked; missing, unwritten, inaccessible, or non-file parents are omitted so native persisted/ephemeral session semantics are preserved. A successful replacement runs resolved Serena then Vestige bootstrap bodies and, for a phase selector, any mapped package skill bodies (currently `plan` seeds `ima-lifecycle-contract` and `implement` seeds `readable-code`).
+- `/ima:profile [name]` lists or activates configured command routes and model roles, then persists an explicit selection to the user default without changing ordinary prompt/model flexibility.
+- `/ima:new [low|mid|high|xhigh|<discovered-ima-command>]` creates a TUI-only fresh session. Bare `/ima:new` applies no explicit route; role selectors apply the effective configured `LOW`, `MID`, `HIGH`, or `XHIGH` role; command selectors use the same command lookup as direct prompts. An unconfigured command starts on the current model. A verified regular-file parent is linked; missing, unwritten, inaccessible, or non-file parents are omitted so native persisted/ephemeral session semantics are preserved. A successful replacement runs Serena then Vestige bootstrap bodies and any mapped package skill bodies (currently `plan` seeds `ima-lifecycle-contract` and `implement`-family commands seed `readable-code`).
 
-See [`docs/foundation/FNR-3019.md`](docs/foundation/FNR-3019.md) for authority, review verification fallback, knowledge routing, and limitations. See [`docs/foundation/phase-model-profiles.md`](docs/foundation/phase-model-profiles.md) for phase routing and fail-closed behavior.
+See [`docs/foundation/FNR-3019.md`](docs/foundation/FNR-3019.md) for authority, review verification fallback, knowledge routing, and limitations. See [`docs/foundation/phase-model-profiles.md`](docs/foundation/phase-model-profiles.md) for command routing and fail-closed behavior.
 
 ## Quality advisory workflows
 
@@ -250,7 +250,7 @@ Create `~/.pi/agent/ima/config.json` (or trusted `.pi/ima/config.json`) to opt i
 }
 ```
 
-See [`config/README.md`](config/README.md) for schema, phase routes, profile paths, trust, and precedence, [`docs/foundation/phase-model-profiles.md`](docs/foundation/phase-model-profiles.md) for runtime routing, and [`docs/foundation/FNR-3013.md`](docs/foundation/FNR-3013.md) for the original role configuration foundation.
+See [`config/README.md`](config/README.md) for schema, command routes, legacy phase fallbacks, profile paths, trust, and precedence, [`docs/foundation/phase-model-profiles.md`](docs/foundation/phase-model-profiles.md) for runtime routing, and [`docs/foundation/FNR-3013.md`](docs/foundation/FNR-3013.md) for the original role configuration foundation.
 
 ## Test
 

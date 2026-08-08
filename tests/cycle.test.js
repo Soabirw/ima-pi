@@ -353,8 +353,16 @@ test("extracts exactly one phase marker and rejects ambiguity", () => {
   assert.equal(extractPhaseOutcome(buildCycleOutcomeMarker({ phase: "plan", outcome: "APPROVED" }).replace("APPROVED", "READY")).error.code, "phase_marker_invalid");
 });
 
-test("maps cycle phases and expands prompt arguments", () => {
-  assert.equal(cycleRoutePhase("implementation"), "implement");
+test("maps every cycle phase to its dispatched command name and expands prompt arguments", () => {
+  assert.deepEqual(Object.fromEntries(["plan", "implementation", "test", "review", "resolution", "rereview", "document"].map((phase) => [phase, cycleRoutePhase(phase)])), {
+    plan: "plan",
+    implementation: "implement",
+    test: "test",
+    review: "review",
+    resolution: "resolve-review",
+    rereview: "rereview",
+    document: "document",
+  });
   assert.equal(expandCyclePrompt("/ima:plan FNR-3036", [{ name: "ima:plan", content: "Source: $@" }]), "Source: FNR-3036");
 });
 
