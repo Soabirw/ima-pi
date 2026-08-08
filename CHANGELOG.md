@@ -4,6 +4,14 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ## [Unreleased]
 
+## [1.8.1] - 2026-08-08
+
+### Fixed
+
+- Corrected the `1.8.0` changelog release heading.
+
+## [1.8.0] - 2026-08-08
+
 ### Added
 
 - Universal `readable-code` skill for language-agnostic implementation and review guidance, including FP and security deference.
