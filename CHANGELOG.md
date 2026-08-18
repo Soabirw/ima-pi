@@ -4,6 +4,14 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ## [Unreleased]
 
+### Changed
+
+- `ima_lifecycle` now persists formal lifecycle artifacts through package-owned direct Vestige MCP `smart_ingest`, validates the receipt, and requires a matching nonce, identity, phase, and completed-outcome `recall`; this path no longer requires the `ima-mcp` binary. `ima_context` hydration and `/ima:cycle` reconciliation retain their distinct `ima-mcp` paths.
+
+### Fixed
+
+- Lifecycle request validation now rejects non-string `sourceRefs` and `priorArtifactIds` members before nonce generation or Vestige I/O.
+
 ## [1.9.0] - 2026-08-07
 
 ### Added

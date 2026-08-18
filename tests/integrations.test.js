@@ -6,7 +6,30 @@ import { Check } from "typebox/value";
 import integrations, { coordinateContext, coordinateLifecycle } from "../extensions/integrations.ts";
 const identity = { project: "ima-pi", lifecycleKey: "ima-pi:taskwarrior:FNR-3007:uuid", lifecycleRootMemoryId: "root", taskwarriorProject: "FNR-3007", taskwarriorTask: "uuid", taskwarriorUuid: "uuid", jiraKey: "FNR-3016", sourceRefs: ["Taskwarrior:uuid"], priorArtifactIds: ["plan"] };
 const artifact = "minimal implementation artifact";
-const gateway = (calls, recall = true) => async (program, args) => { calls.push([program, args]); const [service, operation, value] = args; if (service === "serena" && operation === "project") return { ok: true, command: "serena.project.activate", data: {} }; if (service === "serena" && operation === "instructions") return { ok: true, command: "serena.instructions", data: {} }; if (service === "serena" && operation === "memory" && value === "list") return { ok: true, command: "serena.memory.list", data: { memories: ["core", "conventions", "tech_stack", "suggested_commands", "task_completion"] } }; if (service === "serena" && operation === "memory") return { ok: true, command: "serena.memory.read", data: { content: value } }; if (service === "ima-mcp") throw new Error("unexpected"); if (program === "ima-mcp" && service === "vestige" && operation === "save") return { ok: true, command: "vestige.save", data: { stored: true, type: args[3], id: "receipt" } }; if (program === "ima-mcp" && service === "vestige" && operation === "search") return { ok: true, command: "vestige.search", data: { results: recall ? [{ content: `${args[2]} ${args[3] ?? ""} implementation FNR-3016 uuid outcome completed` }] : [] } }; return null; };
+const gateway = (calls) => async (program, args) => {
+  calls.push([program, args]);
+  const [service, operation, value] = args;
+
+  if (service === "serena" && operation === "project") {
+    return { ok: true, command: "serena.project.activate", data: {} };
+  }
+  if (service === "serena" && operation === "instructions") {
+    return { ok: true, command: "serena.instructions", data: {} };
+  }
+  if (service === "serena" && operation === "memory" && value === "list") {
+    return {
+      ok: true,
+      command: "serena.memory.list",
+      data: { memories: ["core", "conventions", "tech_stack", "suggested_commands", "task_completion"] },
+    };
+  }
+  if (service === "serena" && operation === "memory") {
+    return { ok: true, command: "serena.memory.read", data: { content: value } };
+  }
+  if (service === "ima-mcp") throw new Error("unexpected");
+
+  return null;
+};
 
 const vestigePattern = "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$";
 const invalidVestigeId = "-".repeat(36);
@@ -172,7 +195,252 @@ test("context exposes only known source error codes", async () => {
   const known = await coordinateContext({ source: { type: "file", path: "../outside" } }, "/repo", { run: gateway([]), canonical: async (path) => path });
   assert.equal(known.diagnostics[0].code, "source_path_outside_project");
 });
-test("minimal non-empty artifact with valid identity persists, then searches and cleans generated artifact", async () => { const calls = []; const writes = []; const removed = []; const result = await coordinateLifecycle({ type: "implementation", identity, artifact }, { run: async (program, args) => { calls.push([program, args]); if (args[1] === "save") return { ok: true, command: "vestige.save", data: { stored: true, type: "implementation", id: "receipt" } }; const query = args[2]; const nonce = query.split(" ")[1]; return { ok: true, command: "vestige.search", data: { results: [{ content: `${identity.lifecycleKey} ${nonce} implementation FNR-3016 outcome completed` }] } }; }, temp: async () => "/tmp/ima-test", write: async (path, value) => { writes.push([path, value]); }, remove: async (path) => { removed.push(path); } }); assert.equal(result.status, "completed"); assert.equal(calls.filter(([, args]) => args[1] === "save").length, 1); assert.equal(calls.filter(([, args]) => args[1] === "search").length, 1); assert.equal(writes.length, 1); assert.equal(removed.length, 1); });
+test("lifecycle persists through direct Vestige MCP and verifies the nonce", async () => {
+  const vestigeCalls = [];
+  const runCalls = [];
+  const result = await coordinateLifecycle(
+    { type: "implementation", identity, artifact },
+    {
+      run: async (...args) => {
+        runCalls.push(args);
+        return null;
+      },
+      vestige: async (tool, args) => {
+        vestigeCalls.push([tool, args]);
+        if (tool === "smart_ingest") {
+          return { isError: false, structuredContent: { id: "receipt" } };
+        }
+
+        const nonce = String(args.query).split(" ")[1];
+        return {
+          isError: false,
+          structuredContent: {
+            results: [{
+              content: `${identity.lifecycleKey} ${nonce} phase=implementation; ${identity.jiraKey} ${identity.taskwarriorUuid} outcome=completed`,
+            }],
+          },
+        };
+      },
+    },
+  );
+
+  const [ingestTool, ingestArgs] = vestigeCalls[0];
+  const [recallTool, recallArgs] = vestigeCalls[1];
+  assert.equal(result.status, "completed");
+  assert.equal(result.artifactId, "receipt");
+  assert.deepEqual(vestigeCalls.map(([tool]) => tool), ["smart_ingest", "recall"]);
+  assert.equal(ingestTool, "smart_ingest");
+  assert.equal(ingestArgs.forceCreate, true);
+  assert.equal(ingestArgs.node_type, "decision");
+  assert.equal(ingestArgs.source, identity.lifecycleKey);
+  assert.deepEqual(ingestArgs.tags, [identity.project, "lifecycle", "implementation"]);
+  assert.equal(recallTool, "recall");
+  assert.equal(recallArgs.mode, "lookup");
+  assert.equal(recallArgs.limit, 10);
+  assert.match(ingestArgs.content, new RegExp(String(recallArgs.query).split(" ")[1]));
+  assert.deepEqual(runCalls, []);
+});
+
+test("lifecycle rejects malformed identity arrays before Vestige I/O", async () => {
+  const vestigeCalls = [];
+  const result = await coordinateLifecycle(
+    {
+      type: "implementation",
+      identity: { ...identity, sourceRefs: [null] },
+      artifact,
+    },
+    {
+      vestige: async (...args) => {
+        vestigeCalls.push(args);
+        return null;
+      },
+    },
+  );
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.code, "invalid_lifecycle_request");
+  assert.deepEqual(vestigeCalls, []);
+});
+
+test("lifecycle reports a direct Vestige save failure", async () => {
+  const result = await coordinateLifecycle(
+    { type: "implementation", identity, artifact },
+    { vestige: async () => null },
+  );
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.code, "vestige_save_failed");
+});
+
+test("lifecycle sanitizes a thrown direct Vestige save failure", async () => {
+  const result = await coordinateLifecycle(
+    { type: "implementation", identity, artifact },
+    { vestige: async () => { throw new Error("Authorization: Bearer abc123"); } },
+  );
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.code, "vestige_save_failed");
+  assert.doesNotMatch(JSON.stringify(result), /abc123/);
+});
+
+test("lifecycle rejects an invalid direct Vestige receipt", async () => {
+  const result = await coordinateLifecycle(
+    { type: "implementation", identity, artifact },
+    { vestige: async () => ({ isError: true, content: [] }) },
+  );
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.code, "vestige_receipt_invalid");
+});
+
+test("lifecycle rejects an explicitly negative direct receipt without recall", async () => {
+  const calls = [];
+  const secret = "token=negative-receipt-secret";
+  const result = await coordinateLifecycle(
+    { type: "implementation", identity, artifact },
+    {
+      vestige: async (tool) => {
+        calls.push(tool);
+        return {
+          isError: false,
+          content: [{ type: "text", text: JSON.stringify({ success: false, message: secret }) }],
+        };
+      },
+    },
+  );
+
+  assert.deepEqual(calls, ["smart_ingest"]);
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.code, "vestige_receipt_invalid");
+  assert.doesNotMatch(JSON.stringify(result), /negative-receipt-secret/);
+});
+
+test("lifecycle rejects text-only receipts without recall", async () => {
+  const receipts = [
+    "artifact could not be stored",
+    "artifact wasn't stored",
+    "artifact was not only stored successfully, but also indexed",
+  ];
+
+  for (const [index, receipt] of receipts.entries()) {
+    const calls = [];
+    const secret = `token=text-receipt-secret-${index}`;
+    const result = await coordinateLifecycle(
+      { type: "implementation", identity, artifact },
+      {
+        vestige: async (tool) => {
+          calls.push(tool);
+          return {
+            isError: false,
+            content: [{ type: "text", text: `${receipt} ${secret}` }],
+          };
+        },
+      },
+    );
+
+    assert.deepEqual(calls, ["smart_ingest"]);
+    assert.equal(result.status, "failed");
+    assert.equal(result.error.code, "vestige_receipt_invalid");
+    assert.doesNotMatch(JSON.stringify(result), new RegExp(secret));
+  }
+});
+
+test("lifecycle rejects an unrelated receipt UUID without recall", async () => {
+  const calls = [];
+  const unrelatedUuid = "abcdefab-cdef-abcd-efab-cdefabcdefab";
+  const result = await coordinateLifecycle(
+    { type: "implementation", identity, artifact },
+    {
+      vestige: async (tool) => {
+        calls.push(tool);
+        return { isError: false, content: [{ type: "text", text: `reference ${unrelatedUuid}` }] };
+      },
+    },
+  );
+
+  assert.deepEqual(calls, ["smart_ingest"]);
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.code, "vestige_receipt_invalid");
+  assert.equal(result.artifactId, null);
+});
+
+test("lifecycle rejects a direct Vestige recall without the nonce match", async () => {
+  const result = await coordinateLifecycle(
+    { type: "implementation", identity, artifact },
+    {
+      vestige: async (tool) => tool === "smart_ingest"
+        ? { isError: false, structuredContent: { id: "receipt" } }
+        : { isError: false, structuredContent: { results: [] } },
+    },
+  );
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.code, "vestige_semantic_completion_unverified");
+});
+
+test("lifecycle rejects an error-marked direct Vestige recall", async () => {
+  const calls = [];
+  const secret = "token=error-recall-secret";
+  const result = await coordinateLifecycle(
+    { type: "implementation", identity, artifact },
+    {
+      vestige: async (tool, args) => {
+        calls.push(tool);
+        if (tool === "smart_ingest") {
+          return { isError: false, structuredContent: { id: "receipt" } };
+        }
+
+        const nonce = String(args.query).split(" ")[1];
+        return {
+          isError: true,
+          content: [{ type: "text", text: secret }],
+          structuredContent: {
+            results: [{
+              content: `${identity.lifecycleKey} ${nonce} implementation ${identity.jiraKey} ${identity.taskwarriorUuid} outcome=completed`,
+            }],
+          },
+        };
+      },
+    },
+  );
+
+  assert.deepEqual(calls, ["smart_ingest", "recall"]);
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.code, "vestige_recall_failed");
+  assert.doesNotMatch(JSON.stringify(result), /error-recall-secret/);
+});
+
+test("lifecycle reports an unavailable direct Vestige recall", async () => {
+  const result = await coordinateLifecycle(
+    { type: "implementation", identity, artifact },
+    {
+      vestige: async (tool) => tool === "smart_ingest"
+        ? { isError: false, structuredContent: { id: "receipt" } }
+        : null,
+    },
+  );
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.code, "vestige_recall_failed");
+});
+
+test("lifecycle sanitizes a thrown direct Vestige recall failure", async () => {
+  const result = await coordinateLifecycle(
+    { type: "implementation", identity, artifact },
+    {
+      vestige: async (tool) => {
+        if (tool === "smart_ingest") {
+          return { isError: false, structuredContent: { id: "receipt" } };
+        }
+        throw new Error("token=def456");
+      },
+    },
+  );
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.code, "vestige_recall_failed");
+  assert.doesNotMatch(JSON.stringify(result), /def456/);
+});
 
 test("Taskwarrior source accepts exactly one matching read-only export", async () => { const calls = []; const run = async (program, args) => { calls.push([program, args]); if (program === "task") return [{ uuid: "689fa7ac-84b7-42d0-8912-b8ef76041370", project: "FNR-3007", description: "Integrate", status: "pending" }]; return gateway(calls)(program, args); }; const result = await coordinateContext({ source: { type: "taskwarrior", project: "FNR-3007", uuid: "689fa7ac-84b7-42d0-8912-b8ef76041370" } }, "/repo", { run, canonical: async (path) => path }); assert.equal(result.status, "ready"); assert.deepEqual(calls.find(([program]) => program === "task")[1], ["rc.verbose=nothing", "project:FNR-3007", "689fa7ac-84b7-42d0-8912-b8ef76041370", "export"]); });
 
@@ -193,20 +461,4 @@ test("Taskwarrior source fails closed unless export contains exactly one matchin
     assert.equal(result.status, "failed");
     assert.equal(result.source, null);
   }
-});
-
-test("lifecycle reports temporary cleanup failure after otherwise verified persistence", async () => {
-  const result = await coordinateLifecycle(
-    { type: "implementation", identity, artifact },
-    {
-      run: async (_program, args) => args[1] === "save"
-        ? { ok: true, command: "vestige.save", data: { stored: true, type: "implementation", id: "receipt" } }
-        : { ok: true, command: "vestige.search", data: { results: [{ content: `${identity.lifecycleKey} ${args[2].split(" ")[1]} implementation FNR-3016 outcome completed` }] } },
-      temp: async () => "/tmp/ima-test",
-      write: async () => {},
-      remove: async () => { throw new Error("cleanup failed"); },
-    },
-  );
-  assert.equal(result.status, "failed");
-  assert.equal(result.error.code, "temporary_cleanup_failed");
 });

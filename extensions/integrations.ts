@@ -1,40 +1,87 @@
 /** FNR-3016 production boundary for external IMA context and lifecycle services. */
 import { execFile as execFileCallback } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { lstat, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { lstat, readFile, realpath } from "node:fs/promises";
+import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { derivePhaseContext, evaluateSerenaBootstrap, normalizeSourcePayload, prepareContextArguments, sanitizeContextError, sanitizeContextText, validateContextRequest } from "../lib/ima-context.ts";
 import { buildLifecycleArtifact, deriveLifecycleResult, evaluateLifecycleRecall, sanitizeLifecycleError, validateLifecycleRequest, validateVestigeSaveReceipt } from "../lib/ima-lifecycle.ts";
+import { callMcpTool } from "../lib/ima-mcp-client.ts";
 
 const execFile = promisify(execFileCallback);
 const TIMEOUT = 30_000;
+const VESTIGE_TIMEOUT = 300_000;
 const MAX_BUFFER = 128 * 1024;
 const SOURCE_ERROR_CODES = ["source_path_outside_project", "source_file_unreadable", "source_file_too_large"];
+const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const sourceErrorCode = (error: unknown) => error instanceof Error && SOURCE_ERROR_CODES.includes(error.message) ? error.message : "source_boundary_unavailable";
 const inside = (root: string, target: string) => { const path = relative(root, target); return path === "" || (!path.startsWith("..") && !isAbsolute(path)); };
 const object = (value: unknown): Record<string, unknown> | null => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 const text = (value: unknown) => typeof value === "string" ? value.trim() : "";
 const envelope = (value: string) => { try { return JSON.parse(value); } catch { return null; } };
 
+const vestigeServer = async () => {
+  try {
+    const config = object(envelope(await readFile(join(packageRoot, "config", "mcp.json"), "utf8")));
+    const server = object(object(config?.mcpServers)?.vestige);
+    const command = text(server?.command);
+    const args = server?.args === undefined
+      ? []
+      : Array.isArray(server.args) && server.args.every((value) => typeof value === "string")
+        ? server.args
+        : null;
+
+    return command && args ? { command, args } : null;
+  } catch {
+    return null;
+  }
+};
+
 export type IntegrationDependencies = {
   run?: (program: string, args: string[]) => Promise<unknown>;
   read?: (path: string) => Promise<string>;
   canonical?: (path: string) => Promise<string>;
   stat?: typeof lstat;
-  temp?: () => Promise<string>;
-  write?: (path: string, value: string) => Promise<void>;
-  remove?: (path: string) => Promise<void>;
+  vestige?: (tool: string, args: Record<string, unknown>) => Promise<unknown>;
   home?: () => string;
 };
+
 const productionDependencies: Required<IntegrationDependencies> = {
-  run: async (program, args) => { try { const { stdout } = await execFile(program, args, { timeout: TIMEOUT, maxBuffer: MAX_BUFFER }); return envelope(stdout); } catch { return null; } },
-  read: (path) => readFile(path, "utf8"), canonical: realpath, stat: lstat, temp: () => mkdtemp(join(tmpdir(), "ima-pi-lifecycle-")), write: writeFile, remove: (path) => rm(path, { force: true }), home: homedir,
+  run: async (program, args) => {
+    try {
+      const { stdout } = await execFile(program, args, { timeout: TIMEOUT, maxBuffer: MAX_BUFFER });
+      return envelope(stdout);
+    } catch {
+      return null;
+    }
+  },
+  read: (path) => readFile(path, "utf8"),
+  canonical: realpath,
+  stat: lstat,
+  vestige: async (tool, args) => {
+    const server = await vestigeServer();
+    if (!server) return null;
+
+    try {
+      return await callMcpTool({
+        command: server.command,
+        args: server.args,
+        name: tool,
+        arguments: args,
+        timeoutMs: VESTIGE_TIMEOUT,
+      });
+    } catch {
+      return null;
+    }
+  },
+  home: homedir,
 };
+
 const depsFor = (given?: IntegrationDependencies) => ({ ...productionDependencies, ...given });
 const passed = (value: unknown, command: string) => { const e = object(value); return Boolean(e?.ok === true && e?.command === command && !e?.error); };
 const memoryContent = (value: unknown) => { const e = object(value); return text(object(e?.data)?.content ?? object(object(e?.data)?.memory)?.content); };
@@ -82,35 +129,92 @@ export async function coordinateContext(request: unknown, cwd: string, supplied?
 }
 
 export async function coordinateLifecycle(request: unknown, supplied?: IntegrationDependencies) {
-  const valid = validateLifecycleRequest(request); if (!valid.valid) return { status: "failed", error: valid.error };
-  const deps = depsFor(supplied); let path = "";
-  let result: ReturnType<typeof deriveLifecycleResult> | { status: "failed"; error: ReturnType<typeof sanitizeLifecycleError> };
+  const valid = validateLifecycleRequest(request);
+  if (!valid.valid) return { status: "failed", error: valid.error };
+
+  const deps = depsFor(supplied);
+  const nonce = randomUUID();
+  const recallInput = {
+    lifecycleKey: valid.identity.lifecycleKey,
+    nonce,
+    type: valid.type,
+    jiraKey: valid.identity.jiraKey,
+    taskwarriorUuid: valid.identity.taskwarriorUuid,
+  };
+  const emptyRecall = evaluateLifecycleRecall({ envelope: null, ...recallInput });
+  const artifact = buildLifecycleArtifact({ ...valid, nonce });
+
+  let saved: unknown;
   try {
-    const nonce = randomUUID(); const directory = await deps.temp(); path = join(directory, `${randomUUID()}.md`);
-    await deps.write(path, buildLifecycleArtifact({ ...valid, nonce }));
-    const saved = await deps.run("ima-mcp", ["vestige", "save", "--type", valid.type, "--file", path, "--timeout-ms", "300000", "--json"]);
-    const receipt = validateVestigeSaveReceipt(saved, valid.type);
-    if (!receipt.accepted) {
-      result = deriveLifecycleResult({ type: valid.type, lifecycleKey: valid.identity.lifecycleKey, receipt, recall: { matched: false, lifecycleKeyMatched: false, nonceMatched: false, phaseMatched: false, sourceIdentityMatched: false, outcomeMatched: false, physicalShapeIgnored: true }, error: "vestige_receipt_invalid" });
-    } else {
-      const recalled = await deps.run("ima-mcp", ["vestige", "search", `${valid.identity.lifecycleKey} ${nonce}`, "--timeout-ms", "300000", "--json"]);
-      result = deriveLifecycleResult({ type: valid.type, lifecycleKey: valid.identity.lifecycleKey, receipt, recall: evaluateLifecycleRecall({ envelope: recalled, lifecycleKey: valid.identity.lifecycleKey, nonce, type: valid.type, jiraKey: valid.identity.jiraKey, taskwarriorUuid: valid.identity.taskwarriorUuid }), error: passed(recalled, "vestige.search") ? undefined : "vestige_recall_failed" });
-    }
+    saved = await deps.vestige("smart_ingest", {
+      content: artifact,
+      node_type: "decision",
+      forceCreate: true,
+      source: valid.identity.lifecycleKey,
+      tags: [valid.identity.project, "lifecycle", valid.type],
+    });
   } catch {
-    result = { status: "failed", error: sanitizeLifecycleError("temporary_artifact_failed", "") };
+    return deriveLifecycleResult({
+      type: valid.type,
+      lifecycleKey: valid.identity.lifecycleKey,
+      receipt: { accepted: false, artifactId: null },
+      recall: emptyRecall,
+      error: "vestige_save_failed",
+    });
   }
-  if (!path) return result;
+
+  const receipt = validateVestigeSaveReceipt(saved, valid.type);
+  if (saved == null) {
+    return deriveLifecycleResult({
+      type: valid.type,
+      lifecycleKey: valid.identity.lifecycleKey,
+      receipt,
+      recall: emptyRecall,
+      error: "vestige_save_failed",
+    });
+  }
+  if (!receipt.accepted) {
+    return deriveLifecycleResult({
+      type: valid.type,
+      lifecycleKey: valid.identity.lifecycleKey,
+      receipt,
+      recall: emptyRecall,
+      error: "vestige_receipt_invalid",
+    });
+  }
+
+  let recalled: unknown;
   try {
-    await deps.remove(path);
-    return result;
+    recalled = await deps.vestige("recall", {
+      query: `${valid.identity.lifecycleKey} ${nonce}`,
+      mode: "lookup",
+      limit: 10,
+    });
   } catch {
-    const provisional = result as ReturnType<typeof deriveLifecycleResult>;
-    return {
-      ...provisional,
-      status: "failed" as const,
-      error: sanitizeLifecycleError("temporary_cleanup_failed", ""),
-    };
+    return deriveLifecycleResult({
+      type: valid.type,
+      lifecycleKey: valid.identity.lifecycleKey,
+      receipt,
+      recall: emptyRecall,
+      error: "vestige_recall_failed",
+    });
   }
+  if (recalled == null || object(recalled)?.isError === true) {
+    return deriveLifecycleResult({
+      type: valid.type,
+      lifecycleKey: valid.identity.lifecycleKey,
+      receipt,
+      recall: emptyRecall,
+      error: "vestige_recall_failed",
+    });
+  }
+
+  return deriveLifecycleResult({
+    type: valid.type,
+    lifecycleKey: valid.identity.lifecycleKey,
+    receipt,
+    recall: evaluateLifecycleRecall({ envelope: recalled, ...recallInput }),
+  });
 }
 
 const CONTEXT_SOURCE_PARAMETERS = Type.Object({}, {

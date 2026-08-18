@@ -60,7 +60,7 @@ lifecycle:
 
 ## Persist and hand off
 
-Persist lifecycle artifacts through `ima_lifecycle`; do not substitute a generated SDK namespace, direct service storage, or an undocumented fallback.
+Persist lifecycle artifacts through `ima_lifecycle`; do not substitute a generated SDK namespace, direct service storage, or an undocumented fallback. `ima_lifecycle` persists directly through Vestige MCP and retains its receipt-plus-nonce semantic-recall verification; callers must not bypass it.
 
 A complete artifact includes the approved outcome, scope and non-goals, phase result, changed/reviewed/tested files, decisions, verification commands and results, blockers, residual risk, prior artifact IDs, and the recommended next phase. These sections are recommended rather than required headings: equivalent organization is accepted, and persistence requires only a non-empty bounded artifact with valid lifecycle identity.
 

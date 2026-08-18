@@ -6,7 +6,20 @@ const text = (value: unknown) => typeof value === "string" ? value.trim() : "";
 const REDACTED = "[redacted]";
 const clean = (value: unknown) => typeof value === "string" ? value.replace(/(?:authorization|token|secret|password)\s*[:=]\s*\S+/gi, (match) => match.length < REDACTED.length ? "*".repeat(match.length) : REDACTED) : "";
 export function sanitizeLifecycleError(code: string, _value: unknown) { return { code, message: `Lifecycle integration failed: ${code}.` }; }
-const validIdentity = (value: unknown): value is LifecycleIdentity => { const i = object(value); return Boolean(i && ["project", "lifecycleKey"].every((key) => text(i[key]).length > 0) && ["lifecycleRootMemoryId", "taskwarriorProject", "taskwarriorTask", "taskwarriorUuid", "jiraKey"].every((key) => typeof i[key] === "string") && Array.isArray(i.sourceRefs) && Array.isArray(i.priorArtifactIds)); };
+const isStringArray = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.every((item) => typeof item === "string");
+
+const validIdentity = (value: unknown): value is LifecycleIdentity => {
+  const identity = object(value);
+  return Boolean(
+    identity
+    && ["project", "lifecycleKey"].every((key) => text(identity[key]).length > 0)
+    && ["lifecycleRootMemoryId", "taskwarriorProject", "taskwarriorTask", "taskwarriorUuid", "jiraKey"]
+      .every((key) => typeof identity[key] === "string")
+    && isStringArray(identity.sourceRefs)
+    && isStringArray(identity.priorArtifactIds),
+  );
+};
 export function validateLifecycleRequest(value: unknown): { valid: true; type: LifecyclePhase; identity: LifecycleIdentity; artifact: string } | { valid: false; error: ReturnType<typeof sanitizeLifecycleError> } {
  const input = object(value); const type = text(input?.type); const rawArtifact = typeof input?.artifact === "string" ? input.artifact : "";
  if (!input || !LIFECYCLE_PHASES.includes(type as LifecyclePhase) || !validIdentity(input.identity) || rawArtifact.length > 128_000) return { valid: false, error: sanitizeLifecycleError("invalid_lifecycle_request", value) };
@@ -21,13 +34,107 @@ export function buildLifecycleArtifact(input: { type: LifecyclePhase; identity: 
  const refs = (key: string, values: string[]) => values.length ? `${key}:\n${values.map((value) => `    - ${quoted(value)}`).join("\n")}` : `${key}: []`;
  return `---\nlifecycle:\n  project: ${quoted(i.project)}\n  lifecycle_key: ${quoted(i.lifecycleKey)}\n  lifecycle_root_memory_id: ${quoted(i.lifecycleRootMemoryId)}\n  taskwarrior_project: ${quoted(i.taskwarriorProject)}\n  taskwarrior_task: ${quoted(i.taskwarriorTask)}\n  taskwarrior_uuid: ${quoted(i.taskwarriorUuid)}\n  jira_key: ${quoted(i.jiraKey)}\n  ${refs("source_refs", i.sourceRefs)}\n  phase: ${quoted(input.type)}\n  ${refs("prior_artifact_ids", i.priorArtifactIds)}\n---\n\n${input.artifact.trim()}\n\n${buildLifecycleNonceMarker({ lifecycleKey: i.lifecycleKey, nonce: input.nonce, type: input.type, jiraKey: i.jiraKey, taskwarriorUuid: i.taskwarriorUuid })}\n`;
 }
-export function validateVestigeSaveReceipt(envelope: unknown, expectedType: LifecyclePhase) { const e = object(envelope); const data = object(e?.data); return { accepted: Boolean(e?.ok === true && e?.command === "vestige.save" && data?.stored === true && data?.type === expectedType), artifactId: typeof data?.id === "string" ? data.id : null }; }
+const FAILURE_STATUSES = new Set(["failed", "failure", "error"]);
+
+const mcpResultText = (value: unknown) =>
+  Array.isArray(value)
+    ? value
+      .map(object)
+      .map((item) => item?.type === "text" ? text(item.text) : "")
+      .filter(Boolean)
+      .join("\n")
+    : "";
+
+const mcpResultData = (result: unknown): Record<string, unknown> | null => {
+  const value = object(result);
+  const structuredContent = object(value?.structuredContent);
+  if (structuredContent) return structuredContent;
+
+  const content = mcpResultText(value?.content);
+  if (!content) return null;
+
+  try {
+    return object(JSON.parse(content));
+  } catch {
+    return null;
+  }
+};
+
+const explicitFalse = (value: unknown) =>
+  value === false || text(value).toLowerCase() === "false";
+
+const hasErrorPayload = (value: unknown) =>
+  value !== undefined && value !== null && value !== false && value !== "";
+
+const receiptHasFailure = (data: Record<string, unknown> | null) =>
+  [data?.stored, data?.success, data?.created].some(explicitFalse)
+  || FAILURE_STATUSES.has(text(data?.status).toLowerCase())
+  || hasErrorPayload(data?.error);
+
+export function validateVestigeSaveReceipt(result: unknown, _expectedType: LifecyclePhase) {
+  const callResult = object(result);
+  const data = mcpResultData(result);
+  const artifactId = text(data?.id) || text(data?.memoryId) || null;
+  const positiveData = data?.stored === true
+    || data?.success === true
+    || data?.created === true;
+  const accepted = callResult?.isError !== true
+    && data !== null
+    && !receiptHasFailure(data)
+    && (positiveData || Boolean(artifactId));
+
+  return { accepted, artifactId: accepted ? artifactId : null };
+}
+
 const strings = (value: unknown): string[] => typeof value === "string" ? [value] : Array.isArray(value) ? value.flatMap(strings) : value && typeof value === "object" ? Object.values(value).flatMap(strings) : [];
-export function evaluateLifecycleRecall(input: { envelope: unknown; lifecycleKey: string; nonce: string; type: LifecyclePhase; jiraKey: string; taskwarriorUuid: string }) {
- const data = object(object(input.envelope)?.data); const results = Array.isArray(data?.results) ? data.results : [];
- const requiredSources = [input.jiraKey, input.taskwarriorUuid].filter((value) => text(value));
- const matches = (value: string) => value.includes(input.lifecycleKey) && value.includes(input.nonce) && value.includes(input.type) && requiredSources.every((source) => value.includes(source)) && /\b(completed|success|outcome)\b/i.test(value);
- const value = results.map((result) => strings(result).join("\n")).find(matches) ?? "";
- return { matched: Boolean(value), lifecycleKeyMatched: Boolean(value && value.includes(input.lifecycleKey)), nonceMatched: Boolean(value && value.includes(input.nonce)), phaseMatched: Boolean(value && value.includes(input.type)), sourceIdentityMatched: Boolean(value && requiredSources.every((source) => value.includes(source))), outcomeMatched: Boolean(value && /\b(completed|success|outcome)\b/i.test(value)), physicalShapeIgnored: true as const };
+
+const unmatchedSemanticRecall = () => ({
+  matched: false,
+  lifecycleKeyMatched: false,
+  nonceMatched: false,
+  phaseMatched: false,
+  sourceIdentityMatched: false,
+  outcomeMatched: false,
+  physicalShapeIgnored: true as const,
+});
+
+export function evaluateLifecycleRecall(input: {
+  envelope: unknown;
+  lifecycleKey: string;
+  nonce: string;
+  type: LifecyclePhase;
+  jiraKey: string;
+  taskwarriorUuid: string;
+}) {
+  if (object(input.envelope)?.isError === true) return unmatchedSemanticRecall();
+
+  const data = mcpResultData(input.envelope);
+  const results = Array.isArray(data?.results) ? data.results : [];
+  const requiredSources = [input.jiraKey, input.taskwarriorUuid]
+    .filter((value) => text(value));
+  const hasCompletedOutcome = (value: string) => /\boutcome\s*=\s*completed\b/i.test(value);
+  const hasExpectedPhaseMarker = (value: string) =>
+    value.includes(`phase=${input.type};`);
+  const matches = (value: string) =>
+    value.includes(input.lifecycleKey)
+    && value.includes(input.nonce)
+    && hasExpectedPhaseMarker(value)
+    && requiredSources.every((source) => value.includes(source))
+    && hasCompletedOutcome(value);
+  const matchedValue = results
+    .map((result) => strings(result).join("\n"))
+    .find(matches);
+
+  if (!matchedValue) return unmatchedSemanticRecall();
+
+  return {
+    matched: true,
+    lifecycleKeyMatched: true,
+    nonceMatched: true,
+    phaseMatched: true,
+    sourceIdentityMatched: true,
+    outcomeMatched: true,
+    physicalShapeIgnored: true as const,
+  };
 }
 export function deriveLifecycleResult(input: { type: LifecyclePhase; lifecycleKey: string; receipt: ReturnType<typeof validateVestigeSaveReceipt>; recall: ReturnType<typeof evaluateLifecycleRecall>; error?: string }) { const completed = input.receipt.accepted && input.recall.matched && !input.error; return { schemaVersion: 1, status: completed ? "completed" as const : "failed" as const, phase: input.type, lifecycleKey: input.lifecycleKey, artifactId: input.receipt.artifactId, receiptAccepted: input.receipt.accepted, semanticRecall: input.recall, error: completed ? null : sanitizeLifecycleError(input.error ?? (!input.receipt.accepted ? "vestige_receipt_invalid" : "vestige_semantic_completion_unverified"), "") }; }
