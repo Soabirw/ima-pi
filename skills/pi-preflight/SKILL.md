@@ -15,7 +15,7 @@ Cover, when requested:
 
 - Pi executable plus Node/npm prerequisites; package installation and resource discovery; prompt and skill discovery.
 - Package agents and `ima_delegate`; `preflight-probe` is only the existing package-child marker boundary.
-- `ima-mcp` gateway health and brokered Serena, Vestige, and Qdrant services.
+- Package MCP adapter and gateway health for brokered Serena, Vestige, and Qdrant services.
 - Configured model roles/providers separately from live provider availability.
 - Taskwarrior, Jira, browser, Context7, Tavily, and other configured integrations.
 

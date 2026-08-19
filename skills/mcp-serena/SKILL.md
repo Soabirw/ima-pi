@@ -11,4 +11,4 @@ For project work: activate the current project, load initial_instructions, list 
 Use symbols before bodies and locate references before compatibility-affecting edits. jet_brains tools need the Serena JetBrains plugin and an open IDE. Context files are migration inputs, not runtime truth. The packaged scripts/migrate-context-to-serena.py helper prepares migration material.
 
 ## Safety
-Edits, memory writes, refactors, restart/state operations, and shell execution require explicit workflow authority. Direct MCP has no ima-mcp allow flags. ima-mcp remains transitional compatibility only for existing workflows that explicitly require it.
+Edits, memory writes, refactors, restart/state operations, and shell execution require explicit workflow authority. Perform these only through the package MCP adapter with explicit workflow authority; there is no separate CLI allow-flag layer.

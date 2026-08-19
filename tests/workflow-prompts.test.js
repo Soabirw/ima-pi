@@ -238,12 +238,43 @@ test("FNR-3025 support prompts encode gateway, safety, and terminal contracts", 
   const vestige = await prompt("vestige-bootstrap");
   for (const value of ["session_start", "recall", "Discover Vestige", "PASS, EMPTY, FAIL, or SKIP", "Never ingest", "Stop after"]) has(vestige, value);
   const memorize = await prompt("memorize");
-  for (const value of ["natural language", "parameter grammar", "Vestige preference", "Serena `core`", "`conventions`", "`tech_stack`", "`suggested_commands`", "`task_completion`", "`memory_maintenance`", "ima_lifecycle", "Qdrant", "secrets", "exact preview", "explicit approval", "preferences save", "ima-mcp serena tools call edit_memory", "mode\":\"literal", "allow_multiple_occurrences\":false", "--allow-write", "verify", "Stop after one"]) has(memorize, value);
+  for (const value of ["natural language", "parameter grammar", "Vestige preference", "Serena `core`", "`conventions`", "`tech_stack`", "`suggested_commands`", "`task_completion`", "`memory_maintenance`", "ima_lifecycle", "Qdrant", "secrets", "exact preview", "explicit approval", "vestige_smart_ingest", "serena_edit_memory", "mode\":\"literal", "allow_multiple_occurrences\":false", "serena_write_memory", "verify", "Stop after one"]) has(memorize, value);
+  assert.match(
+    memorize,
+    /serena_edit_memory[\s\S]{0,500}"mode":"literal"[\s\S]{0,250}"allow_multiple_occurrences":false[\s\S]{0,200}Reject zero-match or multiple-match ambiguity/i,
+  );
+  assert.match(
+    memorize,
+    /serena_write_memory[\s\S]{0,300}verify by exact `serena_read_memory`/i,
+  );
+  assert.match(
+    memorize,
+    /vestige_smart_ingest[\s\S]{0,500}single mode[\s\S]{0,250}smart merge\/supersession[\s\S]{0,250}`forceCreate:true` only with explicit user approval[\s\S]{0,250}verify with focused `recall` or `session_start`/i,
+  );
   for (const value of ["ima-memory-workflow", "relevant standard memories", "Do not inspect repository files", "unless the user explicitly asks"]) has(memorize, value);
   const preflight = await prompt("preflight");
-  for (const value of ["offline", "quick", "full", "PASS, WARN, FAIL, BLOCKED, SKIP, NOT_CONFIGURED", "0700", "bounded line/byte chunks", "redact", "cleanup", "retained", "ima_delegate", "IMA_PI_PREFLIGHT_CHILD_OK", "preflight-probe", "pi-preflight", "Goose subrecipe", "Stop after"]) has(preflight, value);
+  for (const value of ["offline", "quick", "full", "compact `mcp` proxy", "advertised by discovery", "PASS, WARN, FAIL, BLOCKED, SKIP, NOT_CONFIGURED", "0700", "bounded line/byte chunks", "redact", "cleanup", "retained", "ima_delegate", "IMA_PI_PREFLIGHT_CHILD_OK", "preflight-probe", "pi-preflight", "Goose subrecipe", "Stop after"]) has(preflight, value);
+  assert.doesNotMatch(preflight, /\bdoctor\b/i);
   const migrate = await prompt("migrate");
-  for (const value of ["Pi-native", "external through `ima-mcp`", "Serena, Vestige, or Qdrant", "~/.pi/agent/ima/config.json", "trusted `.pi/ima/config.json`", "exact redacted preview", "explicit approval", "atomically", "secret", "Validate JSON", "Stop after"]) has(migrate, value);
+  for (const value of ["Pi-native", "external through the package MCP adapter", "Serena, Vestige, or Qdrant", "~/.pi/agent/ima/config.json", "trusted `.pi/ima/config.json`", "exact redacted preview", "explicit approval", "atomically", "secret", "Validate JSON", "Stop after"]) has(migrate, value);
+});
+
+test("Unit D scoped guidance uses direct package MCP instructions", async () => {
+  const guidance = await Promise.all([
+    ["mcp-serena", skill("mcp-serena"), "package MCP adapter"],
+    ["mcp-vestige", skill("mcp-vestige"), "direct Vestige tools through mcp"],
+    ["pi-preflight", skill("pi-preflight"), "Package MCP adapter"],
+    ["ima-pi-guide", skill("ima-pi-guide"), "package MCP adapters"],
+    ["preflight", prompt("preflight"), "package MCP adapter"],
+    ["migrate", prompt("migrate"), "package MCP adapter"],
+    ["memorize", prompt("memorize"), "package MCP adapter"],
+    ["vestige-bootstrap", prompt("vestige-bootstrap"), "package MCP adapter"],
+  ].map(async ([source, content, directEvidence]) => [source, await content, directEvidence]));
+
+  for (const [source, text, directEvidence] of guidance) {
+    has(text, directEvidence);
+    assert.doesNotMatch(text, /\bima-mcp\b/i, `${source} must not direct callers to the legacy CLI`);
+  }
 });
 
 test("FNR-3026 ship-it prompt and Git skill preserve release safety without deployment authority", async () => {
@@ -262,7 +293,7 @@ test("FNR-3033 Pi operational guidance skills retain approved contracts", async 
   const docs = await skill("pi-doc-guide");
   for (const value of ["name: pi-doc-guide", "installed version-matched", "packages.md", "skills.md", "extensions.md", "prompt-templates.md", "settings.md", "models.md", "providers.md", "security.md", "upstream Pi semantics", "ima-pi", "observed local state", "Cite", "rather than guessing"]) has(docs, value);
   const guide = await skill("ima-pi-guide");
-  for (const value of ["name: ima-pi-guide", "installation", "configuration", "operation", "diagnosis", "architecture", "README.md", "docs/foundation", "package resource", "prompts", "/skill:*", "agents", "model-role", "ima-mcp", "/ima:preflight", "READ-ONLY", "LOCAL WRITE", "EXTERNAL WRITE", "DESTRUCTIVE/RISKY", "pasted secrets"]) has(guide, value);
+  for (const value of ["name: ima-pi-guide", "installation", "configuration", "operation", "diagnosis", "architecture", "README.md", "docs/foundation", "package resource", "prompts", "/skill:*", "agents", "model-role", "package MCP adapter", "/ima:preflight", "READ-ONLY", "LOCAL WRITE", "EXTERNAL WRITE", "DESTRUCTIVE/RISKY", "pasted secrets"]) has(guide, value);
   for (const text of [preflight, docs, guide]) {
     assert.doesNotMatch(text, /goose-docs\.ai|~\/\.config\/goose|\.goose-aliases|run `goose-cycle`/i);
   }

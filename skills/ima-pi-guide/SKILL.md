@@ -19,6 +19,6 @@ Give a short answer, evidence checked, recommended next steps, risk labels, and 
 
 Cover team/global installation from the approved private Gitea source and local development including `npm run install:skills`; root `package.json` package resource declarations and package/user/project precedence; production prompts and `/skill:*` discovery; package agents, `/ima:agents`, and `ima_delegate` authority boundaries; opt-in model-role configuration versus provider availability; and architecture rationale under `docs/spikes/` and `docs/foundation/`.
 
-For Serena, Vestige, Qdrant, Jira, Taskwarrior, Context7, Tavily, Chrome, `ima-mcp`, and MCP adapters, explain the integration boundary and begin diagnosis with `/ima:preflight`, then the smallest read-only evidence check for the symptom.
+For Serena, Vestige, Qdrant, Jira, Taskwarrior, Context7, Tavily, Chrome, and the package MCP adapters, explain the integration boundary and begin diagnosis with `/ima:preflight`, then the smallest read-only evidence check for the symptom.
 
 Label suggestions **READ-ONLY**, **LOCAL WRITE**, **EXTERNAL WRITE**, or **DESTRUCTIVE/RISKY** whenever risk is not obvious. Do not describe legacy Goose config, rendered recipes, aliases, workstation setup, cycle automation, or SDK behavior as the Pi operating model.
