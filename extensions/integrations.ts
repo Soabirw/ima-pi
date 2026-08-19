@@ -56,17 +56,46 @@ const mcpServer = async (name: string) => {
   }
 };
 
-type McpToolCaller = (
+export type McpToolCaller = (
   name: string,
   arguments_: Record<string, unknown>,
   timeoutMs: number,
 ) => Promise<unknown>;
 
-type McpSession = <Result>(
+export type McpSession = <Result>(
   serverName: string,
   callback: (call: McpToolCaller) => Promise<Result>,
   signal?: AbortSignal,
 ) => Promise<Result | null>;
+
+export const withConfiguredMcpSession: McpSession = async (
+  serverName,
+  callback,
+  signal,
+) => {
+  const server = await mcpServer(serverName);
+  if (!server) return null;
+
+  try {
+    return await withMcpSession(server, callback, signal);
+  } catch {
+    return null;
+  }
+};
+
+export const recallVestige = async (
+  query: string,
+  session: McpSession = withConfiguredMcpSession,
+) => {
+  try {
+    return await session(
+      "vestige",
+      (call) => call("recall", { query, mode: "lookup", limit: 10 }, VESTIGE_TIMEOUT),
+    );
+  } catch {
+    return null;
+  }
+};
 
 export type IntegrationDependencies = {
   run?: (program: string, args: string[]) => Promise<unknown>;
@@ -106,10 +135,7 @@ const productionDependencies: Required<IntegrationDependencies> = {
       return null;
     }
   },
-  session: async (serverName, callback, signal) => {
-    const server = await mcpServer(serverName);
-    return server ? withMcpSession(server, callback, signal) : null;
-  },
+  session: withConfiguredMcpSession,
   home: homedir,
 };
 
@@ -119,6 +145,23 @@ const directResponse = (value: unknown) => {
   return response?.isError === true ? null : response;
 };
 const directStructured = (value: unknown) => object(directResponse(value)?.structuredContent);
+export const mcpResultData = (value: unknown): Record<string, unknown> | null => {
+  const response = directResponse(value);
+  if (!response) return null;
+
+  const structured = object(response.structuredContent);
+  if (structured) return structured;
+  if (Array.isArray(response.content)) {
+    for (const content of response.content) {
+      const item = object(content);
+      if (typeof item?.text !== "string") continue;
+      const parsed = envelope(item.text);
+      if (object(parsed)) return object(parsed);
+    }
+  }
+
+  return response;
+};
 const directResult = (value: unknown) => {
   const response = directResponse(value);
   if (!response) return null;

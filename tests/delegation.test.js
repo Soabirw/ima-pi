@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import test from "node:test";
 
 import {
   NONCE_MARKER,
   RESEARCH_URL,
-  SERENA_STATUS_MARKER,
+  SERENA_ACTIVATE_TOOL,
   assistantExecutionFailed,
   childIdentityVerified,
   buildFollowUpBrief,
@@ -15,6 +18,7 @@ import {
   extractNonceFromText,
   independentRouting,
   modelIdentity,
+  openFollowUpSession,
   parseDelegationProbeArgs,
   parseModelSelector,
   sanitizeError,
@@ -26,7 +30,7 @@ const requiredTools = [
   { tool: "write", category: "file-write" },
   { tool: "bash", category: "shell" },
   { tool: "bash", category: "research" },
-  { tool: "bash", category: "integration" },
+  { tool: "mcp", category: "integration" },
 ];
 
 test("parseModelSelector splits provider and model", () => {
@@ -98,11 +102,37 @@ test("buildStartBrief contains fixed operations and safety boundaries", () => {
     "/home/eric/IMA/dev/ima-pi",
     "01234567-89ab-cdef-0123-456789abcdef",
     RESEARCH_URL,
-    SERENA_STATUS_MARKER,
+    SERENA_ACTIVATE_TOOL,
     "Do not modify the IMA Pi repository",
     "Do not run destructive commands",
   ]) {
     assert.match(brief, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
+  assert.match(brief, /Use the mcp tool exactly once/);
+  assert.doesNotMatch(brief, /ima-mcp/);
+});
+
+test("openFollowUpSession uses the persisted header cwd", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ima-pi-delegation-session-"));
+  const sessionDirectory = join(root, "sessions");
+  const workspace = join(root, "workspace");
+  const sessionFile = join(sessionDirectory, "child.jsonl");
+  try {
+    await Promise.all([mkdir(sessionDirectory), mkdir(workspace)]);
+    await writeFile(sessionFile, `${JSON.stringify({
+      type: "session",
+      version: 3,
+      id: "01234567-89ab-cdef-0123-456789abcdef",
+      timestamp: "2026-08-19T00:00:00.000Z",
+      cwd: workspace,
+    })}\n`);
+
+    const reopened = openFollowUpSession(sessionFile);
+    assert.equal(reopened.cwd, workspace);
+    assert.equal(reopened.sessionManager.getCwd(), workspace);
+    assert.notEqual(dirname(sessionFile), workspace);
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
 
@@ -139,7 +169,7 @@ test("classifyToolEvent grants categories only for exact controlled paths and co
     { toolName: "write", args: { path: "/workspace/marker.txt", content: "secret" } },
     { toolName: "bash", args: { command: "pwd" } },
     { toolName: "bash", args: { command: `curl -fsSL --max-time 20 ${RESEARCH_URL}` } },
-    { toolName: "bash", args: { command: `${SERENA_STATUS_MARKER} --project /repo --json` } },
+    { toolName: "mcp", args: { server: "serena", tool: SERENA_ACTIVATE_TOOL, args: { project: "/repo" } } },
     { toolName: "bash", args: { command: "env" } },
   ];
 
@@ -150,13 +180,13 @@ test("classifyToolEvent grants categories only for exact controlled paths and co
       { tool: "write", category: "file-write" },
       { tool: "bash", category: "shell" },
       { tool: "bash", category: "research" },
-      { tool: "bash", category: "integration" },
+      { tool: "mcp", category: "integration" },
       { tool: "bash", category: "other" },
     ],
   );
   assert.doesNotMatch(
     JSON.stringify(events.map((event) => classifyToolEvent(event, context))),
-    /secret|curl|ima-mcp|env/,
+    /secret|curl|env/,
   );
 });
 
@@ -171,10 +201,11 @@ test("classifyToolEvent rejects off-target paths and commands", () => {
     { toolName: "write", args: { path: "/workspace/other.txt", content: "x" } },
     { toolName: "bash", args: { command: "curl -fsSL https://evil.example" } },
     { toolName: "bash", args: { command: "printf hi" } },
+    { toolName: "mcp", args: { server: "serena", tool: SERENA_ACTIVATE_TOOL, args: { project: "/repo", extra: true } } },
   ];
   assert.deepEqual(
     offTarget.map((event) => classifyToolEvent(event, context).category),
-    ["other", "other", "other", "other"],
+    ["other", "other", "other", "other", "other"],
   );
 });
 

@@ -3,7 +3,7 @@ import test from "node:test";
 import { validateToolArguments } from "@earendil-works/pi-ai";
 import { convertTools } from "@earendil-works/pi-ai/api/google-shared";
 import { Check } from "typebox/value";
-import integrations, { coordinateContext, coordinateLifecycle } from "../extensions/integrations.ts";
+import integrations, { coordinateContext, coordinateLifecycle, recallVestige } from "../extensions/integrations.ts";
 import { parseQdrantResults } from "../lib/ima-context.ts";
 const identity = { project: "ima-pi", lifecycleKey: "ima-pi:taskwarrior:FNR-3007:uuid", lifecycleRootMemoryId: "root", taskwarriorProject: "FNR-3007", taskwarriorTask: "uuid", taskwarriorUuid: "uuid", jiraKey: "FNR-3016", sourceRefs: ["Taskwarrior:uuid"], priorArtifactIds: ["plan"] };
 const artifact = "minimal implementation artifact";
@@ -43,6 +43,25 @@ const runGateway = (calls) => async (program, args) => {
 
 const vestigePattern = "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$";
 const invalidVestigeId = "-".repeat(36);
+
+test("recallVestige uses the native raw MCP tool and fails closed", async () => {
+  const calls = [];
+  const result = await recallVestige("lifecycle-key implementation", async (server, callback) => callback(
+    async (tool, args, timeout) => {
+      calls.push({ server, tool, args, timeout });
+      return { isError: false, structuredContent: { results: [] } };
+    },
+  ));
+
+  assert.deepEqual(result, { isError: false, structuredContent: { results: [] } });
+  assert.deepEqual(calls, [{
+    server: "vestige",
+    tool: "recall",
+    args: { query: "lifecycle-key implementation", mode: "lookup", limit: 10 },
+    timeout: 300_000,
+  }]);
+  assert.equal(await recallVestige("key", async () => { throw new Error("token=hidden"); }), null);
+});
 
 test("context registration advertises the exact provider-compatible request contract", () => {
   const tools = [];

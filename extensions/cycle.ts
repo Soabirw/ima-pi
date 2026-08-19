@@ -5,7 +5,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DefaultResourceLoader, getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { applyConfiguredCommandRoute, latestSessionProfile } from "./workflow-routing.ts";
-import { coordinateContext, coordinateLifecycle } from "./integrations.ts";
+import { coordinateContext, coordinateLifecycle, mcpResultData, recallVestige } from "./integrations.ts";
 import {
   CYCLE_ENTRY,
   CYCLE_PHASES,
@@ -378,14 +378,15 @@ const execSucceeded = (value: unknown) => {
   return result.ok === true || result.success === true;
 };
 
-const successfulVestigeSearchEnvelope = (value: unknown) => {
-  const envelope = object(value);
-  return Boolean(envelope?.ok === true && envelope?.command === "vestige.search" && !envelope?.error);
-};
+export type CycleRecall = (input: {
+  query: string;
+  mode: "lookup";
+  limit: 10;
+}) => Promise<unknown>;
 
 export type CycleReconcileInput = {
   state: CycleState;
-  run: (program: string, args: string[]) => Promise<unknown>;
+  recall: CycleRecall;
   appendState: CycleAppend;
   timestamp?: string;
 };
@@ -399,15 +400,17 @@ export async function coordinateCycleReconcile(input: CycleReconcileInput): Prom
   if (!valid.valid) return { ok: false, state: null, error: valid.error };
   const state = valid.state;
   if (state.status !== "awaiting-evidence") return { ok: true, state, reconciled: false };
-  let search: unknown;
+
+  const query = `${state.lifecycleKey} ${lifecycleTypeForPhase(state.phase)}`;
+  let response: unknown;
   try {
-    search = await input.run("ima-mcp", ["vestige", "search", `${state.lifecycleKey} ${lifecycleTypeForPhase(state.phase)}`, "--timeout-ms", "300000", "--json"]);
+    response = await input.recall({ query, mode: "lookup", limit: 10 });
   } catch {
     return { ...safeError("cycle_reconcile_read_failed"), state };
   }
-  if (!execSucceeded(search)) return { ...safeError("cycle_reconcile_read_failed"), state };
-  const payload = execPayload(search);
-  if (!successfulVestigeSearchEnvelope(payload)) return { ...safeError("cycle_reconcile_read_failed"), state };
+
+  const payload = mcpResultData(response);
+  if (!payload) return { ...safeError("cycle_reconcile_read_failed"), state };
   const parsed = parseLifecycleSearchRecords(payload, {
     lifecycleKey: state.lifecycleKey,
     phase: state.phase,
@@ -676,6 +679,7 @@ const persistDurableStateWith = (resolveProjectRoot: CycleExtensionDependencies[
 export type CycleExtensionDependencies = {
   applyRoute: (pi: ExtensionAPI, ctx: ExtensionContext, phase: CyclePhase) => Promise<CycleRouteResult>;
   expandPrompt: (value: string, cwd: string) => Promise<string>;
+  recall: CycleRecall;
   resolveProjectRoot: (cwd: string) => Promise<string>;
   loadDurableState: (cwd: string) => Promise<CycleState | null>;
   persistDurableState: (cwd: string, state: CycleState) => Promise<void>;
@@ -684,6 +688,7 @@ export type CycleExtensionDependencies = {
 const defaultCycleExtensionDependencies: CycleExtensionDependencies = {
   applyRoute: (pi, ctx, phase) => routeFor(pi, ctx)(phase),
   expandPrompt: expandCyclePromptFromResources,
+  recall: ({ query }) => recallVestige(query),
   resolveProjectRoot: defaultResolveProjectRoot,
   loadDurableState: loadDurableStateWith(defaultResolveProjectRoot),
   persistDurableState: persistDurableStateWith(defaultResolveProjectRoot),
@@ -798,7 +803,7 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
   };
   const reconcile = async (ctx: ExtensionContext) => {
     if (!state) return true;
-    const result = await coordinateCycleRecovery({ state, run: (program, args) => pi.exec(program, args), appendState: appendFor(pi, ctx, dependencies.persistDurableState) });
+    const result = await coordinateCycleRecovery({ state, recall: dependencies.recall, appendState: appendFor(pi, ctx, dependencies.persistDurableState) });
     if (!result.ok) {
       if (result.state) state = copyState(result.state);
       notify(ctx, result.diagnostic ? unresolvedOutcomeMessage(result.diagnostic.phase, result.diagnostic.artifactId) : result.error.message, "warning");

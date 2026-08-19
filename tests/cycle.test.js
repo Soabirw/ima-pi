@@ -79,7 +79,7 @@ const persistedRecord = (state, phase, outcome, options = {}) => ({
   content: `---\nlifecycle: {}\n---\n\n${options.artifact ?? marker(phase, outcome)}\n\n${lifecycleVerification(state, phase, options)}`,
 });
 
-const vestigeSearch = (results = []) => ({ ok: true, command: "vestige.search", data: { results } });
+const vestigeSearch = (results = []) => ({ structuredContent: { results } });
 
 const awaitingPhaseState = (phase) => {
   let state = createCycleState(jira, { timestamp: at });
@@ -156,6 +156,7 @@ const createCycleExtensionHarness = (branch, run = async () => vestigeSearch()) 
 };
 
 const cycleDependencies = (overrides = {}) => ({
+  recall: async () => vestigeSearch(),
   resolveProjectRoot: async (cwd) => cwd,
   loadDurableState: async () => null,
   persistDurableState: async () => {},
@@ -168,6 +169,7 @@ const dispatchWithDefaultStore = async (root, branch = implementationAwaitingRes
   const harness = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: branch }]);
   harness.ctx.cwd = root;
   registerCycleExtension(harness.pi, {
+    recall: async () => vestigeSearch(),
     resolveProjectRoot: async () => root,
     applyRoute: async () => ({ ok: true }),
     expandPrompt: async () => "expanded prompt",
@@ -1237,6 +1239,7 @@ test("default durable store persists and restores a contained cache", async () =
     const restored = createCycleExtensionHarness([]);
     restored.ctx.cwd = root;
     registerCycleExtension(restored.pi, {
+      recall: async () => vestigeSearch(),
       resolveProjectRoot: async () => root,
       applyRoute: async () => ({ ok: true }),
       expandPrompt: async () => "expanded prompt",
@@ -1313,6 +1316,7 @@ test("default durable store rejects unsafe cache paths without touching external
     const reader = createCycleExtensionHarness([]);
     reader.ctx.cwd = root;
     registerCycleExtension(reader.pi, {
+      recall: async () => vestigeSearch(),
       resolveProjectRoot: async () => root,
       applyRoute: async () => ({ ok: true }),
       expandPrompt: async () => "expanded prompt",
@@ -1332,11 +1336,13 @@ test("session start restores durable state and reconciles it before reporting st
   const durable = createCycleState(jira, { timestamp: at });
   const calls = [];
   const persisted = [];
-  const harness = createCycleExtensionHarness([], async (program, args) => {
-    calls.push([program, args]);
+  const recall = async (input) => {
+    calls.push(input);
     return vestigeSearch([persistedRecord(durable, "plan", "APPROVED", { id: "durable-plan" })]);
-  });
+  };
+  const harness = createCycleExtensionHarness([]);
   registerCycleExtension(harness.pi, cycleDependencies({
+    recall,
     applyRoute: async () => ({ ok: true }),
     expandPrompt: async () => "expanded prompt",
     loadDurableState: async () => durable,
@@ -1346,8 +1352,8 @@ test("session start restores durable state and reconciles it before reporting st
   await harness.handlers.get("session_start")({}, harness.ctx);
 
   assert.deepEqual(calls, [
-    ["ima-mcp", ["vestige", "search", `${durable.lifecycleKey} plan`, "--timeout-ms", "300000", "--json"]],
-    ["ima-mcp", ["vestige", "search", `${durable.lifecycleKey} implementation`, "--timeout-ms", "300000", "--json"]],
+    { query: `${durable.lifecycleKey} plan`, mode: "lookup", limit: 10 },
+    { query: `${durable.lifecycleKey} implementation`, mode: "lookup", limit: 10 },
   ]);
   assert.deepEqual(harness.messages, []);
   assert.equal(persisted.length, 1);
@@ -1360,8 +1366,9 @@ test("session start restores durable state and reconciles it before reporting st
 test("session start reconciles a stale durable phase from verified lifecycle evidence", async () => {
   const stale = awaitingEvidence(implementationAwaitingResumeState());
   const persisted = [];
-  const harness = createCycleExtensionHarness([], async () => vestigeSearch([persistedRecord(stale, "implementation", "COMPLETED", { id: "durable-implementation" })]));
+  const harness = createCycleExtensionHarness([]);
   registerCycleExtension(harness.pi, cycleDependencies({
+    recall: async () => vestigeSearch([persistedRecord(stale, "implementation", "COMPLETED", { id: "durable-implementation" })]),
     applyRoute: async () => ({ ok: true }),
     expandPrompt: async () => "expanded prompt",
     loadDurableState: async () => stale,
@@ -1587,31 +1594,43 @@ test("keeps verified live writes advisory and reports unresolved outcomes with a
   assert.equal(unresolved.diagnostic.artifactId, "persisted-plan");
 });
 
-test("coordinates a read-only persisted-evidence reconciliation shell", async () => {
+test("coordinates a direct-MCP persisted-evidence reconciliation shell", async () => {
   const state = createCycleState(jira, { timestamp: at });
   const entries = [];
   const calls = [];
   const result = await coordinateCycleReconcile({
     state,
-    run: async (program, args) => { calls.push([program, args]); return { code: 0, stdout: JSON.stringify(vestigeSearch([persistedRecord(state, "plan", "APPROVED", { id: "plan-proof" })])) }; },
+    recall: async (input) => {
+      calls.push(input);
+      return vestigeSearch([persistedRecord(state, "plan", "APPROVED", { id: "plan-proof" })]);
+    },
     appendState: (next) => entries.push(next),
     timestamp: at,
   });
   assert.equal(result.ok, true);
   assert.equal(result.reconciled, true);
-  assert.deepEqual(calls, [["ima-mcp", ["vestige", "search", `${state.lifecycleKey} plan`, "--timeout-ms", "300000", "--json"]]]);
+  assert.deepEqual(calls, [{ query: `${state.lifecycleKey} plan`, mode: "lookup", limit: 10 }]);
   assert.equal(entries.length, 1);
   assert.equal(entries[0].phase, "implementation");
 
-  const noEvidence = await coordinateCycleReconcile({ state, run: async () => vestigeSearch(), appendState: () => { throw new Error("must not append"); }, timestamp: at });
+  const noEvidence = await coordinateCycleReconcile({ state, recall: async () => vestigeSearch(), appendState: () => { throw new Error("must not append"); }, timestamp: at });
   assert.equal(noEvidence.ok, true);
   assert.equal(noEvidence.reconciled, false);
 
-  const malformed = await coordinateCycleReconcile({ state, run: async () => ({ ok: true, command: "vestige.search", data: {} }), appendState: () => {}, timestamp: at });
+  const contentWrapped = await coordinateCycleReconcile({
+    state,
+    recall: async () => ({ content: [{ type: "text", text: JSON.stringify({ results: [persistedRecord(state, "plan", "APPROVED", { id: "content-proof" })] }) }] }),
+    appendState: () => {},
+    timestamp: at,
+  });
+  assert.equal(contentWrapped.ok, true);
+  assert.equal(contentWrapped.reconciled, true);
+
+  const malformed = await coordinateCycleReconcile({ state, recall: async () => ({ structuredContent: {} }), appendState: () => {}, timestamp: at });
   assert.equal(malformed.ok, false);
   assert.equal(malformed.error.code, "cycle_reconcile_read_failed");
 
-  const unresolved = await coordinateCycleReconcile({ state, run: async () => vestigeSearch([persistedRecord(state, "plan", "APPROVED", { id: "unclear", artifact: "No cycle marker." })]), appendState: () => {}, timestamp: at });
+  const unresolved = await coordinateCycleReconcile({ state, recall: async () => vestigeSearch([persistedRecord(state, "plan", "APPROVED", { id: "unclear", artifact: "No cycle marker." })]), appendState: () => {}, timestamp: at });
   assert.equal(unresolved.ok, false);
   assert.equal(unresolved.error.code, "lifecycle_outcome_undetermined");
   assert.deepEqual(unresolved.diagnostic, { phase: "plan", artifactId: "unclear" });
@@ -1623,8 +1642,8 @@ test("recovers consecutive verified phases before any resume dispatch", async ()
   const entries = [];
   const result = await coordinateCycleRecovery({
     state: stale,
-    run: async (_program, args) => {
-      const phase = args[2].split(" ").at(-1);
+    recall: async ({ query }) => {
+      const phase = query.split(" ").at(-1);
       calls.push(phase);
       const records = {
         plan: persistedRecord(stale, "plan", "APPROVED", { id: "plan-proof" }),
@@ -1646,7 +1665,7 @@ test("recovers consecutive verified phases before any resume dispatch", async ()
   const implementationStale = implementationAwaitingResumeState();
   const implementationRecovery = await coordinateCycleRecovery({
     state: implementationStale,
-    run: async (_program, args) => args[2].endsWith(" implementation")
+    recall: async ({ query }) => query.endsWith(" implementation")
       ? vestigeSearch([persistedRecord(implementationStale, "implementation", "COMPLETED", { id: "implementation-stale-proof" })])
       : vestigeSearch(),
     appendState: () => {},
@@ -1669,8 +1688,8 @@ test("caps verified recovery by the fixed lifecycle and review cap", async () =>
   const calls = [];
   const result = await coordinateCycleRecovery({
     state: stale,
-    run: async (_program, args) => {
-      const phase = args[2].split(" ").at(-1);
+    recall: async ({ query }) => {
+      const phase = query.split(" ").at(-1);
       calls.push(phase);
       const record = records[phase]?.shift();
       return vestigeSearch(record ? [persistedRecord(stale, record[0], record[1], { id: `${phase}-${calls.length}` })] : []);
@@ -1685,9 +1704,10 @@ test("caps verified recovery by the fixed lifecycle and review cap", async () =>
 
 test("preserves stale resume state and prevents dispatch for undetermined recovery evidence", async () => {
   const stale = implementationAwaitingResumeState();
-  const harness = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: stale }], async () => vestigeSearch([persistedRecord(stale, "implementation", "COMPLETED", { id: "unclear", artifact: "No cycle marker." })]));
+  const harness = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: stale }]);
   const routed = [];
   registerCycleExtension(harness.pi, cycleDependencies({
+    recall: async () => vestigeSearch([persistedRecord(stale, "implementation", "COMPLETED", { id: "unclear", artifact: "No cycle marker." })]),
     applyRoute: async (_pi, _ctx, phase) => { routed.push(phase); return { ok: true }; },
     expandPrompt: async () => "expanded prompt",
   }));
@@ -1700,25 +1720,25 @@ test("preserves stale resume state and prevents dispatch for undetermined recove
   assert.ok(harness.notifications.some(({ level, message }) => level === "warning" && /outcome is unresolved/.test(message)));
 });
 
-test("rejects unsuccessful or misidentified Vestige search envelopes", async () => {
+test("rejects malformed or failed direct Vestige recall results", async () => {
   const state = createCycleState(jira, { timestamp: at });
-  const candidate = persistedRecord(state, "plan", "APPROVED", { id: "envelope-proof" });
-  const rejectedEnvelopes = [
-    { code: 0, stdout: JSON.stringify({ ok: false, command: "vestige.search", data: { results: [candidate] } }) },
-    { code: 0, stdout: JSON.stringify({ ok: true, command: "vestige.get", data: { results: [candidate] } }) },
-    { code: 0, stdout: JSON.stringify({ ok: true, command: "vestige.search", error: "adapter failure", data: { results: [candidate] } }) },
+  const rejectedResults = [
+    null,
+    { isError: true },
+    { structuredContent: {} },
+    { content: [{ type: "text", text: "not JSON" }] },
   ];
-  for (const response of rejectedEnvelopes) {
+  for (const response of rejectedResults) {
     const entries = [];
-    const result = await coordinateCycleReconcile({ state, run: async () => response, appendState: (next) => entries.push(next), timestamp: at });
+    const result = await coordinateCycleReconcile({ state, recall: async () => response, appendState: (next) => entries.push(next), timestamp: at });
     assert.equal(result.ok, false);
     assert.equal(result.error.code, "cycle_reconcile_read_failed");
     assert.deepEqual(result.state, state);
     assert.deepEqual(entries, []);
 
     const routed = [];
-    const harness = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: state }], async () => response);
-    registerCycleExtension(harness.pi, cycleDependencies({ applyRoute: async (_pi, _ctx, phase) => { routed.push(phase); return { ok: true }; }, expandPrompt: async () => "expanded prompt" }));
+    const harness = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: state }]);
+    registerCycleExtension(harness.pi, cycleDependencies({ recall: async () => response, applyRoute: async (_pi, _ctx, phase) => { routed.push(phase); return { ok: true }; }, expandPrompt: async () => "expanded prompt" }));
     await harness.handlers.get("session_start")({}, harness.ctx);
     await harness.commands.get("ima:cycle").handler("resume", harness.ctx);
     assert.deepEqual(routed, []);
@@ -1729,12 +1749,12 @@ test("rejects unsuccessful or misidentified Vestige search envelopes", async () 
 
 test("preserves awaiting-evidence state when reconciliation reads fail", async () => {
   const state = createCycleState(jira, { timestamp: at });
-  for (const run of [
-    async () => ({ code: 1 }),
+  for (const recall of [
+    async () => null,
     async () => { throw new Error("vestige unavailable"); },
   ]) {
     const entries = [];
-    const result = await coordinateCycleReconcile({ state, run, appendState: (next) => entries.push(next), timestamp: at });
+    const result = await coordinateCycleReconcile({ state, recall, appendState: (next) => entries.push(next), timestamp: at });
     assert.equal(result.ok, false);
     assert.equal(result.error.code, "cycle_reconcile_read_failed");
     assert.deepEqual(result.state, state);
@@ -1744,21 +1764,22 @@ test("preserves awaiting-evidence state when reconciliation reads fail", async (
 
 test("status and resume self-heal from persisted lifecycle evidence", async () => {
   const stuck = createCycleState(jira, { timestamp: at });
-  const search = async (program, args) => {
-    assert.equal(program, "ima-mcp");
-    assert.equal(args[1], "search");
+  const search = async ({ query, mode, limit }) => {
+    assert.match(query, new RegExp(`^${stuck.lifecycleKey} (plan|implementation)$`));
+    assert.equal(mode, "lookup");
+    assert.equal(limit, 10);
     return vestigeSearch([persistedRecord(stuck, "plan", "APPROVED", { id: "plan-proof" })]);
   };
-  const statusHarness = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: stuck }], search);
-  registerCycleExtension(statusHarness.pi, cycleDependencies({ applyRoute: async () => ({ ok: true }), expandPrompt: async () => "expanded prompt" }));
+  const statusHarness = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: stuck }]);
+  registerCycleExtension(statusHarness.pi, cycleDependencies({ recall: search, applyRoute: async () => ({ ok: true }), expandPrompt: async () => "expanded prompt" }));
   await statusHarness.handlers.get("session_start")({}, statusHarness.ctx);
   await statusHarness.commands.get("ima:cycle").handler("status", statusHarness.ctx);
   assert.equal(statusHarness.entries.length, 1);
   assert.deepEqual({ phase: statusHarness.entries[0].data.phase, status: statusHarness.entries[0].data.status }, { phase: "implementation", status: "awaiting-resume" });
 
-  const resumeHarness = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: stuck }], search);
+  const resumeHarness = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: stuck }]);
   const routed = [];
-  registerCycleExtension(resumeHarness.pi, cycleDependencies({ applyRoute: async (_pi, _ctx, phase) => { routed.push(phase); return { ok: true }; }, expandPrompt: async () => "expanded prompt" }));
+  registerCycleExtension(resumeHarness.pi, cycleDependencies({ recall: search, applyRoute: async (_pi, _ctx, phase) => { routed.push(phase); return { ok: true }; }, expandPrompt: async () => "expanded prompt" }));
   await resumeHarness.handlers.get("session_start")({}, resumeHarness.ctx);
   const command = resumeHarness.commands.get("ima:cycle");
   const sent = resumeHarness.waitForSend();
@@ -1782,8 +1803,8 @@ test("keeps status and resume non-advancing for unresolved persisted evidence", 
   const stuck = createCycleState(jira, { timestamp: at });
   const search = async () => vestigeSearch([persistedRecord(stuck, "plan", "APPROVED", { id: "unclear", artifact: "Saved artifact without a cycle outcome." })]);
 
-  const statusHarness = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: stuck }], search);
-  registerCycleExtension(statusHarness.pi, cycleDependencies({ applyRoute: async () => ({ ok: true }), expandPrompt: async () => "expanded prompt" }));
+  const statusHarness = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: stuck }]);
+  registerCycleExtension(statusHarness.pi, cycleDependencies({ recall: search, applyRoute: async () => ({ ok: true }), expandPrompt: async () => "expanded prompt" }));
   await statusHarness.handlers.get("session_start")({}, statusHarness.ctx);
   await statusHarness.commands.get("ima:cycle").handler("status", statusHarness.ctx);
   assert.deepEqual(statusHarness.entries, []);
@@ -1794,8 +1815,8 @@ test("keeps status and resume non-advancing for unresolved persisted evidence", 
   assert.match(statusWarning.message, /unclear/);
 
   const routed = [];
-  const resumeHarness = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: stuck }], search);
-  registerCycleExtension(resumeHarness.pi, cycleDependencies({ applyRoute: async (_pi, _ctx, phase) => { routed.push(phase); return { ok: true }; }, expandPrompt: async () => "expanded prompt" }));
+  const resumeHarness = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: stuck }]);
+  registerCycleExtension(resumeHarness.pi, cycleDependencies({ recall: search, applyRoute: async (_pi, _ctx, phase) => { routed.push(phase); return { ok: true }; }, expandPrompt: async () => "expanded prompt" }));
   await resumeHarness.handlers.get("session_start")({}, resumeHarness.ctx);
   await resumeHarness.commands.get("ima:cycle").handler("resume", resumeHarness.ctx);
   assert.deepEqual(routed, []);

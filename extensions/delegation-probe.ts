@@ -20,18 +20,23 @@ import { dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import {
-  createAgentSession,
   ModelRuntime,
   SessionManager,
   type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
+import type {
+  McpPolicyOperation,
+  createMcpChildRuntime as CreateMcpChildRuntime,
+} from "./mcp.ts";
+
+type McpChildRuntime = Awaited<ReturnType<typeof CreateMcpChildRuntime>>;
 
 /** Fixed, harmless resources used by the bounded child. No user input is executed. */
 export const SEED_FILE = "seed.txt";
 export const MARKER_FILE = "marker.txt";
 export const RESEARCH_URL = "https://github.com/earendil-works/pi";
 export const LOCAL_SHELL_COMMAND = "pwd";
-export const SERENA_STATUS_MARKER = "ima-mcp serena project status";
+export const SERENA_ACTIVATE_TOOL = "serena_activate_project";
 /** Marker embedded in the start brief so the follow-up can recover the expected nonce. */
 export const NONCE_MARKER = "DELEGATION_PROBE_NONCE";
 
@@ -39,7 +44,8 @@ export const RESULT_ENV_VAR = "IMA_PI_DELEGATION_RESULT";
 export const SCHEMA_VERSION = 1;
 export const STORY = "FNR-3009";
 
-const CHILD_TOOLS = ["read", "write", "bash"] as const;
+const CHILD_TOOLS = ["read", "write", "bash", "mcp"] as const;
+const FOLLOW_UP_TOOLS: string[] = [];
 
 /* ------------------------------------------------------------------ *
  * Pure helpers (no side effects)
@@ -155,7 +161,7 @@ export function buildStartBrief(input: StartBriefInput): string {
     `2. Use the write tool to create ${markerPath} whose entire contents are exactly the nonce value ${input.nonce} with no extra text.`,
     `3. Use the bash tool to run exactly: ${LOCAL_SHELL_COMMAND}`,
     `4. Use the bash tool to fetch one fixed documentation URL over HTTPS with a timeout: curl -fsSL --max-time 20 ${RESEARCH_URL}`,
-    `5. Use the bash tool to run exactly: ${SERENA_STATUS_MARKER} --project ${input.repoPath} --json`,
+    `5. Use the mcp tool exactly once with server "serena", tool "${SERENA_ACTIVATE_TOOL}", and args {"project":"${input.repoPath}"}.`,
     "6. Reply with one short sentence confirming the steps you completed.",
     "",
     "Boundaries you must respect:",
@@ -231,12 +237,22 @@ export function classifyToolEvent(
   if (tool === "bash") {
     const command = typeof args.command === "string" ? args.command : "";
     const researchCommand = `curl -fsSL --max-time 20 ${RESEARCH_URL}`;
-    const integrationCommand =
-      `${SERENA_STATUS_MARKER} --project ${context.repoPath} --json`;
-    if (command === integrationCommand) return { tool, category: "integration" };
     if (command === researchCommand) return { tool, category: "research" };
     if (command === LOCAL_SHELL_COMMAND) return { tool, category: "shell" };
     return { tool, category: "other" };
+  }
+  if (tool === "mcp") {
+    const server = typeof args.server === "string" ? args.server : "";
+    const mcpTool = typeof args.tool === "string" ? args.tool : "";
+    const project = args.args && typeof args.args === "object"
+      ? (args.args as { project?: unknown }).project
+      : undefined;
+    const exactProject = args.args && typeof args.args === "object"
+      && Object.keys(args.args).length === 1
+      && project === context.repoPath;
+    return server === "serena" && mcpTool === SERENA_ACTIVATE_TOOL && exactProject
+      ? { tool, category: "integration" }
+      : { tool, category: "other" };
   }
   return { tool, category: "other" };
 }
@@ -488,21 +504,29 @@ async function runStartProbe(input: StartInput): Promise<DelegationProbeResult> 
     return { ...base, error: sanitizeError("workspace_setup_failed", error) };
   }
 
-  let session;
+  let childRuntime: McpChildRuntime;
   try {
-    const sessionManager = SessionManager.create(workspace, sessionDir);
-    ({ session } = await createAgentSession({
+    const { createMcpChildRuntime } = await import("./mcp.ts");
+    const mcpPolicy: McpPolicyOperation[] = [{
+      server: "serena",
+      tool: SERENA_ACTIVATE_TOOL,
+      args: { project: input.repoPath },
+    }];
+    childRuntime = await createMcpChildRuntime({
       cwd: workspace,
       model,
       modelRuntime,
-      tools: [...CHILD_TOOLS],
-      sessionManager,
-    }));
+      tools: CHILD_TOOLS,
+      sessionManager: SessionManager.create(workspace, sessionDir),
+      mcpPolicy,
+    });
   } catch (error) {
     return { ...base, error: sanitizeError("child_creation_failed", error) };
   }
 
+  const session = childRuntime.session;
   let toolErrored = false;
+  let outcome: DelegationProbeResult = base;
   const toolContext = {
     seedPath: join(workspace, SEED_FILE),
     markerPath,
@@ -553,7 +577,7 @@ async function runStartProbe(input: StartInput): Promise<DelegationProbeResult> 
       ? { ...actualChild, sessionId, sessionFile }
       : null;
 
-    return {
+    outcome = {
       ...base,
       status: passed ? "passed" : "failed",
       child,
@@ -577,10 +601,20 @@ async function runStartProbe(input: StartInput): Promise<DelegationProbeResult> 
             : sanitizeError("authority_incomplete", "one or more authority signals missing"),
     };
   } catch (error) {
-    return { ...base, error: sanitizeError("child_execution_failed", error) };
-  } finally {
-    session.dispose();
+    outcome = { ...base, error: sanitizeError("child_execution_failed", error) };
   }
+
+  try {
+    await childRuntime.dispose();
+  } catch {
+    return { ...outcome, status: "failed", error: sanitizeError("child_cleanup_failed", "") };
+  }
+  return outcome;
+}
+
+export function openFollowUpSession(sessionFile: string) {
+  const sessionManager = SessionManager.open(sessionFile);
+  return { sessionManager, cwd: sessionManager.getCwd() };
 }
 
 interface FollowUpInput {
@@ -656,19 +690,23 @@ async function runFollowUpProbe(input: FollowUpInput): Promise<DelegationProbeRe
     expectedNonce = "";
   }
 
-  let session;
+  let childRuntime: McpChildRuntime;
   try {
-    const sessionManager = SessionManager.open(input.sessionFile);
-    ({ session } = await createAgentSession({
+    const { sessionManager, cwd } = openFollowUpSession(input.sessionFile);
+    const { createMcpChildRuntime } = await import("./mcp.ts");
+    childRuntime = await createMcpChildRuntime({
+      cwd,
       model,
       modelRuntime,
-      tools: [...CHILD_TOOLS],
+      tools: FOLLOW_UP_TOOLS,
       sessionManager,
-    }));
+    });
   } catch (error) {
     return { ...base, error: sanitizeError("session_reopen_failed", error) };
   }
 
+  const session = childRuntime.session;
+  let outcome: DelegationProbeResult = base;
   try {
     const reopenedSessionId = session.sessionId;
     const reopenedSessionFile = session.sessionFile ?? "";
@@ -699,7 +737,7 @@ async function runFollowUpProbe(input: FollowUpInput): Promise<DelegationProbeRe
       completedWithoutError: !toolErrored && !providerErrored,
     });
 
-    return {
+    outcome = {
       ...base,
       status: evidence.passed ? "passed" : "failed",
       child: {
@@ -718,10 +756,15 @@ async function runFollowUpProbe(input: FollowUpInput): Promise<DelegationProbeRe
           : sanitizeError("continuity_failed", "continuity signals not satisfied"),
     };
   } catch (error) {
-    return { ...base, error: sanitizeError("child_execution_failed", error) };
-  } finally {
-    session.dispose();
+    outcome = { ...base, error: sanitizeError("child_execution_failed", error) };
   }
+
+  try {
+    await childRuntime.dispose();
+  } catch {
+    return { ...outcome, status: "failed", error: sanitizeError("child_cleanup_failed", "") };
+  }
+  return outcome;
 }
 
 /* ------------------------------------------------------------------ *

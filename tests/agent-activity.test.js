@@ -74,14 +74,17 @@ test("reducer is immutable, records exact route only when observed, and is termi
   assert.equal(settled.children[0].settledAt, succeeded.updatedAt);
 });
 
-test("activity classifier exposes stable categories and never raw arguments", () => {
-  for (const service of ["serena", "vestige", "qdrant"]) {
-    const category = classifyDelegationActivity("bash", { command: `ima-mcp ${service} search super-secret` });
-    assert.equal(category, `gateway:${service}`);
-    assert.doesNotMatch(category, /secret|search/);
+test("activity classifier exposes compact-MCP categories without raw arguments", () => {
+  for (const server of ["serena", "vestige", "qdrant-memory"]) {
+    const category = classifyDelegationActivity("mcp", {
+      server,
+      args: { query: "super-secret" },
+    });
+    assert.equal(category, `gateway:${server}`);
+    assert.doesNotMatch(category, /secret|query/);
   }
-  assert.equal(classifyDelegationActivity("bash", { command: "ima-mcp unknown action" }), "gateway:other");
-  assert.equal(classifyDelegationActivity("bash", { command: "ima-mcp serena x; echo token" }), "tool:bash");
+  assert.equal(classifyDelegationActivity("mcp", { server: "unknown" }), "gateway:other");
+  assert.equal(classifyDelegationActivity("bash", { command: "ima-mcp serena search super-secret" }), "tool:bash");
   assert.equal(classifyDelegationActivity("read", { path: "/private/path" }), "tool:read");
   assert.equal(classifyDelegationActivity("custom", { token: "secret" }), "tool:other");
 });

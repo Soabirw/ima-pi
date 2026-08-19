@@ -156,18 +156,17 @@ export function reduceDelegationActivity(state: DelegationActivityState, event: 
   return { ...next, state: childPhase(next) };
 }
 
-const gatewayCategory = (command: unknown): string | null => {
-  if (typeof command !== "string" || /[\n\r;&|`$<>]/.test(command)) return null;
-  const words = command.trim().split(/\s+/);
-  if (words[0] !== "ima-mcp" || words.length < 2) return null;
-  return ["serena", "vestige", "qdrant"].includes(words[1]) ? `gateway:${words[1]}` : "gateway:other";
-};
-
 export function classifyDelegationActivity(toolName: unknown, args: unknown): string {
   const name = typeof toolName === "string" ? toolName : "";
-  const command = name === "bash" && args && typeof args === "object" ? (args as { command?: unknown }).command : undefined;
-  const gateway = gatewayCategory(command);
-  if (gateway) return gateway;
+  if (name === "mcp") {
+    const server = args && typeof args === "object"
+      ? (args as { server?: unknown }).server
+      : undefined;
+    if (typeof server !== "string") return "gateway:other";
+    return ["serena", "vestige", "qdrant-memory"].includes(server)
+      ? `gateway:${server}`
+      : "gateway:other";
+  }
   return ["read", "grep", "find", "ls", "write", "edit", "bash", "test", "image"].includes(name) ? `tool:${name}` : "tool:other";
 }
 
