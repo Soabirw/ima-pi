@@ -9,12 +9,23 @@ import { promisify } from "node:util";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { derivePhaseContext, evaluateSerenaBootstrap, normalizeSourcePayload, prepareContextArguments, sanitizeContextError, sanitizeContextText, validateContextRequest } from "../lib/ima-context.ts";
+import {
+  derivePhaseContext,
+  evaluateSerenaBootstrap,
+  normalizeSourcePayload,
+  parseQdrantResults,
+  prepareContextArguments,
+  sanitizeContextError,
+  sanitizeContextText,
+  STANDARD_MEMORIES,
+  validateContextRequest,
+} from "../lib/ima-context.ts";
 import { buildLifecycleArtifact, deriveLifecycleResult, evaluateLifecycleRecall, sanitizeLifecycleError, validateLifecycleRequest, validateVestigeSaveReceipt } from "../lib/ima-lifecycle.ts";
-import { callMcpTool } from "../lib/ima-mcp-client.ts";
+import { callMcpTool, withMcpSession } from "../lib/ima-mcp-client.ts";
 
 const execFile = promisify(execFileCallback);
 const TIMEOUT = 30_000;
+const MCP_TIMEOUT = 300_000;
 const VESTIGE_TIMEOUT = 300_000;
 const MAX_BUFFER = 128 * 1024;
 const SOURCE_ERROR_CODES = ["source_path_outside_project", "source_file_unreadable", "source_file_too_large"];
@@ -24,11 +35,14 @@ const inside = (root: string, target: string) => { const path = relative(root, t
 const object = (value: unknown): Record<string, unknown> | null => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 const text = (value: unknown) => typeof value === "string" ? value.trim() : "";
 const envelope = (value: string) => { try { return JSON.parse(value); } catch { return null; } };
+const throwIfAborted = (signal?: AbortSignal) => {
+  if (signal?.aborted) signal.throwIfAborted();
+};
 
-const vestigeServer = async () => {
+const mcpServer = async (name: string) => {
   try {
     const config = object(envelope(await readFile(join(packageRoot, "config", "mcp.json"), "utf8")));
-    const server = object(object(config?.mcpServers)?.vestige);
+    const server = object(object(config?.mcpServers)?.[name]);
     const command = text(server?.command);
     const args = server?.args === undefined
       ? []
@@ -42,12 +56,25 @@ const vestigeServer = async () => {
   }
 };
 
+type McpToolCaller = (
+  name: string,
+  arguments_: Record<string, unknown>,
+  timeoutMs: number,
+) => Promise<unknown>;
+
+type McpSession = <Result>(
+  serverName: string,
+  callback: (call: McpToolCaller) => Promise<Result>,
+  signal?: AbortSignal,
+) => Promise<Result | null>;
+
 export type IntegrationDependencies = {
   run?: (program: string, args: string[]) => Promise<unknown>;
   read?: (path: string) => Promise<string>;
   canonical?: (path: string) => Promise<string>;
   stat?: typeof lstat;
   vestige?: (tool: string, args: Record<string, unknown>) => Promise<unknown>;
+  session?: McpSession;
   home?: () => string;
 };
 
@@ -64,7 +91,7 @@ const productionDependencies: Required<IntegrationDependencies> = {
   canonical: realpath,
   stat: lstat,
   vestige: async (tool, args) => {
-    const server = await vestigeServer();
+    const server = await mcpServer("vestige");
     if (!server) return null;
 
     try {
@@ -79,53 +106,314 @@ const productionDependencies: Required<IntegrationDependencies> = {
       return null;
     }
   },
+  session: async (serverName, callback, signal) => {
+    const server = await mcpServer(serverName);
+    return server ? withMcpSession(server, callback, signal) : null;
+  },
   home: homedir,
 };
 
 const depsFor = (given?: IntegrationDependencies) => ({ ...productionDependencies, ...given });
-const passed = (value: unknown, command: string) => { const e = object(value); return Boolean(e?.ok === true && e?.command === command && !e?.error); };
-const memoryContent = (value: unknown) => { const e = object(value); return text(object(e?.data)?.content ?? object(object(e?.data)?.memory)?.content); };
+const directResponse = (value: unknown) => {
+  const response = object(value);
+  return response?.isError === true ? null : response;
+};
+const directStructured = (value: unknown) => object(directResponse(value)?.structuredContent);
+const directResult = (value: unknown) => {
+  const response = directResponse(value);
+  if (!response) return null;
 
-async function serena(root: string, deps: Required<IntegrationDependencies>) {
-  const activate = await deps.run("ima-mcp", ["serena", "project", "activate", "--json"]);
-  if (!passed(activate, "serena.project.activate")) return { bootstrap: evaluateSerenaBootstrap({ activated: false, instructionsLoaded: false, memoryListLoaded: false }), blocking: "serena_activation_failed" };
-  const instructions = await deps.run("ima-mcp", ["serena", "instructions", "--json"]);
-  if (!passed(instructions, "serena.instructions")) return { bootstrap: evaluateSerenaBootstrap({ activated: true, instructionsLoaded: false, memoryListLoaded: false }), blocking: "serena_instructions_failed" };
-  const listing = await deps.run("ima-mcp", ["serena", "memory", "list", "--json"]);
-  const names = object(listing && object(listing)?.data)?.memories;
-  if (!passed(listing, "serena.memory.list") || !Array.isArray(names)) return { bootstrap: evaluateSerenaBootstrap({ activated: true, instructionsLoaded: true, memoryListLoaded: false }), blocking: "serena_memory_list_failed" };
-  const loaded = await Promise.all(["core", "conventions", "tech_stack", "suggested_commands", "task_completion"].map(async (name) => [name, names.includes(name) ? memoryContent(await deps.run("ima-mcp", ["serena", "memory", "read", name, "--json"])) || "failed" : null] as const));
-  return { bootstrap: evaluateSerenaBootstrap({ activated: true, instructionsLoaded: true, memoryListLoaded: true, memories: Object.fromEntries(loaded) }), blocking: null };
+  const structured = object(response.structuredContent);
+  if (typeof structured?.result === "string") return structured.result;
+  if (!Array.isArray(response.content)) return null;
+
+  for (const content of response.content) {
+    const item = object(content);
+    if (typeof item?.text === "string") return item.text;
+  }
+
+  return null;
+};
+const listedMemoryNames = (value: string | null) => {
+  if (value === null) return null;
+
+  try {
+    const listing = object(JSON.parse(value));
+    const names = listing?.memories;
+    return Array.isArray(names) && names.every((name) => typeof name === "string") ? names : null;
+  } catch {
+    return null;
+  }
+};
+const safeToolCall = async (
+  call: McpToolCaller,
+  name: string,
+  arguments_: Record<string, unknown>,
+  timeoutMs: number,
+  signal?: AbortSignal,
+) => {
+  throwIfAborted(signal);
+  try {
+    const result = await call(name, arguments_, timeoutMs);
+    throwIfAborted(signal);
+    return result;
+  } catch {
+    throwIfAborted(signal);
+    return null;
+  }
+};
+const serenaFailure = (
+  activated: boolean,
+  instructionsLoaded: boolean,
+  memoryListLoaded: boolean,
+  blocking: string,
+) => ({
+  bootstrap: evaluateSerenaBootstrap({ activated, instructionsLoaded, memoryListLoaded }),
+  blocking,
+});
+
+async function serena(
+  root: string,
+  deps: Required<IntegrationDependencies>,
+  signal?: AbortSignal,
+) {
+  throwIfAborted(signal);
+  try {
+    const setup = await deps.session("serena", async (call) => {
+      const activation = directResult(await safeToolCall(
+        call,
+        "activate_project",
+        { project: root },
+        MCP_TIMEOUT,
+        signal,
+      ));
+      if (activation === null) return serenaFailure(false, false, false, "serena_activation_failed");
+
+      const instructions = directResult(await safeToolCall(
+        call,
+        "initial_instructions",
+        {},
+        MCP_TIMEOUT,
+        signal,
+      ));
+      if (instructions === null) return serenaFailure(true, false, false, "serena_instructions_failed");
+
+      const listing = directResult(await safeToolCall(
+        call,
+        "list_memories",
+        {},
+        MCP_TIMEOUT,
+        signal,
+      ));
+      const names = listedMemoryNames(listing);
+      if (!names) return serenaFailure(true, true, false, "serena_memory_list_failed");
+
+      const memories: Record<string, string | null | "failed"> = {};
+      for (const name of STANDARD_MEMORIES) {
+        if (!names.includes(name)) {
+          memories[name] = null;
+          continue;
+        }
+
+        const content = directResult(await safeToolCall(
+          call,
+          "read_memory",
+          { memory_name: name },
+          MCP_TIMEOUT,
+          signal,
+        ));
+        memories[name] = text(content) || "failed";
+      }
+
+      return {
+        bootstrap: evaluateSerenaBootstrap({
+          activated: true,
+          instructionsLoaded: true,
+          memoryListLoaded: true,
+          memories,
+        }),
+        blocking: null,
+      };
+    }, signal);
+
+    throwIfAborted(signal);
+    return setup ?? serenaFailure(false, false, false, "serena_activation_failed");
+  } catch {
+    throwIfAborted(signal);
+    return serenaFailure(false, false, false, "serena_activation_failed");
+  }
 }
 
-async function sourcePayload(source: any, root: string, deps: Required<IntegrationDependencies>): Promise<unknown> {
-  if (source.type === "text") return { key: source.title, title: source.title, content: source.content, references: [] };
+async function loadDurableKnowledge(
+  request: { query: string; collection?: string; limit?: number },
+  deps: Required<IntegrationDependencies>,
+  signal?: AbortSignal,
+) {
+  const arguments_ = {
+    query: request.query,
+    ...(request.collection ? { collection_name: request.collection } : {}),
+    ...(request.limit !== undefined ? { limit: request.limit } : {}),
+  };
+
+  throwIfAborted(signal);
+  try {
+    const response = await deps.session("qdrant-memory", (call) => call(
+      "qdrant_find",
+      arguments_,
+      MCP_TIMEOUT,
+    ), signal);
+    throwIfAborted(signal);
+    if (!directResponse(response)) return { requested: true, status: "failed" as const, references: [] };
+
+    const formattedResults = directResult(response);
+    if (formattedResults === null) return { requested: true, status: "empty" as const, references: [] };
+
+    const references = parseQdrantResults(formattedResults)
+      .slice(0, request.limit ?? 20)
+      .map(({ summary, score }) => ({ summary: sanitizeContextText(summary, 512), score }))
+      .filter(({ summary }) => Boolean(summary));
+    return references.length > 0
+      ? { requested: true, status: "loaded" as const, references }
+      : { requested: true, status: "empty" as const, references: [] };
+  } catch {
+    throwIfAborted(signal);
+    return { requested: true, status: "failed" as const, references: [] };
+  }
+}
+
+async function sourcePayload(
+  source: any,
+  root: string,
+  deps: Required<IntegrationDependencies>,
+  signal?: AbortSignal,
+): Promise<unknown> {
+  throwIfAborted(signal);
+  if (source.type === "text") {
+    return { key: source.title, title: source.title, content: source.content, references: [] };
+  }
   if (source.type === "jira") {
     const helper = join(deps.home(), ".agents", "skills", "mcp-atlassian", "scripts", "atlassian-api.mjs");
-    const result = await deps.run("node", [helper, "jira:get", source.key]); const data = object(result);
-    return data ? { key: source.key, title: text(data.summary) || source.key, content: text(data.descriptionText) || text(data.summary), references: ["https://flccc.atlassian.net/browse/" + source.key] } : null;
+    const result = await deps.run("node", [helper, "jira:get", source.key]);
+    throwIfAborted(signal);
+    const data = object(result);
+    return data
+      ? {
+        key: source.key,
+        title: text(data.summary) || source.key,
+        content: text(data.descriptionText) || text(data.summary),
+        references: ["https://flccc.atlassian.net/browse/" + source.key],
+      }
+      : null;
   }
   if (source.type === "taskwarrior") {
     const result = await deps.run("task", ["rc.verbose=nothing", `project:${source.project}`, source.uuid, "export"]);
+    throwIfAborted(signal);
     const resultObject = object(result);
     const tasks = Array.isArray(result) ? result : (Array.isArray(resultObject?.data) ? resultObject.data : []);
     const matches = tasks.filter((item) => object(item)?.uuid === source.uuid && object(item)?.project === source.project);
     const value = object(matches.length === 1 ? matches[0] : null);
-    return value ? { key: source.uuid, title: text(value.description), content: JSON.stringify({ description: value.description, status: value.status, tags: value.tags, depends: value.depends, annotations: value.annotations }), references: [`Taskwarrior:${source.project}:${source.uuid}`] } : null;
+    return value
+      ? {
+        key: source.uuid,
+        title: text(value.description),
+        content: JSON.stringify({
+          description: value.description,
+          status: value.status,
+          tags: value.tags,
+          depends: value.depends,
+          annotations: value.annotations,
+        }),
+        references: [`Taskwarrior:${source.project}:${source.uuid}`],
+      }
+      : null;
   }
-  if (source.type === "vestige") { const value = object(await deps.run("ima-mcp", ["vestige", "get", source.id, "--timeout-ms", "300000", "--json"])); const content = memoryContent(value); return passed(value, "vestige.get") && content ? { key: source.id, title: `Vestige ${source.id}`, content, references: [`Vestige:${source.id}`] } : null; }
-  const lexical = resolve(root, source.path); if (!inside(root, lexical)) throw new Error("source_path_outside_project"); const actual = await deps.canonical(lexical); if (!inside(root, actual)) throw new Error("source_path_outside_project"); const info = await deps.stat(actual); if (!info.isFile()) throw new Error("source_file_unreadable"); if (info.size > 256 * 1024) throw new Error("source_file_too_large"); const content = await deps.read(actual); if (content.includes("\0")) throw new Error("source_file_unreadable"); return { key: source.path, title: source.path, content, references: [`File:${source.path}`] };
+  if (source.type === "vestige") {
+    try {
+      const value = await deps.session("vestige", (call) => call(
+        "memory",
+        { action: "get", id: source.id },
+        VESTIGE_TIMEOUT,
+      ), signal);
+      throwIfAborted(signal);
+      const structured = directStructured(value);
+      const content = text(object(structured?.node)?.content);
+      return structured?.found === true && content
+        ? { key: source.id, title: `Vestige ${source.id}`, content, references: [`Vestige:${source.id}`] }
+        : null;
+    } catch {
+      throwIfAborted(signal);
+      return null;
+    }
+  }
+
+  const lexical = resolve(root, source.path);
+  if (!inside(root, lexical)) throw new Error("source_path_outside_project");
+  const actual = await deps.canonical(lexical);
+  throwIfAborted(signal);
+  if (!inside(root, actual)) throw new Error("source_path_outside_project");
+  const info = await deps.stat(actual);
+  throwIfAborted(signal);
+  if (!info.isFile()) throw new Error("source_file_unreadable");
+  if (info.size > 256 * 1024) throw new Error("source_file_too_large");
+  const content = await deps.read(actual);
+  throwIfAborted(signal);
+  if (content.includes("\0")) throw new Error("source_file_unreadable");
+  return { key: source.path, title: source.path, content, references: [`File:${source.path}`] };
 }
 
-export async function coordinateContext(request: unknown, cwd: string, supplied?: IntegrationDependencies) {
-  const valid = validateContextRequest(request); if (!valid.valid) return { status: "failed", error: valid.error };
-  const deps = depsFor(supplied); const root = await deps.canonical(cwd); const setup = await serena(root, deps);
-  if (setup.blocking) return derivePhaseContext({ cwd: root, serenaProjectPath: root, source: null, serena: setup.bootstrap, diagnostics: [{ code: setup.blocking, stage: "serena", message: "Serena bootstrap did not complete." }] });
+export async function coordinateContext(
+  request: unknown,
+  cwd: string,
+  supplied?: IntegrationDependencies,
+  signal?: AbortSignal,
+) {
+  const valid = validateContextRequest(request);
+  if (!valid.valid) return { status: "failed", error: valid.error };
+
+  throwIfAborted(signal);
+  const deps = depsFor(supplied);
+  const root = await deps.canonical(cwd);
+  throwIfAborted(signal);
+  const setup = await serena(root, deps, signal);
+  throwIfAborted(signal);
+  if (setup.blocking) {
+    return derivePhaseContext({
+      cwd: root,
+      serenaProjectPath: root,
+      source: null,
+      serena: setup.bootstrap,
+      diagnostics: [{ code: setup.blocking, stage: "serena", message: "Serena bootstrap did not complete." }],
+    });
+  }
+
   try {
-    const payload = await sourcePayload(valid.source, root, deps); const source = normalizeSourcePayload({ source: valid.source, payload });
-    const durableKnowledge = valid.durableKnowledge ? await (async () => { const args = ["qdrant", "find", valid.durableKnowledge!.query, ...(valid.durableKnowledge!.collection ? ["--collection", valid.durableKnowledge!.collection] : []), "--json"]; const result = object(await deps.run("ima-mcp", args)); const results = object(result?.data)?.results; return !passed(result, "qdrant.find") ? { requested: true, status: "failed" as const, references: [] } : !Array.isArray(results) || results.length === 0 ? { requested: true, status: "empty" as const, references: [] } : { requested: true, status: "loaded" as const, references: results.slice(0, valid.durableKnowledge!.limit ?? 20).map((entry: any) => ({ summary: sanitizeContextText(text(entry.summary ?? entry.content), 512), score: typeof entry.score === "number" ? entry.score : null })) }; })() : undefined;
-    return derivePhaseContext({ cwd: root, serenaProjectPath: root, source, serena: setup.bootstrap, durableKnowledge, diagnostics: source ? [] : [{ code: "source_boundary_unavailable", stage: "source", message: "Source hydration did not return usable content." }] });
-  } catch (error) { return derivePhaseContext({ cwd: root, serenaProjectPath: root, source: null, serena: setup.bootstrap, diagnostics: [{ code: sourceErrorCode(error), stage: "source", message: "Source hydration failed." }] }); }
+    const payload = await sourcePayload(valid.source, root, deps, signal);
+    throwIfAborted(signal);
+    const source = normalizeSourcePayload({ source: valid.source, payload });
+    const durableKnowledge = valid.durableKnowledge
+      ? await loadDurableKnowledge(valid.durableKnowledge, deps, signal)
+      : undefined;
+    throwIfAborted(signal);
+    return derivePhaseContext({
+      cwd: root,
+      serenaProjectPath: root,
+      source,
+      serena: setup.bootstrap,
+      durableKnowledge,
+      diagnostics: source
+        ? []
+        : [{ code: "source_boundary_unavailable", stage: "source", message: "Source hydration did not return usable content." }],
+    });
+  } catch (error) {
+    throwIfAborted(signal);
+    return derivePhaseContext({
+      cwd: root,
+      serenaProjectPath: root,
+      source: null,
+      serena: setup.bootstrap,
+      diagnostics: [{ code: sourceErrorCode(error), stage: "source", message: "Source hydration failed." }],
+    });
+  }
 }
 
 export async function coordinateLifecycle(request: unknown, supplied?: IntegrationDependencies) {
@@ -240,6 +528,6 @@ const CONTEXT_TOOL_PARAMETERS = Type.Object({
 }, { additionalProperties: false });
 
 export default function integrations(pi: ExtensionAPI) {
-  pi.registerTool({ name: "ima_context", label: "IMA context", description: "Build Serena-first project context from one typed source: jira/key, taskwarrior/project+uuid, file/path, vestige/id, or text/title+content. Optional durableKnowledge requires query and accepts collection and limit.", parameters: CONTEXT_TOOL_PARAMETERS, prepareArguments: prepareContextArguments, execute: async (_id, request, _signal, _update, ctx) => ({ content: [{ type: "text", text: JSON.stringify(await coordinateContext(request, ctx.cwd)) }], details: {} }) });
+  pi.registerTool({ name: "ima_context", label: "IMA context", description: "Build Serena-first project context from one typed source: jira/key, taskwarrior/project+uuid, file/path, vestige/id, or text/title+content. Optional durableKnowledge requires query and accepts collection and limit.", parameters: CONTEXT_TOOL_PARAMETERS, prepareArguments: prepareContextArguments, execute: async (_id, request, signal, _update, ctx) => ({ content: [{ type: "text", text: JSON.stringify(await coordinateContext(request, ctx.cwd, undefined, signal)) }], details: {} }) });
   pi.registerTool({ name: "ima_lifecycle", label: "IMA lifecycle", description: "Save and semantically verify a lifecycle artifact.", parameters: Type.Object({ type: Type.String(), identity: Type.Any(), artifact: Type.String() }), execute: async (_id, request) => { const result = await coordinateLifecycle(request); return { content: [{ type: "text", text: JSON.stringify(result) }], details: result }; } });
 }

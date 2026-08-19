@@ -6,7 +6,9 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ### Changed
 
-- `ima_lifecycle` now persists formal lifecycle artifacts through package-owned direct Vestige MCP `smart_ingest`, validates the receipt, and requires a matching nonce, identity, phase, and completed-outcome `recall`; this path no longer requires the `ima-mcp` binary. `ima_context` hydration and `/ima:cycle` reconciliation retain their distinct `ima-mcp` paths.
+- `ima_lifecycle` now persists formal lifecycle artifacts through package-owned direct Vestige MCP `smart_ingest`, validates the receipt, and requires a matching nonce, identity, phase, and completed-outcome `recall`; this path no longer requires the `ima-mcp` binary. `/ima:cycle` reconciliation retains its distinct `ima-mcp` path.
+- `ima_context` now opens package-owned direct MCP sessions for Serena bootstrap, Vestige source retrieval, and Qdrant durable-knowledge lookup; its context path no longer requires the `ima-mcp` binary.
+- Updated the README and foundation integration documentation to distinguish direct-MCP `ima_context` from the separate `ima-mcp` cycle-reconciliation path.
 
 ### Fixed
 

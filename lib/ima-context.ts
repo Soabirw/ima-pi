@@ -14,6 +14,54 @@ const string = (value: unknown) => typeof value === "string" ? value.trim() : ""
 const bounded = (value: unknown, maximum: number) => typeof value === "string" && value.trim().length > 0 && value.length <= maximum;
 const onlyKeys = (value: Record<string, unknown>, allowed: string[]) => Object.keys(value).every((key) => allowed.includes(key));
 export const sanitizeContextText = (value: unknown, maximum = 8_000) => typeof value === "string" ? value.replace(/authorization\s*[:=]\s*[^\r\n]+/gi, "[redacted]").replace(/(?:token|secret|password)\s*[:=]\s*\S+/gi, "[redacted]").slice(0, maximum) : "";
+const QDRANT_RESULT_HEADER = /^## Result \d+ \(score: ([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?)\)\s*$/i;
+const MARKDOWN_FENCE = /^\s*(`{3,}|~{3,})(.*)$/;
+
+export function parseQdrantResults(formattedText: unknown): Array<{ summary: string; score: number }> {
+  if (typeof formattedText !== "string") return [];
+
+  const results: Array<{ summary: string; score: number }> = [];
+  let current: { score: number; lines: string[] } | null = null;
+  let fenceState: { character: string; length: number } | null = null;
+  const appendCurrent = () => {
+    if (!current) return;
+    const summary = current.lines.join("\n").trim();
+    if (summary) results.push({ summary, score: current.score });
+  };
+
+  for (const line of formattedText.split(/\r?\n/)) {
+    const fenceMatch = line.match(MARKDOWN_FENCE);
+    if (fenceMatch) {
+      const delimiter = fenceMatch[1];
+      const remainder = fenceMatch[2];
+      if (!fenceState) {
+        fenceState = { character: delimiter.charAt(0), length: delimiter.length };
+      } else if (
+        delimiter.charAt(0) === fenceState.character
+        && delimiter.length >= fenceState.length
+        && remainder.trim() === ""
+      ) {
+        fenceState = null;
+      }
+      if (current) current.lines.push(line);
+      continue;
+    }
+
+    const header = fenceState ? null : line.match(QDRANT_RESULT_HEADER);
+    if (header) {
+      appendCurrent();
+      const score = Number(header[1]);
+      current = Number.isFinite(score) ? { score, lines: [] } : null;
+      continue;
+    }
+
+    if (current) current.lines.push(line);
+  }
+
+  appendCurrent();
+  return results;
+}
+
 const clean = sanitizeContextText;
 const CONTEXT_REQUEST_HINT = "Use source fields jira:key, taskwarrior:project+uuid, file:path, vestige:id, or text:title+content. durableKnowledge requires query and optionally accepts collection and limit.";
 

@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { resolve } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
-import { callMcpTool } from "../lib/ima-mcp-client.ts";
+import { callMcpTool, withMcpSession } from "../lib/ima-mcp-client.ts";
 
 const clientPath = pathToFileURL(resolve("lib/ima-mcp-client.ts")).href;
 const integrationsPath = pathToFileURL(resolve("extensions/integrations.ts")).href;
@@ -17,16 +17,25 @@ const toolServer = `
     { name: "ima-pi-test-server", version: "1.0.0" },
     { capabilities: { tools: {} } },
   );
-  server.setRequestHandler(CallToolRequestSchema, async () => ({
-    content: [{
-      type: "text",
-      text: JSON.stringify({
-        secret: process.env.IMA_PI_MCP_TEST_SECRET ?? null,
-        hasHome: Boolean(process.env.HOME),
-        hasPath: Boolean(process.env.PATH),
-      }),
-    }],
-  }));
+  let calls = 0;
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    if (request.params.name === "wait") {
+      await new Promise((resolve) => setTimeout(resolve, Number(request.params.arguments?.delay ?? 0)));
+    }
+
+    calls += 1;
+    return {
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          calls,
+          secret: process.env.IMA_PI_MCP_TEST_SECRET ?? null,
+          hasHome: Boolean(process.env.HOME),
+          hasPath: Boolean(process.env.PATH),
+        }),
+      }],
+    };
+  });
   await server.connect(new StdioServerTransport());
 `;
 
@@ -66,6 +75,68 @@ test("MCP child receives the SDK safe environment and serves a tool", async () =
     if (previous === undefined) delete process.env.IMA_PI_MCP_TEST_SECRET;
     else process.env.IMA_PI_MCP_TEST_SECRET = previous;
   }
+});
+
+test("MCP sessions reuse one connection for multiple tool calls", async () => {
+  const results = await withMcpSession(
+    {
+      command: "node",
+      args: ["--input-type=module", "--eval", toolServer],
+    },
+    async (call) => [
+      await call("inspect-environment", {}, 5_000),
+      await call("inspect-environment", {}, 5_000),
+    ],
+  );
+
+  const counts = results.map((result) => JSON.parse(result.content[0].text).calls);
+  assert.deepEqual(counts, [1, 2]);
+});
+
+test("MCP sessions close after callback and tool failures", async () => {
+  const server = {
+    command: "node",
+    args: ["--input-type=module", "--eval", toolServer],
+  };
+
+  await assert.rejects(
+    withMcpSession(server, async (call) => {
+      await call("inspect-environment", {}, 5_000);
+      throw new Error("callback failure");
+    }),
+    /callback failure/,
+  );
+  await assert.rejects(
+    withMcpSession(server, (call) => call("wait", { delay: 100 }, 10)),
+    /timed out/i,
+  );
+});
+
+test("MCP sessions cancel in-flight calls and close before recovery", async () => {
+  const server = {
+    command: "node",
+    args: ["--input-type=module", "--eval", toolServer],
+  };
+  const controller = new AbortController();
+  const pending = withMcpSession(
+    server,
+    async (call) => {
+      const result = call("wait", { delay: 5_000 }, 5_000);
+      setTimeout(() => controller.abort(), 20);
+      return result;
+    },
+    controller.signal,
+  );
+
+  await assert.rejects(pending, /abort/i);
+  const recovery = await callMcpTool({
+    command: "node",
+    args: ["--input-type=module", "--eval", toolServer],
+    name: "inspect-environment",
+    arguments: {},
+    timeoutMs: 5_000,
+  });
+  assert.equal(JSON.parse(recovery.content[0].text).calls, 1);
 });
 
 test("child stderr remains hidden behind the lifecycle error boundary", async () => {
