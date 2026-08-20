@@ -14,7 +14,12 @@ export const IMA_NEW_RESULT_ENTRY = "ima-new-result";
 export const IMA_NEW_BOOTSTRAP_COMMANDS = ["ima:serena-bootstrap", "ima:vestige-bootstrap"] as const;
 export const IMA_NEW_PHASE_SKILLS: Readonly<Record<ImaPhase, readonly string[]>> = {
   brainstorm: [],
-  plan: ["ima-lifecycle-contract"],
+  plan: [
+    "ima-lifecycle-contract",
+    "readable-code",
+    "functional-programmer",
+    "ima-security-guardrails",
+  ],
   implement: ["readable-code"],
   test: [],
   review: [],

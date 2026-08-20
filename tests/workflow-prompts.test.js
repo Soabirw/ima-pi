@@ -20,7 +20,11 @@ test("brainstorm owns approved product requirements and stops before decompositi
 test("decompose enforces two tiers, one PM destination, preview, and checklist-only work", async () => { const text = await prompt("decompose"); for (const value of ["Taskwarrior Project -> Task", "Jira Epic -> Story/Task", "checklist", "exactly one destination", "never dual-write", "exact persistence preview", "explicit approval", "lifecycle unit", "as `decision`", "stop"]) has(text, value); has(text, "technical files, functions, control flow"); });
 test("plan enforces one-unit Serena-first technical planning without implementation", async () => {
   const text = await prompt("plan");
-  for (const value of ["exactly one", "/ima:decompose", "ima_context", "Serena-first", "files, modules, symbols, APIs", "pure/effect boundaries", "verification commands", "rollback", "as `plan`", "stop", "ima-lifecycle-contract", "Vestige preferences", "two or three", "I will not make code changes in this planning session.", "Problem, Prior Work"]) has(text, value);
+  for (const value of ["exactly one", "/ima:decompose", "ima_context", "Serena-first", "files, modules, symbols, APIs", "pure/effect boundaries", "verification commands", "rollback", "as `plan`", "stop", "ima-lifecycle-contract", "Vestige preferences", "two or three", "I will not make code changes in this planning session.", "Problem, Prior Work", "readable-code", "functional-programmer", "ima-security-guardrails", "Standards Impact", "500-line file-size smell", "responsibility/cohesion", "cohesion-based justification"]) has(text, value);
+  assert.match(
+    text,
+    /^- Standards Impact:[^\n]*500-line file-size smell[^\n]*responsibility\/cohesion[^\n]*cohesion-based justification/mi,
+  );
   has(text, "Do not edit code/config/content");
 });
 
@@ -186,10 +190,17 @@ test("code-review skill restores the Pi-native verified-review contract", async 
     "Readability:",
     "rule-anchored",
     "blocking under the closeout rule",
+    "500-line file-size smell",
+    "cohesion-based justification",
+    "responsibility/cohesion",
   ]) has(text, value);
   assert.match(
     text,
     /^- Readability:[^\n]*rule-anchored[^\n]*as a Warning \(blocking under the closeout rule\)/mi,
+  );
+  assert.match(
+    text,
+    /^- Readability:[^\n]*500-line file-size smell[^\n]*cohesion-based justification[^\n]*Warning \(blocking under the closeout rule\)[^\n]*responsibility\/cohesion/mi,
   );
   assert.doesNotMatch(text, /sub_recipes|\.eta/i);
   await Promise.all(localMarkdownTargets(text).map((target) => access(resolve(root, "skills", "code-review", target))));

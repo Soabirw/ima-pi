@@ -4,8 +4,11 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-08-20
+
 ### Changed
 
+- Restored planning and review standards enforcement: `/ima:plan` and `/ima:new plan` load or seed `readable-code`, `functional-programmer`, and `ima-security-guardrails` alongside the lifecycle contract; plans record Standards Impact, and review treats an unjustified changed file over the >500-line file-size smell as a blocking Warning while preserving cohesion-based exceptions.
 - Renamed the package-internal MCP client to `lib/mcp-client.ts` and replaced active retired-CLI references in its imports, tests, README, and Serena memories; direct MCP behavior is unchanged.
 - `ima_lifecycle` now persists formal lifecycle artifacts through package-owned direct Vestige MCP `smart_ingest`, validates the receipt, and requires a matching nonce, identity, phase, and completed-outcome `recall`; this path no longer requires the `ima-mcp` binary. `/ima:cycle` reconciliation uses configured direct Vestige `recall`.
 - `ima_context` now opens package-owned direct MCP sessions for Serena bootstrap, Vestige source retrieval, and Qdrant durable-knowledge lookup; its context path no longer requires the `ima-mcp` binary.

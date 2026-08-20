@@ -25,6 +25,10 @@ const ready = (selector = null, route = null) => ({ selector, ok: true, route })
 const root = fileURLToPath(new URL("..", import.meta.url));
 const defaultParentSession = fileURLToPath(import.meta.url);
 const commandSelectors = ["brainstorm", "plan", "implement", "implement-js", "implement-wp", "test", "review", "resolve-review", "rereview", "document"];
+const defaultPhaseSkills = [...new Set([
+  ...IMA_NEW_PHASE_SKILLS.plan,
+  ...IMA_NEW_PHASE_SKILLS.implement,
+])];
 const defaultBootstrapCommands = [
   ...IMA_NEW_BOOTSTRAP_COMMANDS.map((name) => ({
     name,
@@ -36,12 +40,7 @@ const defaultBootstrapCommands = [
     source: "prompt",
     sourceInfo: { path: join(root, "prompts", `ima:${name}.md`) },
   })),
-  ...IMA_NEW_PHASE_SKILLS.plan.map((name) => ({
-    name: `skill:${name}`,
-    source: "skill",
-    sourceInfo: { path: join(root, "skills", name, "SKILL.md") },
-  })),
-  ...IMA_NEW_PHASE_SKILLS.implement.map((name) => ({
+  ...defaultPhaseSkills.map((name) => ({
     name: `skill:${name}`,
     source: "skill",
     sourceInfo: { path: join(root, "skills", name, "SKILL.md") },
@@ -240,10 +239,14 @@ test("resolves planned prompt and skill resources through sourceInfo.path and st
   const paths = IMA_NEW_BOOTSTRAP_COMMANDS.map((name) => join(directory, `${name}.md`));
   const skillPath = join(directory, "ima-lifecycle-contract.md");
   const readableCodeSkillPath = join(directory, "readable-code.md");
+  const functionalProgrammerSkillPath = join(directory, "functional-programmer.md");
+  const securityGuardrailsSkillPath = join(directory, "ima-security-guardrails.md");
   await writeFile(paths[0], "---\ndescription: Serena\n---\nSerena bootstrap body\n");
   await writeFile(paths[1], "---\ndescription: Vestige\n---\nVestige bootstrap body\n");
   await writeFile(skillPath, "---\nname: ima-lifecycle-contract\ndescription: Lifecycle\n---\nLifecycle contract body\n");
   await writeFile(readableCodeSkillPath, "---\nname: readable-code\ndescription: Readability\n---\nReadable code body\n");
+  await writeFile(functionalProgrammerSkillPath, "---\nname: functional-programmer\ndescription: Functional programming\n---\nFunctional programmer body\n");
+  await writeFile(securityGuardrailsSkillPath, "---\nname: ima-security-guardrails\ndescription: Security\n---\nSecurity guardrails body\n");
   const commands = [
     ...IMA_NEW_BOOTSTRAP_COMMANDS.map((name, index) => ({
       name,
@@ -252,9 +255,16 @@ test("resolves planned prompt and skill resources through sourceInfo.path and st
     })),
     { name: "skill:ima-lifecycle-contract", source: "skill", sourceInfo: { path: skillPath } },
     { name: "skill:readable-code", source: "skill", sourceInfo: { path: readableCodeSkillPath } },
+    { name: "skill:functional-programmer", source: "skill", sourceInfo: { path: functionalProgrammerSkillPath } },
+    { name: "skill:ima-security-guardrails", source: "skill", sourceInfo: { path: securityGuardrailsSkillPath } },
   ];
 
-  assert.deepEqual(IMA_NEW_PHASE_SKILLS.plan, ["ima-lifecycle-contract"]);
+  assert.deepEqual(IMA_NEW_PHASE_SKILLS.plan, [
+    "ima-lifecycle-contract",
+    "readable-code",
+    "functional-programmer",
+    "ima-security-guardrails",
+  ]);
   assert.deepEqual(IMA_NEW_PHASE_SKILLS.implement, ["readable-code"]);
   for (const phase of IMA_PHASES.filter((phase) => phase !== "plan" && phase !== "implement")) assert.deepEqual(IMA_NEW_PHASE_SKILLS[phase], []);
   assert.deepEqual(
@@ -263,7 +273,14 @@ test("resolves planned prompt and skill resources through sourceInfo.path and st
   );
   assert.deepEqual(
     await resolveImaNewBootstrapMessages({ getCommands: () => commands }, "plan"),
-    ["Serena bootstrap body", "Vestige bootstrap body", "Lifecycle contract body"],
+    [
+      "Serena bootstrap body",
+      "Vestige bootstrap body",
+      "Lifecycle contract body",
+      "Readable code body",
+      "Functional programmer body",
+      "Security guardrails body",
+    ],
   );
   assert.deepEqual(
     await resolveImaNewBootstrapMessages({ getCommands: () => commands }, "implement"),

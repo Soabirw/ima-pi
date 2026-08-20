@@ -8,7 +8,7 @@ This command is the `plan` phase. Runtime selects the configured phase route bef
 
 ## Idempotent session bootstrap
 
-When `$@` supplies a source, always use `ima_context` to hydrate it before research. This per-invocation source hydration is never a no-op: `/ima:new` cannot hydrate a source supplied later. After source hydration, if supporting context is not already loaded this session, load Serena project memory, relevant Vestige preferences, and the `ima-lifecycle-contract` skill. If `/ima:new` already seeded those supporting resources, treat only that supporting load as a no-op. Follow the shared lifecycle contract rather than duplicating tool-owned bootstrap or persistence behavior.
+When `$@` supplies a source, always use `ima_context` to hydrate it before research. This per-invocation source hydration is never a no-op: `/ima:new` cannot hydrate a source supplied later. After source hydration, if supporting context is not already loaded this session, load Serena project memory, relevant Vestige preferences, the `ima-lifecycle-contract` skill, and, where evidence requires their bounded concerns, `readable-code`, `functional-programmer`, and `ima-security-guardrails`. If `/ima:new` already seeded those supporting resources, treat only that supporting load as a no-op. Follow the shared lifecycle contract rather than duplicating tool-owned bootstrap or persistence behavior.
 
 ## Planning-only boundary
 
@@ -31,13 +31,14 @@ Before requesting approval, show one self-contained contract with:
 - source and approved outcome;
 - scope and non-goals;
 - exact files, modules, symbols, APIs, data/control flow, and pure/effect boundaries;
+- Standards Impact: files expected to be created or enlarged, files approaching or exceeding the `functional-programmer` >500-line file-size smell, either the responsibility/cohesion-based split designed before implementation or the recorded cohesion-based justification for retaining each cohesive exception, applicable readability/function-size rules, and security constraints;
 - detailed code instructions, error paths, and relevant security constraints;
 - implementation order, test strategy, observable acceptance criteria, verification commands with expected signals, and rollback;
 - blockers, residual risks, prior artifacts, memory and documentation evidence, and the recommended next phase.
 
 The handoff MUST state approved decisions concretely, name known implementation surfaces, and give checkable acceptance criteria. It MUST NOT leave settled product or architecture choices to the implementation agent, invite redesign, use vague directives, omit known constraints, or broaden scope.
 
-These lifecycle-complete headings are recommended for persisted artifacts; equivalent organization is acceptable, and persistence requires only a non-empty bounded artifact with valid lifecycle identity: Source and Approved Outcome, Scope and Non Goals, Phase Result, Changed Files, Decisions, Verification Commands and Results, Blockers, Residual Risk, Prior Artifacts, and Recommended Next Phase. Add Problem, Prior Work, Context, Approach, Boundaries, API Contracts, Detailed Code Instructions, Test Strategy, Acceptance Criteria, Implementation Order, Security Checklist, Risk Register, Open Questions, Files to Update, and Memory & Docs Hits when applicable.
+These lifecycle-complete headings are recommended for persisted artifacts; equivalent organization is acceptable, and persistence requires only a non-empty bounded artifact with valid lifecycle identity: Source and Approved Outcome, Scope and Non Goals, Phase Result, Changed Files, Decisions, Verification Commands and Results, Blockers, Residual Risk, Standards Impact, Prior Artifacts, and Recommended Next Phase. Add Problem, Prior Work, Context, Approach, Boundaries, API Contracts, Detailed Code Instructions, Test Strategy, Acceptance Criteria, Implementation Order, Security Checklist, Risk Register, Open Questions, Files to Update, and Memory & Docs Hits when applicable.
 
 ## Autonomous plan self-approval
 
