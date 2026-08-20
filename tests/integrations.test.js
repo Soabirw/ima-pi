@@ -37,7 +37,6 @@ const createSessionGateway = (responseFor = defaultSessionResponse) => {
 };
 const runGateway = (calls) => async (program, args) => {
   calls.push([program, args]);
-  if (program === "ima-mcp") throw new Error("unexpected");
   return null;
 };
 

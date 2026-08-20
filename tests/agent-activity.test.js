@@ -84,7 +84,7 @@ test("activity classifier exposes compact-MCP categories without raw arguments",
     assert.doesNotMatch(category, /secret|query/);
   }
   assert.equal(classifyDelegationActivity("mcp", { server: "unknown" }), "gateway:other");
-  assert.equal(classifyDelegationActivity("bash", { command: "ima-mcp serena search super-secret" }), "tool:bash");
+  assert.equal(classifyDelegationActivity("bash", { command: "echo token=super-secret" }), "tool:bash");
   assert.equal(classifyDelegationActivity("read", { path: "/private/path" }), "tool:read");
   assert.equal(classifyDelegationActivity("custom", { token: "secret" }), "tool:other");
 });

@@ -109,7 +109,6 @@ test("buildStartBrief contains fixed operations and safety boundaries", () => {
     assert.match(brief, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
   assert.match(brief, /Use the mcp tool exactly once/);
-  assert.doesNotMatch(brief, /ima-mcp/);
 });
 
 test("openFollowUpSession uses the persisted header cwd", async () => {

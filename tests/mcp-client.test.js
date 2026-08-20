@@ -3,9 +3,9 @@ import { spawn } from "node:child_process";
 import { resolve } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
-import { callMcpTool, withMcpSession } from "../lib/ima-mcp-client.ts";
+import { callMcpTool, withMcpSession } from "../lib/mcp-client.ts";
 
-const clientPath = pathToFileURL(resolve("lib/ima-mcp-client.ts")).href;
+const clientPath = pathToFileURL(resolve("lib/mcp-client.ts")).href;
 const integrationsPath = pathToFileURL(resolve("extensions/integrations.ts")).href;
 
 const toolServer = `

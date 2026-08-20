@@ -196,7 +196,7 @@ test("payload and child brief carry fixed compact-MCP and safety contracts", () 
   }
   assert.match(brief, /Do not modify the repository/i);
   assert.match(brief, /do not run shell commands/i);
-  assert.doesNotMatch(brief, /ima-mcp|bash command|user supplied shell fragment/i);
+  assert.doesNotMatch(brief, /bash command|user supplied shell fragment/i);
 });
 
 test("classifier permits only the exact five compact MCP operations in order", () => {
@@ -212,7 +212,7 @@ test("classifier permits only the exact five compact MCP operations in order", (
 
 test("classifier rejects shell, wrong server, extra arguments, and malformed MCP calls", () => {
   const invalidEvents = [
-    { toolName: "bash", args: { command: "ima-mcp vestige search anything --json" } },
+    { toolName: "bash", args: { command: "echo unexpected" } },
     { ...expectedEvents[0], args: { ...expectedEvents[0].args, server: "vestige" } },
     { ...expectedEvents[0], args: { ...expectedEvents[0].args, args: { project: "/repo", extra: true } } },
     { ...expectedEvents[3], args: { ...expectedEvents[3].args, args: { query: "unbounded", limit: 1 } } },

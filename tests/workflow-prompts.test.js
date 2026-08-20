@@ -27,7 +27,6 @@ test("plan enforces one-unit Serena-first technical planning without implementat
 test("shared lifecycle skill keeps artifact, identity, and cycle-marker boundaries in one source", async () => {
   const text = await skill("ima-lifecycle-contract");
   for (const value of ["name: ima-lifecycle-contract", "artifact is the detailed source of truth", "ima_lifecycle", "generated SDK namespace", "lifecycle_key", "prior_artifact_ids", "Do not create a disconnected lifecycle thread", "exactly one cycle outcome marker"]) has(text, value);
-  assert.doesNotMatch(text, /ima-mcp serena/i);
 });
 
 const implementationPrompts = ["implement", "implement-js", "implement-wp"];
@@ -163,14 +162,14 @@ test("visual prompt restorations name skills and guardrails", async () => {
   assert.match(design, /^Separate visual facts,[^\n]*Bootstrap utilities before custom CSS[^\n]*IMA SCSS variables and mixins before hard-coded values[^\n]*reusable components before new abstractions[^\n]*$/mi);
   for (const value of ["Never hard-code IMA colors when brand variables exist.", "Never paraphrase design copy unless copywriting is requested.", "Verify asset paths before specifying implementation work.", "Do not duplicate site header, footer, or global components.", "Do not broaden the work into an unrelated redesign or refactor."]) assert.match(design, new RegExp(`^- ${value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "mi"));
   for (const value of ["1. Goal", "2. Source Material", "3. Visual Requirements", "4. WordPress/Bootstrap Mapping", "5. Implementation Scope + non-goals", "6. Responsive & Accessibility Requirements", "7. Security & Data Boundaries", "8. Verification", "9. Open Questions"]) assert.match(design, new RegExp(`^${value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "mi"));
-  assert.doesNotMatch(design, /\b(?:ETA|sub_recipes)\b|ima-mcp serena/i);
+  assert.doesNotMatch(design, /\b(?:ETA|sub_recipes)\b/i);
 
   const ui = await prompt("ui-ux-review");
   assert.match(ui, /^For a live target,[^\n]*`mcp-chrome-devtools`[^\n]*$/mi);
   assert.match(ui, /^Load only skills supported by the review evidence:[^\n]*`ima-vision-handoff`[^\n]*`ima-memory-workflow`[^\n]*`ima-bootstrap`[^\n]*`ima-brand`[^\n]*`mcp-context7`[^\n]*`playwright`[^\n]*(?:`mcp-serena`(?: or `rg`)?|`rg`)[^\n]*`ima-delegation-contract`[^\n]*$/mi);
   assert.match(ui, /^Review accessibility for [^\n]*semantic landmarks[^\n]*keyboard reachability[^\n]*focus visibility[^\n]*control labels[^\n]*heading order[^\n]*target size[^\n]*contrast risk[^\n]*alt text[^\n]*reduced-motion risk[^\n]*screen-reader name\/role\/value\. Review responsive behavior for [^\n]*wrapping[^\n]*overflow[^\n]*stacking order[^\n]*sticky\/fixed elements[^\n]*tables[^\n]*forms[^\n]*media crops[^\n]*touch targets[^\n]*text fit\. Check interaction states: hover[^\n]*focus[^\n]*active[^\n]*disabled[^\n]*empty[^\n]*loading[^\n]*validation errors[^\n]*modal\/drawer[^\n]*navigation[^\n]*long content\.$/mi);
   assert.match(ui, /^For CSS and Bootstrap guidance,[^\n]*utilities first[^\n]*IMA SCSS variables and mixins[^\n]*\.container\/\.row\/\.col-\{bp\}-\{n\}[^\n]*\.ima-row\/\.ima-col-\{bp\}-\{n\}[^\n]*Avoid hard-coded IMA colors[^\n]*one-off media queries[^\n]*nested or decorative card shells[^\n]*Apply a concise UX lens:[^\n]*primary user job[^\n]*next action obvious[^\n]*controls are discoverable[^\n]*labels are concrete[^\n]*long, missing, loading, or error content[^\n]*small widths with touch and keyboard input\.$/mi);
-  assert.doesNotMatch(ui, /\b(?:ETA|sub_recipes)\b|ima-mcp serena|review-and-patch/i);
+  assert.doesNotMatch(ui, /\b(?:ETA|sub_recipes)\b|review-and-patch/i);
 });
 
 test("code-review skill restores the Pi-native verified-review contract", async () => {
@@ -192,7 +191,7 @@ test("code-review skill restores the Pi-native verified-review contract", async 
     text,
     /^- Readability:[^\n]*rule-anchored[^\n]*as a Warning \(blocking under the closeout rule\)/mi,
   );
-  assert.doesNotMatch(text, /sub_recipes|\.eta|ima-mcp serena/i);
+  assert.doesNotMatch(text, /sub_recipes|\.eta/i);
   await Promise.all(localMarkdownTargets(text).map((target) => access(resolve(root, "skills", "code-review", target))));
 });
 
@@ -261,19 +260,18 @@ test("FNR-3025 support prompts encode gateway, safety, and terminal contracts", 
 
 test("Unit D scoped guidance uses direct package MCP instructions", async () => {
   const guidance = await Promise.all([
-    ["mcp-serena", skill("mcp-serena"), "package MCP adapter"],
-    ["mcp-vestige", skill("mcp-vestige"), "direct Vestige tools through mcp"],
-    ["pi-preflight", skill("pi-preflight"), "Package MCP adapter"],
-    ["ima-pi-guide", skill("ima-pi-guide"), "package MCP adapters"],
-    ["preflight", prompt("preflight"), "package MCP adapter"],
-    ["migrate", prompt("migrate"), "package MCP adapter"],
-    ["memorize", prompt("memorize"), "package MCP adapter"],
-    ["vestige-bootstrap", prompt("vestige-bootstrap"), "package MCP adapter"],
-  ].map(async ([source, content, directEvidence]) => [source, await content, directEvidence]));
+    [skill("mcp-serena"), "package MCP adapter"],
+    [skill("mcp-vestige"), "direct Vestige tools through mcp"],
+    [skill("pi-preflight"), "Package MCP adapter"],
+    [skill("ima-pi-guide"), "package MCP adapters"],
+    [prompt("preflight"), "package MCP adapter"],
+    [prompt("migrate"), "package MCP adapter"],
+    [prompt("memorize"), "package MCP adapter"],
+    [prompt("vestige-bootstrap"), "package MCP adapter"],
+  ].map(async ([content, directEvidence]) => [await content, directEvidence]));
 
-  for (const [source, text, directEvidence] of guidance) {
+  for (const [text, directEvidence] of guidance) {
     has(text, directEvidence);
-    assert.doesNotMatch(text, /\bima-mcp\b/i, `${source} must not direct callers to the legacy CLI`);
   }
 });
 

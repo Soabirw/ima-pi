@@ -21,7 +21,7 @@ import {
   validateContextRequest,
 } from "../lib/ima-context.ts";
 import { buildLifecycleArtifact, deriveLifecycleResult, evaluateLifecycleRecall, sanitizeLifecycleError, validateLifecycleRequest, validateVestigeSaveReceipt } from "../lib/ima-lifecycle.ts";
-import { callMcpTool, withMcpSession } from "../lib/ima-mcp-client.ts";
+import { callMcpTool, withMcpSession } from "../lib/mcp-client.ts";
 
 const execFile = promisify(execFileCallback);
 const TIMEOUT = 30_000;

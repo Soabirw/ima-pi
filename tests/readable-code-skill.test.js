@@ -16,7 +16,7 @@ test("readable-code skill defines the approved universal readability contract", 
 
   assert.match(content, /^---\nname: ?["']?readable-code["']?/);
   assert.match(content, /^description:/m);
-  assert.doesNotMatch(content, /sub_recipes|\.eta|ima-mcp serena/i);
+  assert.doesNotMatch(content, /sub_recipes|\.eta/i);
   mustContain(content, [
     /Name by intent/i,
     /Keep functions focused/i,

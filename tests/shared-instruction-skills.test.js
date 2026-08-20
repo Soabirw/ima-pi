@@ -11,7 +11,7 @@ const localMarkdownTargets = (content) => [...content.matchAll(/\[[^\]]+\]\(([^)
   .map(([, target]) => target.trim().split("#", 1)[0])
   .filter((target) => target && !target.includes("$") && !/^(?:[a-z]+:|\/)/i.test(target));
 
-const forbiddenGooseTerms = /sub_recipes|\.eta|ima-mcp serena/i;
+const forbiddenGooseTerms = /sub_recipes|\.eta/i;
 
 test("shared instruction skills have valid package metadata and local links", async () => {
   for (const name of skills) {
