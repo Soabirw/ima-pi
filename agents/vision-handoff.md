@@ -2,6 +2,8 @@
 schemaVersion: 1
 name: vision-handoff
 description: Isolated visual-evidence specialist.
+useWhen:
+  - "Accessible image evidence requiring visual facts, text, layout, state, or accessibility signals."
 tier: vision
 authority: vision-read
 tools: [read, image]

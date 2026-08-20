@@ -2,6 +2,8 @@
 schemaVersion: 1
 name: explore
 description: Fast read-only repository exploration.
+useWhen:
+  - "Bounded read-only mapping of files, symbols, callers, and uncertainty; do not design or edit."
 tier: LOW
 authority: read
 tools: [read, grep, find, ls]

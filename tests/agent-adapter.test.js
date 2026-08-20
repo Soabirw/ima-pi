@@ -419,6 +419,48 @@ test("cancellation during image admission prevents child session creation", asyn
   assert.equal(created, 0);
 });
 
+test("blocks malformed adversarial packets before session creation and runs a matching pair on distinct routes", async () => {
+  const adversaryA = { ...agent, name: "adversary-a", tier: "adversaryA", authority: "review-read", tools: ["read"], independence: { freshInitial: true, followUpAllowed: false }, result: { kind: "review", requiredSections: ["model-route", "verdict", "findings", "disproof-attempts", "confidence"] } };
+  const adversaryB = { ...adversaryA, name: "adversary-b", tier: "adversaryB" };
+  const adversaryAAssignment = { ...assignment("a", []), agent: "adversary-a" };
+  const adversaryBAssignment = { ...adversaryAAssignment, id: "b", agent: "adversary-b" };
+  const reject = async (assignments, expectedError) => {
+    let created = 0;
+    const result = await coordinateDelegation({
+      cwd: "/repo", request: { title: "adversarial", assignments }, agents: [adversaryA, adversaryB], config: { models: {} }, runtime, runId: "adversarial", sessionStore: new Map(),
+      dependencies: { createManager: () => ({}), scopedTools: () => [], clock: () => "now", activityClock: () => 1_000, createSession: async () => { created += 1; return { session: fakeSession().session }; } },
+    });
+    assert.equal(result.status, "failed");
+    assert.equal(created, 0);
+    assert.deepEqual(result.results.map(({ status, attempts, error, failure }) => ({ status, attempts, error, failure })), assignments.map(() => ({ status: "blocked", attempts: 0, error: expectedError, failure: "agent-contract" })));
+  };
+
+  await reject([adversaryAAssignment], "delegation_adversary_pair_required");
+  await reject([adversaryAAssignment, { ...adversaryBAssignment, context: "Different evidence" }], "delegation_adversary_packet_mismatch");
+
+  let missingRouteSessions = 0;
+  const missingRoute = await coordinateDelegation({
+    cwd: "/repo", request: { title: "adversarial", assignments: [adversaryAAssignment, adversaryBAssignment] }, agents: [adversaryA, adversaryB],
+    config: { models: { adversaryA: { provider: "p", model: "a", thinking: "high" } } }, runtime: { getModels: () => [{ provider: "p", id: "a", input: ["text"] }], getModel: () => ({ provider: "p", id: "a" }) }, runId: "adversarial", sessionStore: new Map(),
+    dependencies: { createManager: () => ({}), scopedTools: () => [], clock: () => "now", activityClock: () => 1_000, createSession: async () => { missingRouteSessions += 1; return { session: fakeSession().session }; } },
+  });
+  assert.equal(missingRouteSessions, 0);
+  assert.deepEqual(missingRoute.results.map(({ error }) => error), ["adversary_route_unconfigured", "adversary_route_unconfigured"]);
+
+  const first = fakeSession();
+  first.session.model = { provider: "p", id: "a" };
+  const second = fakeSession();
+  second.session.model = { provider: "q", id: "b" };
+  let created = 0;
+  const result = await coordinateDelegation({
+    cwd: "/repo", request: { title: "adversarial", assignments: [adversaryAAssignment, adversaryBAssignment] }, agents: [adversaryA, adversaryB],
+    config: { models: { adversaryA: { provider: "p", model: "a", thinking: "high" }, adversaryB: { provider: "q", model: "b", thinking: "high" } } }, runtime: { getModels: () => [{ provider: "p", id: "a", input: ["text"] }, { provider: "q", id: "b", input: ["text"] }], getModel: (provider, model) => ({ provider, id: model }) }, runId: "adversarial", sessionStore: new Map(),
+    dependencies: { createManager: () => ({}), scopedTools: () => [], clock: () => "now", activityClock: () => 1_000, createSession: async ({ model }) => { created += 1; return { session: model.id === "a" ? first.session : second.session }; } },
+  });
+  assert.equal(result.status, "succeeded");
+  assert.equal(created, 2);
+});
+
 test("adversarial pairs block before child creation when routes are matching or incomplete", async () => {
   const adversaryA = { ...agent, name: "adversary-a", tier: "adversaryA", authority: "review-read", tools: ["read"], independence: { freshInitial: true, followUpAllowed: false }, result: { kind: "review", requiredSections: ["model-route", "verdict", "findings", "disproof-attempts", "confidence"] } };
   const adversaryB = { ...adversaryA, name: "adversary-b", tier: "adversaryB" };

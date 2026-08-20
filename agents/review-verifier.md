@@ -2,6 +2,8 @@
 schemaVersion: 1
 name: review-verifier
 description: Fresh narrow second-opinion verifier for one review finding.
+useWhen:
+  - "Narrow fresh second opinion on one cited review finding and at most one dependency hop."
 tier: reviewVerify
 authority: review-read
 tools: [read, grep, find, ls]

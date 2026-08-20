@@ -2,6 +2,8 @@
 schemaVersion: 1
 name: wordpress-developer
 description: Secure WordPress and PHP implementation specialist.
+useWhen:
+  - "Approved WordPress or PHP implementation requiring WordPress security and extension conventions."
 tier: MID
 phase: implement
 authority: write

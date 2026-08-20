@@ -2,13 +2,21 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { deriveAgentPaths, loadAgentDefinitions, parseAgentDocument, resolveAgentDefinitions, validateAgentDefinition } from "../lib/ima-agents.ts";
+import {
+  deriveAgentPaths,
+  IMA_AGENT_USE_WHEN_MAX_LENGTH,
+  loadAgentDefinitions,
+  parseAgentDocument,
+  resolveAgentDefinitions,
+  validateAgentDefinition,
+} from "../lib/ima-agents.ts";
 import { validateDelegationCompletion } from "../lib/ima-delegation.ts";
 
 const document = (name = "explore", extra = "") => `---
 schemaVersion: 1
 name: ${name}
 description: Explore safely
+useWhen: [Explore safely]
 tier: LOW
 authority: read
 tools: [read, grep]
@@ -26,6 +34,46 @@ test("parses a constrained agent document and rejects missing or unknown schema"
   assert.equal(parsed.diagnostics.length, 0); assert.equal(parsed.definition.name, "explore");
   assert.equal(parseAgentDocument({ path: "/agents/x.md", source: "package", content: "prompt" }).diagnostics[0].code, "agent_frontmatter_missing");
   assert.equal(parseAgentDocument({ path: "/agents/explore.md", source: "package", content: document("explore", "surprise: true\n") }).diagnostics[0].code, "agent_unknown_key");
+});
+
+test("requires bounded package applicability and normalizes legacy custom applicability", () => {
+  const base = {
+    schemaVersion: 1,
+    name: "explore",
+    description: "Explore safely",
+    tier: "LOW",
+    authority: "read",
+    tools: ["read", "grep"],
+    skills: ["mcp-serena"],
+    delegation: { allowed: false, maxDepth: 0 },
+    independence: { freshInitial: false, followUpAllowed: true },
+    result: { kind: "evidence", requiredSections: ["findings"] },
+    escalation: ["missing-evidence"],
+  };
+  const parse = (source, useWhen) => validateAgentDefinition({
+    path: "/agents/explore.md",
+    source,
+    prompt: "Evidence.",
+    metadata: useWhen === undefined ? base : { ...base, useWhen },
+  });
+
+  assert.ok(parse("package").diagnostics.some(({ code }) => code === "agent_use_when_invalid"));
+  assert.deepEqual(parse("user").definition.useWhen, ["Explore safely"]);
+  assert.deepEqual(parse("project").definition.useWhen, ["Explore safely"]);
+  for (const separator of ["\u0085", "\u2028", "\u2029"]) {
+    for (const source of ["user", "project"]) {
+      const legacy = validateAgentDefinition({
+        path: "/agents/explore.md",
+        source,
+        prompt: "Evidence.",
+        metadata: { ...base, description: `Explore${separator}safely` },
+      });
+      assert.deepEqual(legacy.definition.useWhen, ["Explore safely"]);
+    }
+  }
+  for (const useWhen of [[], [""], ["one", "two", "three", "four"], ["multiple\nlines"], ["control\u0000character"], ["control\u0085character"], ["control\u2028character"], ["control\u2029character"], ["x".repeat(IMA_AGENT_USE_WHEN_MAX_LENGTH + 1)], [42]]) {
+    assert.ok(parse("package", useWhen).diagnostics.some(({ code }) => code === "agent_use_when_invalid"));
+  }
 });
 
 test("validates authority invariants and deterministic full replacement", () => {
@@ -47,6 +95,7 @@ test("loads the packaged agent catalog without treating README.md as an agent", 
   });
   assert.deepEqual(loaded.definitions.map(({ name }) => name), ["adversary-a", "adversary-b", "document-assessor", "documenter", "explore", "implementer", "js-developer", "preflight-probe", "review-verifier", "reviewer", "tester", "vision-handoff", "wordpress-developer"]);
   assert.deepEqual(loaded.diagnostics, []);
+  assert.ok(loaded.definitions.every(({ useWhen }) => useWhen.length > 0));
 });
 
 test("derives package, user, and project agent paths", () => {
@@ -80,6 +129,8 @@ test("quality agents enforce fresh verification and exact documentation authorit
   assert.equal(byName.get("review-verifier").tier, "reviewVerify");
   assert.equal(byName.get("tester").phase, "test");
   assert.equal(byName.get("reviewer").phase, "review");
+  assert.match(byName.get("reviewer").useWhen.join(" "), /initial review only/i);
+  assert.match(byName.get("reviewer").useWhen.join(" "), /existing reviewer continuation/i);
   const assessor = byName.get("document-assessor");
   assert.equal(assessor.phase, "document");
   assert.equal(assessor.authority, "read");

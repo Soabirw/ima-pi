@@ -2,6 +2,8 @@
 schemaVersion: 1
 name: document-assessor
 description: Read-only documentation assessor producing an external-update manifest.
+useWhen:
+  - "Read-only assessment of completed lifecycle evidence and a diff to produce an external-update manifest."
 tier: MID
 phase: document
 authority: read

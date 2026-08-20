@@ -8,6 +8,9 @@ export const IMA_AGENT_TIERS = ["HIGH", "MID", "LOW", "vision", "reviewVerify", 
 export const IMA_AGENT_AUTHORITIES = ["read", "write", "test-write", "review-read", "vision-read", "document-write"] as const;
 export const IMA_AGENT_RESULT_KINDS = ["evidence", "implementation", "test", "review", "vision", "documentation"] as const;
 export const IMA_AGENT_TOOLS = ["read", "grep", "find", "ls", "write", "edit", "bash", "test", "image"] as const;
+export const IMA_AGENT_USE_WHEN_MIN_ITEMS = 1;
+export const IMA_AGENT_USE_WHEN_MAX_ITEMS = 3;
+export const IMA_AGENT_USE_WHEN_MAX_LENGTH = 180;
 
 type AgentTier = (typeof IMA_AGENT_TIERS)[number];
 type AgentAuthority = (typeof IMA_AGENT_AUTHORITIES)[number];
@@ -18,6 +21,7 @@ export type AgentDefinition = {
   schemaVersion: 1;
   name: string;
   description: string;
+  useWhen: string[];
   tier: AgentTier;
   phase?: ImaPhase;
   authority: AgentAuthority;
@@ -39,6 +43,25 @@ const diagnostic = (code: string, source: AgentSource, path: string, message: st
 const strings = (value: unknown) => Array.isArray(value) && value.every((item) => typeof item === "string") ? value.map((item) => item.trim()) : null;
 const string = (value: unknown) => typeof value === "string" ? value.trim() : "";
 const inList = <T extends readonly string[]>(list: T, value: string): value is T[number] => list.includes(value);
+const CONTROL_CHARACTERS = /[\u0000-\u001F\u007F-\u009F\u2028\u2029]/;
+const withoutControlCharacters = (value: string) => value.split(CONTROL_CHARACTERS).join(" ");
+
+const normalizeExplicitUseWhen = (value: unknown): string[] | null => {
+  if (!Array.isArray(value) || value.length < IMA_AGENT_USE_WHEN_MIN_ITEMS || value.length > IMA_AGENT_USE_WHEN_MAX_ITEMS) return null;
+  const cues: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string" || CONTROL_CHARACTERS.test(item)) return null;
+    const cue = item.trim();
+    if (!cue || cue.length > IMA_AGENT_USE_WHEN_MAX_LENGTH) return null;
+    cues.push(cue);
+  }
+  return cues;
+};
+
+const normalizeLegacyUseWhen = (description: string): string[] | null => {
+  const cue = withoutControlCharacters(description).replace(/\s+/g, " ").trim().slice(0, IMA_AGENT_USE_WHEN_MAX_LENGTH);
+  return cue ? [cue] : null;
+};
 
 export function deriveAgentPaths(input: { packageRoot: string; agentDir: string; cwd: string }): ImaAgentPaths {
   return { packageAgents: join(input.packageRoot, "agents"), userAgents: join(input.agentDir, "ima", "agents"), projectAgents: join(input.cwd, ".pi", "ima", "agents") };
@@ -47,14 +70,22 @@ export function deriveAgentPaths(input: { packageRoot: string; agentDir: string;
 export function validateAgentDefinition(input: { path: string; source: AgentSource; metadata: unknown; prompt: string }): AgentParseResult {
   const { path, source } = input; const diagnostics: AgentDiagnostic[] = [];
   if (!object(input.metadata)) return { definition: null, diagnostics: [diagnostic("agent_frontmatter_invalid", source, path, "Frontmatter must be a YAML object.")] };
-  const allowed = new Set(["schemaVersion", "name", "description", "tier", "phase", "authority", "tools", "skills", "delegation", "independence", "result", "escalation"]);
+  const allowed = new Set(["schemaVersion", "name", "description", "useWhen", "tier", "phase", "authority", "tools", "skills", "delegation", "independence", "result", "escalation"]);
   for (const key of Object.keys(input.metadata)) if (!allowed.has(key)) diagnostics.push(diagnostic("agent_unknown_key", source, path, `Unknown agent key: ${key}.`));
   const name = string(input.metadata.name); const description = string(input.metadata.description); const tier = string(input.metadata.tier); const phase = string(input.metadata.phase); const authority = string(input.metadata.authority);
-  const tools = strings(input.metadata.tools); const skills = strings(input.metadata.skills); const escalation = strings(input.metadata.escalation); const prompt = input.prompt.trim();
+  const tools = strings(input.metadata.tools);
+  const skills = strings(input.metadata.skills);
+  const escalation = strings(input.metadata.escalation);
+  const explicitUseWhen = normalizeExplicitUseWhen(input.metadata.useWhen);
+  const useWhen = input.metadata.useWhen === undefined && source !== "package"
+    ? normalizeLegacyUseWhen(description)
+    : explicitUseWhen;
+  const prompt = input.prompt.trim();
   const delegation = input.metadata.delegation; const independence = input.metadata.independence; const result = input.metadata.result;
   if (input.metadata.schemaVersion !== IMA_AGENT_SCHEMA_VERSION) diagnostics.push(diagnostic("agent_schema_version_unsupported", source, path, "schemaVersion must be 1."));
   if (!/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(name) || name !== parse(path).name) diagnostics.push(diagnostic("agent_name_invalid", source, path, "name must be lowercase kebab-case and match its filename."));
   if (!description) diagnostics.push(diagnostic("agent_description_invalid", source, path, "description must be non-empty."));
+  if (!useWhen) diagnostics.push(diagnostic("agent_use_when_invalid", source, path, `useWhen must contain ${IMA_AGENT_USE_WHEN_MIN_ITEMS} to ${IMA_AGENT_USE_WHEN_MAX_ITEMS} non-empty single-line strings of at most ${IMA_AGENT_USE_WHEN_MAX_LENGTH} characters.`));
   if (!inList(IMA_AGENT_TIERS, tier)) diagnostics.push(diagnostic("agent_tier_invalid", source, path, "tier is unsupported."));
   if (input.metadata.phase !== undefined && !inList(IMA_PHASES, phase)) diagnostics.push(diagnostic("agent_phase_invalid", source, path, "phase is unsupported."));
   if (!inList(IMA_AGENT_AUTHORITIES, authority)) diagnostics.push(diagnostic("agent_authority_invalid", source, path, "authority is unsupported."));
@@ -73,7 +104,7 @@ export function validateAgentDefinition(input: { path: string; source: AgentSour
   if (authority === "document-write" && !["write", "edit"].some((tool) => tools?.includes(tool))) diagnostics.push(diagnostic("agent_authority_tools_conflict", source, path, "document-write requires write or edit."));
   if (authority === "read" && tools?.some((tool) => ["write", "edit", "bash", "test"].includes(tool))) diagnostics.push(diagnostic("agent_authority_tools_conflict", source, path, "read authority cannot receive write-capable tools."));
   if (diagnostics.length) return { definition: null, diagnostics };
-  return { definition: { schemaVersion: 1, name, description, tier: tier as AgentTier, ...(input.metadata.phase !== undefined ? { phase: phase as ImaPhase } : {}), authority: authority as AgentAuthority, tools: tools!, skills: skills!, delegation: delegation as AgentDefinition["delegation"], independence: independence as AgentDefinition["independence"], result: { kind: resultKind as AgentResultKind, requiredSections: requiredSections!, ...(resultFormat ? { format: resultFormat as "review-verdict-v1" } : {}) }, escalation: escalation!, prompt, source, path }, diagnostics };
+  return { definition: { schemaVersion: 1, name, description, useWhen: useWhen!, tier: tier as AgentTier, ...(input.metadata.phase !== undefined ? { phase: phase as ImaPhase } : {}), authority: authority as AgentAuthority, tools: tools!, skills: skills!, delegation: delegation as AgentDefinition["delegation"], independence: independence as AgentDefinition["independence"], result: { kind: resultKind as AgentResultKind, requiredSections: requiredSections!, ...(resultFormat ? { format: resultFormat as "review-verdict-v1" } : {}) }, escalation: escalation!, prompt, source, path }, diagnostics };
 }
 
 export function parseAgentDocument(input: { path: string; source: AgentSource; content: string }): AgentParseResult {
@@ -90,6 +121,25 @@ export function resolveAgentDefinitions(input: { packageAgents: AgentDefinition[
     for (const definition of definitions) { if (local.has(definition.name)) diagnostics.push(diagnostic("agent_duplicate_definition", source, definition.path, `Duplicate ${definition.name} definition.`)); local.add(definition.name); selected.set(definition.name, structuredClone(definition)); }
   }
   return { definitions: [...selected.values()].sort((a, b) => a.name.localeCompare(b.name)), diagnostics };
+}
+
+export const IMA_AGENT_CATALOG_UNAVAILABLE = "IMA agent catalog unavailable. Do not use ima_delegate until valid agents are available.";
+export const IMA_AGENT_CATALOG_EMPTY = "IMA agent catalog has no available agents. Do not use ima_delegate; handle the task directly.";
+
+export function buildAgentCatalogPrompt(input: { definitions: readonly AgentDefinition[]; diagnostics: readonly AgentDiagnostic[] }): string {
+  if (input.diagnostics.length) return IMA_AGENT_CATALOG_UNAVAILABLE;
+  if (!input.definitions.length) return IMA_AGENT_CATALOG_EMPTY;
+  const rows = [...input.definitions]
+    .sort((left, right) => left.name.localeCompare(right.name))
+    .map(({ name, tier, authority, useWhen }) => `- ${name} (${tier}, ${authority}): ${useWhen.join("; ")}`);
+  return [
+    "## IMA delegation catalog",
+    "Use `ima_delegate` opportunistically when an agent is a clear bounded fit, or when the user explicitly asks to use a named agent.",
+    "If no agent fits, do not delegate. Write-capable agents require exact, disjoint write scopes. Children cannot delegate.",
+    "Do not newly delegate `reviewer` for rereview or verified-finding follow-up; use an eligible existing reviewer continuation.",
+    "Available agents:",
+    ...rows,
+  ].join("\n");
 }
 
 const isMissing = (error: any) => error?.code === "ENOENT";

@@ -2,6 +2,8 @@
 schemaVersion: 1
 name: reviewer
 description: Independent evidence-backed code reviewer.
+useWhen:
+  - "Fresh independent evidence-backed initial review only; use an eligible existing reviewer continuation for rereview or verified-finding follow-up."
 tier: HIGH
 phase: review
 authority: review-read

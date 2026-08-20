@@ -2,6 +2,8 @@
 schemaVersion: 1
 name: implementer
 description: Plan-bound production implementation.
+useWhen:
+  - "Approved plan for general or mixed-stack implementation when no narrower specialist fits."
 tier: MID
 phase: implement
 authority: write

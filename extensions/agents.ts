@@ -14,7 +14,13 @@ import {
   SessionManager,
   getAgentDir,
 } from "@earendil-works/pi-coding-agent";
-import { deriveAgentPaths, loadAgentDefinitions, type AgentDefinition } from "../lib/ima-agents.ts";
+import {
+  buildAgentCatalogPrompt,
+  deriveAgentPaths,
+  IMA_AGENT_CATALOG_UNAVAILABLE,
+  loadAgentDefinitions,
+  type AgentDefinition,
+} from "../lib/ima-agents.ts";
 import {
   buildDelegationOutcomeReport,
   classifyDelegationActivity,
@@ -38,6 +44,7 @@ import {
   reduceDelegationEvent,
   resolveAgentRoute,
   sanitizeDelegationError,
+  validateAdversarialAssignments,
   validateAdversarialRoutes,
   validateDelegationCompletion,
   validateDelegationRequest,
@@ -59,6 +66,7 @@ const agentToolNames: Record<string, string> = { grep: "grep", find: "find", ls:
 const activityProjectionKey = "ima-delegation";
 const text = (value: unknown) => typeof value === "string" ? value.trim() : "";
 const now = () => new Date().toISOString();
+const appendAgentCatalog = (systemPrompt: string, catalog: string) => `${systemPrompt}\n\n${catalog}`;
 
 async function definitions(cwd: string, trusted: boolean) {
   return loadAgentDefinitions({ paths: deriveAgentPaths({ packageRoot, agentDir, cwd }), projectTrusted: trusted });
@@ -377,6 +385,17 @@ export async function coordinateDelegation(input: CoordinatorInput) {
   };
 
   try {
+    const adversaryAssignments = validateAdversarialAssignments(input.request.assignments);
+    if (!adversaryAssignments.valid) {
+      const blocker = adversaryAssignments.errors[0] ?? "delegation_adversary_pair_required";
+      const results = input.request.assignments.map((assignment) => {
+        emit({ type: "blocked", id: assignment.id, at: deps.activityClock(), blocker, escalation: "submit one matching adversary-a and adversary-b pair" });
+        return { id: assignment.id, status: "blocked" as const, attempts: 0, error: blocker, failure: "agent-contract" as const, escalation: "submit one matching adversary-a and adversary-b pair", resumeReference: null };
+      });
+      emit({ type: "run-settled", at: deps.activityClock(), state: "failed" });
+      const report = buildDelegationOutcomeReport({ activity, results, partialEffects: false, unsafeEvidence: [] });
+      return { status: "failed" as const, results, state, activity, report, partialEffects: false, unsafeEvidence: [] };
+    }
     const adversaryNames = new Set(input.request.assignments.map((assignment) => assignment.agent));
     if (adversaryNames.has("adversary-a") && adversaryNames.has("adversary-b")) {
       const validation = validateAdversarialRoutes({ config: input.config, catalog });
@@ -476,7 +495,15 @@ export async function runFocusedContinuation(input: ContinuationInput) {
 
 export default function agents(pi: ExtensionAPI) {
   pi.registerTool({
-    name: "ima_delegate", label: "IMA delegate", description: "Delegate one to four bounded, agent-defined assignments.", executionMode: "sequential",
+    name: "ima_delegate",
+    label: "IMA delegate",
+    description: "Delegate one to four bounded, agent-defined assignments.",
+    promptSnippet: "Delegate one to four bounded assignments to an applicable IMA agent.",
+    promptGuidelines: [
+      "Use ima_delegate opportunistically for a clear agent match or an explicit request to use a named IMA agent; do not delegate when no agent fits. Rereview and verified-finding follow-up must use an eligible existing reviewer continuation, not a new reviewer delegation.",
+      "With ima_delegate, give writers exact, disjoint write scopes, never ask a child to delegate, and rely on visible activity instead of a confirmation loop.",
+    ],
+    executionMode: "sequential",
     parameters: Type.Object({ title: Type.String(), assignments: Type.Array(Type.Object({ id: Type.String(), agent: Type.String(), goal: Type.String(), context: Type.String(), paths: Type.Array(Type.String()), constraints: Type.Array(Type.String()), nonGoals: Type.Array(Type.String()), expectedOutput: Type.String(), writeScope: Type.Array(Type.String()), imagePaths: Type.Optional(Type.Array(Type.String(), { maxItems: 4 })) }), { minItems: 1, maxItems: 4 }) }),
     execute: async (toolCallId, request, signal, onUpdate, ctx) => {
       let projectionDegraded = false;
@@ -507,7 +534,29 @@ export default function agents(pi: ExtensionAPI) {
       return { content: [{ type: "text", text: JSON.stringify({ status: result.status, results: result.results, report: details.report }) }], details };
     },
   });
-  pi.registerCommand("ima:agents", { description: "List resolved IMA agents.", handler: async (_args, ctx) => { const loaded = await definitions(ctx.cwd, resolveProjectTrust(ctx)); const rows = loaded.definitions.map(({ name, source, tier, authority, description }) => `${name}\t${source}\t${tier}\t${authority}\t${description}`); ctx.ui.notify(rows.join("\n") || "No valid IMA agents.", loaded.diagnostics.length ? "warning" : "info"); } });
+  pi.on("before_agent_start", async (event, ctx) => {
+    if (!event.systemPromptOptions.selectedTools?.includes("ima_delegate")) return;
+    try {
+      const loaded = await definitions(
+        event.systemPromptOptions.cwd,
+        resolveProjectTrust(ctx),
+      );
+      return {
+        systemPrompt: appendAgentCatalog(
+          event.systemPrompt,
+          buildAgentCatalogPrompt(loaded),
+        ),
+      };
+    } catch {
+      return {
+        systemPrompt: appendAgentCatalog(
+          event.systemPrompt,
+          IMA_AGENT_CATALOG_UNAVAILABLE,
+        ),
+      };
+    }
+  });
+  pi.registerCommand("ima:agents", { description: "List resolved IMA agents.", handler: async (_args, ctx) => { const loaded = await definitions(ctx.cwd, resolveProjectTrust(ctx)); const rows = loaded.definitions.map(({ name, source, tier, authority, description, useWhen }) => `${name}\t${source}\t${tier}\t${authority}\t${description}\t${useWhen.join("; ")}`); ctx.ui.notify(rows.join("\n") || "No valid IMA agents.", loaded.diagnostics.length ? "warning" : "info"); } });
   pi.registerCommand("ima:agent-sessions", { description: "List sanitized IMA agent session references.", handler: async (_args, ctx) => ctx.ui.notify([...sessions.values()].map((record) => `${record.reference}\t${record.role}\t${record.provider}/${record.model}\t${record.status}`).join("\n") || "No IMA agent sessions.", "info") });
   pi.registerCommand("ima:agent-follow-up", { description: "Run a focused continuation: <session-reference> <brief>.", handler: async (args, ctx) => {
     const [reference, ...rest] = args.trim().split(/\s+/);

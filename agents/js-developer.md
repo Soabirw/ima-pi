@@ -2,6 +2,8 @@
 schemaVersion: 1
 name: js-developer
 description: Node and ESM functional JavaScript specialist.
+useWhen:
+  - "Approved Node, JavaScript, TypeScript, API, CLI, TUI, or applicable frontend implementation."
 tier: MID
 phase: implement
 authority: write

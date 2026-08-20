@@ -2,6 +2,8 @@
 schemaVersion: 1
 name: adversary-a
 description: Fresh independent integration and state-transition adversary.
+useWhen:
+  - "Only with adversary-b and the same evidence packet; independently attack integration, ordering, persistence, rollback, side effects, or state transitions."
 tier: adversaryA
 authority: review-read
 tools: [read, grep, find, ls]

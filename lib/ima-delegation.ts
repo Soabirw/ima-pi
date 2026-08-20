@@ -17,6 +17,28 @@ const safeRelative = (path: string) => !!path && path !== "." && path !== "/" &&
 const normalized = (path: string) => path.replace(/^\.\//, "").replace(/\/+$/, "");
 const overlaps = (left: string, right: string) => left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
 const contained = (target: string, owner: string) => target === owner || target.startsWith(`${owner}/`);
+const sameStringList = (left: readonly string[] = [], right: readonly string[] = []) => left.length === right.length && left.every((value, index) => value === right[index]);
+const isAdversaryAssignment = (assignment: DelegationAssignment) => assignment.agent === "adversary-a" || assignment.agent === "adversary-b";
+const sameAdversarialPacket = (left: DelegationAssignment, right: DelegationAssignment) =>
+  left.goal === right.goal
+  && left.context === right.context
+  && sameStringList(left.paths, right.paths)
+  && sameStringList(left.constraints, right.constraints)
+  && sameStringList(left.nonGoals, right.nonGoals)
+  && left.expectedOutput === right.expectedOutput
+  && sameStringList(left.writeScope, right.writeScope)
+  && sameStringList(left.imagePaths ?? [], right.imagePaths ?? []);
+
+export function validateAdversarialAssignments(assignments: DelegationAssignment[]) {
+  const adversaries = assignments.filter(isAdversaryAssignment);
+  if (!adversaries.length) return { valid: true, errors: [] };
+  const adversaryA = adversaries.filter(({ agent }) => agent === "adversary-a");
+  const adversaryB = adversaries.filter(({ agent }) => agent === "adversary-b");
+  if (adversaryA.length !== 1 || adversaryB.length !== 1) return { valid: false, errors: ["delegation_adversary_pair_required"] };
+  return sameAdversarialPacket(adversaryA[0], adversaryB[0])
+    ? { valid: true, errors: [] }
+    : { valid: false, errors: ["delegation_adversary_packet_mismatch"] };
+}
 
 export function validateDelegationRequest(request: DelegationRequest, agents: AgentDefinition[]) {
   const errors: string[] = []; if (!clean(request.title)) errors.push("delegation_title_invalid");
@@ -34,7 +56,9 @@ export function validateDelegationRequest(request: DelegationRequest, agents: Ag
     if (["write", "test-write", "document-write"].includes(agent.authority) && !assignment.writeScope.length) errors.push(`delegation_write_scope_required:${assignment.id}`);
   if (agent?.authority === "document-write") errors.push(...validateDocumentWriteScope(assignment.writeScope).errors.map((error) => `${error}:${assignment.id}`));
   }
-  errors.push(...validateParallelAssignments(request.assignments)); return { valid: !errors.length, errors };
+  errors.push(...validateAdversarialAssignments(request.assignments).errors);
+  errors.push(...validateParallelAssignments(request.assignments));
+  return { valid: !errors.length, errors };
 }
 
 export function buildChildBrief(input: { projectRoot: string; assignment: DelegationAssignment; agent: AgentDefinition; images?: Array<{ id: string; sourceLabel: string; mimeType: string; byteLength: number }> }) {

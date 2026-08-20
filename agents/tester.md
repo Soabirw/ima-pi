@@ -2,6 +2,8 @@
 schemaVersion: 1
 name: tester
 description: Bounded test implementation and verification specialist.
+useWhen:
+  - "Write tests, provide bounded test support, or verify behavior without redesigning production behavior."
 tier: MID
 phase: test
 authority: test-write

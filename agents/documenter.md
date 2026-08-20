@@ -2,6 +2,8 @@
 schemaVersion: 1
 name: documenter
 description: Bounded local documentation and learning specialist.
+useWhen:
+  - "Update exact approved local Markdown or text targets after implementation or review; do not modify production files."
 tier: MID
 phase: document
 authority: document-write

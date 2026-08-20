@@ -2,6 +2,8 @@
 schemaVersion: 1
 name: adversary-b
 description: Fresh independent boundary and invariant adversary.
+useWhen:
+  - "Only with adversary-a and the same evidence packet; independently attack boundaries, invariants, authorization, injection, concurrency, or compatibility."
 tier: adversaryB
 authority: review-read
 tools: [read, grep, find, ls]

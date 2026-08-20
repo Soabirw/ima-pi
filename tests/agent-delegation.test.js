@@ -9,6 +9,7 @@ import {
   normalizeOwnershipTarget,
   reduceDelegationEvent,
   validateDelegationCompletion,
+  validateAdversarialAssignments,
   validateDelegationRequest,
   validateDelegationRouteIdentity,
   writeScopesOverlap,
@@ -31,6 +32,26 @@ test("validates bounded assignments, path safety, and disjoint writers", () => {
   assert.ok(validateDelegationRequest({ title: "work", assignments: [assignment, { ...assignment, id: "b", writeScope: ["lib"] }] }, [agent]).errors.some((error) => error.startsWith("delegation_write_scope_overlap")));
   assert.equal(writeScopesOverlap(["a/x"], ["b/x"]), false);
   assert.equal(writeScopesOverlap(["lib/a"], ["lib/ab"]), false);
+});
+
+test("requires one matching adversary-a and adversary-b evidence packet", () => {
+  const adversaryA = { ...agent, name: "adversary-a", authority: "review-read", tools: ["read"], result: { kind: "review", requiredSections: ["findings"] } };
+  const adversaryB = { ...adversaryA, name: "adversary-b" };
+  const adversaryAAssignment = { ...assignment, id: "adversary-a", agent: "adversary-a", writeScope: [] };
+  const adversaryBAssignment = { ...adversaryAAssignment, id: "adversary-b", agent: "adversary-b" };
+  const cases = [
+    [[adversaryAAssignment], "delegation_adversary_pair_required"],
+    [[adversaryBAssignment], "delegation_adversary_pair_required"],
+    [[adversaryAAssignment, { ...adversaryAAssignment, id: "duplicate-a" }], "delegation_adversary_pair_required"],
+    [[adversaryAAssignment, { ...adversaryBAssignment, context: "Different evidence" }], "delegation_adversary_packet_mismatch"],
+  ];
+
+  for (const [assignments, error] of cases) {
+    assert.deepEqual(validateAdversarialAssignments(assignments), { valid: false, errors: [error] });
+    assert.ok(validateDelegationRequest({ title: "adversarial", assignments }, [adversaryA, adversaryB]).errors.includes(error));
+  }
+  assert.deepEqual(validateAdversarialAssignments([adversaryAAssignment, adversaryBAssignment]), { valid: true, errors: [] });
+  assert.equal(validateDelegationRequest({ title: "adversarial", assignments: [adversaryAAssignment, adversaryBAssignment] }, [adversaryA, adversaryB]).valid, true);
 });
 
 test("permits read-only documentation assessment without a write scope", () => {

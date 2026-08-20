@@ -2,6 +2,8 @@
 schemaVersion: 1
 name: preflight-probe
 description: No-tool fixed-marker canary for Pi child-spawn preflight.
+useWhen:
+  - "Only the /ima:preflight canary; never general diagnostics or repository work."
 tier: LOW
 authority: read
 tools: []
