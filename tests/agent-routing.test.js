@@ -12,7 +12,7 @@ test("routes exact configured tiers and fails closed for missing capability", ()
   const phased = { ...config, phases: { implement: { provider: "p", model: "phase-implement", thinking: "max", source: "preset" } } };
   const phaseRoute = resolveAgentRoute({ agent: { tier: "MID", phase: "implement" }, config: phased, catalog: [...catalog, { provider: "p", model: "phase-implement" }] });
   assert.deepEqual(phaseRoute.route, { provider: "p", model: "phase-implement", thinking: "max", tier: "MID", phase: "implement" });
-  assert.equal(resolveAgentRoute({ agent: { tier: "MID", phase: "test" }, config: phased, catalog }).error, "phase_route_missing");
+  assert.deepEqual(resolveAgentRoute({ agent: { tier: "MID", phase: "test" }, config: phased, catalog }).route, { provider: "p", model: "mid", thinking: undefined, tier: "MID", phase: "test" });
 });
 
 test("limits recovery and sanitizes credentials", () => {
@@ -28,6 +28,42 @@ test("review verification uses an explicit route or visible fresh-HIGH fallback"
   const routed = resolveReviewVerificationRoute({ config: configured, catalog });
   assert.equal(routed.resolvedRole, "reviewVerify"); assert.equal(routed.fallbackUsed, false); assert.equal(routed.crossModel, true);
   assert.equal(resolveReviewVerificationRoute({ config: configured, catalog: [] }).route, null);
+
+  const phaseAgent = { name: "review-verifier", tier: "reviewVerify", phase: "review" };
+  const phaseRoute = { provider: "p", model: "phase-review", thinking: "low" };
+  const phaseConfigured = { agents: {}, phases: { review: phaseRoute }, models: configured.models };
+  const phasePreferred = resolveReviewVerificationRoute({
+    agent: phaseAgent,
+    config: phaseConfigured,
+    catalog: [...catalog, { provider: "p", model: "phase-review" }],
+  });
+  assert.deepEqual(phasePreferred.route, { provider: "p", model: "mid", thinking: undefined, tier: "reviewVerify", phase: "review" });
+  assert.equal(phasePreferred.resolvedRole, "reviewVerify");
+  assert.equal(phasePreferred.fallbackUsed, false);
+
+  const highFallback = resolveReviewVerificationRoute({
+    agent: phaseAgent,
+    config: { agents: {}, phases: { review: phaseRoute }, models: config.models },
+    catalog: [...catalog, { provider: "p", model: "phase-review" }],
+  });
+  assert.deepEqual(highFallback.route, { provider: "p", model: "high", thinking: "high", tier: "HIGH", phase: "review" });
+  assert.equal(highFallback.fallbackUsed, true);
+
+  const unavailableExact = resolveReviewVerificationRoute({
+    agent: phaseAgent,
+    config: { ...phaseConfigured, agents: { "review-verifier": { provider: "p", model: "missing" } } },
+    catalog: [...catalog, { provider: "p", model: "phase-review" }],
+  });
+  assert.equal(unavailableExact.route, null);
+  assert.equal(unavailableExact.error, "model_unavailable");
+
+  const unavailableReviewRole = resolveReviewVerificationRoute({
+    agent: phaseAgent,
+    config: { agents: {}, phases: { review: phaseRoute }, models: { ...config.models, reviewVerify: { provider: "p", model: "missing" } } },
+    catalog: [...catalog, { provider: "p", model: "phase-review" }],
+  });
+  assert.equal(unavailableReviewRole.route, null);
+  assert.equal(unavailableReviewRole.error, "model_unavailable");
 });
 
 

@@ -69,16 +69,19 @@ export function resolveRoleRoute(config: Pick<ResolvedImaConfig, "models"> | nul
   return { ok: true, route: { role, provider: mapping.provider, model: mapping.model, ...(mapping.thinking ? { thinking: mapping.thinking } : {}) } };
 }
 
-export function formatRouteMatrix(config: Pick<ResolvedImaConfig, "profile" | "commands" | "phases" | "models"> | null | undefined): string {
+export function formatRouteMatrix(config: Pick<ResolvedImaConfig, "profile" | "commands" | "phases" | "agents" | "models"> | null | undefined): string {
   if (!config) return "No effective IMA profile.";
   const route = (mapping: { provider: string; model: string; thinking?: ThinkingLevel }) => `${mapping.provider}/${mapping.model}${mapping.thinking ? ` (${mapping.thinking})` : ""}`;
   const commands = Object.entries(config.commands).filter(([, mapping]) => Boolean(mapping)).sort(([left], [right]) => left.localeCompare(right));
+  const agents = Object.entries(config.agents ?? {}).filter(([, mapping]) => Boolean(mapping)).sort(([left], [right]) => left.localeCompare(right));
   const phases = Object.entries(config.phases).filter(([, mapping]) => Boolean(mapping)).sort(([left], [right]) => left.localeCompare(right));
   const roles = Object.entries(config.models).filter(([, mapping]) => Boolean(mapping)).sort(([left], [right]) => left.localeCompare(right));
   return [
     `profile: ${config.profile ?? "(none)"}`,
     "commands:",
     ...(commands.length ? commands.map(([name, mapping]) => `${name}: ${route(mapping!)}`) : [phases.length ? "(none; no direct command routes)" : "(none; no direct command or legacy phase routes; unconfigured commands pass through)"]),
+    "agents:",
+    ...(agents.length ? agents.map(([name, mapping]) => `${name}: ${route(mapping!)}`) : ["(none)"]),
     "legacy phases:",
     ...(phases.length ? phases.map(([name, mapping]) => `${name}: ${route(mapping!)}`) : ["(none)"]),
     "roles:",
@@ -127,7 +130,7 @@ export async function persistUserProfileSelection(input: { path: string; profile
   } catch (error: any) {
     if (error?.code !== "ENOENT") return { ok: false, error: "user_config_unreadable" };
   }
-  const next: ValidConfigLayer = { schemaVersion: 1, profile: input.profile, ...(layer.models ? { models: layer.models } : {}), ...(layer.phases ? { phases: layer.phases } : {}), ...(layer.commands ? { commands: layer.commands } : {}) };
+  const next: ValidConfigLayer = { schemaVersion: 1, profile: input.profile, ...(layer.models ? { models: layer.models } : {}), ...(layer.phases ? { phases: layer.phases } : {}), ...(layer.agents ? { agents: layer.agents } : {}), ...(layer.commands ? { commands: layer.commands } : {}) };
   const temporaryId = dependencies.temporaryId ?? randomUUID;
   const temporaryPath = join(dirname(input.path), `.${basename(input.path)}.${temporaryId()}.tmp`);
   try {

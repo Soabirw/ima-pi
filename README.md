@@ -201,7 +201,7 @@ All implementation prompts require an approved implementation-grade plan, work i
 - `/ima:rereview [resolution-and-review-source]` independently verifies the resolution without editing.
 - `/ima:review-verify [finding-brief]` returns exactly one narrow finding verdict.
 - `/ima:document [completed-lifecycle-source]` updates only exact local documentation targets and prepares parent-owned external update manifests.
-- `/ima:profile [name]` lists or activates configured command routes and model roles, then persists an explicit selection to the user default without changing ordinary prompt/model flexibility.
+- `/ima:profile [name]` lists or activates configured command, agent, phase, and model routes, then persists an explicit selection to the user default without changing ordinary prompt/model flexibility.
 - `/ima:new [low|mid|high|xhigh|<discovered-ima-command>]` creates a TUI-only fresh session. Bare `/ima:new` applies no explicit route; role selectors apply the effective configured `LOW`, `MID`, `HIGH`, or `XHIGH` role; command selectors use the same command lookup as direct prompts. An unconfigured command starts on the current model. A verified regular-file parent is linked; missing, unwritten, inaccessible, or non-file parents are omitted so native persisted/ephemeral session semantics are preserved. A successful replacement runs Serena then Vestige bootstrap bodies and any mapped package skill bodies (currently `plan` seeds `ima-lifecycle-contract`, `readable-code`, `functional-programmer`, and `ima-security-guardrails`; `implement`-family commands seed `readable-code`).
 
 See [`docs/foundation/FNR-3019.md`](docs/foundation/FNR-3019.md) for authority, review verification fallback, knowledge routing, and limitations. See [`docs/foundation/phase-model-profiles.md`](docs/foundation/phase-model-profiles.md) for command routing and fail-closed behavior.
@@ -209,7 +209,7 @@ See [`docs/foundation/FNR-3019.md`](docs/foundation/FNR-3019.md) for authority, 
 ## Quality advisory workflows
 
 - `/ima:scorecard [target]` produces a read-only, evidence-backed A/B/C/D/F assessment for Code Standards, Security, Test Coverage, Documentation, and Maintainability using only existing configured non-mutating validators. It displays paste-ready Markdown; a later explicit request may update only that exact scorecard section in one unambiguous README.
-- `/ima:adversarial-review [target]` gives one evidence packet to two fresh, read-only adversaries in parallel. It requires configured, catalog-available `adversaryA` and `adversaryB` routes with distinct `(provider, model)` identities and blocks rather than falling back or accepting one-sided results.
+- `/ima:adversarial-review [target]` gives one evidence packet to two fresh, read-only adversaries in parallel. It requires configured, catalog-available exact-agent or `adversaryA`/`adversaryB` routes with distinct `(provider, model)` identities and blocks rather than falling back or accepting one-sided results.
 
 Adversarial reports are advisory only: they do not create formal review state or `REVIEW-NNN` findings. Use `/ima:review` for formal review. See [`docs/foundation/FNR-3022.md`](docs/foundation/FNR-3022.md) for source-to-target coverage, authority, tests, manual acceptance, limitations, and rollback.
 
@@ -233,7 +233,7 @@ Both accept natural-language questions rather than depth/audience parameters. Th
 
 When `ima_delegate` is active on an ordinary turn, the parent receives a bounded resolved-agent catalog with applicability cues. It can delegate a clear bounded match opportunistically or honor an explicit “use `<name>` agent” request through the same path; no fit means no delegation. The catalog never exposes agent prompts or paths, writes still require exact disjoint ownership, and children cannot delegate.
 
-Inspect resolved definitions with `/ima:agents`, session metadata with `/ima:agent-sessions`, and request a focused reusable continuation with `/ima:agent-follow-up <session-reference> <brief>`. Phase-tagged implementation, tester, reviewer, and documenter agents inherit the parent session profile while retaining their tier authority. See [`agents/README.md`](agents/README.md), [`policies/README.md`](policies/README.md), [`docs/foundation/FNR-3014.md`](docs/foundation/FNR-3014.md), and [`docs/foundation/FNR-3015.md`](docs/foundation/FNR-3015.md).
+Inspect resolved definitions with `/ima:agents`, session metadata with `/ima:agent-sessions`, and request a focused reusable continuation with `/ima:agent-follow-up <session-reference> <brief>`. Each delegated agent resolves from the active profile as exact agent override, then phase route, then tier role, independently of the parent model. A selected unavailable route blocks visibly rather than falling back. See [`agents/README.md`](agents/README.md), [`policies/README.md`](policies/README.md), [`docs/foundation/FNR-3014.md`](docs/foundation/FNR-3014.md), and [`docs/foundation/FNR-3015.md`](docs/foundation/FNR-3015.md).
 
 ## Production integrations
 
@@ -252,7 +252,7 @@ Create `~/.pi/agent/ima/config.json` (or trusted `.pi/ima/config.json`) to opt i
 }
 ```
 
-See [`config/README.md`](config/README.md) for schema, command routes, legacy phase fallbacks, profile paths, trust, and precedence, [`docs/foundation/phase-model-profiles.md`](docs/foundation/phase-model-profiles.md) for runtime routing, and [`docs/foundation/FNR-3013.md`](docs/foundation/FNR-3013.md) for the original role configuration foundation.
+See [`config/README.md`](config/README.md) for schema, command and agent routes, legacy phase fallbacks, profile paths, trust, and precedence, [`docs/foundation/phase-model-profiles.md`](docs/foundation/phase-model-profiles.md) for runtime routing, and [`docs/foundation/FNR-3013.md`](docs/foundation/FNR-3013.md) for the original role configuration foundation.
 
 ## Test
 

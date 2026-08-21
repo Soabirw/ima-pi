@@ -7,12 +7,19 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 ### Added
 
 - Added bounded `useWhen` applicability metadata to all packaged agents and a safe resolved-agent catalog for ordinary turns with active `ima_delegate`. The parent can opportunistically delegate a clear match or honor an explicit named-agent request through the existing visible, confirmation-free path; invalid catalogs fail closed without exposing prompts or paths.
+- Added optional complete per-agent `agents` profile mappings for an exact provider, model, and optional thinking level, enabling parent-independent delegated-agent promotion and demotion.
+
+### Changed
+
+- Delegated-agent routing now resolves exact agent mapping before phase and tier routes; `/ima:profile` displays and preserves agent mappings.
 
 ### Fixed
 
 - Enforced adversarial delegation as one matching `adversary-a`/`adversary-b` evidence-packet pair before route resolution or child-session creation.
 - Reject logical-line control characters in explicit `useWhen` cues and normalize them from legacy definition fallbacks.
 - Clarified catalog and delegation guidance so rereview or verified-finding follow-up uses an eligible existing reviewer continuation rather than a fresh reviewer delegation.
+- Reject digit-prefixed agent mapping keys while preserving numeric profile names and agent numeric suffixes.
+- Keep `review-verifier` on exact agent mapping, then `reviewVerify`, then `HIGH`; unavailable selected routes fail closed without phase or lower-tier fallback.
 
 ## [1.10.0] - 2026-08-20
 

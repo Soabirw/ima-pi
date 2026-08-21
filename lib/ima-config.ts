@@ -14,16 +14,18 @@ export type ThinkingLevel = (typeof IMA_THINKING_LEVELS)[number];
 export type ConfigSource = "package" | "preset" | "user" | "project" | "resolved";
 export type ConfigDiagnostic = { code: string; source: ConfigSource; path: string[]; message: string };
 export type ImaModelMapping = { provider: string; model: string; thinking?: ThinkingLevel };
+export type ImaAgentMapping = ImaModelMapping;
 export const IMA_ROLE_SHORTHANDS = ["low", "mid", "high", "xhigh"] as const;
 export type RoleShorthand = (typeof IMA_ROLE_SHORTHANDS)[number];
 export type ImaCommandMapping = ImaModelMapping | RoleShorthand;
 export type ImaRouteMapping = ImaModelMapping | RoleShorthand;
-export type ValidConfigLayer = { schemaVersion: 1; profile?: string | null; models?: Partial<Record<ImaRole, ImaModelMapping>>; phases?: Partial<Record<ImaPhase, ImaRouteMapping>>; commands?: Partial<Record<string, ImaCommandMapping>> };
+export type ValidConfigLayer = { schemaVersion: 1; profile?: string | null; models?: Partial<Record<ImaRole, ImaModelMapping>>; phases?: Partial<Record<ImaPhase, ImaRouteMapping>>; agents?: Record<string, ImaAgentMapping>; commands?: Partial<Record<string, ImaCommandMapping>> };
 export type ConfigValidationResult = { valid: boolean; value: ValidConfigLayer | null; diagnostics: ConfigDiagnostic[] };
 export type ResolvedRole = ImaModelMapping & { source: "preset" | "user" | "project" };
 export type ResolvedPhase = ImaModelMapping & { source: "preset" | "user" | "project" };
+export type ResolvedAgent = ImaAgentMapping & { source: "preset" | "user" | "project" };
 export type ResolvedCommand = ImaModelMapping & { source: "preset" | "user" | "project" };
-export type ResolvedImaConfig = { schemaVersion: 1; profile: string | null; models: Partial<Record<ImaRole, ResolvedRole>>; phases: Partial<Record<ImaPhase, ResolvedPhase>>; commands: Partial<Record<string, ResolvedCommand>>; complete: boolean; missingRoles: ImaRole[]; sources: { packageDefaults: string; preset: string | null; user: string; project: string }; diagnostics: ConfigDiagnostic[] };
+export type ResolvedImaConfig = { schemaVersion: 1; profile: string | null; models: Partial<Record<ImaRole, ResolvedRole>>; phases: Partial<Record<ImaPhase, ResolvedPhase>>; agents: Record<string, ResolvedAgent>; commands: Partial<Record<string, ResolvedCommand>>; complete: boolean; missingRoles: ImaRole[]; sources: { packageDefaults: string; preset: string | null; user: string; project: string }; diagnostics: ConfigDiagnostic[] };
 export type ModelCatalogEntry = { provider: string; model: string; input?: { image?: boolean } | string[] };
 export type ImaProfile = { name: string; source: "package" | "user" | "project"; path: string; layer: ValidConfigLayer };
 export type ImaConfigPaths = { packageDefaults: string; presets: string; user: string; project: string; userProfiles: string; projectProfiles: string };
@@ -34,20 +36,24 @@ export const COMMAND_PHASE_FALLBACK: Readonly<Record<string, ImaPhase>> = {
   "implement-wp": "implement",
 };
 
-const CONFIG_KEYS = new Set(["schemaVersion", "profile", "models", "phases", "commands"]);
+const CONFIG_KEYS = new Set(["schemaVersion", "profile", "models", "phases", "agents", "commands"]);
 const MAPPING_KEYS = new Set(["provider", "model", "thinking"]);
 const ROLE_FOR_SHORTHAND: Readonly<Record<RoleShorthand, ImaRole>> = { low: "LOW", mid: "MID", high: "HIGH", xhigh: "XHIGH" };
-const FATAL_CONFIG_CODES = new Set(["config_json_invalid", "config_required_file_missing", "config_schema_version_unsupported", "config_invalid_profile", "config_preset_unknown", "config_duplicate_profile"]);
+const FATAL_CONFIG_CODES = new Set(["config_json_invalid", "config_required_file_missing", "config_schema_version_unsupported", "config_invalid_profile", "config_invalid_agent", "config_preset_unknown", "config_duplicate_profile"]);
 export const IMA_PROFILE_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+export const IMA_AGENT_NAME_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 const object = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const diagnostic = (code: string, source: ConfigSource, path: string[], message: string): ConfigDiagnostic => ({ code, source, path, message });
 const cloneRole = (role: ImaModelMapping): ImaModelMapping => ({ ...role });
 const isMissing = (error: any) => error?.code === "ENOENT";
 const isRoleShorthand = (value: unknown): value is RoleShorthand => typeof value === "string" && IMA_ROLE_SHORTHANDS.includes(value as RoleShorthand);
-export const isImaProfileName = (value: unknown): value is string => typeof value === "string" && IMA_PROFILE_NAME_PATTERN.test(value);
+const isKebabCaseName = (value: unknown): value is string => typeof value === "string" && IMA_PROFILE_NAME_PATTERN.test(value);
+export const isImaProfileName = isKebabCaseName;
+export const isImaAgentName = (value: unknown): value is string => typeof value === "string" && IMA_AGENT_NAME_PATTERN.test(value);
 export const isFatalConfigDiagnostic = (entry: ConfigDiagnostic) =>
   FATAL_CONFIG_CODES.has(entry.code) ||
   entry.code.startsWith("config_profile_") ||
+  entry.path[0] === "agents" ||
   (entry.path[0] === "models" &&
     (entry.path.length < 2 || IMA_ALL_MODEL_ROLES.includes(entry.path[1] as ImaRole)) &&
     ["config_invalid_model", "config_invalid_provider", "config_invalid_thinking", "config_unknown_key"].includes(entry.code));
@@ -67,7 +73,7 @@ export function validateConfigLayer(value: unknown, source: ConfigSource): Confi
     if (profile !== null && !isImaProfileName(profile)) diagnostics.push(diagnostic("config_invalid_profile", source, ["profile"], "Profile must be lowercase kebab-case or null."));
     else layer.profile = profile as string | null;
   }
-  const mapping = (raw: unknown, path: string[], invalidCode: "config_invalid_model" | "config_invalid_phase" | "config_invalid_command", allowRoleShorthand: boolean): ImaRouteMapping | null => {
+  const mapping = (raw: unknown, path: string[], invalidCode: "config_invalid_model" | "config_invalid_phase" | "config_invalid_agent" | "config_invalid_command", allowRoleShorthand: boolean): ImaRouteMapping | null => {
     if (allowRoleShorthand && isRoleShorthand(raw)) return raw;
     if (!object(raw)) {
       diagnostics.push(diagnostic(invalidCode, source, path, allowRoleShorthand ? "Mapping must be an object or role shorthand." : "Mapping must be an object."));
@@ -108,6 +114,18 @@ export function validateConfigLayer(value: unknown, source: ConfigSource): Confi
       layer.phases = phases;
     }
   }
+  if ("agents" in value) {
+    if (!object(value.agents)) diagnostics.push(diagnostic("config_invalid_agent", source, ["agents"], "agents must be an object."));
+    else {
+      const agents: Record<string, ImaAgentMapping> = {};
+      for (const [name, raw] of Object.entries(value.agents)) {
+        if (!isImaAgentName(name)) { diagnostics.push(diagnostic("config_invalid_agent", source, ["agents", name], "Agent name must be lowercase kebab-case and begin with a letter.")); continue; }
+        const parsed = mapping(raw, ["agents", name], "config_invalid_agent", false);
+        if (parsed && typeof parsed !== "string") agents[name] = parsed;
+      }
+      layer.agents = agents;
+    }
+  }
   if ("commands" in value) {
     if (!object(value.commands)) diagnostics.push(diagnostic("config_invalid_command", source, ["commands"], "commands must be an object."));
     else {
@@ -143,9 +161,11 @@ export function mergeConfigLayers(input: { packageDefaults: ValidConfigLayer; pr
     }
     return { ...cloneRole(direct), source };
   };
+  const agents: Record<string, ResolvedAgent> = {};
   const phases: Partial<Record<ImaPhase, ResolvedPhase>> = {};
   const commandEntries: Array<[string, ResolvedCommand]> = [];
   for (const [source, layer] of [["preset", input.preset], ["user", input.user], ["project", input.project]] as const) {
+    for (const [name, mapping] of Object.entries(layer?.agents ?? {})) agents[name] = { ...cloneRole(mapping), source };
     for (const phase of IMA_PHASES) {
       const mapping = layer?.phases?.[phase];
       if (!mapping) continue;
@@ -161,7 +181,7 @@ export function mergeConfigLayers(input: { packageDefaults: ValidConfigLayer; pr
   const commands = Object.fromEntries(commandEntries);
   const missingRoles = IMA_MODEL_ROLES.filter((role) => !models[role]);
   if (missingRoles.length) diagnostics.push(diagnostic("config_incomplete", "resolved", ["models"], "All model roles require explicit mappings."));
-  return { schemaVersion: 1, profile, models, phases, commands, complete: !missingRoles.length, missingRoles, sources: { packageDefaults: "package", preset: profile, user: "user", project: "project" }, diagnostics };
+  return { schemaVersion: 1, profile, models, phases, agents, commands, complete: !missingRoles.length, missingRoles, sources: { packageDefaults: "package", preset: profile, user: "user", project: "project" }, diagnostics };
 }
 
 export function resolveCommandRoute(config: Pick<ResolvedImaConfig, "commands" | "phases"> | null | undefined, commandName: string): ImaModelMapping | null {
@@ -190,6 +210,7 @@ export function validateModelCatalog(config: ResolvedImaConfig, catalog: ModelCa
   const mappings: Array<{ path: string[]; mapping: ImaModelMapping; role?: ImaRole }> = [];
   for (const role of IMA_ALL_MODEL_ROLES) if (config.models[role]) mappings.push({ path: ["models", role], mapping: config.models[role]!, role });
   for (const phase of IMA_PHASES) if (config.phases[phase]) mappings.push({ path: ["phases", phase], mapping: config.phases[phase]! });
+  for (const [name, mapping] of Object.entries(config.agents)) mappings.push({ path: ["agents", name], mapping });
   for (const [command, mapping] of Object.entries(config.commands)) if (mapping) mappings.push({ path: ["commands", command], mapping });
   for (const { path, mapping, role } of mappings) {
     const entry = catalog.find((item) => item.provider === mapping.provider && item.model === mapping.model);

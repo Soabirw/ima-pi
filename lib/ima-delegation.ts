@@ -73,15 +73,53 @@ export function buildChildBrief(input: { projectRoot: string; assignment: Delega
   ].join("\n\n");
 }
 
-export function resolveReviewVerificationRoute(input: { config: ResolvedImaConfig; catalog: Array<{ provider: string; model: string }> }) {
+type AgentRouteSelection = {
+  mapping: ResolvedRole;
+  phase?: ImaPhase;
+  routeTier: AgentDefinition["tier"];
+  source: "agent" | "phase" | "tier";
+};
+
+const configuredAgentRoute = (config: ResolvedImaConfig, name: string) =>
+  Object.hasOwn(config.agents ?? {}, name) ? config.agents[name] : undefined;
+
+const selectAgentRoute = (input: { agent: Pick<AgentDefinition, "name" | "tier" | "phase">; config: ResolvedImaConfig }): AgentRouteSelection | null => {
+  const agentMapping = configuredAgentRoute(input.config, input.agent.name);
+  if (agentMapping) return { mapping: agentMapping, phase: input.agent.phase, routeTier: input.agent.tier, source: "agent" };
+  const phase = input.agent.phase;
+  const phaseMapping = phase ? input.config.phases[phase] : undefined;
+  if (phaseMapping) return { mapping: phaseMapping, phase, routeTier: input.agent.tier, source: "phase" };
+  const fallbackTier = input.agent.tier === "reviewVerify" && !input.config.models.reviewVerify ? "HIGH" : input.agent.tier;
+  const tierMapping = input.config.models[fallbackTier];
+  return tierMapping ? { mapping: tierMapping, phase, routeTier: fallbackTier, source: "tier" } : null;
+};
+
+export function resolveReviewVerificationRoute(input: { config: ResolvedImaConfig; catalog: Array<{ provider: string; model: string }>; agent?: Pick<AgentDefinition, "name" | "tier" | "phase"> }) {
   const requestedRole = "reviewVerify" as const;
-  const configured = input.config.models.reviewVerify;
-  const selected = configured ?? input.config.models.HIGH;
-  if (!selected) return { route: null, error: "model_unavailable", requestedRole, resolvedRole: configured ? requestedRole : "HIGH", fallbackUsed: !configured, crossModel: false };
+  const agent = input.agent ?? { name: "review-verifier", tier: requestedRole };
+  const agentMapping = configuredAgentRoute(input.config, agent.name);
+  const reviewMapping = input.config.models.reviewVerify;
+  const fallbackUsed = !agentMapping && !reviewMapping;
+  const resolvedRole = fallbackUsed ? "HIGH" : requestedRole;
+  const selected = agentMapping ?? reviewMapping ?? input.config.models.HIGH;
+  if (!selected) return { route: null, error: "model_unavailable", requestedRole, resolvedRole, fallbackUsed, crossModel: false };
   const available = input.catalog.some((entry) => entry.provider === selected.provider && entry.model === selected.model);
-  if (!available) return { route: null, error: "model_unavailable", requestedRole, resolvedRole: configured ? requestedRole : "HIGH", fallbackUsed: !configured, crossModel: false };
+  if (!available) return { route: null, error: "model_unavailable", requestedRole, resolvedRole, fallbackUsed, crossModel: false };
   const high = input.config.models.HIGH;
-  return { route: { provider: selected.provider, model: selected.model, thinking: selected.thinking, tier: configured ? requestedRole : "HIGH" }, error: null, requestedRole, resolvedRole: configured ? requestedRole : "HIGH", fallbackUsed: !configured, crossModel: !!high && (high.provider !== selected.provider || high.model !== selected.model) };
+  return {
+    route: {
+      provider: selected.provider,
+      model: selected.model,
+      thinking: selected.thinking,
+      tier: fallbackUsed ? "HIGH" : requestedRole,
+      ...(agent.phase ? { phase: agent.phase } : {}),
+    },
+    error: null,
+    requestedRole,
+    resolvedRole,
+    fallbackUsed,
+    crossModel: !!high && (high.provider !== selected.provider || high.model !== selected.model),
+  };
 }
 
 export type AdversarialRouteValidation =
@@ -89,8 +127,8 @@ export type AdversarialRouteValidation =
   | { valid: false; code: "adversary_route_unconfigured" | "adversary_route_unavailable" | "adversary_routes_not_distinct"; role?: "adversaryA" | "adversaryB" };
 
 export function validateAdversarialRoutes(input: { config: ResolvedImaConfig; catalog: Array<{ provider: string; model: string }> }): AdversarialRouteValidation {
-  const adversaryA = input.config.models.adversaryA;
-  const adversaryB = input.config.models.adversaryB;
+  const adversaryA = selectAgentRoute({ agent: { name: "adversary-a", tier: "adversaryA" }, config: input.config })?.mapping;
+  const adversaryB = selectAgentRoute({ agent: { name: "adversary-b", tier: "adversaryB" }, config: input.config })?.mapping;
   if (!adversaryA) return { valid: false, code: "adversary_route_unconfigured", role: "adversaryA" };
   if (!adversaryB) return { valid: false, code: "adversary_route_unconfigured", role: "adversaryB" };
   if (!input.catalog.some((entry) => entry.provider === adversaryA.provider && entry.model === adversaryA.model)) return { valid: false, code: "adversary_route_unavailable", role: "adversaryA" };
@@ -104,13 +142,29 @@ export function resolveAgentRoute(input: { agent: AgentDefinition; config: Resol
     const verified = resolveReviewVerificationRoute(input);
     return verified.route ? { route: verified.route, error: null, escalation: null, verification: verified } : { route: null, error: verified.error, escalation: "review verification model is unavailable", verification: verified };
   }
-  const phase = input.agent.phase as ImaPhase | undefined;
-  const mapping = phase ? input.config.phases?.[phase] : input.config.models[input.agent.tier];
-  if (!mapping) return { route: null, error: phase ? "phase_route_missing" : "model_unavailable", escalation: phase ? `${phase} phase route is not configured` : input.agent.tier === "adversaryA" || input.agent.tier === "adversaryB" ? `${input.agent.tier} model is not configured` : "minimum capability is not configured" };
-  const catalog = input.catalog.find((entry) => entry.provider === mapping.provider && entry.model === mapping.model);
+  const selected = selectAgentRoute(input);
+  if (!selected) return { route: null, error: "model_unavailable", escalation: input.agent.tier === "adversaryA" || input.agent.tier === "adversaryB" ? `${input.agent.tier} model is not configured` : "minimum capability is not configured" };
+  const catalog = input.catalog.find((entry) => entry.provider === selected.mapping.provider && entry.model === selected.mapping.model);
   const image = Array.isArray(catalog?.input) ? catalog.input.includes("image") : catalog?.input?.image === true;
-  if (!catalog || (input.agent.tier === "vision" && !image)) return { route: null, error: "model_unavailable", escalation: input.agent.tier === "adversaryA" || input.agent.tier === "adversaryB" ? `${input.agent.tier} model is unavailable` : "minimum capability is unavailable" };
-  return { route: { provider: mapping.provider, model: mapping.model, thinking: mapping.thinking, tier: input.agent.tier, ...(phase ? { phase } : {}) }, error: null, escalation: null };
+  if (!catalog || (input.agent.tier === "vision" && !image)) {
+    const escalation = selected.source === "agent"
+      ? "configured agent route is unavailable"
+      : input.agent.tier === "adversaryA" || input.agent.tier === "adversaryB"
+        ? `${input.agent.tier} model is unavailable`
+        : "minimum capability is unavailable";
+    return { route: null, error: "model_unavailable", escalation };
+  }
+  return {
+    route: {
+      provider: selected.mapping.provider,
+      model: selected.mapping.model,
+      thinking: selected.mapping.thinking,
+      tier: selected.routeTier,
+      ...(selected.phase ? { phase: selected.phase } : {}),
+    },
+    error: null,
+    escalation: null,
+  };
 }
 
 export function deriveToolAuthority(agent: AgentDefinition) { return [...agent.tools]; }

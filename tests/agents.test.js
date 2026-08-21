@@ -36,6 +36,23 @@ test("parses a constrained agent document and rejects missing or unknown schema"
   assert.equal(parseAgentDocument({ path: "/agents/explore.md", source: "package", content: document("explore", "surprise: true\n") }).diagnostics[0].code, "agent_unknown_key");
 });
 
+test("shares the per-agent route name syntax with resolved definitions", () => {
+  const digitPrefixed = parseAgentDocument({
+    path: "/agents/1-reviewer.md",
+    source: "package",
+    content: document("1-reviewer"),
+  });
+  assert.ok(digitPrefixed.diagnostics.some(({ code }) => code === "agent_name_invalid"));
+
+  const numericSuffix = parseAgentDocument({
+    path: "/agents/reviewer-2.md",
+    source: "package",
+    content: document("reviewer-2"),
+  });
+  assert.equal(numericSuffix.diagnostics.length, 0);
+  assert.equal(numericSuffix.definition.name, "reviewer-2");
+});
+
 test("requires bounded package applicability and normalizes legacy custom applicability", () => {
   const base = {
     schemaVersion: 1,

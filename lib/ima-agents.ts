@@ -1,7 +1,7 @@
 import { lstat, readdir, readFile, realpath } from "node:fs/promises";
 import { basename, join, parse, relative, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
-import { IMA_PHASES, type ImaPhase } from "./ima-config.ts";
+import { IMA_PHASES, isImaAgentName, type ImaPhase } from "./ima-config.ts";
 
 export const IMA_AGENT_SCHEMA_VERSION = 1;
 export const IMA_AGENT_TIERS = ["HIGH", "MID", "LOW", "vision", "reviewVerify", "adversaryA", "adversaryB"] as const;
@@ -83,7 +83,7 @@ export function validateAgentDefinition(input: { path: string; source: AgentSour
   const prompt = input.prompt.trim();
   const delegation = input.metadata.delegation; const independence = input.metadata.independence; const result = input.metadata.result;
   if (input.metadata.schemaVersion !== IMA_AGENT_SCHEMA_VERSION) diagnostics.push(diagnostic("agent_schema_version_unsupported", source, path, "schemaVersion must be 1."));
-  if (!/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(name) || name !== parse(path).name) diagnostics.push(diagnostic("agent_name_invalid", source, path, "name must be lowercase kebab-case and match its filename."));
+  if (!isImaAgentName(name) || name !== parse(path).name) diagnostics.push(diagnostic("agent_name_invalid", source, path, "name must be lowercase kebab-case, begin with a letter, and match its filename."));
   if (!description) diagnostics.push(diagnostic("agent_description_invalid", source, path, "description must be non-empty."));
   if (!useWhen) diagnostics.push(diagnostic("agent_use_when_invalid", source, path, `useWhen must contain ${IMA_AGENT_USE_WHEN_MIN_ITEMS} to ${IMA_AGENT_USE_WHEN_MAX_ITEMS} non-empty single-line strings of at most ${IMA_AGENT_USE_WHEN_MAX_LENGTH} characters.`));
   if (!inList(IMA_AGENT_TIERS, tier)) diagnostics.push(diagnostic("agent_tier_invalid", source, path, "tier is unsupported."));

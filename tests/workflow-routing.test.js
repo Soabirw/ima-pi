@@ -29,6 +29,9 @@ const config = {
     review: { provider: "sol", model: "review", thinking: "xhigh", source: "preset" },
     "resolve-review": { provider: "luna", model: "resolution", thinking: "max", source: "preset" },
   },
+  agents: {
+    "js-developer": { provider: "sol", model: "js-developer", thinking: "xhigh", source: "preset" },
+  },
   phases: {
     implement: { provider: "legacy", model: "implement", thinking: "high", source: "preset" },
     resolution: { provider: "legacy", model: "resolution", thinking: "high", source: "preset" },
@@ -72,6 +75,7 @@ test("resolves configured commands before legacy phase fallback and otherwise pa
   assert.deepEqual(resolveCommandRoute({ commands: {}, phases: config.phases }, "resolve-review"), { ok: true, route: { command: "resolve-review", provider: "legacy", model: "resolution", thinking: "high" } });
   assert.equal(resolveCommandRoute({ commands: {}, phases: {} }, "unconfigured"), null);
   assert.match(formatRouteMatrix(config), /commands:\nimplement: luna\/implement \(max\)/);
+  assert.match(formatRouteMatrix(config), /agents:\njs-developer: sol\/js-developer \(xhigh\)\nlegacy phases:/);
   assert.match(formatRouteMatrix(config), /legacy phases:\nimplement: legacy\/implement \(high\)/);
   assert.match(formatRouteMatrix(config), /roles:\nHIGH: terra\/high \(max\)/);
   const phaseOnly = formatRouteMatrix({
@@ -192,7 +196,7 @@ test("saves a user profile atomically while retaining valid overrides", async ()
   const directory = await mkdtemp(join(tmpdir(), "ima-profile-test-"));
   const path = join(directory, "ima", "config.json");
   await mkdir(join(directory, "ima"), { recursive: true });
-  await writeFile(path, JSON.stringify({ schemaVersion: 1, profile: "old", models: { HIGH: { provider: "p", model: "m" } }, phases: { test: { provider: "p", model: "test" } }, commands: { plan: "high" } }));
+  await writeFile(path, JSON.stringify({ schemaVersion: 1, profile: "old", models: { HIGH: { provider: "p", model: "m" } }, phases: { test: { provider: "p", model: "test" } }, agents: { "js-developer": { provider: "p", model: "js" } }, commands: { plan: "high" } }));
   const result = await persistUserProfileSelection({ path, profile: "new-profile" });
   assert.deepEqual(result, { ok: true, path });
   assert.deepEqual(JSON.parse(await readFile(path, "utf8")), {
@@ -200,6 +204,7 @@ test("saves a user profile atomically while retaining valid overrides", async ()
     profile: "new-profile",
     models: { HIGH: { provider: "p", model: "m" } },
     phases: { test: { provider: "p", model: "test" } },
+    agents: { "js-developer": { provider: "p", model: "js" } },
     commands: { plan: "high" },
   });
 });
