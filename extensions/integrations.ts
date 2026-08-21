@@ -12,6 +12,8 @@ import { Type } from "typebox";
 import {
   derivePhaseContext,
   evaluateSerenaBootstrap,
+  type ContextSource,
+  normalizeLifecycleRecallResult,
   normalizeSourcePayload,
   parseQdrantResults,
   prepareContextArguments,
@@ -325,7 +327,7 @@ async function loadDurableKnowledge(
 }
 
 async function sourcePayload(
-  source: any,
+  source: ContextSource,
   root: string,
   deps: Required<IntegrationDependencies>,
   signal?: AbortSignal,
@@ -370,6 +372,31 @@ async function sourcePayload(
       }
       : null;
   }
+  if (source.type === "lifecycle") {
+    try {
+      const value = await deps.session("vestige", (call) => call(
+        "recall",
+        { query: source.key, mode: "lookup", limit: 10 },
+        VESTIGE_TIMEOUT,
+      ), signal);
+      throwIfAborted(signal);
+      const artifact = normalizeLifecycleRecallResult({
+        lifecycleKey: source.key,
+        payload: mcpResultData(value),
+      });
+      return artifact
+        ? {
+          key: source.key,
+          title: `Lifecycle ${source.key}`,
+          content: artifact.content,
+          references: [`Vestige:${artifact.id}`],
+        }
+        : null;
+    } catch {
+      throwIfAborted(signal);
+      return null;
+    }
+  }
   if (source.type === "vestige") {
     try {
       const value = await deps.session("vestige", (call) => call(
@@ -388,6 +415,7 @@ async function sourcePayload(
       return null;
     }
   }
+  if (source.type !== "file") return null;
 
   const lexical = resolve(root, source.path);
   if (!inside(root, lexical)) throw new Error("source_path_outside_project");
@@ -551,12 +579,14 @@ export async function coordinateLifecycle(request: unknown, supplied?: Integrati
 const CONTEXT_SOURCE_PARAMETERS = Type.Object({}, {
   oneOf: [
     Type.Object({ type: StringEnum(["jira"] as const, { description: "Source kind. Supply only the fields required for the selected kind." }), key: Type.String({ pattern: "^[A-Z][A-Z0-9]+-\\d+$", description: "Required for jira; extract the uppercase issue key from a Jira URL." }) }, { additionalProperties: false }),
-    Type.Object({ type: StringEnum(["taskwarrior"] as const, { description: "Source kind. Supply only the fields required for the selected kind." }), project: Type.String({ pattern: "^[\\w.-]+$", description: "Required for taskwarrior." }), uuid: Type.String({ pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F-]{27}$", description: "Required for taskwarrior." }) }, { additionalProperties: false }),
+    Type.Object({ type: StringEnum(["taskwarrior"] as const, { description: "Source kind. Supply only the fields required for the selected kind." }), project: Type.String({ pattern: "^[\\w.-]+$", description: "Required for taskwarrior." }), uuid: Type.String({ pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", description: "Required for taskwarrior." }) }, { additionalProperties: false }),
     Type.Object({ type: StringEnum(["file"] as const, { description: "Source kind. Supply only the fields required for the selected kind." }), path: Type.String({ minLength: 1, maxLength: 1_024, description: "Required for file; project-root-contained regular file path." }) }, { additionalProperties: false }),
     Type.Object({ type: StringEnum(["vestige"] as const, { description: "Source kind. Supply only the fields required for the selected kind." }), id: Type.String({ pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", description: "Required for vestige; memory UUID." }) }, { additionalProperties: false }),
+    Type.Object({ type: StringEnum(["lifecycle"] as const, { description: "Source kind. Supply a validated lifecycle key." }), key: Type.String({ minLength: 1, maxLength: 512, pattern: "^[^\\r\\n]+$", description: "Required for lifecycle; a non-empty lifecycle key without line breaks." }) }, { additionalProperties: false }),
+    Type.Object({ type: StringEnum(["reference"] as const, { description: "Source kind. Raw manual-phase source identifier, normalized before external access." }), value: Type.String({ minLength: 1, maxLength: 1_024, description: "Canonical colon identifier or accepted space-delimited alias." }) }, { additionalProperties: false }),
     Type.Object({ type: StringEnum(["text"] as const, { description: "Source kind. Supply only the fields required for the selected kind." }), title: Type.String({ minLength: 1, maxLength: 256, description: "Required for text." }), content: Type.String({ minLength: 1, maxLength: 64_000, description: "Required for text." }) }, { additionalProperties: false }),
   ],
-  description: "Exactly one source: jira uses key; taskwarrior uses project and uuid; file uses path; vestige uses id; text uses title and content.",
+  description: "Exactly one source: jira uses key; taskwarrior uses project and uuid; file uses path; vestige uses id; lifecycle uses key; reference uses a canonical identifier or space alias; text uses title and content.",
 });
 
 const CONTEXT_DURABLE_KNOWLEDGE_PARAMETERS = Type.Object({
@@ -571,6 +601,6 @@ const CONTEXT_TOOL_PARAMETERS = Type.Object({
 }, { additionalProperties: false });
 
 export default function integrations(pi: ExtensionAPI) {
-  pi.registerTool({ name: "ima_context", label: "IMA context", description: "Build Serena-first project context from one typed source: jira/key, taskwarrior/project+uuid, file/path, vestige/id, or text/title+content. Optional durableKnowledge requires query and accepts collection and limit.", parameters: CONTEXT_TOOL_PARAMETERS, prepareArguments: prepareContextArguments, execute: async (_id, request, signal, _update, ctx) => ({ content: [{ type: "text", text: JSON.stringify(await coordinateContext(request, ctx.cwd, undefined, signal)) }], details: {} }) });
+  pi.registerTool({ name: "ima_context", label: "IMA context", description: "Build Serena-first project context from one typed source: jira/key, taskwarrior/project+uuid, file/path, vestige/id, lifecycle/key, reference/value, or text/title+content. Reference accepts canonical taskwarrior:<project>:<uuid>, jira:<KEY>, lifecycle:<lifecycle-key>, and vestige:<UUID> forms plus space aliases. Optional durableKnowledge requires query and accepts collection and limit.", parameters: CONTEXT_TOOL_PARAMETERS, prepareArguments: prepareContextArguments, execute: async (_id, request, signal, _update, ctx) => ({ content: [{ type: "text", text: JSON.stringify(await coordinateContext(request, ctx.cwd, undefined, signal)) }], details: {} }) });
   pi.registerTool({ name: "ima_lifecycle", label: "IMA lifecycle", description: "Save and semantically verify a lifecycle artifact.", parameters: Type.Object({ type: Type.String(), identity: Type.Any(), artifact: Type.String() }), execute: async (_id, request) => { const result = await coordinateLifecycle(request); return { content: [{ type: "text", text: JSON.stringify(result) }], details: result }; } });
 }

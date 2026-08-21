@@ -10,6 +10,10 @@ This command is the `plan` phase. Runtime selects the configured phase route bef
 
 When `$@` supplies a source, always use `ima_context` to hydrate it before research. This per-invocation source hydration is never a no-op: `/ima:new` cannot hydrate a source supplied later. After source hydration, if supporting context is not already loaded this session, load Serena project memory, relevant Vestige preferences, the `ima-lifecycle-contract` skill, and, where evidence requires their bounded concerns, `readable-code`, `functional-programmer`, and `ima-security-guardrails`. If `/ima:new` already seeded those supporting resources, treat only that supporting load as a no-op. Follow the shared lifecycle contract rather than duplicating tool-owned bootstrap or persistence behavior.
 
+## Manual phase source identifiers
+
+When `$@` is a manual lifecycle identifier, accept these canonical colon forms with space-delimited aliases: `taskwarrior:<project>:<uuid>` (`taskwarrior <project> <uuid>`), `jira:<KEY>` (`jira <KEY>`), `lifecycle:<lifecycle-key>` (`lifecycle <lifecycle-key>`), and `vestige:<UUID>` (`vestige <UUID>`). Pass the supplied identifier to `ima_context` as the closed `{ type: "reference", value: "<identifier>" }` source so it normalizes before external access. Preserve the canonical colon form in every handoff pointer. For lifecycle or Vestige sources, use applicable Vestige recall or memory evidence, never a Taskwarrior/Jira substitute, and declare prerequisites missing only after that lookup is empty or insufficient.
+
 ## Planning-only boundary
 
 Treat statements such as “fix,” “add,” “update,” or “implement” as planning input, not permission to change the repository. Do not edit code/config/content, run tests, builds, migrations, formatters, generators, servers, package installs, commits, branches, or automatically execute another phase.
@@ -50,6 +54,6 @@ Otherwise, persist plan `BLOCKED` and stop. When there are multiple independent 
 
 When the exact directive is absent, retain the interactive human-gated path and wait for explicit approval.
 
-For the human-gated path, show the complete contract and wait for explicit approval. After approval, persist it through `ima_lifecycle` as `plan`. The handoff pointer must use the canonical hydratable source form: `/ima:implement taskwarrior <project> <uuid>` or `/ima:implement <JIRA-KEY>`, never a raw colon lifecycle key. Then point to the appropriate implementation phase and stop.
+For the human-gated path, show the complete contract and wait for explicit approval. After approval, persist it through `ima_lifecycle` as `plan`. The handoff pointer must preserve the canonical prefixed source form: `/ima:implement taskwarrior:<project>:<uuid>`, `/ima:implement jira:<KEY>`, `/ima:implement lifecycle:<lifecycle-key>`, or `/ima:implement vestige:<UUID>`. Then point to the appropriate implementation phase and stop.
 
 When dispatched by `/ima:cycle`, finish the saved plan artifact with exactly one marker and no other cycle outcome marker: `<!-- ima-cycle outcome: phase=plan; outcome=APPROVED -->`. Use `BLOCKED` only when the plan cannot be safely approved.

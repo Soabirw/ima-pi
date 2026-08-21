@@ -20,6 +20,10 @@ Before phase work, search for prior lifecycle artifacts and reuse the existing i
 
 Do not create a disconnected lifecycle thread when prior evidence exists.
 
+## Manual source identifiers
+
+Manual phase handoffs use canonical colon identifiers, with space-delimited aliases accepted only as input: `taskwarrior:<project>:<uuid>` (`taskwarrior <project> <uuid>`), `jira:<KEY>` (`jira <KEY>`), `lifecycle:<lifecycle-key>` (`lifecycle <lifecycle-key>`), and `vestige:<UUID>` (`vestige <UUID>`). Pass an identifier to `ima_context` as its closed `reference` source, then preserve the canonical colon form across handoffs instead of replacing it with a raw key. For lifecycle or Vestige sources, use Vestige recall or memory evidence before declaring prerequisites absent; never substitute a Taskwarrior or Jira probe.
+
 ## `ima_lifecycle` identity
 
 Pass `ima_lifecycle.identity` this unwrapped camelCase object. Use empty strings or arrays rather than invented values; pass the lifecycle phase separately as `type`.

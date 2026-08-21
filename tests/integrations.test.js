@@ -71,21 +71,24 @@ test("context registration advertises the exact provider-compatible request cont
   assert.match(String(contextTool.execute), /coordinateContext\(request, ctx\.cwd, undefined, signal\)/);
   const parameters = contextTool.parameters;
   const source = parameters.properties.source;
-  const sources = [{ type: "jira", key: "FNR-3016" }, { type: "taskwarrior", project: "FNR-3007", uuid: "689fa7ac-84b7-42d0-8912-b8ef76041370" }, { type: "file", path: "README.md" }, { type: "vestige", id: "7027acec-43d3-4fa4-83ec-16e993551720" }, { type: "text", title: "Brief", content: "Scope" }];
-  const requiredFields = [["type", "key"], ["type", "project", "uuid"], ["type", "path"], ["type", "id"], ["type", "title", "content"]];
+  const sources = [{ type: "jira", key: "FNR-3016" }, { type: "taskwarrior", project: "FNR-3007", uuid: "689fa7ac-84b7-42d0-8912-b8ef76041370" }, { type: "file", path: "README.md" }, { type: "vestige", id: "7027acec-43d3-4fa4-83ec-16e993551720" }, { type: "lifecycle", key: "ima-pi:adhoc:lifecycle-source-identifiers:2026-08-04" }, { type: "reference", value: "jira:FNR-3016" }, { type: "text", title: "Brief", content: "Scope" }];
+  const requiredFields = [["type", "key"], ["type", "project", "uuid"], ["type", "path"], ["type", "id"], ["type", "key"], ["type", "value"], ["type", "title", "content"]];
 
   assert.equal(parameters.additionalProperties, false);
   assert.equal(source.type, "object");
   assert.equal(source.oneOf.length, sources.length);
   assert.deepEqual(source.oneOf.map((branch) => branch.required), requiredFields);
-  assert.deepEqual(source.oneOf.map((branch) => branch.properties.type.enum), [["jira"], ["taskwarrior"], ["file"], ["vestige"], ["text"]]);
+  assert.deepEqual(source.oneOf.map((branch) => branch.properties.type.enum), [["jira"], ["taskwarrior"], ["file"], ["vestige"], ["lifecycle"], ["reference"], ["text"]]);
   assert.equal(source.oneOf.every((branch) => branch.additionalProperties === false), true);
   assert.equal(source.oneOf[3].properties.id.pattern, vestigePattern);
+  assert.equal(source.oneOf[4].properties.key.maxLength, 512);
+  assert.equal(source.oneOf[5].properties.value.maxLength, 1_024);
   assert.equal(Check(parameters, { source: { ...sources[3], id: invalidVestigeId } }), false);
   assert.doesNotMatch(JSON.stringify(source), /"const"/);
   assert.deepEqual(parameters.properties.durableKnowledge.required, ["query"]);
   for (const value of sources) assert.equal(Check(parameters, { source: value }), true);
   assert.equal(Check(parameters, { source: sources[0], durableKnowledge: { query: "FNR-3016", collection: "ima", limit: 5 } }), true);
+  assert.deepEqual(contextTool.prepareArguments({ source: sources[5] }), { source: sources[0] });
 
   for (const [index, value] of sources.entries()) {
     for (const required of requiredFields[index]) assert.equal(Check(parameters, { source: Object.fromEntries(Object.entries(value).filter(([key]) => key !== required)) }), false);
@@ -102,8 +105,10 @@ test("context registration advertises the exact provider-compatible request cont
     const declaration = convertTools([contextTool], legacy)[0].functionDeclarations[0];
     const serialized = declaration[legacy ? "parameters" : "parametersJsonSchema"];
     assert.equal(serialized.properties.source.oneOf.length, sources.length);
-    assert.deepEqual(serialized.properties.source.oneOf.map((branch) => branch.properties.type.enum), [["jira"], ["taskwarrior"], ["file"], ["vestige"], ["text"]]);
+    assert.deepEqual(serialized.properties.source.oneOf.map((branch) => branch.properties.type.enum), [["jira"], ["taskwarrior"], ["file"], ["vestige"], ["lifecycle"], ["reference"], ["text"]]);
     assert.equal(serialized.properties.source.oneOf[3].properties.id.pattern, vestigePattern);
+    assert.equal(serialized.properties.source.oneOf[4].properties.key.maxLength, 512);
+    assert.equal(serialized.properties.source.oneOf[5].properties.value.maxLength, 1_024);
     assert.doesNotMatch(JSON.stringify(serialized), /"const"/);
   }
 
@@ -667,6 +672,69 @@ test("context fails closed for invalid direct Vestige source responses", async (
     assert.equal(result.status, "failed");
     assert.equal(result.source, null);
     assert.equal(result.diagnostics[0].code, "source_boundary_unavailable");
+    assert.doesNotMatch(JSON.stringify(result), /vestige-error/);
+  }
+});
+
+test("context hydrates verified lifecycle sources through Vestige recall only", async () => {
+  const lifecycleKey = "ima-pi:adhoc:lifecycle-source-identifiers:2026-08-04";
+  const artifactId = "aac9ae23-432d-4144-a9e6-4bb49457d03a";
+  const content = `# Plan\n<!-- ima-lifecycle verification: lifecycle_key=${lifecycleKey}; nonce=01234567-89ab-cdef-0123-456789abcdef; phase=plan; jira_key=; taskwarrior_uuid=; outcome=completed -->\n`;
+  const runCalls = [];
+  const mcp = createSessionGateway((server, name, arguments_) => (
+    server === "vestige" && name === "recall"
+      ? { isError: false, structuredContent: { results: [{ id: artifactId, content }] } }
+      : defaultSessionResponse(server, name, arguments_)
+  ));
+  const result = await coordinateContext(
+    { source: { type: "reference", value: `lifecycle:${lifecycleKey}` } },
+    "/repo",
+    { canonical: async (path) => path, run: runGateway(runCalls), session: mcp.session },
+  );
+
+  assert.equal(result.status, "ready");
+  assert.deepEqual(result.source, {
+    type: "lifecycle",
+    key: lifecycleKey,
+    title: `Lifecycle ${lifecycleKey}`,
+    content,
+    references: [`Lifecycle:${lifecycleKey}`, `Vestige:${artifactId}`],
+  });
+  assert.deepEqual(mcp.calls.at(-1), ["vestige", "recall", { query: lifecycleKey, mode: "lookup", limit: 10 }]);
+  assert.deepEqual(runCalls, []);
+  assert.equal(mcp.calls.some(([server, name]) => server === "vestige" && name === "memory"), false);
+});
+
+test("lifecycle sources fail closed for unavailable or non-authoritative recall", async () => {
+  const lifecycleKey = "ima-pi:adhoc:lifecycle-source-identifiers:2026-08-04";
+  const verified = `<!-- ima-lifecycle verification: lifecycle_key=${lifecycleKey}; nonce=01234567-89ab-cdef-0123-456789abcdef; phase=plan; jira_key=; taskwarrior_uuid=; outcome=completed -->`;
+  const abbreviated = `<!-- ima-lifecycle verification: lifecycle_key=${lifecycleKey}; outcome=completed -->`;
+  const responses = [
+    { isError: true, content: [{ type: "text", text: "token=vestige-error" }] },
+    { isError: false, structuredContent: { results: [] } },
+    { isError: false, structuredContent: { results: [{ id: "case-mismatch", content: verified.replace(lifecycleKey, lifecycleKey.toUpperCase()) }] } },
+    { isError: false, structuredContent: { results: [{ id: "abbreviated", content: abbreviated }] } },
+    { isError: false, structuredContent: { results: [{ id: "trailing", content: `${verified}\nunrelated` }] } },
+    { isError: false, structuredContent: { results: [{ id: "blocked", content: verified.replace("outcome=completed", "outcome=blocked") }] } },
+  ];
+
+  for (const response of responses) {
+    const runCalls = [];
+    const mcp = createSessionGateway((server, name, arguments_) => (
+      server === "vestige" && name === "recall" ? response : defaultSessionResponse(server, name, arguments_)
+    ));
+    const result = await coordinateContext(
+      { source: { type: "lifecycle", key: lifecycleKey } },
+      "/repo",
+      { canonical: async (path) => path, run: runGateway(runCalls), session: mcp.session },
+    );
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.source, null);
+    assert.equal(result.diagnostics[0].code, "source_boundary_unavailable");
+    assert.deepEqual(runCalls, []);
+    assert.equal(mcp.calls.filter(([server, name]) => server === "vestige" && name === "recall").length, 1);
+    assert.equal(mcp.calls.some(([server, name]) => server === "vestige" && name === "memory"), false);
     assert.doesNotMatch(JSON.stringify(result), /vestige-error/);
   }
 });

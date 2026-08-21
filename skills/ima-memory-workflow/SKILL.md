@@ -20,7 +20,7 @@ Use each memory system for its own job. Do not treat them as interchangeable scr
 For a task that needs context:
 
 1. Hydrate the supplied source with `ima_context`; it establishes source and Serena project context.
-2. Use a focused Vestige recall by lifecycle key, Taskwarrior UUID, or Jira key for prior task work and preferences.
+2. Use a focused Vestige recall by lifecycle key, Taskwarrior UUID, or Jira key for prior task work and preferences. For `lifecycle:<lifecycle-key>`, recall the exact lifecycle key before concluding evidence is absent. For `vestige:<UUID>`, retrieve the cited memory, recover lifecycle identity when present, then recall related verified artifacts. Never replace lifecycle/Vestige recall with a Taskwarrior or Jira probe.
 3. Search Qdrant only when durable reference material would change the decision or implementation.
 4. Read the relevant Serena memories and navigate the smallest necessary repository surface.
 
@@ -35,6 +35,10 @@ Do not preload unrelated memories or broad reference corpora. State when evidenc
    - Store long-lived reference material in Qdrant when it should remain searchable beyond the current task.
 
 Keep artifacts correlated with the existing lifecycle key. Do not create disconnected task threads when a matching source, plan, or lifecycle artifact already exists.
+
+## Manual source identifiers
+
+Manual phases accept canonical colon identifiers with space-delimited aliases: `taskwarrior:<project>:<uuid>` (`taskwarrior <project> <uuid>`), `jira:<KEY>` (`jira <KEY>`), `lifecycle:<lifecycle-key>` (`lifecycle <lifecycle-key>`), and `vestige:<UUID>` (`vestige <UUID>`). Preserve the canonical colon form in handoffs; use `ima_context`'s closed `reference` source to normalize an incoming identifier.
 
 ## Boundaries
 

@@ -2,7 +2,11 @@
 description: Produce bounded documentation and learning closeout from completed lifecycle evidence
 argument-hint: "[completed-lifecycle-source]"
 ---
-You own one terminal MID-tier **document/learning** phase. Runtime selects the configured `document` route before expansion. `$@` must provide plan, implementation, test, final review/rereview, changed files, acceptance, risk, and lifecycle evidence. Call `ima_context`; fail closed if evidence is incomplete. Load `ima-memory-workflow` for Serena, Vestige, and Qdrant routing, and apply `ima-vision-handoff` or `ima-delegation-contract` when visual evidence or bounded delegation applies.
+You own one terminal MID-tier **document/learning** phase. Runtime selects the configured `document` route before expansion. `$@` must provide plan, implementation, test, final review/rereview, changed files, acceptance, risk, and lifecycle evidence. First call `ima_context`, then load `ima-memory-workflow` for Serena, Vestige, and Qdrant routing. Hydrate the source, recall verified plan, implementation, test, and final-review/rereview evidence in order, and reuse the recovered lifecycle identity and prior artifact IDs. Fail closed only when hydration plus the applicable focused recall cannot establish the required evidence. Apply `ima-vision-handoff` or `ima-delegation-contract` when visual evidence or bounded delegation applies.
+
+## Manual phase source identifiers
+
+When `$@` is an identifier, accept these canonical colon forms with space-delimited aliases: `taskwarrior:<project>:<uuid>` (`taskwarrior <project> <uuid>`), `jira:<KEY>` (`jira <KEY>`), `lifecycle:<lifecycle-key>` (`lifecycle <lifecycle-key>`), and `vestige:<UUID>` (`vestige <UUID>`). Pass it to `ima_context` as the closed `{ type: "reference", value: "<identifier>" }` source so it normalizes before external access. Preserve the canonical colon form in handoff pointers. For lifecycle or Vestige sources, use Vestige evidence only and declare prerequisites missing only after that lookup is empty or insufficient.
 
 For the default manifest-only assessment, delegate to `document-assessor` with `writeScope: []`; it is read-only and returns a structured external-update manifest only. Delegate only exact approved `*.md`, `*.mdx`, `*.txt`, `README`, `CHANGELOG`, `CHANGES`, or `RELEASE_NOTES` files to `documenter` with an exact documentation `writeScope` when approved local edits are needed; reject broad directories and all production/test/config/migration/release targets. Validate the local diff.
 

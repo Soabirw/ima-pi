@@ -28,9 +28,9 @@ test("plan enforces one-unit Serena-first technical planning without implementat
   has(text, "Do not edit code/config/content");
 });
 
-test("shared lifecycle skill keeps artifact, identity, and cycle-marker boundaries in one source", async () => {
+test("shared lifecycle skill keeps artifact, identity, source-identifier, and cycle-marker boundaries in one source", async () => {
   const text = await skill("ima-lifecycle-contract");
-  for (const value of ["name: ima-lifecycle-contract", "artifact is the detailed source of truth", "ima_lifecycle", "generated SDK namespace", "lifecycle_key", "prior_artifact_ids", "Do not create a disconnected lifecycle thread", "exactly one cycle outcome marker"]) has(text, value);
+  for (const value of ["name: ima-lifecycle-contract", "artifact is the detailed source of truth", "ima_lifecycle", "generated SDK namespace", "lifecycle_key", "prior_artifact_ids", "Do not create a disconnected lifecycle thread", "exactly one cycle outcome marker", "taskwarrior:<project>:<uuid>", "lifecycle:<lifecycle-key>", "vestige:<UUID>", "canonical colon identifiers", "never substitute a Taskwarrior or Jira probe"]) has(text, value);
 });
 
 const implementationPrompts = ["implement", "implement-js", "implement-wp"];
@@ -62,16 +62,25 @@ test("implementation prompts expose a MID current-session, plan-bound terminal c
   }
 });
 
-test("lifecycle prompts recall verified plans by canonical source lifecycle key", async () => {
+test("manual lifecycle prompts normalize shared source identifiers before declaring evidence missing", async () => {
+  const manualPrompts = ["plan", "implement", "implement-js", "implement-wp", "test", "review", "resolve-review", "rereview", "document"];
+  const sourceGrammar = ["taskwarrior:<project>:<uuid>", "taskwarrior <project> <uuid>", "jira:<KEY>", "jira <KEY>", "lifecycle:<lifecycle-key>", "lifecycle <lifecycle-key>", "vestige:<UUID>", "vestige <UUID>", "canonical colon forms", "space-delimited aliases", "reference", "empty or insufficient"];
+  for (const name of manualPrompts) {
+    const text = await prompt(name);
+    for (const value of sourceGrammar) has(text, value);
+  }
   for (const name of ["implement", "implement-js", "implement-wp", "test", "review", "resolve-review", "rereview"]) {
     const text = await prompt(name);
-    for (const value of ["ima-memory-workflow", "latest VERIFIED lifecycle artifact", "ima-pi:taskwarrior:<project>:<uuid>", "ima-pi:jira:<KEY>"]) has(text, value);
+    for (const value of ["ima-memory-workflow", "latest VERIFIED lifecycle artifact", "ima-pi:taskwarrior:<project>:<uuid>", "ima-pi:jira:<KEY>", "Never substitute a Taskwarrior or Jira probe"]) has(text, value);
   }
   const rereview = await prompt("rereview");
   has(rereview, "First call `ima_context`");
   assert.ok(rereview.indexOf("First call `ima_context`") < rereview.indexOf("latest VERIFIED lifecycle artifact"));
+  const document = await prompt("document");
+  assert.ok(document.indexOf("First call `ima_context`") < document.indexOf("recall verified plan"));
+  assert.ok(document.indexOf("recall verified plan") < document.indexOf("Fail closed only"));
   const planning = await prompt("plan");
-  for (const value of ["canonical hydratable source form", "/ima:implement taskwarrior <project> <uuid>", "/ima:implement <JIRA-KEY>", "never a raw colon lifecycle key"]) has(planning, value);
+  for (const value of ["canonical prefixed source form", "/ima:implement taskwarrior:<project>:<uuid>", "/ima:implement jira:<KEY>", "/ima:implement lifecycle:<lifecycle-key>", "/ima:implement vestige:<UUID>"]) has(planning, value);
 });
 
 test("workflow routing treats arbitrary /ima:* tokens as command-keyed candidates", () => {
@@ -80,9 +89,9 @@ test("workflow routing treats arbitrary /ima:* tokens as command-keyed candidate
   assert.equal(parseWorkflowCommand("/other:command source"), null);
 });
 
-test("README distinguishes direct implementation commands from cycle dispatch", async () => {
+test("README distinguishes direct implementation commands, cycle dispatch, and manual source identifiers", async () => {
   const readme = await readFile(join(root, "README.md"), "utf8");
-  for (const value of ["direct command `X` resolves `commands[X]`", "`implement-js` and `implement-wp` both use `phases.implement`", "The `/ima:cycle` implementation phase dispatches `implement`", "`commands.implement` then `phases.implement`"]) has(readme, value);
+  for (const value of ["direct command `X` resolves `commands[X]`", "`implement-js` and `implement-wp` both use `phases.implement`", "The `/ima:cycle` implementation phase dispatches `implement`", "`commands.implement` then `phases.implement`", "Manual phase source identifiers", "taskwarrior:<project>:<uuid>", "jira:<KEY>", "lifecycle:<lifecycle-key>", "vestige:<UUID>", "space-delimited alias", "/ima:cycle start` remains Jira/Taskwarrior-only"]) has(readme, value);
   assert.doesNotMatch(readme, /command routing resolves `commands\.implement`, then explicit legacy `phases\.implement`/);
 });
 

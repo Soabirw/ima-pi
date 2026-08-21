@@ -6,7 +6,11 @@ You own the `resolution` phase for exactly one approved lifecycle unit. Runtime 
 
 `$@` must supply the approved plan, implementation, test, and review evidence plus lifecycle identity. Call `ima_context` and use Serena-first evidence before changing only the exact implementation or documentation targets named by the confirmed review findings. Load `code-review` for finding structure, `ima-security-guardrails` for applicable target checks, and `functional-programmer` for pure/effect boundaries; load `ima-delegation-contract` before using `ima_delegate`. Do not reopen product scope, redesign architecture, broaden the plan, or resolve unverified findings. Keep effects at explicit boundaries, preserve security and data-integrity contracts, and use the smallest supported verification.
 
-After `ima_context` hydration, when no resume evidence packet is already present in-session, use `ima-memory-workflow` to recall the latest VERIFIED lifecycle artifact(s) for the source lifecycle key: derive `ima-pi:taskwarrior:<project>:<uuid>` for Taskwarrior or `ima-pi:jira:<KEY>` for Jira.
+After `ima_context` hydration, when no resume evidence packet is already present in-session, use `ima-memory-workflow` to recall the latest VERIFIED lifecycle artifact(s) for the source lifecycle key: derive `ima-pi:taskwarrior:<project>:<uuid>` for Taskwarrior or `ima-pi:jira:<KEY>` for Jira. For `lifecycle:<lifecycle-key>`, use the supplied lifecycle key directly. For `vestige:<UUID>`, retrieve the cited memory, recover lifecycle identity when present, then recall related verified evidence. Never substitute a Taskwarrior or Jira probe for lifecycle/vestige evidence; declare prerequisites missing only after the applicable lookup is empty or insufficient.
+
+## Manual phase source identifiers
+
+When `$@` is an identifier, accept these canonical colon forms with space-delimited aliases: `taskwarrior:<project>:<uuid>` (`taskwarrior <project> <uuid>`), `jira:<KEY>` (`jira <KEY>`), `lifecycle:<lifecycle-key>` (`lifecycle <lifecycle-key>`), and `vestige:<UUID>` (`vestige <UUID>`). Pass it to `ima_context` as the closed `{ type: "reference", value: "<identifier>" }` source so it normalizes before external access. Preserve the canonical colon form in handoff pointers. For lifecycle or Vestige sources, use Vestige evidence only and declare prerequisites missing only after that lookup is empty or insufficient.
 
 ## Review-resolution preflight
 
