@@ -27,7 +27,26 @@ test("shared instruction skills have valid package metadata and local links", as
 test("shared instruction skills retain their bounded contracts", async () => {
   const [memory, security, vision, delegation] = await Promise.all(skills.map((name) => read(`skills/${name}/SKILL.md`)));
 
-  mustContain(memory, [/ima_context/, /Vestige/, /Qdrant/, /ima_lifecycle/, /lifecycle key/i], "memory workflow");
+  mustContain(memory, [
+    /ima_context/,
+    /Vestige/,
+    /Qdrant/,
+    /session_start.*recall/is,
+    /read-only transport failure/i,
+    /mcp\(\{ connect: "vestige" \}\)/,
+    /same read.*identical arguments.*exactly once/is,
+    /never retry.*mutation/is,
+    /current-invocation/i,
+    /unrelated merged/i,
+    /For `vestige:<UUID>`, retrieve the cited memory as required.*source hydration/is,
+    /optional preference results.*adequate summary/is,
+    /selected full memory only when its summary cannot support relevance\s+validation or preference\s+summarization/is,
+    /Do not apply this optional-expansion gate.*explicitly cited.*vestige:<UUID>/is,
+    /required cited-memory retrieval.*partial or failed evidence/is,
+    /\/ima:memorize/,
+    /ima_lifecycle/,
+    /lifecycle key/i,
+  ], "memory workflow");
   mustContain(security, [/wp_verify_nonce\(\)|check_ajax_referer\(\)/, /current_user_can\(\)/, /->prepare\(\)/, /sanitize_text_field\(\)/, /esc_html\(\)/, /declare\(strict_types=1\)/, /parameterized-query/i, /pipe\(\).*compose\(.*curry/is], "security guardrails");
   mustContain(vision, [/ima_delegate/, /vision-handoff/, /imagePaths/, /evidence-only/i, /smallest concrete replacement/i], "vision handoff");
   mustContain(delegation, [/ima_delegate/, /one to four/i, /self-contained/i, /writeScope/, /Retry at most once/i], "delegation contract");

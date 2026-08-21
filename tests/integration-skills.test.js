@@ -29,8 +29,21 @@ test("integration skill local Markdown links resolve within packaged assets", as
 test("integration skills retain Pi-native safety and workflow boundaries", async () => {
   assert.match(await read("skills/mcp-serena/SKILL.md"), /activate.*initial_instructions.*list memories/is);
   assert.match(await read("skills/mcp-serena/SKILL.md"), /JetBrains/i);
-  assert.match(await read("skills/mcp-vestige/SKILL.md"), /session_start.*recall/is);
-  assert.match(await read("skills/mcp-vestige/SKILL.md"), /receipt protocol/i);
+  const vestige = await read("skills/mcp-vestige/SKILL.md");
+  assert.match(vestige, /session_start.*recall/is);
+  assert.match(vestige, /preference LOAD/i);
+  assert.match(vestige, /mcp\(\{ connect: "vestige" \}\)/);
+  assert.match(vestige, /same read.*identical arguments.*exactly once/is);
+  assert.match(vestige, /Never retry.*smart_ingest.*mutation/is);
+  assert.match(vestige, /current invocation.*unrelated merged/is);
+  assert.match(vestige, /Stop after an adequate summary/i);
+  assert.match(
+    vestige,
+    /selected full memory only when its summary cannot support relevance\s+validation or preference\s+summarization/is,
+  );
+  assert.match(vestige, /partial\s+or failed evidence rather than guessing/i);
+  assert.match(vestige, /\/ima:memorize/);
+  assert.match(vestige, /receipt protocol/i);
   assert.match(await read("skills/mcp-qdrant/SKILL.md"), /durable/i);
   assert.match(await read("skills/mcp-atlassian/SKILL.md"), /REST helper/i);
   assert.match(await read("skills/mcp-taskwarrior/SKILL.md"), /project plus UUID/i);

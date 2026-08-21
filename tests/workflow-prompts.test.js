@@ -255,7 +255,55 @@ test("FNR-3025 support prompts encode gateway, safety, and terminal contracts", 
   for (const value of ["description:", "argument-hint:", "direct Serena tools to activate", "instructions", "list memories", "core", "conventions", "tech_stack", "suggested_commands", "task_completion", "PASS, MISSING, or FAIL", "Do not pass a Taskwarrior project", "Stop after"]) has(serena, value);
   has(serena, "package MCP adapter");
   const vestige = await prompt("vestige-bootstrap");
-  for (const value of ["session_start", "recall", "Discover Vestige", "PASS, EMPTY, FAIL, or SKIP", "Never ingest", "Stop after"]) has(vestige, value);
+  assert.equal(
+    (vestige.match(/\$@/g) ?? []).length,
+    1,
+    "vestige bootstrap must interpolate its optional topic exactly once",
+  );
+  assert.match(
+    vestige,
+    /empty value or an unexpanded literal\s+placeholder as no topic and select one broad read-only `session_start`/i,
+  );
+  assert.match(
+    vestige,
+    /one focused `recall` and pass the exact non-empty topic only as recall query data/i,
+  );
+  assert.match(
+    vestige,
+    /Classify the final read or retrieval result before noting recovery\. Recovery annotates,\s+never replaces, that final disposition:/is,
+  );
+  assert.match(
+    vestige,
+    /PASS — recovered after one retry — the sole identical retry produced usable current-invocation evidence\./,
+  );
+  assert.match(
+    vestige,
+    /EMPTY — recovered after one retry — the sole identical retry succeeded but found no matching preference\./,
+  );
+  for (const value of [
+    "session_start",
+    "recall",
+    "Discover Vestige",
+    "package MCP adapter",
+    'mcp({ connect: "vestige" })',
+    "-32000",
+    "Connection closed",
+    "timeout",
+    "same read operation",
+    "identical arguments",
+    "exactly once",
+    "Never retry `smart_ingest`",
+    "current-invocation",
+    "unrelated merged",
+    "PASS, EMPTY, FAIL, or SKIP",
+    "PASS — usable current-invocation evidence.",
+    "EMPTY — a successful read found no matching preference.",
+    "FAIL — discovery, reconnect, the sole retry, required full retrieval, or evidence validation failed; label any remaining excerpt partial or stale.",
+    "SKIP — the focused fallback or full retrieval was unnecessary.",
+    "Never ingest",
+    "Stop after",
+  ]) has(vestige, value);
+  assert.doesNotMatch(vestige, /direct Vestige may not expose dedicated preference helpers/i);
   const memorize = await prompt("memorize");
   for (const value of ["natural language", "parameter grammar", "Vestige preference", "Serena `core`", "`conventions`", "`tech_stack`", "`suggested_commands`", "`task_completion`", "`memory_maintenance`", "ima_lifecycle", "Qdrant", "secrets", "exact preview", "explicit approval", "vestige_smart_ingest", "serena_edit_memory", "mode\":\"literal", "allow_multiple_occurrences\":false", "serena_write_memory", "verify", "Stop after one"]) has(memorize, value);
   assert.match(

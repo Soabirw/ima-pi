@@ -20,7 +20,23 @@ Use each memory system for its own job. Do not treat them as interchangeable scr
 For a task that needs context:
 
 1. Hydrate the supplied source with `ima_context`; it establishes source and Serena project context.
-2. Use a focused Vestige recall by lifecycle key, Taskwarrior UUID, or Jira key for prior task work and preferences. For `lifecycle:<lifecycle-key>`, recall the exact lifecycle key before concluding evidence is absent. For `vestige:<UUID>`, retrieve the cited memory, recover lifecycle identity when present, then recall related verified artifacts. Never replace lifecycle/Vestige recall with a Taskwarrior or Jira probe.
+2. Use a native `session_start` for broad context or a focused Vestige `recall` by
+   lifecycle key, Taskwarrior UUID, or Jira key for prior task work and preferences.
+   This direct read is the preference load; do not seek a separate helper.
+   For `lifecycle:<lifecycle-key>`, recall the exact lifecycle key before concluding
+   evidence is absent. For `vestige:<UUID>`, retrieve the cited memory as required
+   source hydration, recover lifecycle identity when present, then recall related
+   verified artifacts. For optional preference results, stop after an adequate summary.
+   Retrieve a selected full memory only when its summary cannot support relevance
+   validation or preference summarization. Do not apply this optional-expansion gate to
+   an explicitly cited `vestige:<UUID>` source. If required cited-memory retrieval
+   fails, report partial or failed evidence rather than substituting unrelated content.
+   On a transient read-only transport failure (`-32000`, `Connection closed`, or
+   adapter timeout), call `mcp({ connect: "vestige" })` and repeat the same read with
+   identical arguments exactly once after reconnect; never retry mutations.
+   Treat live current-invocation responses as authoritative over stale caches, and
+   reject unrelated merged lifecycle or log content as preference evidence. Never
+   replace lifecycle/Vestige recall with a Taskwarrior or Jira probe.
 3. Search Qdrant only when durable reference material would change the decision or implementation.
 4. Read the relevant Serena memories and navigate the smallest necessary repository surface.
 
@@ -28,7 +44,10 @@ Do not preload unrelated memories or broad reference corpora. State when evidenc
 
 ## Preserve in order
 
-1. When the current lifecycle phase explicitly authorizes persistence, persist a formal plan, implementation, test, review, resolution, rereview, or closeout through `ima_lifecycle`.
+1. When the current lifecycle phase explicitly authorizes persistence, persist a formal
+   plan, implementation, test, review, resolution, rereview, or closeout through
+   `ima_lifecycle`. Preference persistence routes through `/ima:memorize`; formal
+   lifecycle persistence remains owned by `ima_lifecycle`.
 2. Every direct memory write requires explicit phase authority:
    - Preserve evolving task context and decisions in Vestige.
    - Update Serena only for concise, stable project instructions or commands that belong to project memory.
