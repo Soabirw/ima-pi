@@ -4,6 +4,8 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-08-21
+
 ### Added
 
 - Added shared canonical source identifiers for all nine manual lifecycle phases: Taskwarrior, Jira, lifecycle, and Vestige forms now accept canonical colon syntax with space-delimited aliases.
@@ -15,6 +17,7 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 ### Fixed
 
 - Manual lifecycle phases now retrieve lifecycle or Vestige evidence before declaring prerequisites missing, reject non-authoritative lifecycle artifacts, and never substitute Taskwarrior or Jira probes for those sources.
+- Hardened Vestige preference bootstrap instructions with native `session_start`/focused `recall`, one classified read-only reconnect/retry, current-evidence safeguards, and no mutation retries.
 
 ## [1.11.0] - 2026-08-20
 
