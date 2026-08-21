@@ -4,8 +4,11 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ## [Unreleased]
 
+## [1.11.0] - 2026-08-20
+
 ### Added
 
+- Added bounded terminal delegation results: fresh and focused-continuation children return a 400-semantic-line/10 KiB summary plus an inspectable session pointer, while complete child-authored reports remain in Pi JSONL sessions.
 - Added bounded `useWhen` applicability metadata to all packaged agents and a safe resolved-agent catalog for ordinary turns with active `ima_delegate`. The parent can opportunistically delegate a clear match or honor an explicit named-agent request through the existing visible, confirmation-free path; invalid catalogs fail closed without exposing prompts or paths.
 - Added optional complete per-agent `agents` profile mappings for an exact provider, model, and optional thinking level, enabling parent-independent delegated-agent promotion and demotion.
 
