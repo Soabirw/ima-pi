@@ -68,7 +68,9 @@ test("reopens exact persisted session, executes focused brief, validates identit
   const run = continuation();
   const result = await run.promise;
   assert.equal(result.status, "succeeded");
-  assert.equal(result.report, report);
+  assert.equal(result.report, undefined);
+  assert.equal(result.summary, report);
+  assert.deepEqual(result.session, { id: "s", file: "/sessions/a.jsonl", resumeReference: "a" });
   assert.deepEqual(run.counts(), { opened: 1, created: 1 });
   assert.deepEqual(run.fake.state.prompts, ["Fix the retained finding"]);
   assert.equal(run.store.get("a").status, "succeeded");
@@ -117,8 +119,10 @@ test("fails closed on observed identity mismatch, exposes unverified context, an
   assert.equal(result.status, "failed");
   assert.ok(result.completion.includes("runtime_identity_mismatch"));
   assert.equal(result.report, undefined);
-  assert.equal(result.unverifiedReport, report);
+  assert.equal(result.unverifiedReport, undefined);
+  assert.equal(result.summary, report);
   assert.equal(result.unverifiedReason, "runtime_identity_mismatch");
+  assert.deepEqual(result.session, { id: "s", file: "/sessions/a.jsonl", resumeReference: null });
   assert.equal(run.store.get("a").updatedAt, "old");
   assert.equal(wrong.state.disposes, 1);
 });

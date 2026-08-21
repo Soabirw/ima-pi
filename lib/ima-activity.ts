@@ -1,5 +1,5 @@
 import type { AgentDefinition } from "./ima-agents.ts";
-import type { DelegationFailure, DelegationRequest } from "./ima-delegation.ts";
+import type { DelegationFailure, DelegationRequest, DelegationResult } from "./ima-delegation.ts";
 
 export type DelegationActivityChildState = "pending" | "starting" | "running" | "retrying" | "succeeded" | "blocked" | "failed" | "cancelling" | "cancelled";
 export type DelegationActivityStateName = "starting" | "running" | "cancelling" | "succeeded" | "failed" | "cancelled";
@@ -183,7 +183,7 @@ export function renderDelegationActivity(state: DelegationActivityState, at: num
   return lines.slice(0, 5);
 }
 
-type CoordinatorResult = { id: string; status: string; attempts?: number; error?: string; failure?: DelegationFailure; escalation?: string | null; resumeReference?: string | null; report?: string; unverifiedReport?: string; unverifiedReason?: string };
+type CoordinatorResult = DelegationResult;
 const actionFor = (input: { state: DelegationOutcomeReport["state"]; failures: DelegationFailure[]; possibleScopes: string[] }) => {
   if (input.state === "cancelled") return { code: "inspect-partial-state", text: "Inspect git status and diffs limited to the reported write scopes before rerunning; cancellation does not roll back effects.", inspectScopes: input.possibleScopes };
   if (input.failures.includes("unsafe-partial-state")) return { code: "correct-safety-boundary", text: "Stop, inspect the reported scopes, and correct assignment ownership or the requested operation before rerunning.", inspectScopes: input.possibleScopes };
@@ -206,7 +206,7 @@ export function buildDelegationOutcomeReport(input: {
   const results = new Map(input.results.map((result) => [result.id, result]));
   const possibleWriteScopes = unique(input.activity.children.flatMap((child) => child.possiblePartialWriteScopes));
   const failures = unique(input.results.map((result) => result.failure).filter((failure): failure is DelegationFailure => Boolean(failure)));
-  const reusableSessionReferences = input.results.map((result) => result.status === "succeeded" ? result.resumeReference : null).filter((reference): reference is string => Boolean(reference));
+  const reusableSessionReferences = input.results.map((result) => result.status === "succeeded" ? result.session?.resumeReference : null).filter((reference): reference is string => Boolean(reference));
   const state = input.activity.state === "succeeded" ? "succeeded" : input.activity.state === "cancelled" ? "cancelled" : "failed";
   const children = input.activity.children.map((child) => {
     const result = results.get(child.assignmentId);
@@ -217,7 +217,7 @@ export function buildDelegationOutcomeReport(input: {
       blocker: child.blocker ?? result?.error ?? null,
       retryHistory: child.retryReason ? [child.retryReason] : [],
       escalation: child.escalation ?? result?.escalation ?? null,
-      resumeReference: result?.status === "succeeded" ? result.resumeReference ?? null : null,
+      resumeReference: result?.status === "succeeded" ? result.session?.resumeReference ?? null : null,
     };
   });
   return {

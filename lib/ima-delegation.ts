@@ -10,7 +10,6 @@ export type DelegationEvent = { type: "started" | "succeeded" | "failed" | "canc
 export type SessionRecord = { reference: string; agent: string; role: string; resultKind: string; provider: string; model: string; thinking?: string; sessionId: string; sessionFile: string; writeScope: string[]; contractFingerprint: string; status: "running" | "succeeded" | "failed" | "cancelled"; fresh: boolean; followUpAllowed: boolean; createdAt: string; updatedAt: string };
 export type BashClassification = { kind: "read-only" | "owned-mutation" | "unsafe-ambiguous"; paths: string[]; reason?: string };
 export type CompletionFailureCode = "assistant_missing" | "assistant_error" | "assistant_aborted" | "assistant_truncated" | "assistant_tool_use" | "assistant_not_terminal" | "report_empty" | "runtime_identity_missing" | "runtime_identity_mismatch" | "session_identity_missing" | "session_identity_mismatch";
-
 const clean = (value: unknown) => typeof value === "string" ? value.trim() : value instanceof Error ? value.message.trim() : "";
 const invalidSegments = (path: string) => path.split("/").some((segment) => !segment || segment === "." || segment === "..");
 const safeRelative = (path: string) => !!path && path !== "." && path !== "/" && !path.startsWith("/") && !path.includes("\\") && !invalidSegments(path);
@@ -292,4 +291,18 @@ export function agentContractFingerprint(agent: AgentDefinition, writeScope: str
 }
 
 export function canResumeSession(input: { record: SessionRecord; agent: AgentDefinition; purpose: "initial-review" | "rereview" | "finding-follow-up" | "implementation-follow-up" | "review-resolution" | "vision-follow-up"; sessionFileExists: boolean }) { if (!input.sessionFileExists || input.record.agent !== input.agent.name || input.record.status !== "succeeded" || !input.agent.independence.followUpAllowed) return false; if (input.agent.authority === "review-read") return ["rereview", "finding-follow-up"].includes(input.purpose); if (input.agent.authority === "vision-read") return input.purpose === "vision-follow-up"; return ["implementation-follow-up", "review-resolution"].includes(input.purpose); }
-export function summarizeDelegationResults(results: Array<{ id: string; status: string; provider?: string; model?: string; sessionId?: string }>) { return results.map((result) => ({ ...result })).sort((a, b) => a.id.localeCompare(b.id)); }
+export {
+  DELEGATION_RESULT_MAX_BYTES,
+  DELEGATION_RESULT_MAX_LINES,
+  DELEGATION_SUMMARY_MAX_BYTES,
+  DELEGATION_SUMMARY_MAX_LINES,
+  boundDelegationSummary,
+  buildDelegationToolPayload,
+  createDelegationResult,
+  summarizeDelegationResults,
+} from "./ima-delegation-results.ts";
+export type {
+  DelegationResult,
+  DelegationSessionPointer,
+  DelegationSummaryLimits,
+} from "./ima-delegation-results.ts";

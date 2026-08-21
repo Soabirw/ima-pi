@@ -33,7 +33,9 @@ import {
 import {
   agentContractFingerprint,
   buildChildBrief,
+  buildDelegationToolPayload,
   canResumeSession,
+  createDelegationResult,
   classifyBashCommand,
   classifyChildFailure,
   createDelegationState,
@@ -262,6 +264,32 @@ export async function coordinateDelegation(input: CoordinatorInput) {
   input.signal?.addEventListener("abort", onAbort, { once: true });
 
   const catalog = input.runtime.getModels().map((model: any) => ({ provider: model.provider, model: model.id, input: model.input }));
+  const toBoundedResult = (result: any) => {
+    const report = typeof result.report === "string"
+      ? result.report
+      : typeof result.unverifiedReport === "string"
+        ? result.unverifiedReport
+        : undefined;
+    return createDelegationResult({
+      id: result.id,
+      status: result.status,
+      attempts: result.attempts,
+      error: result.error,
+      failure: result.failure,
+      escalation: result.escalation,
+      completion: result.completion,
+      provider: result.provider,
+      model: result.model,
+      thinking: result.thinking,
+      report,
+      unverifiedReason: result.unverifiedReason,
+      session: report ? {
+        id: result.sessionId,
+        file: result.sessionFile,
+        resumeReference: result.status === "succeeded" ? result.resumeReference : null,
+      } : null,
+    });
+  };
   const runAssignment = async (assignment: DelegationAssignment) => {
     const agent = input.agents.find((item) => item.name === assignment.agent)!;
     const imagePaths = assignment.imagePaths ?? [];
@@ -347,7 +375,7 @@ export async function coordinateDelegation(input: CoordinatorInput) {
           const unverifiedReport = report.trim();
           emit({ type: cancelled ? "cancelled" : "failed", id: assignment.id, at: deps.activityClock(), blocker: detail, possiblePartialWriteScopes: cancelled && assignment.writeScope.length ? assignment.writeScope : [] });
           state = reduceDelegationEvent(state, { type: cancelled ? "cancelled" : "failed", id: assignment.id, detail, partialEffects: unsafe || (cancelled && assignment.writeScope.length > 0) });
-          return { id: assignment.id, status: cancelled ? "cancelled" : "failed", attempts: attempt, error: detail, failure, completion: completion.failures, resumeReference: null, ...(unverifiedReport ? { unverifiedReport: report, unverifiedReason: detail } : {}) };
+          return { id: assignment.id, status: cancelled ? "cancelled" : "failed", attempts: attempt, error: detail, failure, completion: completion.failures, resumeReference: null, ...(unverifiedReport ? { unverifiedReport: report, unverifiedReason: detail, sessionId: observed.sessionId, sessionFile: observed.sessionFile } : {}) };
         }
         const timestamp = deps.clock();
         const record: SessionRecord = {
@@ -391,7 +419,7 @@ export async function coordinateDelegation(input: CoordinatorInput) {
       const results = input.request.assignments.map((assignment) => {
         emit({ type: "blocked", id: assignment.id, at: deps.activityClock(), blocker, escalation: "submit one matching adversary-a and adversary-b pair" });
         return { id: assignment.id, status: "blocked" as const, attempts: 0, error: blocker, failure: "agent-contract" as const, escalation: "submit one matching adversary-a and adversary-b pair", resumeReference: null };
-      });
+      }).map(toBoundedResult);
       emit({ type: "run-settled", at: deps.activityClock(), state: "failed" });
       const report = buildDelegationOutcomeReport({ activity, results, partialEffects: false, unsafeEvidence: [] });
       return { status: "failed" as const, results, state, activity, report, partialEffects: false, unsafeEvidence: [] };
@@ -403,7 +431,7 @@ export async function coordinateDelegation(input: CoordinatorInput) {
         const results = input.request.assignments.map((assignment) => {
           emit({ type: "blocked", id: assignment.id, at: deps.activityClock(), blocker: validation.code, escalation: "configure two distinct available adversary routes" });
           return { id: assignment.id, status: "blocked" as const, attempts: 0, error: validation.code, failure: "model-unavailable" as const, escalation: "configure two distinct available adversary routes", resumeReference: null };
-        });
+        }).map(toBoundedResult);
         emit({ type: "run-settled", at: deps.activityClock(), state: "failed" });
         const report = buildDelegationOutcomeReport({ activity, results, partialEffects: false, unsafeEvidence: [] });
         return { status: "failed" as const, results, state, activity, report, partialEffects: false, unsafeEvidence: [] };
@@ -413,7 +441,7 @@ export async function coordinateDelegation(input: CoordinatorInput) {
     if (cancelled || unsafe) await abortLive();
     const results = settled.map((entry, index) => entry.status === "fulfilled"
       ? entry.value
-      : { id: input.request.assignments[index].id, status: "failed", attempts: 0, error: sanitizeDelegationError(entry.reason), failure: classifyChildFailure(entry.reason), resumeReference: null });
+      : { id: input.request.assignments[index].id, status: "failed", attempts: 0, error: sanitizeDelegationError(entry.reason), failure: classifyChildFailure(entry.reason), resumeReference: null }).map(toBoundedResult);
     const status = results.every((result) => result.status === "succeeded") ? "succeeded" : cancelled ? "cancelled" : "failed";
     emit({ type: "run-settled", at: deps.activityClock(), state: status });
     const partialEffects = state.partialEffects || unsafe;
@@ -440,10 +468,10 @@ type ContinuationInput = {
 export async function runFocusedContinuation(input: ContinuationInput) {
   const purpose = input.agent.authority === "review-read" ? "finding-follow-up" : input.agent.authority === "vision-read" ? "vision-follow-up" : "implementation-follow-up";
   const fileExists = input.dependencies?.fileExists ?? existsSync;
-  if (!canResumeSession({ record: input.record, agent: input.agent, purpose, sessionFileExists: fileExists(input.record.sessionFile) })) return { status: "refused", error: "session_not_reusable" };
-  if (input.record.contractFingerprint !== agentContractFingerprint(input.agent, input.record.writeScope)) return { status: "refused", error: "agent_contract_drift" };
+  if (!canResumeSession({ record: input.record, agent: input.agent, purpose, sessionFileExists: fileExists(input.record.sessionFile) })) return createDelegationResult({ id: input.record.reference, status: "refused", attempts: 0, error: "session_not_reusable", session: null });
+  if (input.record.contractFingerprint !== agentContractFingerprint(input.agent, input.record.writeScope)) return createDelegationResult({ id: input.record.reference, status: "refused", attempts: 0, error: "agent_contract_drift", session: null });
   const model = input.runtime.getModel(input.record.provider, input.record.model);
-  if (!model) return { status: "refused", error: "model_unavailable" };
+  if (!model) return createDelegationResult({ id: input.record.reference, status: "refused", attempts: 0, error: "model_unavailable", session: null });
   const deps = {
     createSession: input.dependencies?.createSession ?? createAgentSession,
     openManager: input.dependencies?.openManager ?? ((path: string) => SessionManager.open(path)),
@@ -466,7 +494,7 @@ export async function runFocusedContinuation(input: ContinuationInput) {
       unsubscribe = session.subscribe?.((event: any) => { if (mutationAttemptUnsafe(event, { writeScope: input.record.writeScope } as DelegationAssignment)) { unsafe = true; void session.abort?.(); } }) ?? unsubscribe;
       await session.prompt(input.brief);
       await session.waitForIdle();
-      if (unsafe) return { status: "failed", error: "unsafe-partial-state" };
+      if (unsafe) return createDelegationResult({ id: input.record.reference, status: "failed", attempts: attempt + 1, error: "unsafe-partial-state", failure: "unsafe-partial-state", session: null });
       const final = finalAssistant(session);
       const report = final?.report ?? "";
       const observed = observedIdentity(session);
@@ -476,28 +504,47 @@ export async function runFocusedContinuation(input: ContinuationInput) {
         if (attempt === 0 && decideRecovery({ failure, retries: 0 }).retry) continue;
         const detail = final?.errorMessage ? sanitizeDelegationError(final.errorMessage) : completion.failures.join(",");
         const unverifiedReport = report.trim();
-        return { status: "failed", error: detail, completion: completion.failures, ...(unverifiedReport ? { unverifiedReport: report, unverifiedReason: detail } : {}) };
+        return createDelegationResult({
+          id: input.record.reference,
+          status: "failed",
+          attempts: attempt + 1,
+          error: detail,
+          failure,
+          completion: completion.failures,
+          report: unverifiedReport ? report : undefined,
+          unverifiedReason: unverifiedReport ? detail : undefined,
+          session: unverifiedReport ? { id: observed.sessionId, file: observed.sessionFile, resumeReference: null } : null,
+        });
       }
       const updated = { ...input.record, status: "succeeded" as const, updatedAt: deps.clock() };
       store.set(updated.reference, updated);
-      return { status: "succeeded", attempts: attempt + 1, report, provider: observed.provider, model: observed.model, thinking: observed.thinking, sessionId: observed.sessionId, sessionFile: observed.sessionFile };
+      return createDelegationResult({
+        id: input.record.reference,
+        status: "succeeded",
+        attempts: attempt + 1,
+        provider: observed.provider,
+        model: observed.model,
+        thinking: observed.thinking,
+        report,
+        session: { id: observed.sessionId, file: observed.sessionFile, resumeReference: input.record.reference },
+      });
     } catch (error) {
       const failure = classifyChildFailure(error);
       if (attempt === 0 && decideRecovery({ failure, retries: 0 }).retry) continue;
-      return { status: "failed", error: sanitizeDelegationError(error) };
+      return createDelegationResult({ id: input.record.reference, status: "failed", attempts: attempt + 1, error: sanitizeDelegationError(error), failure, session: null });
     } finally {
       unsubscribe();
       session?.dispose?.();
     }
   }
-  return { status: "failed", error: "terminal" };
+  return createDelegationResult({ id: input.record.reference, status: "failed", attempts: 2, error: "terminal", failure: "terminal", session: null });
 }
 
 export default function agents(pi: ExtensionAPI) {
   pi.registerTool({
     name: "ima_delegate",
     label: "IMA delegate",
-    description: "Delegate one to four bounded, agent-defined assignments.",
+    description: "Delegate one to four bounded, agent-defined assignments. Terminal summaries are capped at 400 lines or 10 KiB per child; inspect the structured session pointer for the full report.",
     promptSnippet: "Delegate one to four bounded assignments to an applicable IMA agent.",
     promptGuidelines: [
       "Use ima_delegate opportunistically for a clear agent match or an explicit request to use a named IMA agent; do not delegate when no agent fits. Rereview and verified-finding follow-up must use an eligible existing reviewer continuation, not a new reviewer delegation.",
@@ -530,8 +577,15 @@ export default function agents(pi: ExtensionAPI) {
         }
       }
       // Build the terminal report only after clearing so clear failures remain observable.
-      const details = { ...result, projectionDegraded, report: { ...result.report, projectionDegraded } };
-      return { content: [{ type: "text", text: JSON.stringify({ status: result.status, results: result.results, report: details.report }) }], details };
+      const parentResult = buildDelegationToolPayload({
+        status: result.status,
+        results: result.results,
+        report: { ...result.report, projectionDegraded },
+      });
+      const details = parentResult.overflow
+        ? { ...parentResult.payload, projectionDegraded }
+        : { ...result, status: parentResult.payload.status, results: parentResult.payload.results, report: parentResult.payload.report, projectionDegraded };
+      return { content: [{ type: "text", text: parentResult.serialized }], details };
     },
   });
   pi.on("before_agent_start", async (event, ctx) => {

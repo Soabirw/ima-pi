@@ -47,7 +47,7 @@ test("long assignment ids remain exact across activity events and outcome report
   state = reduceDelegationActivity(state, { type: "run-settled", state: "succeeded", at: 2_000 });
   const report = buildDelegationOutcomeReport({
     activity: state,
-    results: [{ id, status: "succeeded", attempts: 1, resumeReference: id }],
+    results: [{ id, status: "succeeded", attempts: 1, session: { id: "session", file: "/sessions/session.jsonl", resumeReference: id } }],
     partialEffects: false,
     unsafeEvidence: [],
   });
@@ -114,8 +114,8 @@ test("cancellation preserves successful children and reports only cancelled writ
   const report = buildDelegationOutcomeReport({
     activity: state,
     results: [
-      { id: "read", status: "succeeded", attempts: 1, resumeReference: "read" },
-      { id: "write", status: "cancelled", attempts: 1, error: "cancelled", failure: "unsafe-partial-state", resumeReference: "must-not-leak" },
+      { id: "read", status: "succeeded", attempts: 1, session: { id: "read", file: "/sessions/read.jsonl", resumeReference: "read" } },
+      { id: "write", status: "cancelled", attempts: 1, error: "cancelled", failure: "unsafe-partial-state", session: { id: "write", file: "/sessions/write.jsonl", resumeReference: "must-not-leak" } },
     ],
     partialEffects: true,
     unsafeEvidence: [],
@@ -137,7 +137,7 @@ test("retry, safety, failure fields, and reusable successful sessions are struct
   const report = buildDelegationOutcomeReport({
     activity: state,
     results: [
-      { id: "safe", status: "succeeded", attempts: 2, resumeReference: "safe" },
+      { id: "safe", status: "succeeded", attempts: 2, session: { id: "safe", file: "/sessions/safe.jsonl", resumeReference: "safe" } },
       { id: "unsafe", status: "failed", attempts: 1, error: "unsafe-partial-state", failure: "unsafe-partial-state" },
     ],
     partialEffects: true,
@@ -170,7 +170,7 @@ test("safe next actions distinguish model, provider, contract, decision, and suc
   }
   let state = event(initial(), { type: "succeeded", id: "a" });
   state = reduceDelegationActivity(state, { type: "run-settled", state: "succeeded", at: 2_000 });
-  const success = buildDelegationOutcomeReport({ activity: state, results: [{ id: "a", status: "succeeded", attempts: 1, resumeReference: "a" }], partialEffects: false, unsafeEvidence: [] });
+  const success = buildDelegationOutcomeReport({ activity: state, results: [{ id: "a", status: "succeeded", attempts: 1, session: { id: "a", file: "/sessions/a.jsonl", resumeReference: "a" } }], partialEffects: false, unsafeEvidence: [] });
   assert.equal(success.safeNextAction.code, "continue-parent-synthesis");
 });
 

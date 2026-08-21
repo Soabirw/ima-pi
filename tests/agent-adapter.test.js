@@ -130,8 +130,10 @@ test("coordinates concurrent children but returns results in request order with 
   const result = await run({ assignments: [assignment("a", ["owned/a"]), assignment("b", ["owned/b"])], sessions: [{ session: first.session }, { session: second.session }] });
   assert.equal(result.status, "succeeded");
   assert.deepEqual(result.results.map(({ id }) => id), ["a", "b"]);
-  assert.deepEqual(result.results.map(({ sessionId }) => sessionId), ["s-a", "s-b"]);
-  assert.equal(result.results[0].report, report);
+  assert.deepEqual(result.results.map(({ session }) => session?.id), ["s-a", "s-b"]);
+  assert.equal(result.results[0].summary, report);
+  assert.equal(result.results[0].summaryTruncated, false);
+  assert.equal(result.results[0].report, undefined);
   assert.equal(first.state.disposes, 1); assert.equal(second.state.disposes, 1);
   assert.equal(first.state.unsubscribes, 1); assert.equal(second.state.unsubscribes, 1);
 });
@@ -183,7 +185,7 @@ test("retries one transient provider failure in a fresh session and never retrie
   const recovered = await run({ sessions: [{ session: transient.session }, { session: success.session }] });
   assert.equal(recovered.status, "succeeded");
   assert.equal(recovered.results[0].attempts, 2);
-  assert.equal(recovered.results[0].sessionId, "fresh");
+  assert.equal(recovered.results[0].session?.id, "fresh");
   assert.equal(transient.state.disposes, 1); assert.equal(success.state.disposes, 1);
 
   const contractFailure = fakeSession({ text: "normal child report" });
@@ -202,9 +204,10 @@ test("idle is not success when terminal report or observed identity is invalid",
   assert.equal(result.status, "failed");
   assert.ok(result.results[0].completion.includes("runtime_identity_mismatch"));
   assert.equal(result.results[0].report, undefined);
-  assert.equal(result.results[0].unverifiedReport, "Child report that remains unverified.");
+  assert.equal(result.results[0].unverifiedReport, undefined);
+  assert.equal(result.results[0].summary, "Child report that remains unverified.");
   assert.equal(result.results[0].unverifiedReason, "runtime_identity_mismatch");
-  assert.equal(result.results[0].resumeReference, null);
+  assert.deepEqual(result.results[0].session, { id: "session", file: "/sessions/session.jsonl", resumeReference: null });
   assert.equal(sessionStore.has("a"), false);
 });
 
