@@ -17,6 +17,20 @@ test("plan prompt makes autonomous self-approval fail safe", async () => {
 });
 
 test("brainstorm owns approved product requirements and stops before decomposition or design", async () => { const text = await prompt("brainstorm"); for (const value of ["problem or opportunity", "users and use cases", "business rules", "product acceptance criteria", "vision-handoff", "lifecycle type `decision`", "/ima:decompose", "stop"]) has(text, value); has(text, "Do **not** decompose PM work"); });
+test("lifecycle prompts delegate optional evidence to matching specialists", async () => {
+  const specialists = {
+    brainstorm: "brainstormer",
+    plan: "planner",
+    decompose: "decomposer",
+    investigate: "investigator",
+  };
+
+  for (const [name, specialist] of Object.entries(specialists)) {
+    const text = await prompt(name);
+    has(text, specialist);
+    has(text, "ima-delegation-contract");
+  }
+});
 test("decompose enforces two tiers, one PM destination, preview, and checklist-only work", async () => { const text = await prompt("decompose"); for (const value of ["Taskwarrior Project -> Task", "Jira Epic -> Story/Task", "checklist", "exactly one destination", "never dual-write", "exact persistence preview", "explicit approval", "lifecycle unit", "as `decision`", "stop"]) has(text, value); has(text, "technical files, functions, control flow"); });
 test("plan enforces one-unit Serena-first technical planning without implementation", async () => {
   const text = await prompt("plan");

@@ -24,7 +24,7 @@ Use read-only evidence only. If the user asks to implement in this session, prov
 
 Complete Serena-first evidence before Taskwarrior, Jira, Vestige, Qdrant, repository, environment, or browser investigation. Keep discovery narrow and use this ladder: memory -> repository/`rg` -> files, modules, symbols, APIs -> environment -> browser -> broaden once -> specific escalation. Inspect only the symbols needed to establish the affected surface and impact radius.
 
-Use `vision-handoff` for accessible visual sources. Use browser evidence only when browser-dependent acceptance needs it; route strongly visual WordPress work to `/ima:design-to-code`. If discovery cannot establish the implementation surface, report the exact searches and evidence attempted, then ask for the smallest missing input.
+Use `vision-handoff` for accessible visual sources. Use browser evidence only when browser-dependent acceptance needs it; route strongly visual WordPress work to `/ima:design-to-code`. Follow `ima-delegation-contract` to delegate bounded read-only evidence via `ima_delegate`: `explore` for fast mapping, `investigator` for deep root-cause evidence, or `planner` for bounded plan-level or plan-contradiction analysis; the parent retains planning judgment, approval, and persistence. If discovery cannot establish the implementation surface, report the exact searches and evidence attempted, then ask for the smallest missing input.
 
 Ask two or three focused questions at a time only when product, architecture, security, rollout, or verification decisions remain unresolved. Cover pure/effect boundaries, data and API contracts, error paths, security, test strategy, rollout, and rollback where applicable.
 
