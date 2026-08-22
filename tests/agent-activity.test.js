@@ -154,19 +154,25 @@ test("retry, safety, failure fields, and reusable successful sessions are struct
 });
 
 test("safe next actions distinguish model, provider, contract, decision, and success outcomes", () => {
+  const plannerActionText =
+    "Delegate plan-level analysis and decision evidence to the planner agent, then decide in the parent or obtain a human decision; do not retry automatically.";
   const cases = [
     ["model-unavailable", "restore-exact-model"],
     ["auth-or-quota", "restore-exact-model"],
     ["transient-provider", "retry-after-provider-recovery"],
     ["agent-contract", "correct-agent-contract"],
-    ["critical-decision", "obtain-human-decision"],
-    ["plan-contradiction", "obtain-human-decision"],
+    ["critical-decision", "promote-to-planner", plannerActionText],
+    ["plan-contradiction", "promote-to-planner", plannerActionText],
   ];
-  for (const [failure, code] of cases) {
+  for (const [failure, code, expectedText] of cases) {
     let state = event(initial(), { type: "failed", id: "a", blocker: failure });
     state = reduceDelegationActivity(state, { type: "run-settled", state: "failed", at: 2_000 });
     const report = buildDelegationOutcomeReport({ activity: state, results: [{ id: "a", status: "failed", attempts: 1, error: failure, failure }], partialEffects: false, unsafeEvidence: [] });
     assert.equal(report.safeNextAction.code, code, failure);
+    if (expectedText) {
+      assert.equal(report.safeNextAction.text, expectedText, failure);
+      assert.deepEqual(report.safeNextAction.inspectScopes, [], failure);
+    }
   }
   let state = event(initial(), { type: "succeeded", id: "a" });
   state = reduceDelegationActivity(state, { type: "run-settled", state: "succeeded", at: 2_000 });

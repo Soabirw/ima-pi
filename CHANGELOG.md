@@ -4,6 +4,14 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ## [Unreleased]
 
+### Added
+
+- Added read-only lifecycle-specialist agents: `brainstormer`, `planner`, `decomposer`, and `investigator`.
+
+### Changed
+
+- Recovery from `critical-decision` and `plan-contradiction` now routes plan-level analysis and decision evidence to `planner`; the parent or a human retains decision ownership, with no automatic retry.
+
 ## [1.12.0] - 2026-08-21
 
 ### Added

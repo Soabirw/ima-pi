@@ -1,8 +1,10 @@
 # IMA agents
 
-FNR-3014, FNR-3022, and FNR-3025 provide thirteen package-defined, inspectable specialists: `explore`, `implementer`, `js-developer`, `wordpress-developer`, `tester`, `reviewer`, `review-verifier`, `adversary-a`, `adversary-b`, `document-assessor`, `documenter`, `vision-handoff`, and `preflight-probe`.
+FNR-3014, FNR-3022, and FNR-3025 provide seventeen package-defined, inspectable specialists: `adversary-a`, `adversary-b`, `brainstormer`, `decomposer`, `document-assessor`, `documenter`, `explore`, `implementer`, `investigator`, `js-developer`, `planner`, `preflight-probe`, `review-verifier`, `reviewer`, `tester`, `vision-handoff`, and `wordpress-developer`.
 
 Each `*.md` file has one leading YAML frontmatter block and a non-empty Markdown prompt. Required metadata covers schema version, name, description, bounded `useWhen` applicability cues, model tier, optional lifecycle phase, authority, tools, skills, zero-depth delegation, independence, result contract, and escalation categories. Package agents must declare one to three non-empty single-line cues of at most 180 characters; legacy user or trusted-project definitions without `useWhen` receive a normalized description fallback. Unknown fields, invalid names, empty prompts, unsupported tools, invalid applicability, duplicate same-source names, and unsafe authority/tool combinations are rejected with diagnostics.
+
+The lifecycle-specialist evidence agents are `brainstormer` for bounded ideation, `planner` for plan-level analysis and decisions, `decomposer` for independent delivery-unit decomposition, and `investigator` for deep root-cause evidence.
 
 Definitions resolve by full replacement—trusted project, then user, then package—without field merging. Paths are `<package>/agents`, `~/.pi/agent/ima/agents`, and trusted `<project>/.pi/ima/agents`; project definitions are loaded only when `IMA_PI_PROJECT_TRUSTED=true`. Symlinks outside each definition directory are refused.
 
@@ -13,7 +15,7 @@ The catalog is deliberately bounded: `review-verifier` is fresh and read-only; `
 
 ## Fast read-only exploration
 
-FNR-3020 reuses `explore` as the fast read-only exploration target. It is invoked through `ima_delegate`, not exposed as a duplicate standalone command. Give it a complete, bounded assignment and request evidence rather than implementation, for example:
+FNR-3020 reuses `explore` as the fast read-only exploration target. `explore` is LOW-tier, fast, shallow, and bounded mapping; `investigator` is HIGH-tier, deep, thorough multi-file root-cause evidence and does not replace `explore`. `explore` is invoked through `ima_delegate`, not exposed as a duplicate standalone command. Give it a complete, bounded assignment and request evidence rather than implementation, for example:
 
 ```json
 {

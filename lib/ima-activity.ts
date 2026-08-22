@@ -191,7 +191,7 @@ const actionFor = (input: { state: DelegationOutcomeReport["state"]; failures: D
   if (input.failures.some((failure) => failure === "model-unavailable" || failure === "auth-or-quota")) return { code: "restore-exact-model", text: "Restore or configure the required exact role model, then rerun without silent substitution.", inspectScopes: [] };
   if (input.failures.includes("transient-provider")) return { code: "retry-after-provider-recovery", text: "Retry later after provider recovery.", inspectScopes: [] };
   if (input.failures.includes("agent-contract")) return { code: "correct-agent-contract", text: "Correct the brief or agent result contract using the reported contract evidence.", inspectScopes: [] };
-  if (input.failures.some((failure) => failure === "critical-decision" || failure === "plan-contradiction")) return { code: "obtain-human-decision", text: "Obtain a human decision; do not retry automatically.", inspectScopes: [] };
+  if (input.failures.some((failure) => failure === "critical-decision" || failure === "plan-contradiction")) return { code: "promote-to-planner", text: "Delegate plan-level analysis and decision evidence to the planner agent, then decide in the parent or obtain a human decision; do not retry automatically.", inspectScopes: [] };
   if (input.state === "succeeded") return { code: "continue-parent-synthesis", text: "Continue parent synthesis using successful reusable session references.", inspectScopes: [] };
   return { code: "inspect-blocker", text: "Inspect the structured blocker before rerunning.", inspectScopes: [] };
 };

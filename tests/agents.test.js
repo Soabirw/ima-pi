@@ -10,7 +10,7 @@ import {
   resolveAgentDefinitions,
   validateAgentDefinition,
 } from "../lib/ima-agents.ts";
-import { validateDelegationCompletion } from "../lib/ima-delegation.ts";
+import { validateDelegationCompletion, validateDelegationRequest } from "../lib/ima-delegation.ts";
 
 const document = (name = "explore", extra = "") => `---
 schemaVersion: 1
@@ -110,9 +110,81 @@ test("loads the packaged agent catalog without treating README.md as an agent", 
     paths: deriveAgentPaths({ packageRoot, agentDir: resolve(packageRoot, ".missing-agent-home"), cwd: packageRoot }),
     projectTrusted: false,
   });
-  assert.deepEqual(loaded.definitions.map(({ name }) => name), ["adversary-a", "adversary-b", "document-assessor", "documenter", "explore", "implementer", "js-developer", "preflight-probe", "review-verifier", "reviewer", "tester", "vision-handoff", "wordpress-developer"]);
+  assert.deepEqual(
+    loaded.definitions.map(({ name }) => name),
+    [
+      "adversary-a",
+      "adversary-b",
+      "brainstormer",
+      "decomposer",
+      "document-assessor",
+      "documenter",
+      "explore",
+      "implementer",
+      "investigator",
+      "js-developer",
+      "planner",
+      "preflight-probe",
+      "review-verifier",
+      "reviewer",
+      "tester",
+      "vision-handoff",
+      "wordpress-developer",
+    ],
+  );
   assert.deepEqual(loaded.diagnostics, []);
   assert.ok(loaded.definitions.every(({ useWhen }) => useWhen.length > 0));
+});
+
+test("lifecycle-specialist agents preserve read-only evidence contracts", async () => {
+  const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const loaded = await loadAgentDefinitions({
+    paths: deriveAgentPaths({ packageRoot, agentDir: resolve(packageRoot, ".missing-agent-home"), cwd: packageRoot }),
+    projectTrusted: false,
+  });
+  const byName = new Map(loaded.definitions.map((definition) => [definition.name, definition]));
+  const expected = {
+    brainstormer: { phase: "brainstorm", requiredSections: ["findings", "options", "risks"] },
+    planner: { phase: "plan", requiredSections: ["findings", "plan-outline", "risks"] },
+    decomposer: { phase: null, requiredSections: ["findings", "delivery-units", "dependencies"] },
+    investigator: { phase: null, requiredSections: ["findings", "evidence", "hypotheses"] },
+  };
+  for (const [name, expectation] of Object.entries(expected)) {
+    const definition = byName.get(name);
+    assert.ok(definition, name);
+    assert.equal(definition.tier, "HIGH");
+    if (expectation.phase) assert.equal(definition.phase, expectation.phase);
+    else assert.equal(Object.hasOwn(definition, "phase"), false);
+    assert.equal(definition.authority, "read");
+    assert.deepEqual(definition.tools, ["read", "grep", "find", "ls"]);
+    assert.deepEqual(definition.result, { kind: "evidence", requiredSections: expectation.requiredSections });
+    assert.ok(definition.useWhen[0]);
+    assert.deepEqual(definition.delegation, { allowed: false, maxDepth: 0 });
+    assert.deepEqual(definition.independence, { freshInitial: false, followUpAllowed: true });
+  }
+});
+
+test("accepts bounded read-only delegation to each lifecycle specialist", async () => {
+  const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const loaded = await loadAgentDefinitions({
+    paths: deriveAgentPaths({ packageRoot, agentDir: resolve(packageRoot, ".missing-agent-home"), cwd: packageRoot }),
+    projectTrusted: false,
+  });
+  const assignments = ["brainstormer", "planner", "decomposer", "investigator"].map((name) => ({
+    id: name,
+    agent: name,
+    goal: `Gather ${name} evidence`,
+    context: "Approved lifecycle-specialist work.",
+    paths: [`agents/${name}.md`],
+    constraints: ["Read only"],
+    nonGoals: ["Editing"],
+    expectedOutput: "Evidence",
+    writeScope: [],
+  }));
+  assert.deepEqual(
+    validateDelegationRequest({ title: "Delegate lifecycle-specialist evidence", assignments }, loaded.definitions),
+    { valid: true, errors: [] },
+  );
 });
 
 test("derives package, user, and project agent paths", () => {
