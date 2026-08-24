@@ -5,7 +5,42 @@ const object = (value: unknown): Record<string, unknown> | null => value && type
 const text = (value: unknown) => typeof value === "string" ? value.trim() : "";
 const REDACTED = "[redacted]";
 const clean = (value: unknown) => typeof value === "string" ? value.replace(/(?:authorization|token|secret|password)\s*[:=]\s*\S+/gi, (match) => match.length < REDACTED.length ? "*".repeat(match.length) : REDACTED) : "";
-export function sanitizeLifecycleError(code: string, _value: unknown) { return { code, message: `Lifecycle integration failed: ${code}.` }; }
+const HTML_COMMENT_START = "<!--";
+const HTML_COMMENT_END = "-->";
+const LIFECYCLE_VERIFICATION_COMMENT = /^\s*ima-lifecycle verification:/;
+const LIFECYCLE_MARKER_NONCE = /nonce=[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/;
+const LIFECYCLE_MARKER_OUTCOME = /outcome=completed/;
+const EMBEDDED_LIFECYCLE_FRONT_MATTER =
+  /(?:^|\r?\n)---\r?\nlifecycle:\r?\n  project: '[^\r\n]*'\r?\n  lifecycle_key: '[^\r\n]*'/;
+const LIFECYCLE_ERROR_MESSAGES: Record<string, string> = {
+  lifecycle_artifact_embeds_prior_artifact: "Lifecycle artifact embeds a prior artifact. Reference prior IDs in prior_artifact_ids or source_refs instead of pasting content.",
+};
+const hasPersistedLifecycleMarker = (artifact: string) => {
+  let commentStart = artifact.indexOf(HTML_COMMENT_START);
+  while (commentStart >= 0) {
+    const contentStart = commentStart + HTML_COMMENT_START.length;
+    const commentEnd = artifact.indexOf(HTML_COMMENT_END, contentStart);
+    if (commentEnd < 0) return false;
+
+    const comment = artifact.slice(contentStart, commentEnd);
+    if (
+      LIFECYCLE_VERIFICATION_COMMENT.test(comment)
+      && LIFECYCLE_MARKER_NONCE.test(comment)
+      && LIFECYCLE_MARKER_OUTCOME.test(comment)
+    ) return true;
+
+    commentStart = artifact.indexOf(HTML_COMMENT_START, commentEnd + HTML_COMMENT_END.length);
+  }
+  return false;
+};
+const embedsPriorLifecycleArtifact = (artifact: string) =>
+  hasPersistedLifecycleMarker(artifact) || EMBEDDED_LIFECYCLE_FRONT_MATTER.test(artifact);
+export function sanitizeLifecycleError(code: string, _value: unknown) {
+  const message = Object.hasOwn(LIFECYCLE_ERROR_MESSAGES, code)
+    ? LIFECYCLE_ERROR_MESSAGES[code]
+    : `Lifecycle integration failed: ${code}.`;
+  return { code, message };
+}
 const isStringArray = (value: unknown): value is string[] =>
   Array.isArray(value) && value.every((item) => typeof item === "string");
 
@@ -23,6 +58,7 @@ const validIdentity = (value: unknown): value is LifecycleIdentity => {
 export function validateLifecycleRequest(value: unknown): { valid: true; type: LifecyclePhase; identity: LifecycleIdentity; artifact: string } | { valid: false; error: ReturnType<typeof sanitizeLifecycleError> } {
  const input = object(value); const type = text(input?.type); const rawArtifact = typeof input?.artifact === "string" ? input.artifact : "";
  if (!input || !LIFECYCLE_PHASES.includes(type as LifecyclePhase) || !validIdentity(input.identity) || rawArtifact.length > 128_000) return { valid: false, error: sanitizeLifecycleError("invalid_lifecycle_request", value) };
+ if (embedsPriorLifecycleArtifact(rawArtifact)) return { valid: false, error: sanitizeLifecycleError("lifecycle_artifact_embeds_prior_artifact", value) };
  const artifact = clean(rawArtifact);
  if (artifact.length > 128_000 || !text(artifact)) return { valid: false, error: sanitizeLifecycleError("invalid_lifecycle_request", value) };
  return { valid: true, type: type as LifecyclePhase, identity: input.identity as LifecycleIdentity, artifact };

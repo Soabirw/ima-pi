@@ -844,6 +844,28 @@ test("lifecycle rejects malformed identity arrays before Vestige I/O", async () 
   assert.deepEqual(vestigeCalls, []);
 });
 
+test("lifecycle rejects embedded prior artifacts before Vestige I/O", async () => {
+  const vestigeCalls = [];
+  const embeddedArtifact = `${artifact}\n<!-- ima-lifecycle verification: lifecycle_key=${identity.lifecycleKey}; nonce=01234567-89ab-cdef-0123-456789abcdef; phase=plan; jira_key=${identity.jiraKey}; taskwarrior_uuid=${identity.taskwarriorUuid}; outcome=completed -->`;
+  const result = await coordinateLifecycle(
+    { type: "implementation", identity, artifact: embeddedArtifact },
+    {
+      vestige: async (...args) => {
+        vestigeCalls.push(args);
+        return null;
+      },
+    },
+  );
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.code, "lifecycle_artifact_embeds_prior_artifact");
+  assert.equal(
+    result.error.message,
+    "Lifecycle artifact embeds a prior artifact. Reference prior IDs in prior_artifact_ids or source_refs instead of pasting content.",
+  );
+  assert.deepEqual(vestigeCalls, []);
+});
+
 test("lifecycle reports a direct Vestige save failure", async () => {
   const result = await coordinateLifecycle(
     { type: "implementation", identity, artifact },

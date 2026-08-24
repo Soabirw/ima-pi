@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildLifecycleArtifact, buildLifecycleNonceMarker, deriveLifecycleResult, evaluateLifecycleRecall, LIFECYCLE_PHASES, validateLifecycleRequest, validateVestigeSaveReceipt } from "../lib/ima-lifecycle.ts";
+import { buildLifecycleArtifact, buildLifecycleNonceMarker, deriveLifecycleResult, evaluateLifecycleRecall, LIFECYCLE_PHASES, sanitizeLifecycleError, validateLifecycleRequest, validateVestigeSaveReceipt } from "../lib/ima-lifecycle.ts";
 const identity = { project: "ima-pi", lifecycleKey: "ima-pi:taskwarrior:FNR-3007:uuid", lifecycleRootMemoryId: "root", taskwarriorProject: "FNR-3007", taskwarriorTask: "uuid", taskwarriorUuid: "task-uuid", jiraKey: "FNR-3016", sourceRefs: ["Taskwarrior:task-uuid"], priorArtifactIds: ["plan"] };
 const standalone = { ...identity, lifecycleRootMemoryId: "", taskwarriorProject: "", taskwarriorTask: "", taskwarriorUuid: "", jiraKey: "", sourceRefs: [], priorArtifactIds: [] };
 const artifact = "# Source and approved outcome\n## Scope\n## Non-goals\n## Phase result\n## Changed files\n## Decisions\n## Verification commands/results\n## Blockers\n## Residual risk\n## Prior artifacts\n## Recommended next phase";
@@ -45,6 +45,110 @@ test("keeps non-empty lifecycle artifact bounds without heading requirements", (
   assert.equal(request(" \n\t "), false);
   assert.equal(request("x".repeat(128_001)), false);
 });
+
+test("rejects an embedded persisted lifecycle verification marker", () => {
+  const embeddedMarker = buildLifecycleNonceMarker({
+    lifecycleKey: identity.lifecycleKey,
+    nonce,
+    type: "plan",
+    jiraKey: identity.jiraKey,
+    taskwarriorUuid: identity.taskwarriorUuid,
+  });
+  const result = validateLifecycleRequest({ type: "plan", identity, artifact: `${artifact}\n${embeddedMarker}` });
+
+  assert.equal(result.valid, false);
+  assert.equal(result.error.code, "lifecycle_artifact_embeds_prior_artifact");
+  assert.equal(
+    result.error.message,
+    "Lifecycle artifact embeds a prior artifact. Reference prior IDs in prior_artifact_ids or source_refs instead of pasting content.",
+  );
+});
+
+test("allows lifecycle marker data split across closed comments", () => {
+  const result = validateLifecycleRequest({
+    type: "plan",
+    identity,
+    artifact: `${artifact}\n<!-- ima-lifecycle verification: nonce=${nonce} -->\n<!-- ima-lifecycle verification: outcome=completed -->`,
+  });
+
+  assert.equal(result.valid, true);
+});
+
+test("rejects emitted lifecycle front matter with LF and CRLF endings", () => {
+  const lifecycleMarker = buildLifecycleNonceMarker({
+    lifecycleKey: identity.lifecycleKey,
+    nonce,
+    type: "plan",
+    jiraKey: identity.jiraKey,
+    taskwarriorUuid: identity.taskwarriorUuid,
+  });
+  const emittedArtifact = buildLifecycleArtifact({ type: "plan", identity, artifact, nonce });
+  const frontMatterArtifact = emittedArtifact.replace(lifecycleMarker, "");
+
+  for (const candidate of [frontMatterArtifact, frontMatterArtifact.replaceAll("\n", "\r\n")]) {
+    const result = validateLifecycleRequest({ type: "plan", identity, artifact: candidate });
+    assert.equal(result.valid, false);
+    assert.equal(result.error.code, "lifecycle_artifact_embeds_prior_artifact");
+  }
+});
+
+test("allows unrelated nested YAML lifecycle_key fields", () => {
+  const result = validateLifecycleRequest({
+    type: "plan",
+    identity,
+    artifact: `${artifact}\nsettings:\n  lifecycle_key: '${identity.lifecycleKey}'`,
+  });
+
+  assert.equal(result.valid, true);
+});
+
+test("limits lifecycle error messages to registered codes", () => {
+  assert.deepEqual(
+    sanitizeLifecycleError("lifecycle_artifact_embeds_prior_artifact", undefined),
+    {
+      code: "lifecycle_artifact_embeds_prior_artifact",
+      message: "Lifecycle artifact embeds a prior artifact. Reference prior IDs in prior_artifact_ids or source_refs instead of pasting content.",
+    },
+  );
+
+  for (const code of ["constructor", "toString", "__proto__", "invalid_lifecycle_request", "vestige_save_failed"]) {
+    assert.deepEqual(sanitizeLifecycleError(code, undefined), {
+      code,
+      message: `Lifecycle integration failed: ${code}.`,
+    });
+  }
+});
+
+test("accepts lifecycle artifacts that reference prior IDs only", () => {
+  const result = validateLifecycleRequest({
+    type: "plan",
+    identity,
+    artifact: `${artifact}\n\n## Prior artifacts\n- ${nonce}`,
+  });
+
+  assert.equal(result.valid, true);
+});
+
+test("allows discussion of lifecycle markers without a persisted nonce", () => {
+  const result = validateLifecycleRequest({
+    type: "plan",
+    identity,
+    artifact: `${artifact}\n<!-- ima-lifecycle verification: nonce=<uuid>; outcome=completed -->\nThe lifecycle_key field is discussed in prose.`,
+  });
+
+  assert.equal(result.valid, true);
+});
+
+test("allows ima-cycle outcome markers", () => {
+  const result = validateLifecycleRequest({
+    type: "plan",
+    identity,
+    artifact: `${artifact}\n<!-- ima-cycle outcome: phase=implementation; outcome=COMPLETED -->`,
+  });
+
+  assert.equal(result.valid, true);
+});
+
 test("builds labeled lifecycle metadata without inventing standalone identifiers", () => { const standaloneResult = buildLifecycleArtifact({ type: "decision", identity: standalone, artifact, nonce }); assert.match(standaloneResult, /lifecycle_root_memory_id: ''/); assert.match(standaloneResult, /taskwarrior_uuid: ''/); assert.match(standaloneResult, /jira_key: ''/); assert.match(standaloneResult, /source_refs: \[\]/); assert.match(standaloneResult, /prior_artifact_ids: \[\]/); assert.doesNotMatch(standaloneResult, /- ''/); const correlatedResult = buildLifecycleArtifact({ type: "decision", identity, artifact, nonce }); assert.match(correlatedResult, /source_refs:\n    - 'Taskwarrior:task-uuid'/); assert.match(correlatedResult, /prior_artifact_ids:\n    - 'plan'/); assert.match(buildLifecycleNonceMarker({ lifecycleKey: identity.lifecycleKey, nonce, type: "implementation", jiraKey: identity.jiraKey, taskwarriorUuid: identity.taskwarriorUuid }), /outcome=completed/); });
 test("validates successful and failed MCP save receipts", () => {
   const unrelatedUuid = "abcdefab-cdef-abcd-efab-cdefabcdefab";
