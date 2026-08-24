@@ -4,6 +4,10 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ## [Unreleased]
 
+### Fixed
+
+- Bounded package-owned Vestige lifecycle `recall` responses with an internal `60_000` token budget, preserving authoritative verification and fail-closed rejection of truncated or mismatched evidence.
+
 ## [1.13.0] - 2026-08-21
 
 ### Added

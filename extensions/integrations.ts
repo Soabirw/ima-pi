@@ -29,6 +29,7 @@ const execFile = promisify(execFileCallback);
 const TIMEOUT = 30_000;
 const MCP_TIMEOUT = 300_000;
 const VESTIGE_TIMEOUT = 300_000;
+const VESTIGE_RECALL_TOKEN_BUDGET = 60_000;
 const MAX_BUFFER = 128 * 1024;
 const SOURCE_ERROR_CODES = ["source_path_outside_project", "source_file_unreadable", "source_file_too_large"];
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -92,7 +93,16 @@ export const recallVestige = async (
   try {
     return await session(
       "vestige",
-      (call) => call("recall", { query, mode: "lookup", limit: 10 }, VESTIGE_TIMEOUT),
+      (call) => call(
+        "recall",
+        {
+          query,
+          mode: "lookup",
+          limit: 10,
+          token_budget: VESTIGE_RECALL_TOKEN_BUDGET,
+        },
+        VESTIGE_TIMEOUT,
+      ),
     );
   } catch {
     return null;
@@ -376,7 +386,12 @@ async function sourcePayload(
     try {
       const value = await deps.session("vestige", (call) => call(
         "recall",
-        { query: source.key, mode: "lookup", limit: 10 },
+        {
+          query: source.key,
+          mode: "lookup",
+          limit: 10,
+          token_budget: VESTIGE_RECALL_TOKEN_BUDGET,
+        },
         VESTIGE_TIMEOUT,
       ), signal);
       throwIfAborted(signal);
@@ -548,6 +563,7 @@ export async function coordinateLifecycle(request: unknown, supplied?: Integrati
       query: `${valid.identity.lifecycleKey} ${nonce}`,
       mode: "lookup",
       limit: 10,
+      token_budget: VESTIGE_RECALL_TOKEN_BUDGET,
     });
   } catch {
     return deriveLifecycleResult({

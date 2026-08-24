@@ -56,7 +56,12 @@ test("recallVestige uses the native raw MCP tool and fails closed", async () => 
   assert.deepEqual(calls, [{
     server: "vestige",
     tool: "recall",
-    args: { query: "lifecycle-key implementation", mode: "lookup", limit: 10 },
+    args: {
+      query: "lifecycle-key implementation",
+      mode: "lookup",
+      limit: 10,
+      token_budget: 60_000,
+    },
     timeout: 300_000,
   }]);
   assert.equal(await recallVestige("key", async () => { throw new Error("token=hidden"); }), null);
@@ -679,7 +684,7 @@ test("context fails closed for invalid direct Vestige source responses", async (
 test("context hydrates verified lifecycle sources through Vestige recall only", async () => {
   const lifecycleKey = "ima-pi:adhoc:lifecycle-source-identifiers:2026-08-04";
   const artifactId = "aac9ae23-432d-4144-a9e6-4bb49457d03a";
-  const content = `# Plan\n<!-- ima-lifecycle verification: lifecycle_key=${lifecycleKey}; nonce=01234567-89ab-cdef-0123-456789abcdef; phase=plan; jira_key=; taskwarrior_uuid=; outcome=completed -->\n`;
+  const content = `# Plan\n<!-- ima-lifecycle verification: lifecycle_key=${lifecycleKey}; nonce=01234567-89ab-cdef-0123-456789abcdef; phase=plan; jira_key=; taskwarrior_uuid=; outcome=completed -->`;
   const runCalls = [];
   const mcp = createSessionGateway((server, name, arguments_) => (
     server === "vestige" && name === "recall"
@@ -700,7 +705,11 @@ test("context hydrates verified lifecycle sources through Vestige recall only", 
     content,
     references: [`Lifecycle:${lifecycleKey}`, `Vestige:${artifactId}`],
   });
-  assert.deepEqual(mcp.calls.at(-1), ["vestige", "recall", { query: lifecycleKey, mode: "lookup", limit: 10 }]);
+  assert.deepEqual(mcp.calls.at(-1), [
+    "vestige",
+    "recall",
+    { query: lifecycleKey, mode: "lookup", limit: 10, token_budget: 60_000 },
+  ]);
   assert.deepEqual(runCalls, []);
   assert.equal(mcp.calls.some(([server, name]) => server === "vestige" && name === "memory"), false);
 });
@@ -709,11 +718,13 @@ test("lifecycle sources fail closed for unavailable or non-authoritative recall"
   const lifecycleKey = "ima-pi:adhoc:lifecycle-source-identifiers:2026-08-04";
   const verified = `<!-- ima-lifecycle verification: lifecycle_key=${lifecycleKey}; nonce=01234567-89ab-cdef-0123-456789abcdef; phase=plan; jira_key=; taskwarrior_uuid=; outcome=completed -->`;
   const abbreviated = `<!-- ima-lifecycle verification: lifecycle_key=${lifecycleKey}; outcome=completed -->`;
+  const tailTruncated = verified.slice(0, -4);
   const responses = [
     { isError: true, content: [{ type: "text", text: "token=vestige-error" }] },
     { isError: false, structuredContent: { results: [] } },
     { isError: false, structuredContent: { results: [{ id: "case-mismatch", content: verified.replace(lifecycleKey, lifecycleKey.toUpperCase()) }] } },
     { isError: false, structuredContent: { results: [{ id: "abbreviated", content: abbreviated }] } },
+    { isError: false, structuredContent: { results: [{ id: "tail-truncated", content: tailTruncated }] } },
     { isError: false, structuredContent: { results: [{ id: "trailing", content: `${verified}\nunrelated` }] } },
     { isError: false, structuredContent: { results: [{ id: "blocked", content: verified.replace("outcome=completed", "outcome=blocked") }] } },
   ];
@@ -807,6 +818,7 @@ test("lifecycle persists through direct Vestige MCP and verifies the nonce", asy
   assert.equal(recallTool, "recall");
   assert.equal(recallArgs.mode, "lookup");
   assert.equal(recallArgs.limit, 10);
+  assert.equal(recallArgs.token_budget, 60_000);
   assert.match(ingestArgs.content, new RegExp(String(recallArgs.query).split(" ")[1]));
   assert.deepEqual(runCalls, []);
 });
