@@ -10,6 +10,7 @@ const HTML_COMMENT_END = "-->";
 const LIFECYCLE_VERIFICATION_COMMENT = /^\s*ima-lifecycle verification:/;
 const LIFECYCLE_MARKER_NONCE = /nonce=[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/;
 const LIFECYCLE_MARKER_OUTCOME = /outcome=completed/;
+const UUID_PATTERN = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 const EMBEDDED_LIFECYCLE_FRONT_MATTER =
   /(?:^|\r?\n)---\r?\nlifecycle:\r?\n  project: '[^\r\n]*'\r?\n  lifecycle_key: '[^\r\n]*'/;
 const LIFECYCLE_ERROR_MESSAGES: Record<string, string> = {
@@ -110,14 +111,18 @@ const receiptHasFailure = (data: Record<string, unknown> | null) =>
 export function validateVestigeSaveReceipt(result: unknown, _expectedType: LifecyclePhase) {
   const callResult = object(result);
   const data = mcpResultData(result);
-  const artifactId = text(data?.id) || text(data?.memoryId) || null;
-  const positiveData = data?.stored === true
-    || data?.success === true
-    || data?.created === true;
+  const results = Array.isArray(data?.results) ? data.results : [];
+  const receipt = object(results.length === 1 ? results[0] : null);
+  const artifactId = text(receipt?.nodeId);
   const accepted = callResult?.isError !== true
     && data !== null
+    && results.length === 1
+    && receipt !== null
     && !receiptHasFailure(data)
-    && (positiveData || Boolean(artifactId));
+    && !receiptHasFailure(receipt)
+    && text(receipt.status) === "saved"
+    && text(receipt.decision) === "create"
+    && UUID_PATTERN.test(artifactId);
 
   return { accepted, artifactId: accepted ? artifactId : null };
 }

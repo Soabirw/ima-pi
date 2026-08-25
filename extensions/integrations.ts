@@ -12,6 +12,7 @@ import { Type } from "typebox";
 import {
   derivePhaseContext,
   evaluateSerenaBootstrap,
+  LIFECYCLE_ARTIFACT_MAXIMUM,
   type ContextSource,
   normalizeLifecycleRecallResult,
   normalizeSourcePayload,
@@ -24,12 +25,17 @@ import {
 } from "../lib/ima-context.ts";
 import { buildLifecycleArtifact, deriveLifecycleResult, evaluateLifecycleRecall, sanitizeLifecycleError, validateLifecycleRequest, validateVestigeSaveReceipt } from "../lib/ima-lifecycle.ts";
 import { callMcpTool, withMcpSession } from "../lib/mcp-client.ts";
+import {
+  createLifecycleRecallEnvelope,
+  discoverLifecycleCandidates,
+  readBoundedLifecycleArtifact,
+  retrieveBoundedLifecycleArtifacts,
+} from "../lib/vestige-lifecycle.ts";
 
 const execFile = promisify(execFileCallback);
 const TIMEOUT = 30_000;
 const MCP_TIMEOUT = 300_000;
 const VESTIGE_TIMEOUT = 300_000;
-const VESTIGE_RECALL_TOKEN_BUDGET = 60_000;
 const MAX_BUFFER = 128 * 1024;
 const SOURCE_ERROR_CODES = ["source_path_outside_project", "source_file_unreadable", "source_file_too_large"];
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -89,22 +95,25 @@ export const withConfiguredMcpSession: McpSession = async (
 export const recallVestige = async (
   query: string,
   session: McpSession = withConfiguredMcpSession,
+  signal?: AbortSignal,
 ) => {
   try {
-    return await session(
-      "vestige",
-      (call) => call(
-        "recall",
-        {
-          query,
-          mode: "lookup",
-          limit: 10,
-          token_budget: VESTIGE_RECALL_TOKEN_BUDGET,
-        },
-        VESTIGE_TIMEOUT,
+    return await retrieveBoundedLifecycleArtifacts({
+      query,
+      discover: (arguments_) => session(
+        "vestige",
+        (call) => call("recall", arguments_, VESTIGE_TIMEOUT),
+        signal,
       ),
-    );
+      read: (id) => session(
+        "vestige",
+        (call) => call("memory", { action: "get", id }, VESTIGE_TIMEOUT),
+        signal,
+      ),
+      signal,
+    });
   } catch {
+    throwIfAborted(signal);
     return null;
   }
 };
@@ -114,7 +123,11 @@ export type IntegrationDependencies = {
   read?: (path: string) => Promise<string>;
   canonical?: (path: string) => Promise<string>;
   stat?: typeof lstat;
-  vestige?: (tool: string, args: Record<string, unknown>) => Promise<unknown>;
+  vestige?: (
+    tool: string,
+    args: Record<string, unknown>,
+    signal?: AbortSignal,
+  ) => Promise<unknown>;
   session?: McpSession;
   home?: () => string;
 };
@@ -131,19 +144,25 @@ const productionDependencies: Required<IntegrationDependencies> = {
   read: (path) => readFile(path, "utf8"),
   canonical: realpath,
   stat: lstat,
-  vestige: async (tool, args) => {
+  vestige: async (tool, args, signal) => {
+    throwIfAborted(signal);
     const server = await mcpServer("vestige");
+    throwIfAborted(signal);
     if (!server) return null;
 
     try {
-      return await callMcpTool({
+      const result = await callMcpTool({
         command: server.command,
         args: server.args,
         name: tool,
         arguments: args,
         timeoutMs: VESTIGE_TIMEOUT,
+        signal,
       });
+      throwIfAborted(signal);
+      return result;
     } catch {
+      throwIfAborted(signal);
       return null;
     }
   },
@@ -383,34 +402,20 @@ async function sourcePayload(
       : null;
   }
   if (source.type === "lifecycle") {
-    try {
-      const value = await deps.session("vestige", (call) => call(
-        "recall",
-        {
-          query: source.key,
-          mode: "lookup",
-          limit: 10,
-          token_budget: VESTIGE_RECALL_TOKEN_BUDGET,
-        },
-        VESTIGE_TIMEOUT,
-      ), signal);
-      throwIfAborted(signal);
-      const artifact = normalizeLifecycleRecallResult({
-        lifecycleKey: source.key,
-        payload: mcpResultData(value),
-      });
-      return artifact
-        ? {
-          key: source.key,
-          title: `Lifecycle ${source.key}`,
-          content: artifact.content,
-          references: [`Vestige:${artifact.id}`],
-        }
-        : null;
-    } catch {
-      throwIfAborted(signal);
-      return null;
-    }
+    const value = await recallVestige(source.key, deps.session, signal);
+    throwIfAborted(signal);
+    const artifact = normalizeLifecycleRecallResult({
+      lifecycleKey: source.key,
+      payload: mcpResultData(value),
+    });
+    return artifact
+      ? {
+        key: source.key,
+        title: `Lifecycle ${source.key}`,
+        content: artifact.content,
+        references: [`Vestige:${artifact.id}`],
+      }
+      : null;
   }
   if (source.type === "vestige") {
     try {
@@ -502,10 +507,15 @@ export async function coordinateContext(
   }
 }
 
-export async function coordinateLifecycle(request: unknown, supplied?: IntegrationDependencies) {
+export async function coordinateLifecycle(
+  request: unknown,
+  supplied?: IntegrationDependencies,
+  signal?: AbortSignal,
+) {
   const valid = validateLifecycleRequest(request);
   if (!valid.valid) return { status: "failed", error: valid.error };
 
+  throwIfAborted(signal);
   const deps = depsFor(supplied);
   const nonce = randomUUID();
   const recallInput = {
@@ -517,17 +527,30 @@ export async function coordinateLifecycle(request: unknown, supplied?: Integrati
   };
   const emptyRecall = evaluateLifecycleRecall({ envelope: null, ...recallInput });
   const artifact = buildLifecycleArtifact({ ...valid, nonce });
+  if (artifact.length > LIFECYCLE_ARTIFACT_MAXIMUM) {
+    return {
+      status: "failed",
+      error: sanitizeLifecycleError("invalid_lifecycle_request", request),
+    };
+  }
 
   let saved: unknown;
   try {
+    throwIfAborted(signal);
     saved = await deps.vestige("smart_ingest", {
-      content: artifact,
-      node_type: "decision",
+      items: [{
+        content: artifact,
+        node_type: "decision",
+        forceCreate: true,
+        source: valid.identity.lifecycleKey,
+        tags: [valid.identity.project, "lifecycle", valid.type],
+      }],
+      batchMergePolicy: "force_create",
       forceCreate: true,
-      source: valid.identity.lifecycleKey,
-      tags: [valid.identity.project, "lifecycle", valid.type],
-    });
+    }, signal);
+    throwIfAborted(signal);
   } catch {
+    throwIfAborted(signal);
     return deriveLifecycleResult({
       type: valid.type,
       lifecycleKey: valid.identity.lifecycleKey,
@@ -547,7 +570,7 @@ export async function coordinateLifecycle(request: unknown, supplied?: Integrati
       error: "vestige_save_failed",
     });
   }
-  if (!receipt.accepted) {
+  if (!receipt.accepted || !receipt.artifactId) {
     return deriveLifecycleResult({
       type: valid.type,
       lifecycleKey: valid.identity.lifecycleKey,
@@ -557,15 +580,18 @@ export async function coordinateLifecycle(request: unknown, supplied?: Integrati
     });
   }
 
-  let recalled: unknown;
-  try {
-    recalled = await deps.vestige("recall", {
-      query: `${valid.identity.lifecycleKey} ${nonce}`,
-      mode: "lookup",
-      limit: 10,
-      token_budget: VESTIGE_RECALL_TOKEN_BUDGET,
-    });
-  } catch {
+  const candidateIds = await discoverLifecycleCandidates({
+    query: `${valid.identity.lifecycleKey} ${nonce}`,
+    concrete: true,
+    discover: (arguments_) => deps.session(
+      "vestige",
+      (call) => call("recall", arguments_, VESTIGE_TIMEOUT),
+      signal,
+    ),
+    signal,
+  });
+  throwIfAborted(signal);
+  if (candidateIds === null) {
     return deriveLifecycleResult({
       type: valid.type,
       lifecycleKey: valid.identity.lifecycleKey,
@@ -574,7 +600,30 @@ export async function coordinateLifecycle(request: unknown, supplied?: Integrati
       error: "vestige_recall_failed",
     });
   }
-  if (recalled == null || object(recalled)?.isError === true) {
+  const discoveredReceipt = candidateIds.some(
+    (id) => id.toLowerCase() === receipt.artifactId.toLowerCase(),
+  );
+  if (!discoveredReceipt) {
+    return deriveLifecycleResult({
+      type: valid.type,
+      lifecycleKey: valid.identity.lifecycleKey,
+      receipt,
+      recall: emptyRecall,
+      error: "vestige_semantic_completion_unverified",
+    });
+  }
+
+  const recalledArtifact = await readBoundedLifecycleArtifact({
+    id: receipt.artifactId,
+    read: (id) => deps.session(
+      "vestige",
+      (call) => call("memory", { action: "get", id }, VESTIGE_TIMEOUT),
+      signal,
+    ),
+    signal,
+  });
+  throwIfAborted(signal);
+  if (!recalledArtifact) {
     return deriveLifecycleResult({
       type: valid.type,
       lifecycleKey: valid.identity.lifecycleKey,
@@ -584,6 +633,7 @@ export async function coordinateLifecycle(request: unknown, supplied?: Integrati
     });
   }
 
+  const recalled = createLifecycleRecallEnvelope([recalledArtifact]);
   return deriveLifecycleResult({
     type: valid.type,
     lifecycleKey: valid.identity.lifecycleKey,
@@ -618,5 +668,5 @@ const CONTEXT_TOOL_PARAMETERS = Type.Object({
 
 export default function integrations(pi: ExtensionAPI) {
   pi.registerTool({ name: "ima_context", label: "IMA context", description: "Build Serena-first project context from one typed source: jira/key, taskwarrior/project+uuid, file/path, vestige/id, lifecycle/key, reference/value, or text/title+content. Reference accepts canonical taskwarrior:<project>:<uuid>, jira:<KEY>, lifecycle:<lifecycle-key>, and vestige:<UUID> forms plus space aliases. Optional durableKnowledge requires query and accepts collection and limit.", parameters: CONTEXT_TOOL_PARAMETERS, prepareArguments: prepareContextArguments, execute: async (_id, request, signal, _update, ctx) => ({ content: [{ type: "text", text: JSON.stringify(await coordinateContext(request, ctx.cwd, undefined, signal)) }], details: {} }) });
-  pi.registerTool({ name: "ima_lifecycle", label: "IMA lifecycle", description: "Save and semantically verify a lifecycle artifact.", parameters: Type.Object({ type: Type.String(), identity: Type.Any(), artifact: Type.String() }), execute: async (_id, request) => { const result = await coordinateLifecycle(request); return { content: [{ type: "text", text: JSON.stringify(result) }], details: result }; } });
+  pi.registerTool({ name: "ima_lifecycle", label: "IMA lifecycle", description: "Save and semantically verify a lifecycle artifact.", parameters: Type.Object({ type: Type.String(), identity: Type.Any(), artifact: Type.String() }), execute: async (_id, request, signal) => { const result = await coordinateLifecycle(request, undefined, signal); return { content: [{ type: "text", text: JSON.stringify(result) }], details: result }; } });
 }

@@ -27,7 +27,7 @@ const LIFECYCLE_PHASE_PATTERN = LIFECYCLE_PHASES.join("|");
 const CONTEXT_IDENTIFIER_MAXIMUM = 1_024;
 const LIFECYCLE_KEY_MAXIMUM = 512;
 const LIFECYCLE_RECALL_LIMIT = 10;
-const LIFECYCLE_ARTIFACT_MAXIMUM = 64_000;
+export const LIFECYCLE_ARTIFACT_MAXIMUM = 64_000;
 
 export function parseQdrantResults(formattedText: unknown): Array<{ summary: string; score: number }> {
   if (typeof formattedText !== "string") return [];

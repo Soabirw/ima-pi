@@ -36,7 +36,7 @@ Serena holds stable project context and instructions. Vestige holds preferences,
 
 ## Degradation and troubleshooting
 
-Missing credentials, provider access, IDE support, browser tooling, MCP executables, Jira/Taskwarrior access, or memory backends should affect only the invoked capability. They do not make a successful package installation fail. Use `/ima:preflight` and [`/skill:pi-preflight`](../skills/pi-preflight/SKILL.md) for read-only diagnosis. In the recorded clean-install acceptance, a non-interactive preflight prompt reached an unavailable default provider before diagnostics; treat that as a provider limitation, not an installation failure.
+Missing credentials, provider access, IDE support, browser tooling, MCP executables, Jira/Taskwarrior access, or memory backends should affect only the invoked capability. They do not make a successful package installation fail. Vestige lifecycle reads use brief candidate discovery followed by isolated, 64 KB-bounded exact reads; a failed or oversized candidate cannot poison later candidates. If no authoritative bounded artifact remains, hydration and reconciliation fail closed. `ima_lifecycle` persists one batch force-create item and requires its exact `saved`/`create` receipt node before semantic verification. Use `/ima:preflight` and [`/skill:pi-preflight`](../skills/pi-preflight/SKILL.md) for read-only diagnosis. In the recorded clean-install acceptance, a non-interactive preflight prompt reached an unavailable default provider before diagnostics; treat that as a provider limitation, not an installation failure.
 
 ## Updates, removal, rollback, and local development
 

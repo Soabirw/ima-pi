@@ -7,7 +7,11 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 ### Fixed
 
 - Lifecycle persistence now rejects embedded prior lifecycle artifacts before Vestige I/O while preserving identifier-only references.
-- Bounded package-owned Vestige lifecycle `recall` responses with an internal `60_000` token budget, preserving authoritative verification and fail-closed rejection of truncated or mismatched evidence.
+- Added local containment for oversized Vestige lifecycle records: brief, small-budget candidate discovery and isolated 64 KB-bounded exact reads skip failed or oversized candidates while preserving fail-closed verification; lifecycle persistence uses one-item batch force-create with exact `saved`/`create` receipt-node verification.
+
+### Known limitations
+
+- This package-local containment does not change existing Vestige records; direct consumers outside `ima-pi` can still encounter oversized records.
 
 ## [1.13.0] - 2026-08-21
 

@@ -4,7 +4,8 @@ import { validateToolArguments } from "@earendil-works/pi-ai";
 import { convertTools } from "@earendil-works/pi-ai/api/google-shared";
 import { Check } from "typebox/value";
 import integrations, { coordinateContext, coordinateLifecycle, recallVestige } from "../extensions/integrations.ts";
-import { parseQdrantResults } from "../lib/ima-context.ts";
+import { LIFECYCLE_ARTIFACT_MAXIMUM, parseQdrantResults } from "../lib/ima-context.ts";
+import { buildLifecycleArtifact } from "../lib/ima-lifecycle.ts";
 const identity = { project: "ima-pi", lifecycleKey: "ima-pi:taskwarrior:FNR-3007:uuid", lifecycleRootMemoryId: "root", taskwarriorProject: "FNR-3007", taskwarriorTask: "uuid", taskwarriorUuid: "uuid", jiraKey: "FNR-3016", sourceRefs: ["Taskwarrior:uuid"], priorArtifactIds: ["plan"] };
 const artifact = "minimal implementation artifact";
 const STANDARD_MEMORY_NAMES = ["core", "conventions", "tech_stack", "suggested_commands", "task_completion"];
@@ -43,27 +44,51 @@ const runGateway = (calls) => async (program, args) => {
 const vestigePattern = "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$";
 const invalidVestigeId = "-".repeat(36);
 
-test("recallVestige uses the native raw MCP tool and fails closed", async () => {
+test("recallVestige discovers IDs then reads bounded exact memories", async () => {
+  const artifactId = "aac9ae23-432d-4144-a9e6-4bb49457d03a";
   const calls = [];
   const result = await recallVestige("lifecycle-key implementation", async (server, callback) => callback(
     async (tool, args, timeout) => {
       calls.push({ server, tool, args, timeout });
-      return { isError: false, structuredContent: { results: [] } };
+      return tool === "recall"
+        ? { isError: false, structuredContent: { results: [{ id: artifactId }] } }
+        : {
+          isError: false,
+          structuredContent: {
+            action: "get",
+            found: true,
+            node: { id: artifactId, content: "bounded artifact" },
+          },
+        };
     },
   ));
 
-  assert.deepEqual(result, { isError: false, structuredContent: { results: [] } });
-  assert.deepEqual(calls, [{
-    server: "vestige",
-    tool: "recall",
-    args: {
-      query: "lifecycle-key implementation",
-      mode: "lookup",
-      limit: 10,
-      token_budget: 60_000,
+  assert.deepEqual(result, {
+    isError: false,
+    structuredContent: { results: [{ id: artifactId, content: "bounded artifact" }] },
+  });
+  assert.deepEqual(calls, [
+    {
+      server: "vestige",
+      tool: "recall",
+      args: {
+        query: "lifecycle-key implementation",
+        mode: "lookup",
+        retrieval_mode: "precise",
+        detail_level: "brief",
+        concrete: false,
+        limit: 10,
+        token_budget: 1_000,
+      },
+      timeout: 300_000,
     },
-    timeout: 300_000,
-  }]);
+    {
+      server: "vestige",
+      tool: "memory",
+      args: { action: "get", id: artifactId },
+      timeout: 300_000,
+    },
+  ]);
   assert.equal(await recallVestige("key", async () => { throw new Error("token=hidden"); }), null);
 });
 
@@ -73,6 +98,7 @@ test("context registration advertises the exact provider-compatible request cont
   const contextTool = tools.find((tool) => tool.name === "ima_context");
   const lifecycleTool = tools.find((tool) => tool.name === "ima_lifecycle");
   assert.match(String(lifecycleTool.execute), /details: result/);
+  assert.match(String(lifecycleTool.execute), /coordinateLifecycle\(request, undefined, signal\)/);
   assert.match(String(contextTool.execute), /coordinateContext\(request, ctx\.cwd, undefined, signal\)/);
   const parameters = contextTool.parameters;
   const source = parameters.properties.source;
@@ -681,16 +707,22 @@ test("context fails closed for invalid direct Vestige source responses", async (
   }
 });
 
-test("context hydrates verified lifecycle sources through Vestige recall only", async () => {
+test("context hydrates verified lifecycle sources through bounded Vestige retrieval", async () => {
   const lifecycleKey = "ima-pi:adhoc:lifecycle-source-identifiers:2026-08-04";
   const artifactId = "aac9ae23-432d-4144-a9e6-4bb49457d03a";
   const content = `# Plan\n<!-- ima-lifecycle verification: lifecycle_key=${lifecycleKey}; nonce=01234567-89ab-cdef-0123-456789abcdef; phase=plan; jira_key=; taskwarrior_uuid=; outcome=completed -->`;
   const runCalls = [];
-  const mcp = createSessionGateway((server, name, arguments_) => (
-    server === "vestige" && name === "recall"
-      ? { isError: false, structuredContent: { results: [{ id: artifactId, content }] } }
-      : defaultSessionResponse(server, name, arguments_)
-  ));
+  const mcp = createSessionGateway((server, name, arguments_) => {
+    if (server !== "vestige") return defaultSessionResponse(server, name, arguments_);
+    if (name === "recall") return { isError: false, structuredContent: { results: [{ id: artifactId }] } };
+    if (name === "memory") {
+      return {
+        isError: false,
+        structuredContent: { action: "get", found: true, node: { id: artifactId, content } },
+      };
+    }
+    return null;
+  });
   const result = await coordinateContext(
     { source: { type: "reference", value: `lifecycle:${lifecycleKey}` } },
     "/repo",
@@ -705,13 +737,64 @@ test("context hydrates verified lifecycle sources through Vestige recall only", 
     content,
     references: [`Lifecycle:${lifecycleKey}`, `Vestige:${artifactId}`],
   });
-  assert.deepEqual(mcp.calls.at(-1), [
-    "vestige",
-    "recall",
-    { query: lifecycleKey, mode: "lookup", limit: 10, token_budget: 60_000 },
+  assert.deepEqual(mcp.calls.slice(-2), [
+    [
+      "vestige",
+      "recall",
+      {
+        query: lifecycleKey,
+        mode: "lookup",
+        retrieval_mode: "precise",
+        detail_level: "brief",
+        concrete: false,
+        limit: 10,
+        token_budget: 1_000,
+      },
+    ],
+    ["vestige", "memory", { action: "get", id: artifactId }],
   ]);
   assert.deepEqual(runCalls, []);
-  assert.equal(mcp.calls.some(([server, name]) => server === "vestige" && name === "memory"), false);
+});
+
+test("context skips an oversized lifecycle candidate and hydrates a later verified record", async () => {
+  const lifecycleKey = "ima-pi:adhoc:lifecycle-source-identifiers:2026-08-04";
+  const oversizedId = "aec9ae23-432d-4144-a9e6-4bb49457d03a";
+  const usableId = "bec9ae23-432d-4144-a9e6-4bb49457d03a";
+  const content = `# Plan\n<!-- ima-lifecycle verification: lifecycle_key=${lifecycleKey}; nonce=01234567-89ab-cdef-0123-456789abcdef; phase=plan; jira_key=; taskwarrior_uuid=; outcome=completed -->`;
+  const mcp = createSessionGateway((server, name, arguments_) => {
+    if (server !== "vestige") return defaultSessionResponse(server, name, arguments_);
+    if (name === "recall") return { isError: false, structuredContent: { results: [{ id: oversizedId }, { id: usableId }] } };
+    if (arguments_.id === oversizedId) {
+      return {
+        isError: false,
+        structuredContent: {
+          action: "get",
+          found: true,
+          node: { id: oversizedId, content: "x".repeat(LIFECYCLE_ARTIFACT_MAXIMUM + 1) },
+        },
+      };
+    }
+    return {
+      isError: false,
+      structuredContent: { action: "get", found: true, node: { id: usableId, content } },
+    };
+  });
+
+  const result = await coordinateContext(
+    { source: { type: "lifecycle", key: lifecycleKey } },
+    "/repo",
+    { canonical: async (path) => path, run: runGateway([]), session: mcp.session },
+  );
+
+  assert.equal(result.status, "ready");
+  assert.equal(result.source.references.at(-1), `Vestige:${usableId}`);
+  assert.deepEqual(
+    mcp.calls.filter(([server, name]) => server === "vestige" && name === "memory"),
+    [
+      ["vestige", "memory", { action: "get", id: oversizedId }],
+      ["vestige", "memory", { action: "get", id: usableId }],
+    ],
+  );
 });
 
 test("lifecycle sources fail closed for unavailable or non-authoritative recall", async () => {
@@ -776,9 +859,30 @@ test("context exposes only known source error codes", async () => {
   );
   assert.equal(known.diagnostics[0].code, "source_path_outside_project");
 });
-test("lifecycle persists through direct Vestige MCP and verifies the nonce", async () => {
+test("lifecycle persists through batch force-create and verifies the exact receipt node", async () => {
+  const artifactId = "aac9ae23-432d-4144-a9e6-4bb49457d03a";
   const vestigeCalls = [];
   const runCalls = [];
+  let recallQuery = "";
+  const mcp = createSessionGateway((server, name, arguments_) => {
+    if (server !== "vestige") return defaultSessionResponse(server, name, arguments_);
+    if (name === "recall") {
+      recallQuery = String(arguments_.query);
+      return { isError: false, structuredContent: { results: [{ id: artifactId }] } };
+    }
+    const nonce = recallQuery.split(" ")[1];
+    return {
+      isError: false,
+      structuredContent: {
+        action: "get",
+        found: true,
+        node: {
+          id: artifactId,
+          content: `${identity.lifecycleKey} ${nonce} phase=implementation; ${identity.jiraKey} ${identity.taskwarriorUuid} outcome=completed`,
+        },
+      },
+    };
+  });
   const result = await coordinateLifecycle(
     { type: "implementation", identity, artifact },
     {
@@ -788,39 +892,212 @@ test("lifecycle persists through direct Vestige MCP and verifies the nonce", asy
       },
       vestige: async (tool, args) => {
         vestigeCalls.push([tool, args]);
-        if (tool === "smart_ingest") {
-          return { isError: false, structuredContent: { id: "receipt" } };
-        }
-
-        const nonce = String(args.query).split(" ")[1];
         return {
           isError: false,
           structuredContent: {
-            results: [{
-              content: `${identity.lifecycleKey} ${nonce} phase=implementation; ${identity.jiraKey} ${identity.taskwarriorUuid} outcome=completed`,
-            }],
+            results: [{ status: "saved", decision: "create", nodeId: artifactId }],
           },
         };
       },
+      session: mcp.session,
     },
   );
 
   const [ingestTool, ingestArgs] = vestigeCalls[0];
-  const [recallTool, recallArgs] = vestigeCalls[1];
   assert.equal(result.status, "completed");
-  assert.equal(result.artifactId, "receipt");
-  assert.deepEqual(vestigeCalls.map(([tool]) => tool), ["smart_ingest", "recall"]);
+  assert.equal(result.artifactId, artifactId);
+  assert.deepEqual(vestigeCalls.map(([tool]) => tool), ["smart_ingest"]);
   assert.equal(ingestTool, "smart_ingest");
   assert.equal(ingestArgs.forceCreate, true);
-  assert.equal(ingestArgs.node_type, "decision");
-  assert.equal(ingestArgs.source, identity.lifecycleKey);
-  assert.deepEqual(ingestArgs.tags, [identity.project, "lifecycle", "implementation"]);
-  assert.equal(recallTool, "recall");
-  assert.equal(recallArgs.mode, "lookup");
-  assert.equal(recallArgs.limit, 10);
-  assert.equal(recallArgs.token_budget, 60_000);
-  assert.match(ingestArgs.content, new RegExp(String(recallArgs.query).split(" ")[1]));
+  assert.equal(ingestArgs.batchMergePolicy, "force_create");
+  assert.deepEqual(ingestArgs.items, [{
+    content: ingestArgs.items[0].content,
+    node_type: "decision",
+    forceCreate: true,
+    source: identity.lifecycleKey,
+    tags: [identity.project, "lifecycle", "implementation"],
+  }]);
+  assert.deepEqual(mcp.calls.filter(([server]) => server === "vestige"), [
+    [
+      "vestige",
+      "recall",
+      {
+        query: recallQuery,
+        mode: "lookup",
+        retrieval_mode: "precise",
+        detail_level: "brief",
+        concrete: true,
+        limit: 10,
+        token_budget: 1_000,
+      },
+    ],
+    ["vestige", "memory", { action: "get", id: artifactId }],
+  ]);
+  assert.match(ingestArgs.items[0].content, new RegExp(recallQuery.split(" ")[1]));
   assert.deepEqual(runCalls, []);
+});
+
+test("lifecycle rejects oversized serialized artifacts before Vestige I/O", async () => {
+  const requests = [
+    {
+      identity,
+      artifact: "x".repeat(LIFECYCLE_ARTIFACT_MAXIMUM),
+    },
+    {
+      identity: {
+        ...identity,
+        sourceRefs: ["x".repeat(LIFECYCLE_ARTIFACT_MAXIMUM)],
+      },
+      artifact,
+    },
+  ];
+
+  for (const request of requests) {
+    const vestigeCalls = [];
+    const sessionCalls = [];
+    const result = await coordinateLifecycle(
+      { type: "implementation", ...request },
+      {
+        vestige: async (...args) => {
+          vestigeCalls.push(args);
+          return null;
+        },
+        session: async (...args) => {
+          sessionCalls.push(args);
+          return null;
+        },
+      },
+    );
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.error.code, "invalid_lifecycle_request");
+    assert.deepEqual(vestigeCalls, []);
+    assert.deepEqual(sessionCalls, []);
+  }
+});
+
+test("lifecycle allows an artifact at the exact serialized bound", async () => {
+  const artifactId = "aac9ae23-432d-4144-a9e6-4bb49457d03a";
+  const sampleNonce = "01234567-89ab-cdef-0123-456789abcdef";
+  const emptyArtifact = buildLifecycleArtifact({
+    type: "implementation",
+    identity,
+    artifact: "",
+    nonce: sampleNonce,
+  });
+  const artifactAtLimit = "x".repeat(
+    LIFECYCLE_ARTIFACT_MAXIMUM - emptyArtifact.length,
+  );
+  const vestigeCalls = [];
+  let recallQuery = "";
+  const mcp = createSessionGateway((server, name, arguments_) => {
+    if (server !== "vestige") return null;
+    if (name === "recall") {
+      recallQuery = String(arguments_.query);
+      return { isError: false, structuredContent: { results: [{ id: artifactId }] } };
+    }
+    const nonce = recallQuery.split(" ")[1];
+    return {
+      isError: false,
+      structuredContent: {
+        action: "get",
+        found: true,
+        node: {
+          id: artifactId,
+          content: `${identity.lifecycleKey} ${nonce} phase=implementation; ${identity.jiraKey} ${identity.taskwarriorUuid} outcome=completed`,
+        },
+      },
+    };
+  });
+
+  const result = await coordinateLifecycle(
+    { type: "implementation", identity, artifact: artifactAtLimit },
+    {
+      vestige: async (tool, arguments_) => {
+        vestigeCalls.push([tool, arguments_]);
+        return {
+          isError: false,
+          structuredContent: {
+            results: [{ status: "saved", decision: "create", nodeId: artifactId }],
+          },
+        };
+      },
+      session: mcp.session,
+    },
+  );
+
+  assert.equal(result.status, "completed");
+  assert.equal(vestigeCalls.length, 1);
+  assert.equal(
+    vestigeCalls[0][1].items[0].content.length,
+    LIFECYCLE_ARTIFACT_MAXIMUM,
+  );
+});
+
+test("lifecycle preserves a pre-aborted signal without external effects", async () => {
+  const controller = new AbortController();
+  const reason = new Error("cancelled before lifecycle mutation");
+  const vestigeCalls = [];
+  const sessionCalls = [];
+  controller.abort(reason);
+
+  await assert.rejects(
+    coordinateLifecycle(
+      { type: "implementation", identity, artifact },
+      {
+        vestige: async (...args) => {
+          vestigeCalls.push(args);
+          return null;
+        },
+        session: async (...args) => {
+          sessionCalls.push(args);
+          return null;
+        },
+      },
+      controller.signal,
+    ),
+    (error) => error === reason,
+  );
+  assert.deepEqual(vestigeCalls, []);
+  assert.deepEqual(sessionCalls, []);
+});
+
+test("lifecycle aborts after discovery without retrying or reading the receipt", async () => {
+  const artifactId = "aac9ae23-432d-4144-a9e6-4bb49457d03a";
+  const controller = new AbortController();
+  const reason = new Error("cancelled during lifecycle discovery");
+  const vestigeCalls = [];
+  const vestigeSignals = [];
+  const mcp = createSessionGateway((server, name) => {
+    if (server !== "vestige" || name !== "recall") return null;
+    controller.abort(reason);
+    return { isError: false, structuredContent: { results: [{ id: artifactId }] } };
+  });
+
+  await assert.rejects(
+    coordinateLifecycle(
+      { type: "implementation", identity, artifact },
+      {
+        vestige: async (tool, arguments_, signal) => {
+          vestigeCalls.push([tool, arguments_]);
+          vestigeSignals.push(signal);
+          return {
+            isError: false,
+            structuredContent: {
+              results: [{ status: "saved", decision: "create", nodeId: artifactId }],
+            },
+          };
+        },
+        session: mcp.session,
+      },
+      controller.signal,
+    ),
+    (error) => error === reason,
+  );
+  assert.deepEqual(vestigeCalls.map(([tool]) => tool), ["smart_ingest"]);
+  assert.deepEqual(vestigeSignals, [controller.signal]);
+  assert.deepEqual(mcp.signals, [controller.signal]);
+  assert.equal(mcp.calls.some(([server, name]) => server === "vestige" && name === "memory"), false);
 });
 
 test("lifecycle rejects malformed identity arrays before Vestige I/O", async () => {
@@ -968,82 +1245,57 @@ test("lifecycle rejects an unrelated receipt UUID without recall", async () => {
   assert.equal(result.artifactId, null);
 });
 
-test("lifecycle rejects a direct Vestige recall without the nonce match", async () => {
+test("lifecycle rejects a brief discovery that omits the created receipt node", async () => {
+  const artifactId = "aac9ae23-432d-4144-a9e6-4bb49457d03a";
+  const mcp = createSessionGateway((server, name) => (
+    server === "vestige" && name === "recall"
+      ? { isError: false, structuredContent: { results: [] } }
+      : null
+  ));
   const result = await coordinateLifecycle(
     { type: "implementation", identity, artifact },
     {
-      vestige: async (tool) => tool === "smart_ingest"
-        ? { isError: false, structuredContent: { id: "receipt" } }
-        : { isError: false, structuredContent: { results: [] } },
+      vestige: async () => ({
+        isError: false,
+        structuredContent: { results: [{ status: "saved", decision: "create", nodeId: artifactId }] },
+      }),
+      session: mcp.session,
     },
   );
 
   assert.equal(result.status, "failed");
   assert.equal(result.error.code, "vestige_semantic_completion_unverified");
+  assert.equal(mcp.calls.some(([server, name]) => server === "vestige" && name === "memory"), false);
 });
 
-test("lifecycle rejects an error-marked direct Vestige recall", async () => {
-  const calls = [];
+test("lifecycle fails closed after one unavailable exact receipt read", async () => {
+  const artifactId = "aac9ae23-432d-4144-a9e6-4bb49457d03a";
   const secret = "token=error-recall-secret";
-  const result = await coordinateLifecycle(
-    { type: "implementation", identity, artifact },
-    {
-      vestige: async (tool, args) => {
-        calls.push(tool);
-        if (tool === "smart_ingest") {
-          return { isError: false, structuredContent: { id: "receipt" } };
-        }
-
-        const nonce = String(args.query).split(" ")[1];
-        return {
-          isError: true,
-          content: [{ type: "text", text: secret }],
-          structuredContent: {
-            results: [{
-              content: `${identity.lifecycleKey} ${nonce} implementation ${identity.jiraKey} ${identity.taskwarriorUuid} outcome=completed`,
-            }],
-          },
-        };
-      },
-    },
-  );
-
-  assert.deepEqual(calls, ["smart_ingest", "recall"]);
-  assert.equal(result.status, "failed");
-  assert.equal(result.error.code, "vestige_recall_failed");
-  assert.doesNotMatch(JSON.stringify(result), /error-recall-secret/);
-});
-
-test("lifecycle reports an unavailable direct Vestige recall", async () => {
-  const result = await coordinateLifecycle(
-    { type: "implementation", identity, artifact },
-    {
-      vestige: async (tool) => tool === "smart_ingest"
-        ? { isError: false, structuredContent: { id: "receipt" } }
-        : null,
-    },
-  );
-
-  assert.equal(result.status, "failed");
-  assert.equal(result.error.code, "vestige_recall_failed");
-});
-
-test("lifecycle sanitizes a thrown direct Vestige recall failure", async () => {
+  const mcp = createSessionGateway((server, name) => {
+    if (server !== "vestige") return null;
+    if (name === "recall") return { isError: false, structuredContent: { results: [{ id: artifactId }] } };
+    return { isError: true, content: [{ type: "text", text: secret }] };
+  });
+  const calls = [];
   const result = await coordinateLifecycle(
     { type: "implementation", identity, artifact },
     {
       vestige: async (tool) => {
-        if (tool === "smart_ingest") {
-          return { isError: false, structuredContent: { id: "receipt" } };
-        }
-        throw new Error("token=def456");
+        calls.push(tool);
+        return {
+          isError: false,
+          structuredContent: { results: [{ status: "saved", decision: "create", nodeId: artifactId }] },
+        };
       },
+      session: mcp.session,
     },
   );
 
+  assert.deepEqual(calls, ["smart_ingest"]);
   assert.equal(result.status, "failed");
   assert.equal(result.error.code, "vestige_recall_failed");
-  assert.doesNotMatch(JSON.stringify(result), /def456/);
+  assert.equal(mcp.calls.filter(([server, name]) => server === "vestige" && name === "memory").length, 1);
+  assert.doesNotMatch(JSON.stringify(result), /error-recall-secret/);
 });
 
 test("Taskwarrior source accepts exactly one matching read-only export", async () => {

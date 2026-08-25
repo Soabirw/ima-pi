@@ -150,35 +150,29 @@ test("allows ima-cycle outcome markers", () => {
 });
 
 test("builds labeled lifecycle metadata without inventing standalone identifiers", () => { const standaloneResult = buildLifecycleArtifact({ type: "decision", identity: standalone, artifact, nonce }); assert.match(standaloneResult, /lifecycle_root_memory_id: ''/); assert.match(standaloneResult, /taskwarrior_uuid: ''/); assert.match(standaloneResult, /jira_key: ''/); assert.match(standaloneResult, /source_refs: \[\]/); assert.match(standaloneResult, /prior_artifact_ids: \[\]/); assert.doesNotMatch(standaloneResult, /- ''/); const correlatedResult = buildLifecycleArtifact({ type: "decision", identity, artifact, nonce }); assert.match(correlatedResult, /source_refs:\n    - 'Taskwarrior:task-uuid'/); assert.match(correlatedResult, /prior_artifact_ids:\n    - 'plan'/); assert.match(buildLifecycleNonceMarker({ lifecycleKey: identity.lifecycleKey, nonce, type: "implementation", jiraKey: identity.jiraKey, taskwarriorUuid: identity.taskwarriorUuid }), /outcome=completed/); });
-test("validates successful and failed MCP save receipts", () => {
-  const unrelatedUuid = "abcdefab-cdef-abcd-efab-cdefabcdefab";
-  const structuredReceipt = validateVestigeSaveReceipt(
-    { isError: false, structuredContent: { memoryId: "stored-memory" } },
-    "plan",
-  );
-  const textReceipt = validateVestigeSaveReceipt(
-    { isError: false, content: [{ type: "text", text: JSON.stringify({ success: true, id: "text-memory" }) }] },
+test("validates one-item batch force-create Vestige receipts", () => {
+  const nodeId = "abcdefab-cdef-abcd-efab-cdefabcdefab";
+  const acceptedReceipt = validateVestigeSaveReceipt(
+    {
+      isError: false,
+      structuredContent: {
+        results: [{ status: "saved", decision: "create", nodeId }],
+      },
+    },
     "plan",
   );
   const rejectedReceipts = [
-    { isError: true, structuredContent: { id: "failed-memory" } },
-    { isError: false, content: [{ type: "text", text: JSON.stringify({ success: false, id: "not-stored" }) }] },
-    { isError: false, structuredContent: { stored: false, id: "not-stored" } },
-    { isError: false, structuredContent: { status: "error", id: "not-stored" } },
-    { isError: false, structuredContent: { success: true, error: { message: "failed" } } },
-    { isError: false, content: [{ type: "text", text: "artifact stored successfully" }] },
-    { isError: false, content: [{ type: "text", text: `artifact stored successfully id=${unrelatedUuid}` }] },
-    { isError: false, content: [{ type: "text", text: "failed: artifact was not stored" }] },
-    { isError: false, content: [{ type: "text", text: "artifact could not be stored" }] },
-    { isError: false, content: [{ type: "text", text: "artifact could not be successfully stored" }] },
-    { isError: false, content: [{ type: "text", text: "artifact wasn't stored" }] },
-    { isError: false, content: [{ type: "text", text: "artifact was not only stored successfully, but also indexed" }] },
-    { isError: false, content: [{ type: "text", text: `unrelated reference ${unrelatedUuid}` }] },
-    { isError: false, content: [] },
+    { isError: true, structuredContent: { results: [{ status: "saved", decision: "create", nodeId }] } },
+    { isError: false, structuredContent: { results: [] } },
+    { isError: false, structuredContent: { results: [{ status: "saved", decision: "create", nodeId }, { status: "saved", decision: "create", nodeId }] } },
+    { isError: false, structuredContent: { results: [{ status: "saved", decision: "update", nodeId }] } },
+    { isError: false, structuredContent: { results: [{ status: "merged", decision: "create", nodeId }] } },
+    { isError: false, structuredContent: { results: [{ status: "saved", decision: "create", nodeId: "not-a-uuid" }] } },
+    { isError: false, structuredContent: { results: [{ status: "saved", decision: "create", id: nodeId }] } },
+    { isError: false, structuredContent: { results: [{ status: "saved", decision: "create", nodeId, error: "failed" }] } },
   ];
 
-  assert.deepEqual(structuredReceipt, { accepted: true, artifactId: "stored-memory" });
-  assert.deepEqual(textReceipt, { accepted: true, artifactId: "text-memory" });
+  assert.deepEqual(acceptedReceipt, { accepted: true, artifactId: nodeId });
   for (const receipt of rejectedReceipts) {
     assert.deepEqual(validateVestigeSaveReceipt(receipt, "plan"), {
       accepted: false,
