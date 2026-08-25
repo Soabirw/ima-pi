@@ -22,8 +22,26 @@ For a task that needs context:
 1. Hydrate the supplied source with `ima_context`; it establishes source and Serena project context.
 2. Use a native `session_start` for broad context or a focused Vestige `recall` by
    lifecycle key, Taskwarrior UUID, or Jira key for prior task work and preferences.
-   This direct read is the preference load; do not seek a separate helper.
-   For `lifecycle:<lifecycle-key>`, recall the exact lifecycle key before concluding
+   This direct read is the preference load; do not seek a separate helper. For focused
+   lifecycle discovery, use the existing bounded shape:
+
+   ```js
+   {
+     query,
+     mode: "lookup",
+     retrieval_mode: "precise",
+     detail_level: "brief",
+     concrete: true,
+     limit: 10,
+     token_budget: 1000,
+   }
+   ```
+
+   Reuse these package-standard limits rather than inventing another set. Validate
+   candidate IDs and summaries, then use `vestige_memory` with `{ action: "get", id }`
+   only for selected candidates whose summaries are insufficient. A failed or oversized
+   exact read is partial or failed evidence; never broaden to unbounded recall or mutate
+   memory. For `lifecycle:<lifecycle-key>`, recall the exact lifecycle key before concluding
    evidence is absent. For `vestige:<UUID>`, retrieve the cited memory as required
    source hydration, recover lifecycle identity when present, then recall related
    verified artifacts. For optional preference results, stop after an adequate summary.

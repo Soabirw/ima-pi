@@ -100,6 +100,7 @@ export const recallVestige = async (
   try {
     return await retrieveBoundedLifecycleArtifacts({
       query,
+      concrete: true,
       discover: (arguments_) => session(
         "vestige",
         (call) => call("recall", arguments_, VESTIGE_TIMEOUT),

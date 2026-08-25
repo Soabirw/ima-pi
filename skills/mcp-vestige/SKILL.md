@@ -24,6 +24,28 @@ Retrieve a selected full memory only when its summary cannot support relevance
 validation or preference summarization. If that required retrieval fails, report partial
 or failed evidence rather than guessing.
 
+## Bounded lifecycle discovery
+
+For focused lifecycle discovery, call `recall` through the package MCP adapter with the
+existing bounded shape:
+
+```js
+{
+  query,
+  mode: "lookup",
+  retrieval_mode: "precise",
+  detail_level: "brief",
+  concrete: true,
+  limit: 10,
+  token_budget: 1000,
+}
+```
+
+Reuse these package-standard limits rather than inventing another set. Validate candidate
+IDs and summaries, then use `vestige_memory` with `{ action: "get", id }` only for
+selected candidates whose summaries are insufficient. A failed or oversized exact read
+is partial or failed evidence; never broaden to unbounded recall or mutate memory.
+
 Persist preferences through `/ima:memorize`, which owns its approval and verification
 flow. Writes including `smart_ingest` are explicit mutations requiring authority.
 `ima_lifecycle` persists and semantically verifies lifecycle artifacts directly through

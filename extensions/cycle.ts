@@ -378,11 +378,7 @@ const execSucceeded = (value: unknown) => {
   return result.ok === true || result.success === true;
 };
 
-export type CycleRecall = (input: {
-  query: string;
-  mode: "lookup";
-  limit: 10;
-}) => Promise<unknown>;
+export type CycleRecall = (query: string) => Promise<unknown>;
 
 export type CycleReconcileInput = {
   state: CycleState;
@@ -404,7 +400,7 @@ export async function coordinateCycleReconcile(input: CycleReconcileInput): Prom
   const query = `${state.lifecycleKey} ${lifecycleTypeForPhase(state.phase)}`;
   let response: unknown;
   try {
-    response = await input.recall({ query, mode: "lookup", limit: 10 });
+    response = await input.recall(query);
   } catch {
     return { ...safeError("cycle_reconcile_read_failed"), state };
   }
@@ -688,7 +684,7 @@ export type CycleExtensionDependencies = {
 const defaultCycleExtensionDependencies: CycleExtensionDependencies = {
   applyRoute: (pi, ctx, phase) => routeFor(pi, ctx)(phase),
   expandPrompt: expandCyclePromptFromResources,
-  recall: ({ query }) => recallVestige(query),
+  recall: (query) => recallVestige(query),
   resolveProjectRoot: defaultResolveProjectRoot,
   loadDurableState: loadDurableStateWith(defaultResolveProjectRoot),
   persistDurableState: persistDurableStateWith(defaultResolveProjectRoot),

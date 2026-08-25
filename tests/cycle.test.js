@@ -1336,8 +1336,8 @@ test("session start restores durable state and reconciles it before reporting st
   const durable = createCycleState(jira, { timestamp: at });
   const calls = [];
   const persisted = [];
-  const recall = async (input) => {
-    calls.push(input);
+  const recall = async (query) => {
+    calls.push(query);
     return vestigeSearch([persistedRecord(durable, "plan", "APPROVED", { id: "durable-plan" })]);
   };
   const harness = createCycleExtensionHarness([]);
@@ -1352,8 +1352,8 @@ test("session start restores durable state and reconciles it before reporting st
   await harness.handlers.get("session_start")({}, harness.ctx);
 
   assert.deepEqual(calls, [
-    { query: `${durable.lifecycleKey} plan`, mode: "lookup", limit: 10 },
-    { query: `${durable.lifecycleKey} implementation`, mode: "lookup", limit: 10 },
+    `${durable.lifecycleKey} plan`,
+    `${durable.lifecycleKey} implementation`,
   ]);
   assert.deepEqual(harness.messages, []);
   assert.equal(persisted.length, 1);
@@ -1600,8 +1600,8 @@ test("coordinates a direct-MCP persisted-evidence reconciliation shell", async (
   const calls = [];
   const result = await coordinateCycleReconcile({
     state,
-    recall: async (input) => {
-      calls.push(input);
+    recall: async (query) => {
+      calls.push(query);
       return vestigeSearch([persistedRecord(state, "plan", "APPROVED", { id: "plan-proof" })]);
     },
     appendState: (next) => entries.push(next),
@@ -1609,7 +1609,7 @@ test("coordinates a direct-MCP persisted-evidence reconciliation shell", async (
   });
   assert.equal(result.ok, true);
   assert.equal(result.reconciled, true);
-  assert.deepEqual(calls, [{ query: `${state.lifecycleKey} plan`, mode: "lookup", limit: 10 }]);
+  assert.deepEqual(calls, [`${state.lifecycleKey} plan`]);
   assert.equal(entries.length, 1);
   assert.equal(entries[0].phase, "implementation");
 
@@ -1642,7 +1642,7 @@ test("recovers consecutive verified phases before any resume dispatch", async ()
   const entries = [];
   const result = await coordinateCycleRecovery({
     state: stale,
-    recall: async ({ query }) => {
+    recall: async (query) => {
       const phase = query.split(" ").at(-1);
       calls.push(phase);
       const records = {
@@ -1665,7 +1665,7 @@ test("recovers consecutive verified phases before any resume dispatch", async ()
   const implementationStale = implementationAwaitingResumeState();
   const implementationRecovery = await coordinateCycleRecovery({
     state: implementationStale,
-    recall: async ({ query }) => query.endsWith(" implementation")
+    recall: async (query) => query.endsWith(" implementation")
       ? vestigeSearch([persistedRecord(implementationStale, "implementation", "COMPLETED", { id: "implementation-stale-proof" })])
       : vestigeSearch(),
     appendState: () => {},
@@ -1688,7 +1688,7 @@ test("caps verified recovery by the fixed lifecycle and review cap", async () =>
   const calls = [];
   const result = await coordinateCycleRecovery({
     state: stale,
-    recall: async ({ query }) => {
+    recall: async (query) => {
       const phase = query.split(" ").at(-1);
       calls.push(phase);
       const record = records[phase]?.shift();
@@ -1764,10 +1764,8 @@ test("preserves awaiting-evidence state when reconciliation reads fail", async (
 
 test("status and resume self-heal from persisted lifecycle evidence", async () => {
   const stuck = createCycleState(jira, { timestamp: at });
-  const search = async ({ query, mode, limit }) => {
+  const search = async (query) => {
     assert.match(query, new RegExp(`^${stuck.lifecycleKey} (plan|implementation)$`));
-    assert.equal(mode, "lookup");
-    assert.equal(limit, 10);
     return vestigeSearch([persistedRecord(stuck, "plan", "APPROVED", { id: "plan-proof" })]);
   };
   const statusHarness = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: stuck }]);

@@ -34,7 +34,7 @@ test("lifecycle prompts delegate optional evidence to matching specialists", asy
 test("decompose enforces two tiers, one PM destination, preview, and checklist-only work", async () => { const text = await prompt("decompose"); for (const value of ["Taskwarrior Project -> Task", "Jira Epic -> Story/Task", "checklist", "exactly one destination", "never dual-write", "exact persistence preview", "explicit approval", "lifecycle unit", "as `decision`", "stop"]) has(text, value); has(text, "technical files, functions, control flow"); });
 test("plan enforces one-unit Serena-first technical planning without implementation", async () => {
   const text = await prompt("plan");
-  for (const value of ["exactly one", "/ima:decompose", "ima_context", "Serena-first", "files, modules, symbols, APIs", "pure/effect boundaries", "verification commands", "rollback", "as `plan`", "stop", "ima-lifecycle-contract", "Vestige preferences", "two or three", "I will not make code changes in this planning session.", "Problem, Prior Work", "readable-code", "functional-programmer", "ima-security-guardrails", "Standards Impact", "500-line file-size smell", "responsibility/cohesion", "cohesion-based justification"]) has(text, value);
+  for (const value of ["exactly one", "/ima:decompose", "ima_context", "Serena-first", "files, modules, symbols, APIs", "pure/effect boundaries", "verification commands", "rollback", "as `plan`", "stop", "ima-lifecycle-contract", "Vestige preferences", "ima-memory-workflow", "two or three", "I will not make code changes in this planning session.", "Problem, Prior Work", "readable-code", "functional-programmer", "ima-security-guardrails", "Standards Impact", "500-line file-size smell", "responsibility/cohesion", "cohesion-based justification"]) has(text, value);
   assert.match(
     text,
     /^- Standards Impact:[^\n]*500-line file-size smell[^\n]*responsibility\/cohesion[^\n]*cohesion-based justification/mi,
@@ -94,7 +94,8 @@ test("manual lifecycle prompts normalize shared source identifiers before declar
   assert.ok(document.indexOf("First call `ima_context`") < document.indexOf("recall verified plan"));
   assert.ok(document.indexOf("recall verified plan") < document.indexOf("Fail closed only"));
   const planning = await prompt("plan");
-  for (const value of ["canonical prefixed source form", "/ima:implement taskwarrior:<project>:<uuid>", "/ima:implement jira:<KEY>", "/ima:implement lifecycle:<lifecycle-key>", "/ima:implement vestige:<UUID>"]) has(planning, value);
+  for (const value of ["ima-memory-workflow", "canonical prefixed source form", "/ima:implement taskwarrior:<project>:<uuid>", "/ima:implement jira:<KEY>", "/ima:implement lifecycle:<lifecycle-key>", "/ima:implement vestige:<UUID>"]) has(planning, value);
+  assert.ok(planning.indexOf("ima_context") < planning.indexOf("ima-memory-workflow"));
 });
 
 test("workflow routing treats arbitrary /ima:* tokens as command-keyed candidates", () => {

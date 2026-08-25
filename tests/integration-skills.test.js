@@ -31,6 +31,8 @@ test("integration skills retain Pi-native safety and workflow boundaries", async
   assert.match(await read("skills/mcp-serena/SKILL.md"), /JetBrains/i);
   const vestige = await read("skills/mcp-vestige/SKILL.md");
   assert.match(vestige, /session_start.*recall/is);
+  assert.match(vestige, /focused\s+lifecycle\s+discovery.*mode:\s*"lookup".*retrieval_mode:\s*"precise".*detail_level:\s*"brief".*concrete:\s*true.*limit:\s*10.*token_budget:\s*1000/is);
+  assert.match(vestige, /vestige_memory.*action:\s*"get".*id.*selected candidates/is);
   assert.match(vestige, /preference LOAD/i);
   assert.match(vestige, /mcp\(\{ connect: "vestige" \}\)/);
   assert.match(vestige, /same read.*identical arguments.*exactly once/is);

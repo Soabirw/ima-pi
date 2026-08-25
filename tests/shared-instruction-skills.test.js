@@ -32,6 +32,8 @@ test("shared instruction skills retain their bounded contracts", async () => {
     /Vestige/,
     /Qdrant/,
     /session_start.*recall/is,
+    /focused\s+lifecycle\s+discovery.*mode:\s*"lookup".*retrieval_mode:\s*"precise".*detail_level:\s*"brief".*concrete:\s*true.*limit:\s*10.*token_budget:\s*1000/is,
+    /vestige_memory.*action:\s*"get".*id.*selected candidates/is,
     /read-only transport failure/i,
     /mcp\(\{ connect: "vestige" \}\)/,
     /same read.*identical arguments.*exactly once/is,

@@ -8,7 +8,7 @@ This command is the `plan` phase. Runtime selects the configured phase route bef
 
 ## Idempotent session bootstrap
 
-When `$@` supplies a source, always use `ima_context` to hydrate it before research. This per-invocation source hydration is never a no-op: `/ima:new` cannot hydrate a source supplied later. After source hydration, if supporting context is not already loaded this session, load Serena project memory, relevant Vestige preferences, the `ima-lifecycle-contract` skill, and, where evidence requires their bounded concerns, `readable-code`, `functional-programmer`, and `ima-security-guardrails`. If `/ima:new` already seeded those supporting resources, treat only that supporting load as a no-op. Follow the shared lifecycle contract rather than duplicating tool-owned bootstrap or persistence behavior.
+When `$@` supplies a source, always use `ima_context` to hydrate it before research. This per-invocation source hydration is never a no-op: `/ima:new` cannot hydrate a source supplied later. After source hydration, if supporting context is not already loaded this session, load Serena project memory, the `ima-memory-workflow` skill for relevant Vestige preferences, the `ima-lifecycle-contract` skill, and, where evidence requires their bounded concerns, `readable-code`, `functional-programmer`, and `ima-security-guardrails`. If `/ima:new` already seeded those supporting resources, treat only that supporting load as a no-op. Follow the shared lifecycle contract rather than duplicating tool-owned bootstrap or persistence behavior.
 
 ## Manual phase source identifiers
 
