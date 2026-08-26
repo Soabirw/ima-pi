@@ -35,7 +35,8 @@ configuration; tool arguments never select endpoints, models, or collections.
 ## Boundaries
 
 - `ima_context.durableKnowledge` keeps its documented public contract while using the direct
-  package corpus boundary internally for compatible legacy knowledge collections.
+  package corpus boundary internally for the legacy `ima-knowledge` collection only. Other
+  collection names fail closed before embedding or search.
 - Story B owns Vestige export and migration. Story C owns lifecycle persistence/routing.
 - Qdrant collection deletion, generic vector-database abstractions, and `ima-rag` integration
   are outside this capability.
