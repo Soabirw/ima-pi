@@ -32,7 +32,7 @@ The packaged `/ima:*` prompts provide phase or bounded-operation entry points. U
 
 ## Memory and integrations
 
-Serena holds stable project context and instructions. Vestige holds preferences, decisions, and reconstructable task lifecycle artifacts. Qdrant is for durable reference knowledge. Jira, Taskwarrior, browser, MCP services, and other integration executables remain external boundaries. See [`foundation/FNR-3032.md`](foundation/FNR-3032.md) for the integration inventory.
+Serena holds stable project context and instructions. Vestige holds preferences, decisions, and reconstructable task lifecycle artifacts. Qdrant is the package-native institutional corpus for durable reference knowledge: use read-only `ima_corpus_status`, bounded `ima_corpus_find`/`ima_corpus_recall`, selected `ima_corpus_get`, and explicitly authorized `ima_corpus_store`. Qdrant is not a package MCP server. Jira, Taskwarrior, browser, brokered MCP services, and other integration executables remain external boundaries. See [`foundation/FNR-3032.md`](foundation/FNR-3032.md) for the integration inventory.
 
 ## Degradation and troubleshooting
 

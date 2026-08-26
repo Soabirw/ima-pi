@@ -4,7 +4,7 @@ import { validateToolArguments } from "@earendil-works/pi-ai";
 import { convertTools } from "@earendil-works/pi-ai/api/google-shared";
 import { Check } from "typebox/value";
 import integrations, { coordinateContext, coordinateLifecycle, recallVestige } from "../extensions/integrations.ts";
-import { LIFECYCLE_ARTIFACT_MAXIMUM, parseQdrantResults } from "../lib/ima-context.ts";
+import { LIFECYCLE_ARTIFACT_MAXIMUM } from "../lib/ima-context.ts";
 import { buildLifecycleArtifact } from "../lib/ima-lifecycle.ts";
 const identity = { project: "ima-pi", lifecycleKey: "ima-pi:taskwarrior:FNR-3007:uuid", lifecycleRootMemoryId: "root", taskwarriorProject: "FNR-3007", taskwarriorTask: "uuid", taskwarriorUuid: "uuid", jiraKey: "FNR-3016", sourceRefs: ["Taskwarrior:uuid"], priorArtifactIds: ["plan"] };
 const artifact = "minimal implementation artifact";
@@ -429,115 +429,26 @@ test("context cancellation interrupts Serena and prevents later effects", async 
   assert.deepEqual(runCalls, []);
 });
 
-test("parseQdrantResults keeps complete top-level result blocks", () => {
-  assert.deepEqual(parseQdrantResults(""), []);
-
-  const formatted = [
-    "## Result 1 (score: 0.75)",
-    "First result",
-    "### Detail",
-    "```md",
-    "## Result 9 (score: 0.1)",
-    "```",
-    "",
-    "## Result 2 (score: -1.25e-1)",
-    "Second result",
-  ].join("\n");
-
-  assert.deepEqual(parseQdrantResults(formatted), [
-    {
-      summary: "First result\n### Detail\n```md\n## Result 9 (score: 0.1)\n```",
-      score: 0.75,
+test("context uses injected direct legacy Qdrant lookup, preserves scores, and does not open a Qdrant MCP session", async () => {
+  const mcp = createSessionGateway();
+  const calls = [];
+  const corpus = {
+    findKnowledge: async (input) => {
+      calls.push(input);
+      return { success: true, data: [
+        { summary: "one", score: 0.91 },
+        { summary: "two", score: 0.75 },
+        { summary: "three", score: 0.5 },
+      ] };
     },
-    { summary: "Second result", score: -0.125 },
-  ]);
-  assert.deepEqual(parseQdrantResults([
-    "## Result 1 (score: invalid)",
-    "Ignored",
-    "## Result 2 (score: 0.5)",
-    "",
-    "## Result 3 (score: 0.6)",
-    "Valid",
-  ].join("\n")), [{ summary: "Valid", score: 0.6 }]);
-  assert.deepEqual(parseQdrantResults("## Result 1 (score: 0.5)\n"), []);
-});
-
-test("parseQdrantResults preserves result-looking headers inside valid fences", () => {
-  const fourBacktickFence = [
-    "## Result 1 (score: 0.9)",
-    "Outer",
-    "````markdown",
-    "```",
-    "## Result 9 (score: 0.1)",
-    "````",
-    "",
-    "## Result 2 (score: 0.8)",
-    "Second",
-  ].join("\n");
-  assert.deepEqual(parseQdrantResults(fourBacktickFence), [
-    {
-      summary: "Outer\n````markdown\n```\n## Result 9 (score: 0.1)\n````",
-      score: 0.9,
-    },
-    { summary: "Second", score: 0.8 },
-  ]);
-
-  const suffixedDelimiter = [
-    "## Result 1 (score: 0.7)",
-    "```javascript",
-    "```not-a-close",
-    "## Result 9 (score: 0.1)",
-    "```",
-    "",
-    "## Result 2 (score: 0.6)",
-    "Second",
-  ].join("\n");
-  assert.deepEqual(parseQdrantResults(suffixedDelimiter), [
-    {
-      summary: "```javascript\n```not-a-close\n## Result 9 (score: 0.1)\n```",
-      score: 0.7,
-    },
-    { summary: "Second", score: 0.6 },
-  ]);
-
-  const tildeFence = [
-    "## Result 1 (score: 0.5)",
-    "~~~yaml",
-    "## Result 9 (score: 0.1)",
-    "~~~~",
-    "",
-    "## Result 2 (score: 0.4)",
-    "Second",
-  ].join("\n");
-  assert.deepEqual(parseQdrantResults(tildeFence), [
-    { summary: "~~~yaml\n## Result 9 (score: 0.1)\n~~~~", score: 0.5 },
-    { summary: "Second", score: 0.4 },
-  ]);
-});
-
-test("context parses direct Qdrant results, preserves scores, and applies the requested limit", async () => {
-  const mcp = createSessionGateway((server, name, arguments_) => {
-    if (server === "qdrant-memory" && name === "qdrant_find") {
-      return directResult([
-        "## Result 1 (score: 0.91)",
-        "one",
-        "",
-        "## Result 2 (score: 0.75)",
-        "two",
-        "",
-        "## Result 3 (score: 0.5)",
-        "three",
-      ].join("\n"));
-    }
-    return defaultSessionResponse(server, name, arguments_);
-  });
+  };
   const result = await coordinateContext(
     {
       source: { type: "text", title: "Brief", content: "Scope" },
-      durableKnowledge: { query: "evidence", collection: "ima", limit: 2 },
+      durableKnowledge: { query: "evidence", collection: "ima-knowledge", limit: 2 },
     },
     "/repo",
-    { canonical: async (path) => path, session: mcp.session },
+    { canonical: async (path) => path, session: mcp.session, corpus },
   );
 
   assert.equal(result.status, "ready");
@@ -545,106 +456,78 @@ test("context parses direct Qdrant results, preserves scores, and applies the re
     { summary: "one", score: 0.91 },
     { summary: "two", score: 0.75 },
   ]);
-  assert.deepEqual(mcp.sessions, ["serena", "qdrant-memory"]);
-  assert.deepEqual(mcp.calls.at(-1), [
-    "qdrant-memory",
-    "qdrant_find",
-    { query: "evidence", collection_name: "ima", limit: 2 },
-  ]);
+  assert.deepEqual(calls, [{ query: "evidence", collection: "ima-knowledge", limit: 2 }]);
+  assert.deepEqual(mcp.sessions, ["serena"]);
 });
 
-test("context forwards Qdrant limits before local bounding", async () => {
-  const formatted = Array.from({ length: 21 }, (_, index) => [
-    `## Result ${index + 1} (score: ${index + 1})`,
-    `result ${index + 1}`,
-  ].join("\n")).join("\n\n");
-  const mcp = createSessionGateway((server, name, arguments_) => (
-    server === "qdrant-memory" && name === "qdrant_find"
-      ? directResult(formatted)
-      : defaultSessionResponse(server, name, arguments_)
-  ));
+test("context uses the legacy institutional default collection and preserves its limit", async () => {
+  const mcp = createSessionGateway();
+  const calls = [];
+  const corpus = {
+    findKnowledge: async (input) => {
+      calls.push(input);
+      return { success: true, data: Array.from({ length: 21 }, (_, index) => ({
+        summary: `result ${index + 1}`,
+        score: index + 1,
+      })) };
+    },
+  };
   const result = await coordinateContext(
     {
       source: { type: "text", title: "Brief", content: "Scope" },
       durableKnowledge: { query: "evidence", limit: 20 },
     },
     "/repo",
-    { canonical: async (path) => path, session: mcp.session },
+    { canonical: async (path) => path, session: mcp.session, corpus },
   );
 
   assert.equal(result.durableKnowledge.references.length, 20);
-  assert.deepEqual(result.durableKnowledge.references.at(-1), {
-    summary: "result 20",
-    score: 20,
-  });
-  assert.deepEqual(mcp.calls.at(-1), [
-    "qdrant-memory",
-    "qdrant_find",
-    { query: "evidence", limit: 20 },
-  ]);
+  assert.deepEqual(result.durableKnowledge.references.at(-1), { summary: "result 20", score: 20 });
+  assert.deepEqual(calls, [{ query: "evidence", collection: "ima-knowledge", limit: 20 }]);
 });
 
-test("context redacts direct Qdrant summaries", async () => {
-  const mcp = createSessionGateway((server, name, arguments_) => {
-    if (server === "qdrant-memory" && name === "qdrant_find") {
-      return directResult([
-        "## Result 1 (score: 0.9)",
-        "token=secret-value",
-        "",
-        "## Result 2 (score: 0.8)",
-        "password=hidden",
-      ].join("\n"));
-    }
-    return defaultSessionResponse(server, name, arguments_);
-  });
-  const result = await coordinateContext(
-    {
-      source: { type: "text", title: "Brief", content: "Scope" },
-      durableKnowledge: { query: "evidence" },
-    },
-    "/repo",
-    { canonical: async (path) => path, session: mcp.session },
-  );
-
-  assert.deepEqual(result.durableKnowledge.references, [
-    { summary: "[redacted]", score: 0.9 },
-    { summary: "[redacted]", score: 0.8 },
-  ]);
-});
-
-test("context distinguishes direct Qdrant failures from successful empty results", async () => {
+test("context redacts direct corpus summaries and distinguishes failures from empty results", async () => {
   const cases = [
     {
-      response: { isError: true, content: [{ type: "text", text: "token=direct-error" }] },
-      contextStatus: "degraded",
-      durableStatus: "failed",
+      response: { success: true, data: [{ summary: "token=secret-value", score: 0.9 }, { summary: "password=hidden", score: 0.8 }] },
+      contextStatus: "ready",
+      durableStatus: "loaded",
+      references: [{ summary: "[redacted]", score: 0.9 }, { summary: "[redacted]", score: 0.8 }],
     },
     {
-      response: directResult("not a Qdrant result block"),
+      response: { success: false, error: { code: "qdrant_unavailable", message: "token=direct-error" } },
+      contextStatus: "degraded",
+      durableStatus: "failed",
+      references: [],
+    },
+    {
+      response: { success: true, data: [] },
       contextStatus: "ready",
       durableStatus: "empty",
+      references: [],
     },
   ];
 
-  for (const { response, contextStatus, durableStatus } of cases) {
-    const mcp = createSessionGateway((server, name, arguments_) => (
-      server === "qdrant-memory" && name === "qdrant_find"
-        ? response
-        : defaultSessionResponse(server, name, arguments_)
-    ));
+  for (const { response, contextStatus, durableStatus, references } of cases) {
+    const mcp = createSessionGateway();
     const result = await coordinateContext(
       {
         source: { type: "text", title: "Brief", content: "Scope" },
         durableKnowledge: { query: "evidence" },
       },
       "/repo",
-      { canonical: async (path) => path, session: mcp.session },
+      {
+        canonical: async (path) => path,
+        session: mcp.session,
+        corpus: { findKnowledge: async () => response },
+      },
     );
 
     assert.equal(result.status, contextStatus);
     assert.equal(result.durableKnowledge.status, durableStatus);
-    assert.deepEqual(result.durableKnowledge.references, []);
+    assert.deepEqual(result.durableKnowledge.references, references);
     assert.doesNotMatch(JSON.stringify(result), /direct-error/);
+    assert.deepEqual(mcp.sessions, ["serena"]);
   }
 });
 

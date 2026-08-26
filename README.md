@@ -6,7 +6,7 @@ Pi-native IMA agent harness, packaged through Pi's standard Git/npm package mode
 
 - **52 packaged skills and 29 `/ima:*` prompt templates** for engineering, web, WordPress, IMA, MCP, research, and operational workflows.
 - **Pi-native package resources**—prompts, skills, agents, extensions, policies, and configuration guidance—distributed through Pi's normal Git/npm package model.
-- **Memory-aware project work:** Serena provides stable project context, Vestige preserves task decisions and lifecycle artifacts, and Qdrant stores durable reference knowledge. These are external integrations, not bundled services.
+- **Memory-aware project work:** Serena provides stable project context, Vestige preserves task decisions and lifecycle artifacts, and package-native Qdrant/Ollama corpus tools store durable reference knowledge. None are bundled services.
 - **A guided development lifecycle with bounded autonomy:** use the manual phases or the explicit, user-gated `/ima:cycle`; autonomous progression requires an approved bounded, conflict-free, low-risk plan and verified evidence, and it stops at `document`.
 - **Bounded specialist delegation** keeps work scoped while parent-owned lifecycle gates preserve accountability.
 
@@ -102,7 +102,7 @@ Pi discovers these package skills directly:
 
 /skill:mcp-serena
 /skill:mcp-vestige
-/skill:mcp-qdrant
+/skill:ima-qdrant
 /skill:mcp-atlassian
 /skill:mcp-taskwarrior
 /skill:mcp-context7
@@ -111,7 +111,7 @@ Pi discovers these package skills directly:
 /skill:mcp-sequential-thinking
 /skill:mcp-chrome-devtools
 
-Eight direct MCP servers use the package adapter. Atlassian uses its packaged REST helper and Taskwarrior uses the native CLI. Lifecycle reads discover validated candidate IDs with a small, brief recall, then read each candidate through an isolated, size-bounded session. Oversized or disconnected candidates are skipped; without a bounded authoritative artifact, lifecycle hydration and reconciliation fail closed. Lifecycle persistence force-creates one batch item and accepts only one exact `saved`/`create` receipt node ID before verifying that node. For team or global installation, run `pi install ssh://git@gitea.theflccc.org:2222/IMA/ima-pi.git`; this unpinned private-Gitea source was verified in an isolated Pi home on 2026-08-03. For local development only, run `pi install /home/eric/IMA/dev/ima-pi`. Updates are explicit with `pi update --extensions` or `pi update --all`. Synchronize shared Agent Skills with `npm run install:skills`. See [`docs/foundation/FNR-3032.md`](docs/foundation/FNR-3032.md) for prerequisites, source coverage, manual acceptance, limitations, and rollback.
+Seven direct MCP servers use the package adapter. Qdrant is package-native through `/skill:ima-qdrant` and `ima_corpus_*` tools; Atlassian uses its packaged REST helper and Taskwarrior uses the native CLI. Lifecycle reads discover validated candidate IDs with a small, brief recall, then read each candidate through an isolated, size-bounded session. Oversized or disconnected candidates are skipped; without a bounded authoritative artifact, lifecycle hydration and reconciliation fail closed. Lifecycle persistence force-creates one batch item and accepts only one exact `saved`/`create` receipt node ID before verifying that node. For team or global installation, run `pi install ssh://git@gitea.theflccc.org:2222/IMA/ima-pi.git`; this unpinned private-Gitea source was verified in an isolated Pi home on 2026-08-03. For local development only, run `pi install /home/eric/IMA/dev/ima-pi`. Updates are explicit with `pi update --extensions` or `pi update --all`. Synchronize shared Agent Skills with `npm run install:skills`. See [`docs/foundation/FNR-3032.md`](docs/foundation/FNR-3032.md) for prerequisites, source coverage, manual acceptance, limitations, and rollback.
 
 ## Try the package
 
@@ -130,7 +130,7 @@ Then try:
 /ima:vision-probe <provider>/<model> <absolute-image-path>
 ```
 
-`/ima:delegate-probe`, `/ima:control-probe`, `/ima:gateway-probe`, and `/ima:vision-probe` are bounded technical-spike entry points, not production orchestration interfaces. The gateway probe performs one intentional semantic Vestige ingestion while Serena and Qdrant remain read-only. The control probe accepts `/ima:control-probe cancel <run-id> <a|b>` after startup; see its spike document for live acceptance steps and limitations.
+`/ima:delegate-probe`, `/ima:control-probe`, `/ima:gateway-probe`, and `/ima:vision-probe` are bounded technical-spike entry points, not production orchestration interfaces. The gateway probe performs one intentional semantic Vestige ingestion while Serena remains read-only; Qdrant/Ollama status is separate package-native evidence through read-only `ima_corpus_status`. The control probe accepts `/ima:control-probe cancel <run-id> <a|b>` after startup; see its spike document for live acceptance steps and limitations.
 
 ## Production support workflows
 
@@ -243,7 +243,7 @@ Inspect resolved definitions with `/ima:agents`, session metadata with `/ima:age
 
 `ima_context` is a model-callable tool that activates Serena, loads its instructions and standard project memories, then normalizes exactly one Jira, Taskwarrior, project-file, Vestige-memory, lifecycle-key, raw manual-phase reference, or free-text source into a versioned phase context. A raw reference accepts canonical `taskwarrior:<project>:<uuid>`, `jira:<KEY>`, `lifecycle:<lifecycle-key>`, and `vestige:<UUID>` forms plus their space-delimited aliases. Lifecycle-key hydration performs a bounded direct Vestige recall and accepts only verified completed artifacts for the exact key. An optional Qdrant lookup is read-only. `ima_lifecycle` validates a complete lifecycle artifact, persists it through direct Vestige MCP `smart_ingest`, and reports completion only after receipt acceptance plus one `recall` result that matches its nonce, identity, phase, and completed outcome. Formal lifecycle persistence uses the package-owned MCP adapter and direct Vestige operations.
 
-`ima_context` uses package-owned direct MCP sessions for its Serena, Vestige-source, and optional Qdrant boundaries; `/ima:cycle` reconciliation uses configured direct Vestige `recall`. Direct lifecycle persistence uses the package-owned MCP stdio client; callers must continue to use `ima_lifecycle` rather than bypassing its receipt protocol. Neither integration exposes a service SDK, mutates Jira or Taskwarrior, or indexes Qdrant. `/ima:cycle` reuses these boundaries and independently verifies lifecycle evidence before its explicitly confirmed single-tracker close. See [`docs/foundation/FNR-3016.md`](docs/foundation/FNR-3016.md) and [`docs/foundation/FNR-3036.md`](docs/foundation/FNR-3036.md) for contracts, ordering, security boundaries, limitations, and live acceptance.
+`ima_context` uses package-owned direct MCP sessions for Serena and Vestige-source boundaries, plus the package-native Qdrant/Ollama corpus boundary for optional durable knowledge; `/ima:cycle` reconciliation uses configured direct Vestige `recall`. Native `ima_corpus_*` tools own bounded institutional Qdrant records without a `qdrant-memory` MCP dependency. Direct lifecycle persistence uses the package-owned MCP stdio client; callers must continue to use `ima_lifecycle` rather than bypassing its receipt protocol. Neither integration exposes a service SDK, mutates Jira or Taskwarrior, or indexes Qdrant without explicit corpus-store authority. `/ima:cycle` reuses these boundaries and independently verifies lifecycle evidence before its explicitly confirmed single-tracker close. See [`docs/foundation/FNR-3016.md`](docs/foundation/FNR-3016.md) and [`docs/foundation/FNR-3036.md`](docs/foundation/FNR-3036.md) for contracts, ordering, security boundaries, limitations, and live acceptance.
 
 ## Configure model roles
 

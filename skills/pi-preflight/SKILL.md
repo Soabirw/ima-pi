@@ -15,7 +15,7 @@ Cover, when requested:
 
 - Pi executable plus Node/npm prerequisites; package installation and resource discovery; prompt and skill discovery.
 - Package agents and `ima_delegate`; `preflight-probe` is only the existing package-child marker boundary.
-- Package MCP adapter and gateway health for brokered Serena, Vestige, and Qdrant services.
+- Package MCP adapter and gateway health for brokered Serena and Vestige services. Qdrant is package-native: in quick/full call read-only `ima_corpus_status` once; in offline report its live check as `SKIP`. Missing Qdrant MCP registration is expected, while a missing native corpus tool is `FAIL`. `ima_corpus_status` never bootstraps or mutates the corpus.
 - Configured model roles/providers separately from live provider availability.
 - Taskwarrior, Jira, browser, Context7, Tavily, and other configured integrations.
 

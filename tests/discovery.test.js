@@ -57,18 +57,35 @@ test("package exposes namespaced extension, prompt, and skill commands", async (
     assert.equal(commands.get(`ima:${name}`)?.origin, "package");
     assert.match(await readFile(join(root, "prompts", `ima:${name}.md`), "utf8"), new RegExp(description, "i"));
   }
-  for (const name of ["ima-pi-probe", "ima-lifecycle-contract", "ima-memory-workflow", "ima-security-guardrails", "ima-vision-handoff", "ima-delegation-contract", "code-review", "ima-medical-research", "patristic-researcher", "ima-brand", "ima-copywriting", "ima-editorial-scorecard", "ima-editorial-workflow", "ima-email-creator", "architect", "functional-programmer", "js-fp", "php-fp", "py-fp", "ruby-fp", "rg", "ima-git", "gh-cli", "tea-gitea", "js-fp-api", "js-fp-react", "js-fp-vue", "js-fp-wordpress", "jquery", "playwright", "unit-testing", "php-fp-wordpress", "phpunit-wp", "wp-ddev", "ima-bootstrap", "livecanvas", "ima-forms-expert", "php-authnet", "mcp-serena", "mcp-vestige", "mcp-qdrant", "mcp-atlassian", "mcp-taskwarrior", "mcp-context7", "mcp-tavily", "mcp-fetch", "mcp-sequential-thinking", "mcp-chrome-devtools", "pi-preflight", "pi-doc-guide", "ima-pi-guide"]) {
+  for (const name of ["ima-pi-probe", "ima-lifecycle-contract", "ima-memory-workflow", "ima-security-guardrails", "ima-vision-handoff", "ima-delegation-contract", "code-review", "ima-medical-research", "patristic-researcher", "ima-brand", "ima-copywriting", "ima-editorial-scorecard", "ima-editorial-workflow", "ima-email-creator", "architect", "functional-programmer", "js-fp", "php-fp", "py-fp", "ruby-fp", "rg", "ima-git", "gh-cli", "tea-gitea", "js-fp-api", "js-fp-react", "js-fp-vue", "js-fp-wordpress", "jquery", "playwright", "unit-testing", "php-fp-wordpress", "phpunit-wp", "wp-ddev", "ima-bootstrap", "livecanvas", "ima-forms-expert", "php-authnet", "mcp-serena", "mcp-vestige", "ima-qdrant", "mcp-atlassian", "mcp-taskwarrior", "mcp-context7", "mcp-tavily", "mcp-fetch", "mcp-sequential-thinking", "mcp-chrome-devtools", "pi-preflight", "pi-doc-guide", "ima-pi-guide"]) {
     const skill = commands.get(`skill:${name}`);
     assert.equal(skill?.source, "skill");
     assert.equal(skill?.origin, "top-level");
   }
 });
 
-test("package ships integrations extension with both production tool registrations", async () => {
+test("package ships integrations and native corpus production tool registrations", async () => {
   const integrations = await readFile(join(root, "extensions", "integrations.ts"), "utf8");
+  const corpus = await readFile(join(root, "extensions", "institutional-memory.ts"), "utf8");
   assert.match(integrations, /registerTool\(\{ name: "ima_context"/);
   assert.match(integrations, /registerTool\(\{ name: "ima_lifecycle"/);
+  for (const name of ["ima_corpus_status", "ima_corpus_store", "ima_corpus_find", "ima_corpus_recall", "ima_corpus_get"]) {
+    assert.match(corpus, new RegExp(`name: "${name}"`));
+  }
   assert.equal((await readFile(join(root, "extensions", "gateway-probe.ts"), "utf8")).includes("ima:gateway-probe"), true);
+});
+
+test("current gateway documentation separates native Qdrant status from historical MCP evidence", async () => {
+  const [spike, readme] = await Promise.all([
+    readFile(join(root, "docs", "spikes", "FNR-3011.md"), "utf8"),
+    readFile(join(root, "README.md"), "utf8"),
+  ]);
+  const current = spike.slice(0, spike.indexOf("## Historical outcome"));
+  assert.match(current, /only Serena and\s+>\s*Vestige/i);
+  assert.match(current, /Qdrant is not a gateway operation/i);
+  assert.match(current, /ima_corpus_status/);
+  assert.match(current, /not current operator instructions/i);
+  assert.match(readme, /Qdrant\/Ollama status is separate package-native evidence through read-only `ima_corpus_status`/);
 });
 
 test("Pi discovers package, user, and trusted project resources", async () => {

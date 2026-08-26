@@ -13,7 +13,7 @@ Use each memory system for its own job. Do not treat them as interchangeable scr
 | --- | --- |
 | Serena | Stable project instructions, standard memories, code navigation, and refactor-aware repository evidence. |
 | Vestige | Task and session continuity, preferences, decisions, lifecycle state, and closeout learning. |
-| Qdrant | Durable reference material: standards, PRDs, architecture records, research, and reusable knowledge. |
+| Qdrant | Durable reference material through package-native `ima_corpus_*` tools: standards, PRDs, architecture records, research, and reusable knowledge. |
 
 ## Retrieve in order
 
@@ -55,7 +55,7 @@ For a task that needs context:
    Treat live current-invocation responses as authoritative over stale caches, and
    reject unrelated merged lifecycle or log content as preference evidence. Never
    replace lifecycle/Vestige recall with a Taskwarrior or Jira probe.
-3. Search Qdrant only when durable reference material would change the decision or implementation.
+3. Search Qdrant only when durable reference material would change the decision or implementation. Use native `ima_corpus_find` for bounded semantic summaries, `ima_corpus_recall` for exact lifecycle-key summaries, and `ima_corpus_get` only for a selected full record. Do not discover or invoke Qdrant through package MCP.
 4. Read the relevant Serena memories and navigate the smallest necessary repository surface.
 
 Do not preload unrelated memories or broad reference corpora. State when evidence is partial, stale, or absent.
@@ -69,7 +69,7 @@ Do not preload unrelated memories or broad reference corpora. State when evidenc
 2. Every direct memory write requires explicit phase authority:
    - Preserve evolving task context and decisions in Vestige.
    - Update Serena only for concise, stable project instructions or commands that belong to project memory.
-   - Store long-lived reference material in Qdrant when it should remain searchable beyond the current task.
+   - Store long-lived reference material with `ima_corpus_store` only when it should remain searchable beyond the current task and the phase explicitly authorizes that mutation.
 
 Keep artifacts correlated with the existing lifecycle key. Do not create disconnected task threads when a matching source, plan, or lifecycle artifact already exists.
 

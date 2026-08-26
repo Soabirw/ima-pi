@@ -30,16 +30,14 @@ export const JIRA_KEY = "FNR-3011";
 export const USAGE = "usage: /ima:gateway-probe <provider>/<model>";
 export const CHILD_TIMEOUT_MS = 60_000;
 export const MCP_TIMEOUT_MS = 300_000;
-export const QDRANT_PROBE_QUERY = "ima-pi gateway probe";
 export const CHILD_EXECUTION_TIMEOUT = Symbol("child_execution_timeout");
 const CHILD_TOOLS = ["mcp"] as const;
 
-type Service = "serena" | "vestige" | "qdrant-memory" | "unknown";
+type Service = "serena" | "vestige" | "unknown";
 type Operation =
   | "activate_project"
   | "get_current_config"
   | "memory_status"
-  | "qdrant_find"
   | "smart_ingest"
   | "unknown";
 
@@ -95,13 +93,11 @@ export interface GatewayProbeResult {
     serenaActivate: GatewayCheck;
     serenaConfig: GatewayCheck;
     vestige: GatewayCheck;
-    qdrant: GatewayCheck;
   };
   child: {
     serenaActivate: GatewayCheck;
     serenaConfig: GatewayCheck;
     vestigeRead: GatewayCheck;
-    qdrant: GatewayCheck;
     vestigeIngest: GatewayCheck;
   };
   semanticCompletion: {
@@ -163,7 +159,7 @@ export function buildLifecyclePayload(input: {
   jiraKey: string;
   nonce: string;
 }): string {
-  return `FNR-3011 implementation-probe completed external Serena, Vestige, and Qdrant gateway workflow attempts. lifecycle_key=${input.lifecycleKey}; jira_key=${input.jiraKey}; run_nonce=${input.nonce}; outcome=completed. Serena and Qdrant remain external read-only services; this is a semantic lifecycle update, not a required memory shape.`;
+  return `FNR-3011 implementation-probe completed external Serena and Vestige gateway workflow attempts. lifecycle_key=${input.lifecycleKey}; jira_key=${input.jiraKey}; run_nonce=${input.nonce}; outcome=completed. Serena remains an external read-only service; this is a semantic lifecycle update, not a required memory shape.`;
 }
 
 export const childOperations = (input: GatewayContext): GatewayOperation[] => [
@@ -192,14 +188,6 @@ export const childOperations = (input: GatewayContext): GatewayOperation[] => [
     mutation: false,
   },
   {
-    server: "qdrant-memory",
-    serverTool: "qdrant_find",
-    compactTool: "qdrant_memory_qdrant_find",
-    args: { query: QDRANT_PROBE_QUERY, limit: 1 },
-    operation: "qdrant_find",
-    mutation: false,
-  },
-  {
     server: "vestige",
     serverTool: "smart_ingest",
     compactTool: "vestige_smart_ingest",
@@ -217,7 +205,7 @@ export function buildChildBrief(input: GatewayContext): string {
   const operations = childOperations(input);
   return [
     "You are the bounded FNR-3011 gateway-probe child.",
-    "Run exactly these five compact mcp calls in order, then stop:",
+    "Run exactly these four compact mcp calls in order, then stop:",
     ...operations.map((operation, index) =>
       `${index + 1}. mcp({"server":"${operation.server}","tool":"${operation.compactTool}","args":${JSON.stringify(operation.args)}})`,
     ),
@@ -310,7 +298,6 @@ export function evaluateObservedWorkflow(events: ObservedCommand[]): {
     { service: "serena", operation: "activate_project", mutation: false },
     { service: "serena", operation: "get_current_config", mutation: false },
     { service: "vestige", operation: "memory_status", mutation: false },
-    { service: "qdrant-memory", operation: "qdrant_find", mutation: false },
     { service: "vestige", operation: "smart_ingest", mutation: true },
   ];
   const passed = events.length === expected.length
@@ -498,11 +485,11 @@ async function runGatewayProbe(input: {
   const parentOperations = childOperations({
     repoPath: repoRoot,
     payload: "",
-  }).slice(0, 4);
-  const [serenaActivate, serenaConfig, vestige, qdrant] = await Promise.all(
+  }).slice(0, 3);
+  const [serenaActivate, serenaConfig, vestige] = await Promise.all(
     parentOperations.map(runParentCheck),
   );
-  const parent = { serenaActivate, serenaConfig, vestige, qdrant };
+  const parent = { serenaActivate, serenaConfig, vestige };
   const blank = (): GatewayProbeResult => deriveGatewayProbeResult({
     schemaVersion: 1,
     story: STORY,
@@ -513,7 +500,6 @@ async function runGatewayProbe(input: {
       serenaActivate: failedCheck("serena", "activate_project", "not_run"),
       serenaConfig: failedCheck("serena", "get_current_config", "not_run"),
       vestigeRead: failedCheck("vestige", "memory_status", "not_run"),
-      qdrant: failedCheck("qdrant-memory", "qdrant_find", "not_run"),
       vestigeIngest: failedCheck("vestige", "smart_ingest", "not_run"),
     },
     semanticCompletion: {
@@ -530,9 +516,7 @@ async function runGatewayProbe(input: {
   if (!Object.values(parent).every((check) => check.passed)) {
     const errorCode = !parent.serenaActivate.passed || !parent.serenaConfig.passed
       ? "parent_serena_failed"
-      : !parent.vestige.passed
-        ? "parent_vestige_failed"
-        : "parent_qdrant_failed";
+      : "parent_vestige_failed";
     return { ...blank(), error: sanitizeGatewayError(errorCode, "") };
   }
 
@@ -610,7 +594,6 @@ async function runGatewayProbe(input: {
       serenaActivate: childResult(resultsByOperation, "serena", "activate_project", "activate_project"),
       serenaConfig: childResult(resultsByOperation, "serena", "get_current_config", "get_current_config"),
       vestigeRead: childResult(resultsByOperation, "vestige", "memory_status", "memory_status"),
-      qdrant: childResult(resultsByOperation, "qdrant-memory", "qdrant_find", "qdrant_find"),
       vestigeIngest: childResult(resultsByOperation, "vestige", "smart_ingest", "smart_ingest"),
     };
     const ingest = resultsByOperation.get("vestige:smart_ingest");

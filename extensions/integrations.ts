@@ -16,7 +16,6 @@ import {
   type ContextSource,
   normalizeLifecycleRecallResult,
   normalizeSourcePayload,
-  parseQdrantResults,
   prepareContextArguments,
   sanitizeContextError,
   sanitizeContextText,
@@ -25,6 +24,7 @@ import {
 } from "../lib/ima-context.ts";
 import { buildLifecycleArtifact, deriveLifecycleResult, evaluateLifecycleRecall, sanitizeLifecycleError, validateLifecycleRequest, validateVestigeSaveReceipt } from "../lib/ima-lifecycle.ts";
 import { callMcpTool, withMcpSession } from "../lib/mcp-client.ts";
+import { createQdrantCorpusClient, type QdrantCorpusClient } from "../lib/qdrant-http.ts";
 import {
   createLifecycleRecallEnvelope,
   discoverLifecycleCandidates,
@@ -130,6 +130,7 @@ export type IntegrationDependencies = {
     signal?: AbortSignal,
   ) => Promise<unknown>;
   session?: McpSession;
+  corpus?: QdrantCorpusClient;
   home?: () => string;
 };
 
@@ -168,6 +169,7 @@ const productionDependencies: Required<IntegrationDependencies> = {
     }
   },
   session: withConfiguredMcpSession,
+  corpus: createQdrantCorpusClient(),
   home: homedir,
 };
 
@@ -324,26 +326,17 @@ async function loadDurableKnowledge(
   deps: Required<IntegrationDependencies>,
   signal?: AbortSignal,
 ) {
-  const arguments_ = {
-    query: request.query,
-    ...(request.collection ? { collection_name: request.collection } : {}),
-    ...(request.limit !== undefined ? { limit: request.limit } : {}),
-  };
-
   throwIfAborted(signal);
   try {
-    const response = await deps.session("qdrant-memory", (call) => call(
-      "qdrant_find",
-      arguments_,
-      MCP_TIMEOUT,
-    ), signal);
+    const response = await deps.corpus.findKnowledge({
+      query: request.query,
+      collection: request.collection ?? "ima-knowledge",
+      limit: request.limit ?? 20,
+    }, signal);
     throwIfAborted(signal);
-    if (!directResponse(response)) return { requested: true, status: "failed" as const, references: [] };
+    if (!response.success) return { requested: true, status: "failed" as const, references: [] };
 
-    const formattedResults = directResult(response);
-    if (formattedResults === null) return { requested: true, status: "empty" as const, references: [] };
-
-    const references = parseQdrantResults(formattedResults)
+    const references = response.data
       .slice(0, request.limit ?? 20)
       .map(({ summary, score }) => ({ summary: sanitizeContextText(summary, 512), score }))
       .filter(({ summary }) => Boolean(summary));
@@ -658,7 +651,7 @@ const CONTEXT_SOURCE_PARAMETERS = Type.Object({}, {
 
 const CONTEXT_DURABLE_KNOWLEDGE_PARAMETERS = Type.Object({
   query: Type.String({ minLength: 1, maxLength: 2_000, description: "Read-only Qdrant query." }),
-  collection: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Optional Qdrant collection." })),
+  collection: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Optional legacy collection; only ima-knowledge is supported." })),
   limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 20, description: "Maximum durable references." })),
 }, { additionalProperties: false });
 
@@ -668,6 +661,6 @@ const CONTEXT_TOOL_PARAMETERS = Type.Object({
 }, { additionalProperties: false });
 
 export default function integrations(pi: ExtensionAPI) {
-  pi.registerTool({ name: "ima_context", label: "IMA context", description: "Build Serena-first project context from one typed source: jira/key, taskwarrior/project+uuid, file/path, vestige/id, lifecycle/key, reference/value, or text/title+content. Reference accepts canonical taskwarrior:<project>:<uuid>, jira:<KEY>, lifecycle:<lifecycle-key>, and vestige:<UUID> forms plus space aliases. Optional durableKnowledge requires query and accepts collection and limit.", parameters: CONTEXT_TOOL_PARAMETERS, prepareArguments: prepareContextArguments, execute: async (_id, request, signal, _update, ctx) => ({ content: [{ type: "text", text: JSON.stringify(await coordinateContext(request, ctx.cwd, undefined, signal)) }], details: {} }) });
+  pi.registerTool({ name: "ima_context", label: "IMA context", description: "Build Serena-first project context from one typed source: jira/key, taskwarrior/project+uuid, file/path, vestige/id, lifecycle/key, reference/value, or text/title+content. Reference accepts canonical taskwarrior:<project>:<uuid>, jira:<KEY>, lifecycle:<lifecycle-key>, and vestige:<UUID> forms plus space aliases. Optional durableKnowledge requires query and accepts the supported ima-knowledge collection and limit.", parameters: CONTEXT_TOOL_PARAMETERS, prepareArguments: prepareContextArguments, execute: async (_id, request, signal, _update, ctx) => ({ content: [{ type: "text", text: JSON.stringify(await coordinateContext(request, ctx.cwd, undefined, signal)) }], details: {} }) });
   pi.registerTool({ name: "ima_lifecycle", label: "IMA lifecycle", description: "Save and semantically verify a lifecycle artifact.", parameters: Type.Object({ type: Type.String(), identity: Type.Any(), artifact: Type.String() }), execute: async (_id, request, signal) => { const result = await coordinateLifecycle(request, undefined, signal); return { content: [{ type: "text", text: JSON.stringify(result) }], details: result }; } });
 }

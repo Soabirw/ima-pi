@@ -5,7 +5,6 @@ import {
   JIRA_KEY,
   LIFECYCLE_KEY,
   MCP_TIMEOUT_MS,
-  QDRANT_PROBE_QUERY,
   USAGE,
   buildChildBrief,
   buildLifecyclePayload,
@@ -76,14 +75,6 @@ const expectedEvents = [
   {
     toolName: "mcp",
     args: {
-      server: "qdrant-memory",
-      tool: "qdrant_memory_qdrant_find",
-      args: { query: QDRANT_PROBE_QUERY, limit: 1 },
-    },
-  },
-  {
-    toolName: "mcp",
-    args: {
       server: "vestige",
       tool: "vestige_smart_ingest",
       args: {
@@ -98,7 +89,6 @@ const expectedWorkflow = [
   { service: "serena", operation: "activate_project", mutation: false },
   { service: "serena", operation: "get_current_config", mutation: false },
   { service: "vestige", operation: "memory_status", mutation: false },
-  { service: "qdrant-memory", operation: "qdrant_find", mutation: false },
   { service: "vestige", operation: "smart_ingest", mutation: true },
 ];
 
@@ -118,13 +108,11 @@ const successfulResult = () => ({
     serenaActivate: check("serena", "activate_project"),
     serenaConfig: check("serena", "get_current_config"),
     vestige: check("vestige", "memory_status"),
-    qdrant: check("qdrant-memory", "qdrant_find"),
   },
   child: {
     serenaActivate: check("serena", "activate_project"),
     serenaConfig: check("serena", "get_current_config"),
     vestigeRead: check("vestige", "memory_status"),
-    qdrant: check("qdrant-memory", "qdrant_find"),
     vestigeIngest: check("vestige", "smart_ingest"),
   },
   semanticCompletion: {
@@ -185,7 +173,6 @@ test("payload and child brief carry fixed compact-MCP and safety contracts", () 
     "serena_activate_project",
     "serena_get_current_config",
     "vestige_memory_status",
-    "qdrant_memory_qdrant_find",
     "vestige_smart_ingest",
     "use only mcp",
   ]) {
@@ -199,7 +186,7 @@ test("payload and child brief carry fixed compact-MCP and safety contracts", () 
   assert.doesNotMatch(brief, /bash command|user supplied shell fragment/i);
 });
 
-test("classifier permits only the exact five compact MCP operations in order", () => {
+test("classifier permits only the exact four compact MCP operations in order", () => {
   assert.deepEqual(
     expectedEvents.map((event) => classifyGatewayCommand(event, context)),
     expectedWorkflow,
@@ -215,7 +202,7 @@ test("classifier rejects shell, wrong server, extra arguments, and malformed MCP
     { toolName: "bash", args: { command: "echo unexpected" } },
     { ...expectedEvents[0], args: { ...expectedEvents[0].args, server: "vestige" } },
     { ...expectedEvents[0], args: { ...expectedEvents[0].args, args: { project: "/repo", extra: true } } },
-    { ...expectedEvents[3], args: { ...expectedEvents[3].args, args: { query: "unbounded", limit: 1 } } },
+    { toolName: "mcp", args: { server: "qdrant-memory", tool: "qdrant_memory_qdrant_find", args: { query: "unbounded", limit: 1 } } },
     { toolName: "mcp", args: { server: "serena", tool: "serena_activate_project" } },
   ];
   for (const event of invalidEvents) {
@@ -249,7 +236,7 @@ test("parent checks use native server tool names with exact arguments", async ()
     return directResult();
   });
   const checks = await Promise.all(
-    childOperations(context).slice(0, 4).map((operation) => runParentCheck(operation, session)),
+    childOperations(context).slice(0, 3).map((operation) => runParentCheck(operation, session)),
   );
 
   assert.equal(checks.every((result) => result.passed), true);
@@ -257,7 +244,6 @@ test("parent checks use native server tool names with exact arguments", async ()
     { server: "serena", tool: "activate_project", args: { project: "/repo" }, timeout: MCP_TIMEOUT_MS },
     { server: "serena", tool: "get_current_config", args: {}, timeout: MCP_TIMEOUT_MS },
     { server: "vestige", tool: "memory_status", args: { view: "health" }, timeout: MCP_TIMEOUT_MS },
-    { server: "qdrant-memory", tool: "qdrant_find", args: { query: QDRANT_PROBE_QUERY, limit: 1 }, timeout: MCP_TIMEOUT_MS },
   ]);
 });
 
@@ -364,8 +350,7 @@ test("MCP policy blocks off-contract calls before a fake adapter executes", asyn
   assert.equal(attempt(expectedEvents[1].args), true);
   assert.equal(attempt(expectedEvents[2].args), true);
   assert.equal(attempt(expectedEvents[3].args), true);
-  assert.equal(attempt(expectedEvents[4].args), true);
-  assert.equal(executed.length, 5);
+  assert.equal(executed.length, 4);
 
   await assert.rejects(createMcpChildRuntime({
     cwd: "/tmp",
@@ -384,7 +369,7 @@ test("result derivation requires checks, exact child identity, workflow, and sem
     ...base,
     parent: {
       ...base.parent,
-      qdrant: check("qdrant-memory", "qdrant_find", false),
+      vestige: check("vestige", "memory_status", false),
     },
   }).status, "failed");
   assert.equal(deriveGatewayProbeResult({

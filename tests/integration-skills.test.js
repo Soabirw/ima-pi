@@ -4,7 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 
 const root = resolve(dirname(new URL(import.meta.url).pathname), "..");
-const skills = ["mcp-serena", "mcp-vestige", "mcp-qdrant", "mcp-atlassian", "mcp-taskwarrior", "mcp-context7", "mcp-tavily", "mcp-fetch", "mcp-sequential-thinking", "mcp-chrome-devtools"];
+const skills = ["mcp-serena", "mcp-vestige", "ima-qdrant", "mcp-atlassian", "mcp-taskwarrior", "mcp-context7", "mcp-tavily", "mcp-fetch", "mcp-sequential-thinking", "mcp-chrome-devtools"];
 const assets = ["skills/mcp-serena/scripts/migrate-context-to-serena.py", "skills/mcp-atlassian/scripts/atlassian-api.mjs", "skills/mcp-taskwarrior/agents/openai.yaml"];
 const read = (path) => readFile(join(root, path), "utf8");
 const localMarkdownTargets = (content) => [...content.matchAll(/\[[^\]]+\]\((?!https?:|mailto:|#)([^)#]+)(?:#[^)]*)?\)/g)].map((match) => match[1]);
@@ -46,7 +46,10 @@ test("integration skills retain Pi-native safety and workflow boundaries", async
   assert.match(vestige, /partial\s+or failed evidence rather than guessing/i);
   assert.match(vestige, /\/ima:memorize/);
   assert.match(vestige, /receipt protocol/i);
-  assert.match(await read("skills/mcp-qdrant/SKILL.md"), /durable/i);
+  const qdrant = await read("skills/ima-qdrant/SKILL.md");
+  assert.match(qdrant, /package-native/i);
+  assert.match(qdrant, /ima_corpus_status/);
+  assert.match(qdrant, /never add.*qdrant-memory/is);
   assert.match(await read("skills/mcp-atlassian/SKILL.md"), /REST helper/i);
   assert.match(await read("skills/mcp-taskwarrior/SKILL.md"), /project plus UUID/i);
   assert.match(await read("skills/mcp-context7/SKILL.md"), /resolve.*library ID.*query/is);

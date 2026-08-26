@@ -4,6 +4,16 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ## [Unreleased]
 
+### Added
+
+- Added package-native Qdrant/Ollama institutional corpus tools for bounded immutable storage, semantic search, lifecycle-key recall, full retrieval, and read-only prerequisite status.
+
+### Changed
+
+- Replaced the `qdrant-memory` MCP dependency with direct abort-aware Node fetch boundaries while preserving `ima_context.durableKnowledge`.
+- Restricted optional durable-knowledge lookups to the known legacy `ima-knowledge` collection so unknown embedding compatibility fails closed.
+- Updated Qdrant skills, preflight, migration, gateway, activity, and documentation contracts for the native corpus boundary.
+
 ## [1.13.1] - 2026-08-25
 
 ### Fixed

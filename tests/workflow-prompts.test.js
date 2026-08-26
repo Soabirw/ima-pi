@@ -335,10 +335,10 @@ test("FNR-3025 support prompts encode gateway, safety, and terminal contracts", 
   );
   for (const value of ["ima-memory-workflow", "relevant standard memories", "Do not inspect repository files", "unless the user explicitly asks"]) has(memorize, value);
   const preflight = await prompt("preflight");
-  for (const value of ["offline", "quick", "full", "compact `mcp` proxy", "advertised by discovery", "PASS, WARN, FAIL, BLOCKED, SKIP, NOT_CONFIGURED", "0700", "bounded line/byte chunks", "redact", "cleanup", "retained", "ima_delegate", "IMA_PI_PREFLIGHT_CHILD_OK", "preflight-probe", "pi-preflight", "Goose subrecipe", "Stop after"]) has(preflight, value);
+  for (const value of ["offline", "quick", "full", "compact `mcp` proxy", "advertised by discovery", "ima_corpus_status", "never discover or invoke Qdrant through `mcp`", "Offline skips live Qdrant/Ollama", "missing package-native corpus tool is FAIL", "PASS, WARN, FAIL, BLOCKED, SKIP, NOT_CONFIGURED", "0700", "bounded line/byte chunks", "redact", "cleanup", "retained", "ima_delegate", "IMA_PI_PREFLIGHT_CHILD_OK", "preflight-probe", "pi-preflight", "Goose subrecipe", "Stop after"]) has(preflight, value);
   assert.doesNotMatch(preflight, /\bdoctor\b/i);
   const migrate = await prompt("migrate");
-  for (const value of ["Pi-native", "external through the package MCP adapter", "Serena, Vestige, or Qdrant", "~/.pi/agent/ima/config.json", "trusted `.pi/ima/config.json`", "exact redacted preview", "explicit approval", "atomically", "secret", "Validate JSON", "Stop after"]) has(migrate, value);
+  for (const value of ["Pi-native", "external through the package MCP adapter", "Serena and Vestige remain external", "Qdrant corpus support is Pi-native", "qdrant-memory", "ima_corpus_*", "~/.pi/agent/ima/config.json", "trusted `.pi/ima/config.json`", "exact redacted preview", "explicit approval", "atomically", "secret", "Validate JSON", "Stop after"]) has(migrate, value);
 });
 
 test("Unit D scoped guidance uses direct package MCP instructions", async () => {
@@ -370,7 +370,7 @@ test("FNR-3026 ship-it prompt and Git skill preserve release safety without depl
 
 test("FNR-3033 Pi operational guidance skills retain approved contracts", async () => {
   const preflight = await skill("pi-preflight");
-  for (const value of ["name: pi-preflight", "/ima:preflight", "offline", "quick", "full", "PASS", "WARN", "FAIL", "BLOCKED", "SKIP", "NOT_CONFIGURED", "package", "agent", "skill", "gateway", "model", "integration", "ima_delegate", "preflight-probe", "configured:false", "READ-ONLY", "FNR-3025"]) has(preflight, value);
+  for (const value of ["name: pi-preflight", "/ima:preflight", "offline", "quick", "full", "ima_corpus_status", "Qdrant MCP registration is expected", "PASS", "WARN", "FAIL", "BLOCKED", "SKIP", "NOT_CONFIGURED", "package", "agent", "skill", "gateway", "model", "integration", "ima_delegate", "preflight-probe", "configured:false", "READ-ONLY", "FNR-3025"]) has(preflight, value);
   const docs = await skill("pi-doc-guide");
   for (const value of ["name: pi-doc-guide", "installed version-matched", "packages.md", "skills.md", "extensions.md", "prompt-templates.md", "settings.md", "models.md", "providers.md", "security.md", "upstream Pi semantics", "ima-pi", "observed local state", "Cite", "rather than guessing"]) has(docs, value);
   const guide = await skill("ima-pi-guide");

@@ -35,6 +35,7 @@
     "@modelcontextprotocol/sdk": "^1.30.0",
     "pi-mcp-adapter": "2.17.0",
     "typebox": "1.1.38",
+    "uuid": "^14.0.2",
     "yaml": "2.8.2"
   }
 }

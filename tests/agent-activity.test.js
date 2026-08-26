@@ -75,7 +75,7 @@ test("reducer is immutable, records exact route only when observed, and is termi
 });
 
 test("activity classifier exposes compact-MCP categories without raw arguments", () => {
-  for (const server of ["serena", "vestige", "qdrant-memory"]) {
+  for (const server of ["serena", "vestige"]) {
     const category = classifyDelegationActivity("mcp", {
       server,
       args: { query: "super-secret" },
@@ -83,6 +83,7 @@ test("activity classifier exposes compact-MCP categories without raw arguments",
     assert.equal(category, `gateway:${server}`);
     assert.doesNotMatch(category, /secret|query/);
   }
+  assert.equal(classifyDelegationActivity("mcp", { server: "qdrant-memory" }), "gateway:other");
   assert.equal(classifyDelegationActivity("mcp", { server: "unknown" }), "gateway:other");
   assert.equal(classifyDelegationActivity("bash", { command: "echo token=super-secret" }), "tool:bash");
   assert.equal(classifyDelegationActivity("read", { path: "/private/path" }), "tool:read");

@@ -8,7 +8,7 @@ import test from "node:test";
 
 const root = resolve(dirname(new URL(import.meta.url).pathname), "..");
 const run = promisify(execFile);
-const expected = ["serena", "vestige", "qdrant-memory", "context7", "tavily", "fetch", "sequential-thinking", "chrome-devtools"];
+const expected = ["serena", "vestige", "context7", "tavily", "fetch", "sequential-thinking", "chrome-devtools"];
 
 test("MCP package composition has an exact pinned adapter and approved catalog", async () => {
   const manifest = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
@@ -23,7 +23,7 @@ test("MCP package composition has an exact pinned adapter and approved catalog",
     args: ["--from", "git+https://github.com/oraios/serena", "serena", "start-mcp-server", "--context=desktop-app", "--language-backend", "JetBrains", "--project-from-cwd"],
   });
   assert.deepEqual(config.mcpServers.vestige, { command: "vestige-mcp" });
-  assert.deepEqual(config.mcpServers["qdrant-memory"], { command: "qdrant-mcp" });
+  assert.equal("qdrant-memory" in config.mcpServers, false);
   assert.deepEqual(config.mcpServers.context7, { command: "npx", args: ["-y", "@upstash/context7-mcp@latest"] });
   assert.deepEqual(config.mcpServers.tavily, {
     command: "npx",

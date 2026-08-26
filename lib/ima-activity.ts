@@ -163,7 +163,7 @@ export function classifyDelegationActivity(toolName: unknown, args: unknown): st
       ? (args as { server?: unknown }).server
       : undefined;
     if (typeof server !== "string") return "gateway:other";
-    return ["serena", "vestige", "qdrant-memory"].includes(server)
+    return ["serena", "vestige"].includes(server)
       ? `gateway:${server}`
       : "gateway:other";
   }
