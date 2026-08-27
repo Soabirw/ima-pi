@@ -1,5 +1,6 @@
 import {
   corpusFailure,
+  INSTITUTIONAL_COLLECTION,
   utf8ByteLength,
   type CorpusErrorCode,
   type CorpusResult,
@@ -11,6 +12,7 @@ export const DEFAULT_HTTP_TIMEOUT_MS = 15_000;
 export const MAX_HTTP_RESPONSE_BYTES = 256 * 1024;
 
 const COLLECTION_NAME = /^[A-Za-z0-9_-]{1,255}$/;
+const SNAPSHOT_NAME = /^[A-Za-z0-9._-]{1,255}$/;
 const textDecoder = new TextDecoder();
 
 export type JsonObject = Record<string, unknown>;
@@ -132,3 +134,27 @@ export const bodyOrFailure = (response: CorpusResult<ResponseData>, code: Corpus
     ? success(response.data.body)
     : failure(code);
 };
+
+export async function createInstitutionalSnapshot(
+  supplied: QdrantHttpDependencies = {},
+  signal?: AbortSignal,
+): Promise<CorpusResult<{ name: string }>> {
+  const endpoints = resolveCorpusEndpoints(supplied.env ?? process.env);
+  if (!endpoints.success) return endpoints;
+
+  const response = bodyOrFailure(await requestJson({
+    fetcher: supplied.fetch ?? globalThis.fetch,
+    endpoint: endpoints.data.qdrantUrl,
+    path: `collections/${encodeURIComponent(INSTITUTIONAL_COLLECTION)}/snapshots`,
+    method: "POST",
+    timeoutMs: supplied.timeoutMs ?? DEFAULT_HTTP_TIMEOUT_MS,
+    maximumResponseBytes: supplied.maxResponseBytes ?? MAX_HTTP_RESPONSE_BYTES,
+    signal,
+    unavailableCode: "qdrant_unavailable",
+  }), "qdrant_unavailable");
+  if (!response.success) return response;
+
+  const snapshot = object(object(response.data)?.result);
+  const name = text(snapshot?.name);
+  return SNAPSHOT_NAME.test(name) ? success({ name }) : failure("response_invalid");
+}

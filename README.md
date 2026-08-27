@@ -4,7 +4,7 @@ Pi-native IMA agent harness, packaged through Pi's standard Git/npm package mode
 
 ## Features
 
-- **52 packaged skills and 29 `/ima:*` prompt templates** for engineering, web, WordPress, IMA, MCP, research, and operational workflows.
+- **52 packaged skills and 30 `/ima:*` prompt templates** for engineering, web, WordPress, IMA, MCP, research, and operational workflows.
 - **Pi-native package resources**—prompts, skills, agents, extensions, policies, and configuration guidance—distributed through Pi's normal Git/npm package model.
 - **Memory-aware project work:** Serena provides stable project context, Vestige preserves task decisions and lifecycle artifacts, and package-native Qdrant/Ollama corpus tools store durable reference knowledge. None are bundled services.
 - **A guided development lifecycle with bounded autonomy:** use the manual phases or the explicit, user-gated `/ima:cycle`; autonomous progression requires an approved bounded, conflict-free, low-risk plan and verified evidence, and it stops at `document`.
@@ -136,6 +136,7 @@ Then try:
 
 - `/ima:serena-bootstrap [context]` loads Serena instructions and standard project memories through direct MCP, read-only.
 - `/ima:vestige-bootstrap [topic]` reads relevant user preferences through direct MCP without mutation.
+- `/ima:vestige-migrate [cleanup <report-path>]` performs a non-destructive Vestige lifecycle-memory migration; cleanup is a later explicit, re-verified action, and operators should not run migrations for the same project concurrently.
 - `/ima:memorize [what should be remembered]` lets users say what should be remembered; it infers project memory versus cross-project preference, asks only when scope is ambiguous, previews exact wording, and requires approval before one verified write.
 - `/ima:preflight [offline|quick|full or request]` reports bounded read-only Pi/IMA diagnostics. It can spool large raw gateway evidence into restrictive temporary files and optionally retain only a redacted final report.
 - `/ima:migrate [request]` classifies legacy configuration and, after an exact preview and approval, writes only supported Pi/IMA configuration atomically.

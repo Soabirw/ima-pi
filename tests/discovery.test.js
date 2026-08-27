@@ -52,7 +52,7 @@ test("package exposes namespaced extension, prompt, and skill commands", async (
   assert.equal(commands.get("ima:new")?.source, "extension");
   assert.equal(commands.get("ima:cycle")?.source, "extension");
   assert.equal(commands.get("ima:prompt")?.source, "prompt");
-  for (const [name, description] of [["serena-bootstrap", "Serena project instructions"], ["vestige-bootstrap", "Vestige.*without mutation"], ["ship-it", "Prepare and validate staging release branches"], ["memorize", "stable project fact"], ["preflight", "read-only Pi and IMA diagnostic"], ["migrate", "legacy configuration"], ["brainstorm", "product requirements"], ["decompose", "two-tier delivery units"], ["plan", "technical implementation contract"], ["architect", "bounded evidence-oriented architecture assessment"], ["investigate", "Investigate and trace a problem without applying a fix"], ["instruct", "Research and teach what the user should do and why"], ["prompt-start", "Turn rough context into a clear prompt for a dedicated workflow"], ["test", "formal test phase"], ["review", "independent product-read-only review"], ["resolve-review", "Resolve approved review findings"], ["rereview", "Independently rereview one resolved lifecycle finding set"], ["review-verify", "Verify exactly one review finding"], ["document", "documentation and learning closeout"], ["ui-ux-review", "read-only UI/UX review"], ["design-to-code", "WordPress and Bootstrap design-to-code"], ["medical-research", "current primary-source verification"], ["patristic-research", "early Christianity through Augustine"]]) {
+  for (const [name, description] of [["serena-bootstrap", "Serena project instructions"], ["vestige-bootstrap", "Vestige.*without mutation"], ["vestige-migrate", "Safely migrate Vestige lifecycle memories"], ["ship-it", "Prepare and validate staging release branches"], ["memorize", "stable project fact"], ["preflight", "read-only Pi and IMA diagnostic"], ["migrate", "legacy configuration"], ["brainstorm", "product requirements"], ["decompose", "two-tier delivery units"], ["plan", "technical implementation contract"], ["architect", "bounded evidence-oriented architecture assessment"], ["investigate", "Investigate and trace a problem without applying a fix"], ["instruct", "Research and teach what the user should do and why"], ["prompt-start", "Turn rough context into a clear prompt for a dedicated workflow"], ["test", "formal test phase"], ["review", "independent product-read-only review"], ["resolve-review", "Resolve approved review findings"], ["rereview", "Independently rereview one resolved lifecycle finding set"], ["review-verify", "Verify exactly one review finding"], ["document", "documentation and learning closeout"], ["ui-ux-review", "read-only UI/UX review"], ["design-to-code", "WordPress and Bootstrap design-to-code"], ["medical-research", "current primary-source verification"], ["patristic-research", "early Christianity through Augustine"]]) {
     assert.equal(commands.get(`ima:${name}`)?.source, "prompt");
     assert.equal(commands.get(`ima:${name}`)?.origin, "package");
     assert.match(await readFile(join(root, "prompts", `ima:${name}.md`), "utf8"), new RegExp(description, "i"));
@@ -67,10 +67,14 @@ test("package exposes namespaced extension, prompt, and skill commands", async (
 test("package ships integrations and native corpus production tool registrations", async () => {
   const integrations = await readFile(join(root, "extensions", "integrations.ts"), "utf8");
   const corpus = await readFile(join(root, "extensions", "institutional-memory.ts"), "utf8");
+  const migration = await readFile(join(root, "extensions", "vestige-migrate.ts"), "utf8");
   assert.match(integrations, /registerTool\(\{ name: "ima_context"/);
   assert.match(integrations, /registerTool\(\{ name: "ima_lifecycle"/);
   for (const name of ["ima_corpus_status", "ima_corpus_store", "ima_corpus_find", "ima_corpus_recall", "ima_corpus_get"]) {
     assert.match(corpus, new RegExp(`name: "${name}"`));
+  }
+  for (const name of ["ima_vestige_migrate", "ima_vestige_cleanup"]) {
+    assert.match(migration, new RegExp(`name: "${name}"`));
   }
   assert.equal((await readFile(join(root, "extensions", "gateway-probe.ts"), "utf8")).includes("ima:gateway-probe"), true);
 });

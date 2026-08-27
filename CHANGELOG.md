@@ -7,6 +7,7 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 ### Added
 
 - Added package-native Qdrant/Ollama institutional corpus tools for bounded immutable storage, semantic search, lifecycle-key recall, full retrieval, and read-only prerequisite status.
+- Added `/ima:vestige-migrate` with bounded Vestige export, migration-local secret redaction, idempotent Tier-1 import, quarantine reporting, a non-destructive default, and later explicit Tier-1-verified cleanup that counts a purge only after a positive deletion acknowledgment.
 
 ### Changed
 
