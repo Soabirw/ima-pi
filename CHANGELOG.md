@@ -4,6 +4,8 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ## [Unreleased]
 
+## [1.14.0] - 2026-08-27
+
 ### Added
 
 - Added schema-v2 Tier-1 lifecycle manifests with deterministic vectorless detail chunks, UTF-8-aware lossless splitting/reassembly, chunks-first/manifest-last persistence, and fail-closed integrity validation.
