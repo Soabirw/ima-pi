@@ -59,6 +59,23 @@ test("cycle resolution prompts expose exact phase markers and bounded handoffs",
     has(text, "/ima:cycle");
   }
   for (const value of ["code-review", "ima-security-guardrails", "functional-programmer", "ima-delegation-contract", "REVIEW-NNN", "retained and not withdrawn", "precise evidence", "required observable outcome", "decided files/symbols", "control/data/error behavior", "tests and acceptance checks", "constraints/non-goals", "CONFIRMED", "resolution ordering/dependencies", "resolved", "blocked", "not attempted", "Mechanical line-number adjustment"]) has(resolution, value);
+  for (const value of [
+    "implementation-grade",
+    "append",
+    "corrective",
+    "exact files/symbols",
+    "control/data/error behavior",
+    "tests and acceptance checks",
+    "constraints",
+    "rejected alternatives",
+    "resolution dependencies",
+    "rather than merely restating the failure without corrective instructions",
+    "must never suppress",
+  ]) has(rereview, value);
+  assert.match(
+    rereview,
+    /Preserve each original `REVIEW-NNN` ID;[^\n]*append an implementation-grade corrective handoff[^\n]*rather than merely restating the failure without corrective instructions[^\n]*exact files\/symbols[^\n]*control\/data\/error behavior[^\n]*tests and acceptance checks[^\n]*constraints[^\n]*rejected alternatives[^\n]*resolution dependencies[^\n]*Assign the next unused ID only to an independently verified regression caused by the resolution[^\n]*same complete corrective handoff[^\n]*Do not edit code, reopen unrelated scope, or redesign;[^\n]*must never suppress[^\n]*Apply the `code-review` request-changes gate/,
+  );
   assert.doesNotMatch(resolution, /remediation brief is `SUFFICIENT`/i);
 });
 test("implementation prompts expose a MID current-session, plan-bound terminal contract", async () => {
@@ -159,7 +176,7 @@ test("quality and learning prompts retain distinct bounded terminal contracts", 
   for (const name of ["test", "review", "review-verify", "document"]) { const text = await prompt(name); has(text, "description:"); has(text, "argument-hint:"); has(text, "stop"); has(text, "/ima:cycle"); }
   const testing = await prompt("test"); for (const value of ["Do not redesign or edit production behavior", "ima_lifecycle", "unit-testing", "evidence", "smallest project-supported", "ima-security-guardrails", "detected testing contract", "tests or test support added or repaired", "changed files", "commands and results", "behaviors covered", "defects or blockers", "evidence gaps and residual risk", "phase outcome", "recommended next phase", "implementation details", "deep mock chains", "real timers, network, or filesystem", "weaken assertions", "skip markers"]) has(testing, value);
   const review = await prompt("review"); for (const value of ["fresh", "product-read-only", "Critical or Warning", "review-verifier", "REVIEW-NNN", "ima_lifecycle", "code-review", "Integration Contract", "request-changes gate"]) has(review, value);
-  const rereview = await prompt("rereview"); for (const value of ["code-review", "regression", "next unused ID"]) has(rereview, value);
+  const rereview = await prompt("rereview"); for (const value of ["code-review", "regression", "next unused ID", "implementation-grade", "append", "corrective", "resolution dependencies", "must never suppress"]) has(rereview, value);
   const verify = await prompt("review-verify"); for (const value of ["CONFIRMED|WITHDRAWN|PARTIAL", "Do not edit", "one dependency hop", "only that evidence range", "code-review", "malformed brief"]) has(verify, value); assert.doesNotMatch(verify, /range, named remediation surface/i);
   const document = await prompt("document"); for (const value of ["exact approved", "external-update manifest", "Serena", "Vestige", "Qdrant", "ima_lifecycle"]) has(document, value);
   for (const value of ["ima-memory-workflow", "ima-vision-handoff", "ima-delegation-contract", "active docs", "archive docs", "transient notes", "high-signal", "document-assessor", "documenter", "writeScope"]) has(document, value);
@@ -239,6 +256,18 @@ test("code-review skill restores the Pi-native verified-review contract", async 
     "500-line file-size smell",
     "cohesion-based justification",
     "responsibility/cohesion",
+    "rereview",
+    "corrective",
+    "must never suppress",
+    "regression",
+    "applies identically to review and rereview",
+    "same six-part corrective handoff",
+    "preserved `REVIEW-NNN`",
+    "independently verified regression caused by the resolution",
+    "next unused ID",
+    "same complete handoff",
+    "failing behavior",
+    "root cause",
   ]) has(text, value);
   assert.match(
     text,
@@ -247,6 +276,18 @@ test("code-review skill restores the Pi-native verified-review contract", async 
   assert.match(
     text,
     /^- Readability:[^\n]*500-line file-size smell[^\n]*cohesion-based justification[^\n]*Warning \(blocking under the closeout rule\)[^\n]*responsibility\/cohesion/mi,
+  );
+  assert.match(
+    text,
+    /^Apply this requirement equally during rereview:[^\n]*same six-part corrective handoff[^\n]*preserved `REVIEW-NNN`[^\n]*independently verified regression caused by the resolution[^\n]*next unused ID[^\n]*same complete handoff[^\n]*must never suppress[^\n]*$/m,
+  );
+  assert.match(
+    text,
+    /^This gate applies identically to review and rereview `REQUEST_CHANGES` verdicts\.$/m,
+  );
+  assert.match(
+    text,
+    /^1\. location, failing behavior, root cause, and affected contract or callers;$/m,
   );
   assert.doesNotMatch(text, /sub_recipes|\.eta/i);
   await Promise.all(localMarkdownTargets(text).map((target) => access(resolve(root, "skills", "code-review", target))));

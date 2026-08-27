@@ -18,6 +18,10 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 - Restricted optional durable-knowledge lookups to the known legacy `ima-knowledge` collection so unknown embedding compatibility fails closed.
 - Updated Qdrant skills, preflight, migration, gateway, activity, and documentation contracts for the native corpus boundary.
 
+### Fixed
+
+- Hardened the shared review/rereview `REQUEST_CHANGES` gate: retained or sharpened rereview findings now require complete implementation-grade corrective instructions and failure/root-cause context, without the no-redesign boundary suppressing either.
+
 ## [1.13.1] - 2026-08-25
 
 ### Fixed

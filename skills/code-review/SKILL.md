@@ -88,11 +88,15 @@ For each retained finding provide:
 5. constraints, non-goals, and material rejected alternatives; and
 6. verifier verdict and reason.
 
+Apply this requirement equally during rereview: when rereview retains or sharpens a finding, append the same six-part corrective handoff under the preserved `REVIEW-NNN` rather than merely restating the failure without corrective instructions. An independently verified regression caused by the resolution gets the next unused ID with the same complete handoff. The prohibition on unrelated redesign must never suppress the corrective instructions a retained finding needs.
+
 Use code or pseudocode when operation ordering, replacement logic, or data shape is material. Keep Suggestions concise and nonblocking.
 
 ## Request-changes gate
 
 Fail closed. A `REQUEST_CHANGES` verdict is valid only when each retained Critical or Warning has a stable `REVIEW-NNN`, precise evidence, a plausible failure mode, a confirmed verifier verdict, a complete decided remediation, tests and acceptance checks, explicit constraints, and stated resolution ordering. Otherwise keep the review blocked or report a nonblocking concern; do not emit an implementation handoff.
+
+This gate applies identically to review and rereview `REQUEST_CHANGES` verdicts.
 
 ## Adversarial reconciliation
 
