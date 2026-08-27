@@ -44,7 +44,7 @@ test("plan enforces one-unit Serena-first technical planning without implementat
 
 test("shared lifecycle skill keeps artifact, identity, source-identifier, and cycle-marker boundaries in one source", async () => {
   const text = await skill("ima-lifecycle-contract");
-  for (const value of ["name: ima-lifecycle-contract", "artifact is the detailed source of truth", "ima_lifecycle", "generated SDK namespace", "lifecycle_key", "prior_artifact_ids", "Do not create a disconnected lifecycle thread", "exactly one cycle outcome marker", "taskwarrior:<project>:<uuid>", "lifecycle:<lifecycle-key>", "vestige:<UUID>", "canonical colon identifiers", "never substitute a Taskwarrior or Jira probe"]) has(text, value);
+  for (const value of ["name: ima-lifecycle-contract", "artifact is the detailed source of truth", "ima_lifecycle", "generated SDK namespace", "lifecycle_key", "prior_artifact_ids", "Do not create a disconnected lifecycle thread", "exactly one cycle outcome marker", "taskwarrior:<project>:<uuid>", "lifecycle:<lifecycle-key>", "vestige:<UUID>", "canonical colon identifiers", "Tier-1 Qdrant", "No Vestige lifecycle write, recall, or fallback", "summary"]) has(text, value);
 });
 
 const implementationPrompts = ["implement", "implement-js", "implement-wp"];
@@ -78,24 +78,46 @@ test("implementation prompts expose a MID current-session, plan-bound terminal c
 
 test("manual lifecycle prompts normalize shared source identifiers before declaring evidence missing", async () => {
   const manualPrompts = ["plan", "implement", "implement-js", "implement-wp", "test", "review", "resolve-review", "rereview", "document"];
-  const sourceGrammar = ["taskwarrior:<project>:<uuid>", "taskwarrior <project> <uuid>", "jira:<KEY>", "jira <KEY>", "lifecycle:<lifecycle-key>", "lifecycle <lifecycle-key>", "vestige:<UUID>", "vestige <UUID>", "canonical colon forms", "space-delimited aliases", "reference", "empty or insufficient"];
+  const sourceGrammar = ["taskwarrior:<project>:<uuid>", "taskwarrior <project> <uuid>", "jira:<KEY>", "jira <KEY>", "lifecycle:<lifecycle-key>", "lifecycle <lifecycle-key>", "vestige:<UUID>", "vestige <UUID>", "canonical colon forms", "space-delimited aliases", "reference", "Tier-1 Qdrant"];
   for (const name of manualPrompts) {
     const text = await prompt(name);
     for (const value of sourceGrammar) has(text, value);
   }
   for (const name of ["implement", "implement-js", "implement-wp", "test", "review", "resolve-review", "rereview"]) {
     const text = await prompt(name);
-    for (const value of ["ima-memory-workflow", "latest VERIFIED lifecycle artifact", "ima-pi:taskwarrior:<project>:<uuid>", "ima-pi:jira:<KEY>", "Never substitute a Taskwarrior or Jira probe"]) has(text, value);
+    for (const value of ["ima-memory-workflow", "latest VERIFIED Tier-1 lifecycle artifact", "ima-pi:taskwarrior:<project>:<uuid>", "ima-pi:jira:<KEY>", "unavailable lifecycle corpus evidence"]) has(text, value);
   }
   const rereview = await prompt("rereview");
   has(rereview, "First call `ima_context`");
-  assert.ok(rereview.indexOf("First call `ima_context`") < rereview.indexOf("latest VERIFIED lifecycle artifact"));
+  assert.ok(rereview.indexOf("First call `ima_context`") < rereview.indexOf("latest VERIFIED Tier-1 lifecycle artifact"));
   const document = await prompt("document");
   assert.ok(document.indexOf("First call `ima_context`") < document.indexOf("recall verified plan"));
   assert.ok(document.indexOf("recall verified plan") < document.indexOf("Fail closed only"));
   const planning = await prompt("plan");
   for (const value of ["ima-memory-workflow", "canonical prefixed source form", "/ima:implement taskwarrior:<project>:<uuid>", "/ima:implement jira:<KEY>", "/ima:implement lifecycle:<lifecycle-key>", "/ima:implement vestige:<UUID>"]) has(planning, value);
   assert.ok(planning.indexOf("ima_context") < planning.indexOf("ima-memory-workflow"));
+});
+
+test("active two-tier documentation assigns lifecycle artifacts to Qdrant and preferences to Vestige", async () => {
+  const [readme, guide, workflow, lifecycle, vestige, conventions, completion] = await Promise.all([
+    readFile(join(root, "README.md"), "utf8"),
+    readFile(join(root, "docs", "guide.md"), "utf8"),
+    skill("ima-memory-workflow"),
+    skill("ima-lifecycle-contract"),
+    skill("mcp-vestige"),
+    readFile(join(root, ".serena", "memories", "conventions.md"), "utf8"),
+    readFile(join(root, ".serena", "memories", "task_completion.md"), "utf8"),
+  ]);
+  for (const text of [readme, guide, workflow, lifecycle]) {
+    has(text, "Tier-1 Qdrant");
+  }
+  for (const text of [workflow, lifecycle, vestige]) {
+    has(text, "Vestige");
+    assert.doesNotMatch(text, /Vestige MCP `smart_ingest`.*lifecycle|Vestige lifecycle fallback/i);
+  }
+  has(vestige, "preferences");
+  has(conventions, "Vestige is preferences-only");
+  has(completion, "ima_lifecycle");
 });
 
 test("workflow routing treats arbitrary /ima:* tokens as command-keyed candidates", () => {

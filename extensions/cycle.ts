@@ -5,7 +5,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DefaultResourceLoader, getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { applyConfiguredCommandRoute, latestSessionProfile } from "./workflow-routing.ts";
-import { coordinateContext, coordinateLifecycle, mcpResultData, recallVestige } from "./integrations.ts";
+import { coordinateContext, coordinateLifecycle, mcpResultData, recallCorpusLifecycle } from "./integrations.ts";
 import {
   CYCLE_ENTRY,
   CYCLE_PHASES,
@@ -464,7 +464,7 @@ export type CycleCloseInput = {
   commitPrep: boolean;
   confirmed?: boolean;
   run: (program: string, args: string[]) => Promise<unknown>;
-  lifecycle?: (request: { type: "closeout"; identity: LifecycleIdentity; artifact: string }) => Promise<{ status?: string; [key: string]: unknown }>;
+  lifecycle?: (request: { type: "closeout"; identity: LifecycleIdentity; summary: string; artifact: string }) => Promise<{ status?: string; [key: string]: unknown }>;
   identity?: LifecycleIdentity;
   appendState: CycleAppend;
   timestamp?: string;
@@ -522,7 +522,12 @@ export async function coordinateCycleClose(input: CycleCloseInput): Promise<{ ok
   const lifecycle = input.lifecycle ?? (async (request) => coordinateLifecycle(request));
   let persisted: { status?: string; [key: string]: unknown };
   try {
-    persisted = await lifecycle({ type: "closeout", identity, artifact });
+    persisted = await lifecycle({
+      type: "closeout",
+      identity,
+      summary: "Cycle closeout verified after tracker completion.",
+      artifact,
+    });
   } catch {
     persisted = { status: "failed" };
   }
@@ -684,7 +689,7 @@ export type CycleExtensionDependencies = {
 const defaultCycleExtensionDependencies: CycleExtensionDependencies = {
   applyRoute: (pi, ctx, phase) => routeFor(pi, ctx)(phase),
   expandPrompt: expandCyclePromptFromResources,
-  recall: (query) => recallVestige(query),
+  recall: (query) => recallCorpusLifecycle(query),
   resolveProjectRoot: defaultResolveProjectRoot,
   loadDurableState: loadDurableStateWith(defaultResolveProjectRoot),
   persistDurableState: persistDurableStateWith(defaultResolveProjectRoot),

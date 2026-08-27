@@ -10,11 +10,11 @@ import {
   type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
 import {
-  mcpResultData,
-  recallVestige,
   withConfiguredMcpSession,
   type McpSession,
 } from "./integrations.ts";
+import { storeInstitutionalManifest } from "../lib/qdrant-corpus.ts";
+import { createQdrantCorpusClient } from "../lib/qdrant-http.ts";
 import type {
   McpPolicyOperation,
   createMcpChildRuntime as CreateMcpChildRuntime,
@@ -37,8 +37,7 @@ type Service = "serena" | "vestige" | "unknown";
 type Operation =
   | "activate_project"
   | "get_current_config"
-  | "memory_status"
-  | "smart_ingest"
+  | "session_start"
   | "unknown";
 
 type GatewayContext = {
@@ -78,6 +77,13 @@ export interface ObservedCommand {
   mutation: boolean;
 }
 
+export interface CorpusCheck {
+  operation: "logical_store" | "direct_get";
+  mutation: boolean;
+  passed: boolean;
+  errorCode: string | null;
+}
+
 export interface ModelIdentity {
   provider: string;
   model: string;
@@ -92,17 +98,20 @@ export interface GatewayProbeResult {
   parent: {
     serenaActivate: GatewayCheck;
     serenaConfig: GatewayCheck;
-    vestige: GatewayCheck;
+    vestigePreference: GatewayCheck;
   };
   child: {
     serenaActivate: GatewayCheck;
     serenaConfig: GatewayCheck;
-    vestigeRead: GatewayCheck;
-    vestigeIngest: GatewayCheck;
+    vestigePreference: GatewayCheck;
+  };
+  corpus: {
+    store: CorpusCheck;
+    directGet: CorpusCheck;
   };
   semanticCompletion: {
-    ingestAccepted: boolean;
-    recallMatched: boolean;
+    storeAccepted: boolean;
+    directGetMatched: boolean;
     lifecycleKeyMatched: boolean;
     jiraKeyMatched: boolean;
     nonceMatched: boolean;
@@ -159,7 +168,7 @@ export function buildLifecyclePayload(input: {
   jiraKey: string;
   nonce: string;
 }): string {
-  return `FNR-3011 implementation-probe completed external Serena and Vestige gateway workflow attempts. lifecycle_key=${input.lifecycleKey}; jira_key=${input.jiraKey}; run_nonce=${input.nonce}; outcome=completed. Serena remains an external read-only service; this is a semantic lifecycle update, not a required memory shape.`;
+  return `FNR-3011 implementation-probe completed external Serena and Qdrant lifecycle workflow checks. lifecycle_key=${input.lifecycleKey}; jira_key=${input.jiraKey}; run_nonce=${input.nonce}; outcome=completed. Serena and Vestige preference bootstrap remain read-only services; Qdrant direct retrieval verifies this logical lifecycle record.`;
 }
 
 export const childOperations = (input: GatewayContext): GatewayOperation[] => [
@@ -181,23 +190,16 @@ export const childOperations = (input: GatewayContext): GatewayOperation[] => [
   },
   {
     server: "vestige",
-    serverTool: "memory_status",
-    compactTool: "vestige_memory_status",
-    args: { view: "health" },
-    operation: "memory_status",
-    mutation: false,
-  },
-  {
-    server: "vestige",
-    serverTool: "smart_ingest",
-    compactTool: "vestige_smart_ingest",
+    serverTool: "session_start",
+    compactTool: "vestige_session_start",
     args: {
-      content: input.payload,
-      node_type: "event",
-      tags: [STORY, "gateway-probe"],
+      queries: ["user preferences"],
+      include_intentions: false,
+      include_predictions: false,
+      include_status: false,
     },
-    operation: "smart_ingest",
-    mutation: true,
+    operation: "session_start",
+    mutation: false,
   },
 ];
 
@@ -205,7 +207,7 @@ export function buildChildBrief(input: GatewayContext): string {
   const operations = childOperations(input);
   return [
     "You are the bounded FNR-3011 gateway-probe child.",
-    "Run exactly these four compact mcp calls in order, then stop:",
+    "Run exactly these compact mcp calls in order, then stop:",
     ...operations.map((operation, index) =>
       `${index + 1}. mcp({"server":"${operation.server}","tool":"${operation.compactTool}","args":${JSON.stringify(operation.args)}})`,
     ),
@@ -218,6 +220,7 @@ const object = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : null;
+const text = (value: unknown) => typeof value === "string" ? value.trim() : "";
 
 export function classifyGatewayCommand(
   event: { toolName?: unknown; args?: unknown; input?: unknown },
@@ -297,85 +300,42 @@ export function evaluateObservedWorkflow(events: ObservedCommand[]): {
   const expected: ObservedCommand[] = [
     { service: "serena", operation: "activate_project", mutation: false },
     { service: "serena", operation: "get_current_config", mutation: false },
-    { service: "vestige", operation: "memory_status", mutation: false },
-    { service: "vestige", operation: "smart_ingest", mutation: true },
+    { service: "vestige", operation: "session_start", mutation: false },
   ];
   const passed = events.length === expected.length
     && events.every((event, index) => isDeepStrictEqual(event, expected[index]));
   return { passed, errorCode: passed ? null : "unexpected_child_command" };
 }
 
-const MAX_CONTENT_VALUES = 64;
-const MAX_CONTENT_LENGTH = 8_192;
-
-function contentStrings(value: unknown, collected: string[] = []): string[] {
-  if (collected.length >= MAX_CONTENT_VALUES) return collected;
-  if (typeof value === "string") {
-    collected.push(value.slice(0, MAX_CONTENT_LENGTH));
-    return collected;
-  }
-  if (Array.isArray(value)) {
-    for (const item of value) contentStrings(item, collected);
-    return collected;
-  }
-  if (value && typeof value === "object") {
-    for (const item of Object.values(value)) contentStrings(item, collected);
-  }
-  return collected;
-}
-
-export function evaluateSemanticCompletion(input: {
-  ingestResult: unknown;
-  ingestIsError?: boolean;
-  recalledMemories: unknown;
+export function evaluateCorpusCompletion(input: {
+  store: unknown;
+  directRecord: unknown;
   lifecycleKey: string;
   jiraKey: string;
   nonce: string;
 }) {
-  const ingest = validateGatewayResult({
-    service: "vestige",
-    operation: "smart_ingest",
-    kind: "compact",
-    expected: { server: "vestige", tool: "smart_ingest" },
-    result: input.ingestResult,
-    isError: input.ingestIsError,
-  });
-  const data = mcpResultData(input.recalledMemories);
-  const nested = object(data?.data);
-  const results = Array.isArray(data?.results)
-    ? data.results
-    : Array.isArray(nested?.results)
-      ? nested.results
-      : [];
-  const matches = results.map((result) => {
-    const text = contentStrings(result).join("\n");
-    return {
-      lifecycleKeyMatched: text.includes(input.lifecycleKey),
-      jiraKeyMatched: text.includes(input.jiraKey),
-      nonceMatched: text.includes(input.nonce),
-      outcomeMatched: /\b(completed|success)\b/i.test(text),
-    };
-  });
-  const matched = matches.find((match) =>
-    match.lifecycleKeyMatched
-    && match.jiraKeyMatched
-    && match.nonceMatched
-    && match.outcomeMatched,
-  );
-  const lifecycleKeyMatched = matched?.lifecycleKeyMatched ?? false;
-  const jiraKeyMatched = matched?.jiraKeyMatched ?? false;
-  const nonceMatched = matched?.nonceMatched ?? false;
-  const outcomeMatched = matched?.outcomeMatched ?? false;
-  const recallMatched = Boolean(matched);
+  const stored = object(input.store);
+  const record = object(input.directRecord);
+  const detail = typeof record?.detail === "string" ? record.detail : "";
+  const storeAccepted = stored?.success === true
+    && (text(object(stored.data)?.status) === "stored" || text(object(stored.data)?.status) === "unchanged");
+  const lifecycleKeyMatched = detail.includes(input.lifecycleKey);
+  const jiraKeyMatched = detail.includes(input.jiraKey);
+  const nonceMatched = detail.includes(input.nonce);
+  const outcomeMatched = /\boutcome\s*=\s*completed\b/i.test(detail);
+  const directGetMatched = lifecycleKeyMatched
+    && jiraKeyMatched
+    && nonceMatched
+    && outcomeMatched;
   return {
-    ingestAccepted: ingest.passed,
-    recallMatched,
+    storeAccepted,
+    directGetMatched,
     lifecycleKeyMatched,
     jiraKeyMatched,
     nonceMatched,
     outcomeMatched,
     physicalShapeIgnored: true as const,
-    passed: ingest.passed && recallMatched,
+    passed: storeAccepted && directGetMatched,
   };
 }
 
@@ -410,18 +370,27 @@ const failedCheck = (
   code: string,
 ): GatewayCheck => ({ service, operation, passed: false, errorCode: code });
 
+const failedCorpusCheck = (
+  operation: CorpusCheck["operation"],
+  code: string,
+): CorpusCheck => ({ operation, mutation: operation === "logical_store", passed: false, errorCode: code });
+
 export function deriveGatewayProbeResult(
   input: Omit<GatewayProbeResult, "status" | "error">,
 ): GatewayProbeResult {
-  const checks = [...Object.values(input.parent), ...Object.values(input.child)];
+  const checks = [
+    ...Object.values(input.parent),
+    ...Object.values(input.child),
+    ...Object.values(input.corpus),
+  ];
   const identity = input.actualChild?.provider === input.requestedChild.provider
     && input.actualChild?.model === input.requestedChild.model;
   const workflow = evaluateObservedWorkflow(input.observedCommands).passed;
   const passed = checks.every((check) => check.passed)
     && identity
     && workflow
-    && input.semanticCompletion.ingestAccepted
-    && input.semanticCompletion.recallMatched;
+    && input.semanticCompletion.storeAccepted
+    && input.semanticCompletion.directGetMatched;
   return {
     ...input,
     status: passed ? "passed" : "failed",
@@ -482,14 +451,11 @@ async function runGatewayProbe(input: {
   model: string;
 }): Promise<GatewayProbeResult> {
   const requestedChild = { provider: input.provider, model: input.model };
-  const parentOperations = childOperations({
-    repoPath: repoRoot,
-    payload: "",
-  }).slice(0, 3);
-  const [serenaActivate, serenaConfig, vestige] = await Promise.all(
+  const parentOperations = childOperations({ repoPath: repoRoot, payload: "" });
+  const [serenaActivate, serenaConfig, vestigePreference] = await Promise.all(
     parentOperations.map(runParentCheck),
   );
-  const parent = { serenaActivate, serenaConfig, vestige };
+  const parent = { serenaActivate, serenaConfig, vestigePreference };
   const blank = (): GatewayProbeResult => deriveGatewayProbeResult({
     schemaVersion: 1,
     story: STORY,
@@ -499,12 +465,15 @@ async function runGatewayProbe(input: {
     child: {
       serenaActivate: failedCheck("serena", "activate_project", "not_run"),
       serenaConfig: failedCheck("serena", "get_current_config", "not_run"),
-      vestigeRead: failedCheck("vestige", "memory_status", "not_run"),
-      vestigeIngest: failedCheck("vestige", "smart_ingest", "not_run"),
+      vestigePreference: failedCheck("vestige", "session_start", "not_run"),
+    },
+    corpus: {
+      store: failedCorpusCheck("logical_store", "not_run"),
+      directGet: failedCorpusCheck("direct_get", "not_run"),
     },
     semanticCompletion: {
-      ingestAccepted: false,
-      recallMatched: false,
+      storeAccepted: false,
+      directGetMatched: false,
       lifecycleKeyMatched: false,
       jiraKeyMatched: false,
       nonceMatched: false,
@@ -522,9 +491,7 @@ async function runGatewayProbe(input: {
 
   const modelRuntime = await ModelRuntime.create();
   const model = modelRuntime.getModel(input.provider, input.model);
-  if (!model) {
-    return { ...blank(), error: sanitizeGatewayError("child_model_not_found", "") };
-  }
+  if (!model) return { ...blank(), error: sanitizeGatewayError("child_model_not_found", "") };
   if (!modelRuntime.hasConfiguredAuth(input.provider)) {
     return { ...blank(), error: sanitizeGatewayError("child_model_unauthenticated", "") };
   }
@@ -540,11 +507,7 @@ async function runGatewayProbe(input: {
   });
   const context = { repoPath: repoRoot, payload };
   const mcpPolicy: McpPolicyOperation[] = childOperations(context).map(
-    ({ server, compactTool, args }) => ({
-      server,
-      tool: compactTool,
-      args,
-    }),
+    ({ server, compactTool, args }) => ({ server, tool: compactTool, args }),
   );
   const observedCommands: ObservedCommand[] = [];
   const observedByCallId = new Map<string, ObservedCommand>();
@@ -590,18 +553,59 @@ async function runGatewayProbe(input: {
       ]),
       CHILD_TIMEOUT_MS,
     );
+
     const child = {
       serenaActivate: childResult(resultsByOperation, "serena", "activate_project", "activate_project"),
       serenaConfig: childResult(resultsByOperation, "serena", "get_current_config", "get_current_config"),
-      vestigeRead: childResult(resultsByOperation, "vestige", "memory_status", "memory_status"),
-      vestigeIngest: childResult(resultsByOperation, "vestige", "smart_ingest", "smart_ingest"),
+      vestigePreference: childResult(resultsByOperation, "vestige", "session_start", "session_start"),
     };
-    const ingest = resultsByOperation.get("vestige:smart_ingest");
-    const recalled = await recallVestige(`${LIFECYCLE_KEY} ${nonce}`);
-    const semantic = evaluateSemanticCompletion({
-      ingestResult: ingest?.result,
-      ingestIsError: ingest?.isError,
-      recalledMemories: recalled,
+    const corpus = createQdrantCorpusClient();
+    const recordKey = `${LIFECYCLE_KEY}:gateway-probe:${nonce}`;
+    let stored: unknown = null;
+    let directRecord: unknown = null;
+    try {
+      stored = await storeInstitutionalManifest({
+        record: {
+          recordKey,
+          project: "ima-pi",
+          site: "",
+          repo: "ima-pi",
+          lifecycleKey: LIFECYCLE_KEY,
+          phase: "implementation",
+          summary: "Gateway probe verified Qdrant lifecycle storage and direct retrieval.",
+          detail: payload,
+          sourceRefs: [`Jira:${JIRA_KEY}`, `lifecycle:${LIFECYCLE_KEY}`],
+        },
+        createdAt: new Date().toISOString(),
+        operations: corpus,
+      });
+      if (object(stored)?.success === true) {
+        const direct = await corpus.getInstitutional(recordKey);
+        directRecord = direct.success ? direct.data : null;
+      }
+    } catch {
+      stored = null;
+      directRecord = null;
+    }
+
+    const storedResult = object(stored);
+    const corpusChecks = {
+      store: {
+        operation: "logical_store" as const,
+        mutation: true,
+        passed: storedResult?.success === true,
+        errorCode: storedResult?.success === true ? null : "corpus_logical_store_failed",
+      },
+      directGet: {
+        operation: "direct_get" as const,
+        mutation: false,
+        passed: directRecord !== null,
+        errorCode: directRecord === null ? "corpus_direct_get_failed" : null,
+      },
+    };
+    const semantic = evaluateCorpusCompletion({
+      store: stored,
+      directRecord,
       lifecycleKey: LIFECYCLE_KEY,
       jiraKey: JIRA_KEY,
       nonce,
@@ -613,15 +617,12 @@ async function runGatewayProbe(input: {
       actualChild: modelIdentity(session.model),
       parent,
       child,
+      corpus: corpusChecks,
       semanticCompletion: semantic,
       observedCommands,
     });
     outcome = toolError && result.status === "passed"
-      ? {
-        ...result,
-        status: "failed",
-        error: sanitizeGatewayError("child_execution_failed", ""),
-      }
+      ? { ...result, status: "failed", error: sanitizeGatewayError("child_execution_failed", "") }
       : result;
   } catch (error) {
     outcome = {

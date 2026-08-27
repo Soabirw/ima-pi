@@ -10,7 +10,9 @@ import {
   VECTOR_NAME,
   VECTOR_SIZE,
   corpusFailure,
+  normalizeInstitutionalManifest,
   normalizeInstitutionalRecord,
+  storeInstitutionalManifest,
   utf8ByteLength,
 } from "../lib/qdrant-corpus.ts";
 import {
@@ -35,7 +37,7 @@ const collection = (indexed = true) => ({
       },
     },
     payload_schema: indexed
-      ? Object.fromEntries(["lifecycle_key", "project", "site", "repo"].map((field) => [field, { data_type: "keyword" }]))
+      ? Object.fromEntries(["lifecycle_key", "phase", "project", "site", "repo", "record_kind", "parent_record_key"].map((field) => [field, { data_type: "keyword" }]))
       : {},
   },
 });
@@ -88,6 +90,7 @@ test("strict corpus tool schemas and registration expose all five native tools",
   const status = tools[0];
   const store = tools[1];
   const find = tools[2];
+  const recall = tools[3];
   assert.equal(Check(status.parameters, {}), true);
   assert.equal(Check(status.parameters, { unwanted: true }), false);
   assert.equal(Check(store.parameters, {
@@ -95,6 +98,7 @@ test("strict corpus tool schemas and registration expose all five native tools",
   }), true);
   assert.equal(Check(store.parameters, { recordKey: "key" }), false);
   assert.equal(Check(find.parameters, { query: "evidence", limit: 21 }), false);
+  assert.equal(Check(recall.parameters, { lifecycleKey: "life", phase: "plan" }), false);
 });
 
 test("status is read-only and store returns only its immutable outcome", async () => {
@@ -133,6 +137,40 @@ test("status is read-only and store returns only its immutable outcome", async (
   const storedResult = await tools[1].execute("store", storeRequest, undefined);
   assert.equal(ensured, 1);
   assert.deepEqual(JSON.parse(storedResult.content[0].text), { status: "stored", id: stored.id, recordKey: stored.recordKey });
+});
+
+test("large corpus-tool detail stores a manifest and vectorless chunks instead of a schema-v1 point", async () => {
+  const points = new Map();
+  const client = fakeClient({
+    getPoints: async (ids) => success(ids.flatMap((id) => points.has(id) ? [points.get(id)] : [])),
+    insertPoints: async ({ points: inserted }) => {
+      for (const point of inserted) {
+        if (points.has(point.id)) return failure("record_conflict");
+        points.set(point.id, { id: point.id, payload: point.payload });
+      }
+      return success(undefined);
+    },
+  });
+  const tools = [];
+  registerInstitutionalMemoryTools({ registerTool: (tool) => tools.push(tool) }, {
+    client,
+    now: () => new Date("2026-08-25T00:00:00.000Z"),
+  });
+
+  const result = await tools[1].execute("store", {
+    recordKey: "large-detail",
+    project: "ima-pi",
+    site: "",
+    repo: "ima-pi",
+    lifecycleKey: "life",
+    phase: "implementation",
+    summary: "Large detail uses schema-v2 storage.",
+    detail: "x".repeat(50_000),
+  }, undefined);
+
+  assert.equal(JSON.parse(result.content[0].text).status, "stored");
+  assert.equal([...points.values()].filter(({ payload }) => payload.record_kind === "manifest").length, 1);
+  assert.equal([...points.values()].filter(({ payload }) => payload.record_kind === "detail_chunk").length > 1, true);
 });
 
 test("find and recall tool output excludes full detail while get returns one bounded record", async () => {
@@ -211,7 +249,7 @@ test("ensureCollection creates an absent collection and only missing keyword ind
   const result = await client.ensureCollection();
   assert.equal(result.success, true);
   assert.equal(result.data.collection, "ready");
-  assert.equal(calls.filter((call) => call.path.endsWith("/index")).length, 4);
+  assert.equal(calls.filter((call) => call.path.endsWith("/index")).length, 7);
 });
 
 test("semantic and legacy searches use bounded payload selectors and never return detail", async () => {
@@ -240,7 +278,7 @@ test("semantic and legacy searches use bounded payload selectors and never retur
   assert.equal(JSON.stringify(institutional.data).includes("must not leak"), false);
   assert.deepEqual(legacy, success([{ summary: "legacy summary", score: 0.7 }]));
   const query = calls.find((call) => call.path.endsWith("/points/query"));
-  assert.deepEqual(query.body.with_payload, { exclude: ["detail"] });
+  assert.deepEqual(query.body.with_payload, { exclude: ["detail", "detail_chunk"] });
 });
 
 test("legacy knowledge lookup rejects arbitrary collections before external calls", async () => {
@@ -303,6 +341,35 @@ test("insert uses named vectors with insert_only and wait", async () => {
   assert.deepEqual(calls[0].body.points[0].vector, { [VECTOR_NAME]: vector() });
 });
 
+test("vectorless chunk insertion uses an empty Qdrant batch vector map", async () => {
+  const calls = [];
+  const client = createQdrantCorpusClient({
+    env: environment,
+    fetch: async (input, init = {}) => {
+      const request = new URL(String(input));
+      calls.push({ path: request.pathname, search: request.search, body: JSON.parse(String(init.body)) });
+      return json({ result: true });
+    },
+  });
+
+  const result = await client.insertPoints({
+    points: [{
+      id: "7e90312f-9c9e-5cc4-85f6-1ea0f64d76a4",
+      payload: { schema_version: 2, record_kind: "detail_chunk" },
+    }],
+  });
+  assert.equal(result.success, true);
+  assert.match(calls[0].search, /wait=true/);
+  assert.match(calls[0].search, /update_mode=insert_only/);
+  assert.deepEqual(calls[0].body, {
+    batch: {
+      ids: ["7e90312f-9c9e-5cc4-85f6-1ea0f64d76a4"],
+      vectors: {},
+      payloads: [{ schema_version: 2, record_kind: "detail_chunk" }],
+    },
+  });
+});
+
 test("status fails closed for an approved-model digest mismatch", async () => {
   const client = createQdrantCorpusClient({
     env: environment,
@@ -331,12 +398,18 @@ test("lifecycle recall uses an exact keyword filter and excludes full detail", a
     },
   });
 
-  const result = await client.recallInstitutional({ lifecycleKey: "life", limit: 1 });
+  const result = await client.recallInstitutional({ lifecycleKey: "life", phase: "plan", limit: 1 });
   assert.equal(result.success, true);
   assert.doesNotMatch(JSON.stringify(result.data), /must not leak/);
   const scroll = calls.find((call) => call.path.endsWith("/points/scroll"));
-  assert.deepEqual(scroll.body.filter, { must: [{ key: "lifecycle_key", match: { value: "life" } }] });
-  assert.deepEqual(scroll.body.with_payload, { exclude: ["detail"] });
+  assert.deepEqual(scroll.body.filter, {
+    must: [
+      { key: "lifecycle_key", match: { value: "life" } },
+      { key: "phase", match: { value: "plan" } },
+    ],
+    must_not: [{ key: "record_kind", match: { value: "detail_chunk" } }],
+  });
+  assert.deepEqual(scroll.body.with_payload, { exclude: ["detail", "detail_chunk"] });
 });
 
 test("full retrieval validates deterministic identity and returns bounded detail", async () => {
@@ -360,6 +433,204 @@ test("full retrieval validates deterministic identity and returns bounded detail
   assert.equal(result.success, true);
   assert.equal(result.data.detail, "exact full detail");
   assert.deepEqual(result.data.sourceRefs, ["source"]);
+});
+
+test("schema-v2 full retrieval directly reassembles vectorless chunks from singleton reads", async () => {
+  const input = {
+    recordKey: "ima-pi:implementation:chunked",
+    project: "ima-pi",
+    site: "",
+    repo: "ima-pi",
+    lifecycleKey: "life",
+    phase: "implementation",
+    summary: "Chunked lifecycle record.",
+    detail: "é".repeat(20_000),
+    sourceRefs: ["source"],
+  };
+  const manifest = normalizeInstitutionalManifest(input, "2026-08-25T00:00:00.000Z");
+  assert.equal(manifest.success, true);
+  const client = createQdrantCorpusClient({
+    env: environment,
+    fetch: async (inputUrl, init = {}) => {
+      const request = new URL(String(inputUrl));
+      const ids = JSON.parse(String(init.body)).ids;
+      if (request.pathname !== "/collections/ima-institutional-memory/points") {
+        throw new Error(`unexpected ${request}`);
+      }
+      if (ids.length === 1 && ids[0] === manifest.data.id) {
+        return json({ result: [{ id: manifest.data.id, payload: manifest.data.payload }] });
+      }
+      const chunk = manifest.data.chunks.find((candidate) => candidate.id === ids[0]);
+      return json({ result: chunk ? [{ id: chunk.id, payload: chunk.payload }] : [] });
+    },
+  });
+
+  const result = await client.getInstitutional(input.recordKey);
+  assert.equal(result.success, true);
+  assert.equal(result.data.detail, input.detail);
+  assert.equal(result.data.contentHash, manifest.data.payload.content_hash);
+});
+
+test("schema-v2 singleton reads keep escaped near-limit chunks below the response bound", async () => {
+  const input = {
+    recordKey: "ima-pi:implementation:escaped-chunks",
+    project: "ima-pi",
+    site: "",
+    repo: "ima-pi",
+    lifecycleKey: "life",
+    phase: "implementation",
+    summary: "Escaped chunk transport stays bounded.",
+    detail: "\t".repeat(160_000),
+    sourceRefs: ["source"],
+  };
+  const manifest = normalizeInstitutionalManifest(input, "2026-08-25T00:00:00.000Z");
+  assert.equal(manifest.success, true);
+  const calls = [];
+  const client = createQdrantCorpusClient({
+    env: environment,
+    fetch: async (inputUrl, init = {}) => {
+      const request = new URL(String(inputUrl));
+      const ids = JSON.parse(String(init.body)).ids;
+      calls.push(ids);
+      const point = ids[0] === manifest.data.id
+        ? { id: manifest.data.id, payload: manifest.data.payload }
+        : manifest.data.chunks.find((candidate) => candidate.id === ids[0]);
+      return json({ result: point ? [{ id: point.id, payload: point.payload }] : [] });
+    },
+  });
+
+  const result = await client.getInstitutional(input.recordKey);
+  assert.equal(result.success, true);
+  assert.equal(result.data.detail, input.detail);
+  assert.deepEqual(calls.map((ids) => ids.length), Array(manifest.data.chunks.length + 1).fill(1));
+});
+
+test("manifest storage verifies escaped near-limit chunks through bounded singleton reads", async () => {
+  const points = new Map();
+  const pointReadIds = [];
+  const client = createQdrantCorpusClient({
+    env: environment,
+    fetch: async (inputUrl, init = {}) => {
+      const request = new URL(String(inputUrl));
+      const method = init.method ?? "GET";
+      const body = init.body ? JSON.parse(String(init.body)) : null;
+      if (request.pathname === "/") return json({ version: "1.17.1" });
+      if (request.pathname === "/api/tags") return json(modelTags);
+      if (request.pathname === "/api/embed") return json({ embeddings: [vector()] });
+      if (request.pathname === "/collections/ima-institutional-memory" && method === "GET") return json(collection());
+      if (request.pathname === "/collections/ima-institutional-memory/points" && method === "POST") {
+        pointReadIds.push(body.ids);
+        return json({ result: body.ids.flatMap((id) => points.has(id) ? [points.get(id)] : []) });
+      }
+      if (request.pathname === "/collections/ima-institutional-memory/points" && method === "PUT") {
+        if (body.batch) {
+          body.batch.ids.forEach((id, index) => points.set(id, { id, payload: body.batch.payloads[index] }));
+        } else {
+          body.points.forEach((point) => points.set(point.id, { id: point.id, payload: point.payload }));
+        }
+        return json({ result: true });
+      }
+      throw new Error(`unexpected ${method} ${request}`);
+    },
+  });
+  const detail = "\t".repeat(160_000);
+  const stored = await storeInstitutionalManifest({
+    record: {
+      recordKey: "ima-pi:implementation:escaped-store",
+      project: "ima-pi",
+      site: "",
+      repo: "ima-pi",
+      lifecycleKey: "life",
+      phase: "implementation",
+      summary: "Escaped storage verification remains bounded.",
+      detail,
+      sourceRefs: ["source"],
+    },
+    createdAt: "2026-08-25T00:00:00.000Z",
+    operations: client,
+  });
+
+  assert.equal(stored.success, true);
+  assert.equal(pointReadIds.every((ids) => ids.length === 1), true);
+  const full = await client.getInstitutional(stored.data.recordKey);
+  assert.equal(full.success, true);
+  assert.equal(full.data.detail, detail);
+});
+
+test("singleton retrieval aborts before later chunk reads", async () => {
+  const input = {
+    recordKey: "ima-pi:implementation:abort-chunks",
+    project: "ima-pi",
+    site: "",
+    repo: "ima-pi",
+    lifecycleKey: "life",
+    phase: "implementation",
+    summary: "Abort stops later chunk reads.",
+    detail: "x".repeat(40_000),
+    sourceRefs: ["source"],
+  };
+  const manifest = normalizeInstitutionalManifest(input, "2026-08-25T00:00:00.000Z");
+  assert.equal(manifest.success, true);
+  const controller = new AbortController();
+  let calls = 0;
+  const client = createQdrantCorpusClient({
+    env: environment,
+    fetch: async (inputUrl, init = {}) => {
+      const ids = JSON.parse(String(init.body)).ids;
+      calls += 1;
+      const point = ids[0] === manifest.data.id
+        ? { id: manifest.data.id, payload: manifest.data.payload }
+        : manifest.data.chunks.find((candidate) => candidate.id === ids[0]);
+      if (ids[0] !== manifest.data.id) controller.abort();
+      return json({ result: point ? [{ id: point.id, payload: point.payload }] : [] });
+    },
+  });
+
+  assert.deepEqual(await client.getInstitutional(input.recordKey, controller.signal), failure("aborted"));
+  assert.equal(calls, 2);
+});
+
+test("an individually oversized singleton provider response remains sanitized", async () => {
+  const client = createQdrantCorpusClient({
+    env: environment,
+    fetch: async () => json({ result: [{ id: "6e90312f-9c9e-5cc4-85f6-1ea0f64d76a4", payload: { pad: "x".repeat(300_000) } }] }),
+  });
+
+  assert.deepEqual(await client.getInstitutional("ima-pi:implementation:oversized-response"), failure("response_invalid"));
+});
+
+test("schema-v2 full retrieval fails closed for an incomplete chunk response", async () => {
+  const input = {
+    recordKey: "ima-pi:implementation:incomplete",
+    project: "ima-pi",
+    site: "",
+    repo: "ima-pi",
+    lifecycleKey: "life",
+    phase: "implementation",
+    summary: "Incomplete chunks fail closed.",
+    detail: "x".repeat(40_000),
+    sourceRefs: ["source"],
+  };
+  const manifest = normalizeInstitutionalManifest(input, "2026-08-25T00:00:00.000Z");
+  assert.equal(manifest.success, true);
+  const client = createQdrantCorpusClient({
+    env: environment,
+    fetch: async (inputUrl, init = {}) => {
+      const request = new URL(String(inputUrl));
+      const ids = JSON.parse(String(init.body)).ids;
+      if (ids.length === 1 && ids[0] === manifest.data.id) {
+        return json({ result: [{ id: manifest.data.id, payload: manifest.data.payload }] });
+      }
+      const firstChunk = manifest.data.chunks[0];
+      return json({
+        result: ids[0] === firstChunk.id
+          ? [{ id: firstChunk.id, payload: firstChunk.payload }]
+          : [],
+      });
+    },
+  });
+
+  assert.deepEqual(await client.getInstitutional(input.recordKey), failure("record_incomplete"));
 });
 
 test("a pre-aborted corpus request performs no fetch", async () => {
@@ -532,6 +803,7 @@ test("find filters match schema bounds, empty values, and only fixed payload key
       { key: "site", match: { value: "" } },
       { key: "repo", match: { value: repository } },
     ],
+    must_not: [{ key: "record_kind", match: { value: "detail_chunk" } }],
   });
 
   let invalidCalls = 0;
@@ -559,7 +831,7 @@ test("find and recall tool output fails closed instead of exceeding Pi's output 
     repo: "r".repeat(1_024),
     lifecycleKey: "l".repeat(512),
     phase: "x".repeat(128),
-    summary: "q".repeat(2_000),
+    summary: "q".repeat(60_000),
     score: 0.5,
   }));
   const tools = [];

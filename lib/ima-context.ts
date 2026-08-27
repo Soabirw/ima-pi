@@ -1,4 +1,8 @@
-import { LIFECYCLE_PHASES } from "./ima-lifecycle.ts";
+import {
+  LIFECYCLE_PHASES,
+  MAX_SERIALIZED_LIFECYCLE_ARTIFACT_BYTES,
+} from "./ima-lifecycle.ts";
+import { utf8ByteLength } from "./qdrant-corpus.ts";
 
 export const CONTEXT_SCHEMA_VERSION = 1;
 export const STANDARD_MEMORIES = ["core", "conventions", "tech_stack", "suggested_commands", "task_completion"] as const;
@@ -16,7 +20,11 @@ const object = (value: unknown): Record<string, unknown> | null => value && type
 const string = (value: unknown) => typeof value === "string" ? value.trim() : "";
 const bounded = (value: unknown, maximum: number) => typeof value === "string" && value.trim().length > 0 && value.length <= maximum;
 const onlyKeys = (value: Record<string, unknown>, allowed: string[]) => Object.keys(value).every((key) => allowed.includes(key));
-export const sanitizeContextText = (value: unknown, maximum = 8_000) => typeof value === "string" ? value.replace(/authorization\s*[:=]\s*[^\r\n]+/gi, "[redacted]").replace(/(?:token|secret|password)\s*[:=]\s*\S+/gi, "[redacted]").slice(0, maximum) : "";
+const redactContextText = (value: unknown) => typeof value === "string"
+  ? value.replace(/authorization\s*[:=]\s*[^\r\n]+/gi, "[redacted]").replace(/(?:token|secret|password)\s*[:=]\s*\S+/gi, "[redacted]")
+  : "";
+export const sanitizeContextText = (value: unknown, maximum = 8_000) =>
+  redactContextText(value).slice(0, maximum);
 const QDRANT_RESULT_HEADER = /^## Result \d+ \(score: ([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?)\)\s*$/i;
 const MARKDOWN_FENCE = /^\s*(`{3,}|~{3,})(.*)$/;
 const JIRA_KEY_PATTERN = /^[A-Z][A-Z0-9]+-\d+$/;
@@ -26,8 +34,7 @@ const UUID_PATTERN = new RegExp(`^${UUID_FRAGMENT}$`);
 const LIFECYCLE_PHASE_PATTERN = LIFECYCLE_PHASES.join("|");
 const CONTEXT_IDENTIFIER_MAXIMUM = 1_024;
 const LIFECYCLE_KEY_MAXIMUM = 512;
-const LIFECYCLE_RECALL_LIMIT = 10;
-export const LIFECYCLE_ARTIFACT_MAXIMUM = 64_000;
+export const LIFECYCLE_ARTIFACT_MAXIMUM = MAX_SERIALIZED_LIFECYCLE_ARTIFACT_BYTES;
 
 export function parseQdrantResults(formattedText: unknown): Array<{ summary: string; score: number }> {
   if (typeof formattedText !== "string") return [];
@@ -176,13 +183,18 @@ const escapeRegularExpression = (value: string) => value.replace(/[.*+?^${}()|[\
 
 const lifecycleArtifact = (value: unknown) => {
   const result = object(value);
-  const nested = object(result?.node) ?? object(result?.memory);
-  const content = typeof nested?.content === "string"
-    ? nested.content
+  const content = typeof result?.detail === "string"
+    ? result.detail
     : typeof result?.content === "string" ? result.content : "";
-  const id = string(nested?.id) || string(result?.id);
-  return bounded(id, 1_024) && !/[\r\n]/.test(id) && bounded(content, LIFECYCLE_ARTIFACT_MAXIMUM)
-    ? { id, content }
+  const id = string(result?.id);
+  const lifecycleKey = string(result?.lifecycleKey);
+  const sanitizedContent = redactContextText(content);
+  return bounded(id, 1_024)
+    && !/[\r\n]/.test(id)
+    && lifecycleKey
+    && sanitizedContent
+    && utf8ByteLength(sanitizedContent) <= LIFECYCLE_ARTIFACT_MAXIMUM
+    ? { id, lifecycleKey, content: sanitizedContent }
     : null;
 };
 
@@ -198,19 +210,15 @@ const verifiedLifecycleArtifact = (content: string, key: string) => {
   return trailingContent === "" || trailingContent === "\n";
 };
 
-export function normalizeLifecycleRecallResult(input: { lifecycleKey: string; payload: unknown }): { id: string; content: string } | null {
+export function normalizeCorpusLifecycleRecord(input: { lifecycleKey: string; record: unknown }): { id: string; content: string } | null {
   const source = lifecycleSource(input.lifecycleKey);
-  const results = Array.isArray(object(input.payload)?.results)
-    ? object(input.payload)?.results.slice(0, LIFECYCLE_RECALL_LIMIT) ?? []
-    : [];
-  if (!source) return null;
-
-  for (const result of results) {
-    const artifact = lifecycleArtifact(result);
-    if (artifact && verifiedLifecycleArtifact(artifact.content, source.key)) return artifact;
-  }
-
-  return null;
+  const artifact = lifecycleArtifact(input.record);
+  return source
+    && artifact
+    && artifact.lifecycleKey === source.key
+    && verifiedLifecycleArtifact(artifact.content, source.key)
+    ? { id: artifact.id, content: artifact.content }
+    : null;
 }
 
 const sourceKey = (source: ContextSource) => {
@@ -228,8 +236,14 @@ export function normalizeSourcePayload(input: { source: ContextSource; payload: 
     return { type: "text", key: title, title, content: input.source.content, references: [`Text:${title}`] };
   }
   if (!payload) return null;
-  const content = clean(payload.content ?? payload.description ?? payload.summary, 64_000);
-  if (!content) return null;
+  const rawContent = payload.content ?? payload.description ?? payload.summary;
+  const content = input.source.type === "lifecycle"
+    ? redactContextText(rawContent)
+    : clean(rawContent, 64_000);
+  if (
+    !content
+    || (input.source.type === "lifecycle" && utf8ByteLength(content) > LIFECYCLE_ARTIFACT_MAXIMUM)
+  ) return null;
   const references = Array.isArray(payload.references) ? payload.references.filter((item): item is string => typeof item === "string").map((item) => clean(item, 1_024)) : [];
   const key = clean(string(payload.key) || sourceKey(input.source), 1_024);
   return { type: input.source.type, key, title: clean(payload.title, 512) || normalizeSourceReference(input.source), content, references: [...new Set([normalizeSourceReference(input.source), ...references])] };

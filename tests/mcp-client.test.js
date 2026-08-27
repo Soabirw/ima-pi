@@ -159,16 +159,24 @@ test("child stderr remains hidden behind the lifecycle error boundary", async ()
           sourceRefs: [],
           priorArtifactIds: [],
         },
+        summary: "Corpus failure keeps child stderr behind the lifecycle boundary.",
         artifact: "stderr boundary test",
       },
       {
-        vestige: () => callMcpTool({
-          command: process.execPath,
-          args: ["--input-type=module", "--eval", ${JSON.stringify(`process.stderr.write(${JSON.stringify(sentinel)}); process.exit(1);`)}],
-          name: "smart_ingest",
-          arguments: {},
-          timeoutMs: 5_000,
-        }),
+        corpus: {
+          getPoints: async () => ({ success: true, data: [] }),
+          ensureCollection: async () => ({ success: true, data: undefined }),
+          embedSummary: async () => ({ success: true, data: Array.from({ length: 768 }, () => 0.25) }),
+          insertPoints: () => callMcpTool({
+            command: process.execPath,
+            args: ["--input-type=module", "--eval", ${JSON.stringify(`process.stderr.write(${JSON.stringify(sentinel)}); process.exit(1);`)}],
+            name: "insert_points",
+            arguments: {},
+            timeoutMs: 5_000,
+          }),
+          getInstitutional: async () => ({ success: false, error: { code: "record_not_found" } }),
+          findKnowledge: async () => ({ success: true, data: [] }),
+        },
       },
     );
     process.stdout.write(JSON.stringify(result));
@@ -178,5 +186,5 @@ test("child stderr remains hidden behind the lifecycle error boundary", async ()
   assert.equal(result.status, 0);
   assert.doesNotMatch(result.stderr, new RegExp(sentinel));
   assert.doesNotMatch(result.stdout, new RegExp(sentinel));
-  assert.equal(JSON.parse(result.stdout).error.code, "vestige_save_failed");
+  assert.equal(JSON.parse(result.stdout).error.code, "chunk_store_failed");
 });

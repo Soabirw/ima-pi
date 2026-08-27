@@ -25,8 +25,11 @@ unbounded retrieval.
 
 Use `ima_corpus_store` only with explicit lifecycle or user authority. Supply one bounded,
 immutable record with a stable `recordKey`, project, lifecycle key, phase, summary, detail,
-and source references. Identical content returns `unchanged`; a changed record for the same
-key is `record_conflict` and must not be overwritten.
+and source references. Small schema-v1 records remain compatible; large detail is stored as a
+schema-v2 embedded manifest plus deterministic vectorless detail chunks. Semantic find and
+lifecycle recall return manifest summaries only; direct get validates and reassembles full detail.
+Identical content returns `unchanged`; a changed record for the same key is `record_conflict` and
+must not be overwritten.
 
 Do not store credentials, endpoint values, raw provider responses, stack traces, transient
 logs, or unreviewed personal data. The package owns endpoint defaults and operator environment
@@ -37,6 +40,7 @@ configuration; tool arguments never select endpoints, models, or collections.
 - `ima_context.durableKnowledge` keeps its documented public contract while using the direct
   package corpus boundary internally for the legacy `ima-knowledge` collection only. Other
   collection names fail closed before embedding or search.
-- Story B owns Vestige export and migration. Story C owns lifecycle persistence/routing.
+- Story B owns Vestige export and migration. Formal lifecycle persistence/routing uses
+  `ima_lifecycle` and the Tier-1 corpus; Vestige remains preferences-only.
 - Qdrant collection deletion, generic vector-database abstractions, and `ima-rag` integration
   are outside this capability.

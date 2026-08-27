@@ -2,12 +2,13 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
   corpusFailure,
-  storeInstitutionalRecord,
+  storeLogicalInstitutionalRecord,
   utf8ByteLength,
   type CorpusResult,
   type InstitutionalRecordInput,
 } from "../lib/qdrant-corpus.ts";
 import {
+  MAX_LOGICAL_RECORD_OUTPUT_BYTES,
   createQdrantCorpusClient,
   type QdrantCorpusClient,
 } from "../lib/qdrant-http.ts";
@@ -22,8 +23,8 @@ const MAX_PHASE_LENGTH = 128;
 const MAX_SOURCE_REFERENCES = 64;
 const MAX_SOURCE_REFERENCE_LENGTH = 1_024;
 const MAX_SUMMARY_LENGTH = 2_000;
-const MAX_DETAIL_LENGTH = 44_000;
-export const MAX_CORPUS_TOOL_OUTPUT_BYTES = 50 * 1024;
+const MAX_DETAIL_LENGTH = 128_000;
+export const MAX_CORPUS_TOOL_OUTPUT_BYTES = MAX_LOGICAL_RECORD_OUTPUT_BYTES;
 
 export type InstitutionalMemoryDependencies = {
   client?: QdrantCorpusClient;
@@ -96,10 +97,10 @@ export function registerInstitutionalMemoryTools(
   pi.registerTool({
     name: "ima_corpus_store",
     label: "Store IMA corpus record",
-    description: "Store one bounded immutable institutional record. Repeated identical records are unchanged; conflicting content for the same record key fails.",
+    description: "Store one bounded immutable institutional record. Large detail is stored as a summary manifest plus verified vectorless chunks; repeated identical records are unchanged and conflicting content fails.",
     parameters: storeParameters,
     async execute(_id, request, signal) {
-      const result = resultOrThrow(await storeInstitutionalRecord({
+      const result = resultOrThrow(await storeLogicalInstitutionalRecord({
         record: request as InstitutionalRecordInput,
         createdAt: now().toISOString(),
         operations: client,

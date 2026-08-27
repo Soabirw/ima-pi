@@ -1,6 +1,5 @@
 /** FNR-3016 production boundary for external IMA context and lifecycle services. */
 import { execFile as execFileCallback } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -12,9 +11,8 @@ import { Type } from "typebox";
 import {
   derivePhaseContext,
   evaluateSerenaBootstrap,
-  LIFECYCLE_ARTIFACT_MAXIMUM,
   type ContextSource,
-  normalizeLifecycleRecallResult,
+  normalizeCorpusLifecycleRecord,
   normalizeSourcePayload,
   prepareContextArguments,
   sanitizeContextError,
@@ -22,20 +20,22 @@ import {
   STANDARD_MEMORIES,
   validateContextRequest,
 } from "../lib/ima-context.ts";
-import { buildLifecycleArtifact, deriveLifecycleResult, evaluateLifecycleRecall, sanitizeLifecycleError, validateLifecycleRequest, validateVestigeSaveReceipt } from "../lib/ima-lifecycle.ts";
-import { callMcpTool, withMcpSession } from "../lib/mcp-client.ts";
-import { createQdrantCorpusClient, type QdrantCorpusClient } from "../lib/qdrant-http.ts";
 import {
-  createLifecycleRecallEnvelope,
-  discoverLifecycleCandidates,
-  readBoundedLifecycleArtifact,
-  retrieveBoundedLifecycleArtifacts,
-} from "../lib/vestige-lifecycle.ts";
+  deriveLifecycleResult,
+  evaluateLifecycleArtifact,
+  prepareLifecycleArtifact,
+  validateLifecycleRequest,
+  validateLifecycleStoreReceipt,
+} from "../lib/ima-lifecycle.ts";
+import { storeInstitutionalManifest } from "../lib/qdrant-corpus.ts";
+import { withMcpSession } from "../lib/mcp-client.ts";
+import { createQdrantCorpusClient, type QdrantCorpusClient } from "../lib/qdrant-http.ts";
 
 const execFile = promisify(execFileCallback);
 const TIMEOUT = 30_000;
 const MCP_TIMEOUT = 300_000;
 const VESTIGE_TIMEOUT = 300_000;
+const LIFECYCLE_RECALL_LIMIT = 10;
 const MAX_BUFFER = 128 * 1024;
 const SOURCE_ERROR_CODES = ["source_path_outside_project", "source_file_unreadable", "source_file_too_large"];
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -92,27 +92,42 @@ export const withConfiguredMcpSession: McpSession = async (
   }
 };
 
-export const recallVestige = async (
+const lifecycleRecallQuery = (value: string) => {
+  const trimmed = value.trim();
+  const separator = trimmed.lastIndexOf(" ");
+  if (separator < 1) return null;
+  const lifecycleKey = trimmed.slice(0, separator);
+  const phase = trimmed.slice(separator + 1);
+  return lifecycleKey && ["plan", "implementation", "test", "review", "resolution", "rereview", "decision", "closeout"].includes(phase)
+    ? { lifecycleKey, phase }
+    : null;
+};
+
+export const recallCorpusLifecycle = async (
   query: string,
-  session: McpSession = withConfiguredMcpSession,
+  corpus: QdrantCorpusClient = createQdrantCorpusClient(),
   signal?: AbortSignal,
 ) => {
+  const selection = lifecycleRecallQuery(query);
+  if (!selection) return null;
+
   try {
-    return await retrieveBoundedLifecycleArtifacts({
-      query,
-      concrete: true,
-      discover: (arguments_) => session(
-        "vestige",
-        (call) => call("recall", arguments_, VESTIGE_TIMEOUT),
-        signal,
-      ),
-      read: (id) => session(
-        "vestige",
-        (call) => call("memory", { action: "get", id }, VESTIGE_TIMEOUT),
-        signal,
-      ),
-      signal,
-    });
+    const recalled = await corpus.recallInstitutional({
+      lifecycleKey: selection.lifecycleKey,
+      phase: selection.phase,
+      limit: LIFECYCLE_RECALL_LIMIT,
+    }, signal);
+    throwIfAborted(signal);
+    if (!recalled.success) return null;
+
+    const records: Array<{ id: string; content: string }> = [];
+    for (const summary of recalled.data) {
+      const full = await corpus.getInstitutional(summary.recordKey, signal);
+      throwIfAborted(signal);
+      if (!full.success) return null;
+      records.push({ id: full.data.id, content: full.data.detail });
+    }
+    return { structuredContent: { results: records } };
   } catch {
     throwIfAborted(signal);
     return null;
@@ -124,14 +139,10 @@ export type IntegrationDependencies = {
   read?: (path: string) => Promise<string>;
   canonical?: (path: string) => Promise<string>;
   stat?: typeof lstat;
-  vestige?: (
-    tool: string,
-    args: Record<string, unknown>,
-    signal?: AbortSignal,
-  ) => Promise<unknown>;
   session?: McpSession;
   corpus?: QdrantCorpusClient;
   home?: () => string;
+  now?: () => Date;
 };
 
 const productionDependencies: Required<IntegrationDependencies> = {
@@ -146,31 +157,10 @@ const productionDependencies: Required<IntegrationDependencies> = {
   read: (path) => readFile(path, "utf8"),
   canonical: realpath,
   stat: lstat,
-  vestige: async (tool, args, signal) => {
-    throwIfAborted(signal);
-    const server = await mcpServer("vestige");
-    throwIfAborted(signal);
-    if (!server) return null;
-
-    try {
-      const result = await callMcpTool({
-        command: server.command,
-        args: server.args,
-        name: tool,
-        arguments: args,
-        timeoutMs: VESTIGE_TIMEOUT,
-        signal,
-      });
-      throwIfAborted(signal);
-      return result;
-    } catch {
-      throwIfAborted(signal);
-      return null;
-    }
-  },
   session: withConfiguredMcpSession,
   corpus: createQdrantCorpusClient(),
   home: homedir,
+  now: () => new Date(),
 };
 
 const depsFor = (given?: IntegrationDependencies) => ({ ...productionDependencies, ...given });
@@ -396,20 +386,30 @@ async function sourcePayload(
       : null;
   }
   if (source.type === "lifecycle") {
-    const value = await recallVestige(source.key, deps.session, signal);
-    throwIfAborted(signal);
-    const artifact = normalizeLifecycleRecallResult({
+    const recalled = await deps.corpus.recallInstitutional({
       lifecycleKey: source.key,
-      payload: mcpResultData(value),
-    });
-    return artifact
-      ? {
+      limit: LIFECYCLE_RECALL_LIMIT,
+    }, signal);
+    throwIfAborted(signal);
+    if (!recalled.success) return null;
+
+    for (const summary of recalled.data) {
+      const full = await deps.corpus.getInstitutional(summary.recordKey, signal);
+      throwIfAborted(signal);
+      if (!full.success) return null;
+      const artifact = normalizeCorpusLifecycleRecord({
+        lifecycleKey: source.key,
+        record: full.data,
+      });
+      if (!artifact) continue;
+      return {
         key: source.key,
         title: `Lifecycle ${source.key}`,
         content: artifact.content,
-        references: [`Vestige:${artifact.id}`],
-      }
-      : null;
+        references: [`Qdrant:${artifact.id}`],
+      };
+    }
+    return null;
   }
   if (source.type === "vestige") {
     try {
@@ -511,37 +511,51 @@ export async function coordinateLifecycle(
 
   throwIfAborted(signal);
   const deps = depsFor(supplied);
-  const nonce = randomUUID();
-  const recallInput = {
+  const preparation = prepareLifecycleArtifact(valid);
+  const emptyRecall = evaluateLifecycleArtifact({
+    artifact: null,
+    lifecycleKey: valid.identity.lifecycleKey,
+    nonce: "",
+    type: valid.type,
+    jiraKey: valid.identity.jiraKey,
+    taskwarriorUuid: valid.identity.taskwarriorUuid,
+  });
+  if (!preparation.valid) {
+    return deriveLifecycleResult({
+      type: valid.type,
+      lifecycleKey: valid.identity.lifecycleKey,
+      receipt: { accepted: false, artifactId: null },
+      recall: emptyRecall,
+      error: preparation.error.code,
+    });
+  }
+
+  const { nonce, artifact, recordKey } = preparation.data;
+  const verification = {
     lifecycleKey: valid.identity.lifecycleKey,
     nonce,
     type: valid.type,
     jiraKey: valid.identity.jiraKey,
     taskwarriorUuid: valid.identity.taskwarriorUuid,
   };
-  const emptyRecall = evaluateLifecycleRecall({ envelope: null, ...recallInput });
-  const artifact = buildLifecycleArtifact({ ...valid, nonce });
-  if (artifact.length > LIFECYCLE_ARTIFACT_MAXIMUM) {
-    return {
-      status: "failed",
-      error: sanitizeLifecycleError("invalid_lifecycle_request", request),
-    };
-  }
-
-  let saved: unknown;
+  let stored;
   try {
-    throwIfAborted(signal);
-    saved = await deps.vestige("smart_ingest", {
-      items: [{
-        content: artifact,
-        node_type: "decision",
-        forceCreate: true,
-        source: valid.identity.lifecycleKey,
-        tags: [valid.identity.project, "lifecycle", valid.type],
-      }],
-      batchMergePolicy: "force_create",
-      forceCreate: true,
-    }, signal);
+    stored = await storeInstitutionalManifest({
+      record: {
+        recordKey,
+        project: valid.identity.project,
+        site: "",
+        repo: "ima-pi",
+        lifecycleKey: valid.identity.lifecycleKey,
+        phase: valid.type,
+        summary: valid.summary,
+        detail: artifact,
+        sourceRefs: valid.identity.sourceRefs,
+      },
+      createdAt: deps.now().toISOString(),
+      operations: deps.corpus,
+      signal,
+    });
     throwIfAborted(signal);
   } catch {
     throwIfAborted(signal);
@@ -550,89 +564,52 @@ export async function coordinateLifecycle(
       lifecycleKey: valid.identity.lifecycleKey,
       receipt: { accepted: false, artifactId: null },
       recall: emptyRecall,
-      error: "vestige_save_failed",
+      error: "corpus_store_failed",
     });
   }
 
-  const receipt = validateVestigeSaveReceipt(saved, valid.type);
-  if (saved == null) {
+  const receipt = stored.success
+    ? validateLifecycleStoreReceipt(stored.data)
+    : { accepted: false, artifactId: null };
+  if (!stored.success || !receipt.accepted || !receipt.artifactId) {
     return deriveLifecycleResult({
       type: valid.type,
       lifecycleKey: valid.identity.lifecycleKey,
       receipt,
       recall: emptyRecall,
-      error: "vestige_save_failed",
-    });
-  }
-  if (!receipt.accepted || !receipt.artifactId) {
-    return deriveLifecycleResult({
-      type: valid.type,
-      lifecycleKey: valid.identity.lifecycleKey,
-      receipt,
-      recall: emptyRecall,
-      error: "vestige_receipt_invalid",
+      error: stored.success ? "corpus_receipt_invalid" : stored.error.code,
     });
   }
 
-  const candidateIds = await discoverLifecycleCandidates({
-    query: `${valid.identity.lifecycleKey} ${nonce}`,
-    concrete: true,
-    discover: (arguments_) => deps.session(
-      "vestige",
-      (call) => call("recall", arguments_, VESTIGE_TIMEOUT),
-      signal,
-    ),
-    signal,
-  });
-  throwIfAborted(signal);
-  if (candidateIds === null) {
+  let recalled;
+  try {
+    recalled = await deps.corpus.getInstitutional(recordKey, signal);
+    throwIfAborted(signal);
+  } catch {
+    throwIfAborted(signal);
     return deriveLifecycleResult({
       type: valid.type,
       lifecycleKey: valid.identity.lifecycleKey,
       receipt,
       recall: emptyRecall,
-      error: "vestige_recall_failed",
+      error: "corpus_recall_failed",
     });
   }
-  const discoveredReceipt = candidateIds.some(
-    (id) => id.toLowerCase() === receipt.artifactId.toLowerCase(),
-  );
-  if (!discoveredReceipt) {
+  if (!recalled.success) {
     return deriveLifecycleResult({
       type: valid.type,
       lifecycleKey: valid.identity.lifecycleKey,
       receipt,
       recall: emptyRecall,
-      error: "vestige_semantic_completion_unverified",
+      error: recalled.error.code,
     });
   }
 
-  const recalledArtifact = await readBoundedLifecycleArtifact({
-    id: receipt.artifactId,
-    read: (id) => deps.session(
-      "vestige",
-      (call) => call("memory", { action: "get", id }, VESTIGE_TIMEOUT),
-      signal,
-    ),
-    signal,
-  });
-  throwIfAborted(signal);
-  if (!recalledArtifact) {
-    return deriveLifecycleResult({
-      type: valid.type,
-      lifecycleKey: valid.identity.lifecycleKey,
-      receipt,
-      recall: emptyRecall,
-      error: "vestige_recall_failed",
-    });
-  }
-
-  const recalled = createLifecycleRecallEnvelope([recalledArtifact]);
   return deriveLifecycleResult({
     type: valid.type,
     lifecycleKey: valid.identity.lifecycleKey,
     receipt,
-    recall: evaluateLifecycleRecall({ envelope: recalled, ...recallInput }),
+    recall: evaluateLifecycleArtifact({ artifact: recalled.data.detail, ...verification }),
   });
 }
 
@@ -660,7 +637,27 @@ const CONTEXT_TOOL_PARAMETERS = Type.Object({
   durableKnowledge: Type.Optional(CONTEXT_DURABLE_KNOWLEDGE_PARAMETERS),
 }, { additionalProperties: false });
 
+const CONTROL_SAFE_STRING_PATTERN = "^[^\\u0000-\\u001F\\u007F-\\u009F]*$";
+const LIFECYCLE_IDENTITY_PARAMETERS = Type.Object({
+  project: Type.String({ minLength: 1, maxLength: 256, pattern: CONTROL_SAFE_STRING_PATTERN }),
+  lifecycleKey: Type.String({ minLength: 1, maxLength: 512, pattern: CONTROL_SAFE_STRING_PATTERN }),
+  lifecycleRootMemoryId: Type.String({ maxLength: 512, pattern: CONTROL_SAFE_STRING_PATTERN }),
+  taskwarriorProject: Type.String({ maxLength: 256, pattern: CONTROL_SAFE_STRING_PATTERN }),
+  taskwarriorTask: Type.String({ maxLength: 256, pattern: CONTROL_SAFE_STRING_PATTERN }),
+  taskwarriorUuid: Type.String({ maxLength: 128, pattern: CONTROL_SAFE_STRING_PATTERN }),
+  jiraKey: Type.String({ maxLength: 128, pattern: CONTROL_SAFE_STRING_PATTERN }),
+  sourceRefs: Type.Array(Type.String({ minLength: 1, maxLength: 1_024, pattern: CONTROL_SAFE_STRING_PATTERN }), { maxItems: 64 }),
+  priorArtifactIds: Type.Array(Type.String({ minLength: 1, maxLength: 1_024, pattern: CONTROL_SAFE_STRING_PATTERN }), { maxItems: 64 }),
+}, { additionalProperties: false });
+
+const LIFECYCLE_TOOL_PARAMETERS = Type.Object({
+  type: Type.String(),
+  identity: LIFECYCLE_IDENTITY_PARAMETERS,
+  summary: Type.String({ minLength: 1, maxLength: 2_000, pattern: CONTROL_SAFE_STRING_PATTERN, description: "Required approved one-line phase outcome; validated to 2,000 UTF-8 bytes without control characters." }),
+  artifact: Type.String({ minLength: 1, maxLength: 128_000 }),
+}, { additionalProperties: false });
+
 export default function integrations(pi: ExtensionAPI) {
   pi.registerTool({ name: "ima_context", label: "IMA context", description: "Build Serena-first project context from one typed source: jira/key, taskwarrior/project+uuid, file/path, vestige/id, lifecycle/key, reference/value, or text/title+content. Reference accepts canonical taskwarrior:<project>:<uuid>, jira:<KEY>, lifecycle:<lifecycle-key>, and vestige:<UUID> forms plus space aliases. Optional durableKnowledge requires query and accepts the supported ima-knowledge collection and limit.", parameters: CONTEXT_TOOL_PARAMETERS, prepareArguments: prepareContextArguments, execute: async (_id, request, signal, _update, ctx) => ({ content: [{ type: "text", text: JSON.stringify(await coordinateContext(request, ctx.cwd, undefined, signal)) }], details: {} }) });
-  pi.registerTool({ name: "ima_lifecycle", label: "IMA lifecycle", description: "Save and semantically verify a lifecycle artifact.", parameters: Type.Object({ type: Type.String(), identity: Type.Any(), artifact: Type.String() }), execute: async (_id, request, signal) => { const result = await coordinateLifecycle(request, undefined, signal); return { content: [{ type: "text", text: JSON.stringify(result) }], details: result }; } });
+  pi.registerTool({ name: "ima_lifecycle", label: "IMA lifecycle", description: "Store and directly verify one lifecycle artifact in the Tier-1 Qdrant corpus. An explicit summary and closed bounded lifecycle identity are required for manifest-only semantic recall.", parameters: LIFECYCLE_TOOL_PARAMETERS, execute: async (_id, request, signal) => { const result = await coordinateLifecycle(request, undefined, signal); return { content: [{ type: "text", text: JSON.stringify(result) }], details: result }; } });
 }

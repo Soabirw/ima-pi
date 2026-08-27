@@ -1,25 +1,33 @@
 import {
   CORPUS_SCHEMA_VERSION,
+  CORPUS_SCHEMA_VERSION_V2,
+  DETAIL_CHUNK_RECORD_KIND,
   EMBEDDING_MODEL,
   EMBEDDING_MODEL_DIGEST,
   INSTITUTIONAL_COLLECTION,
+  MAX_DETAIL_CHUNK_COUNT,
   MAX_PAYLOAD_BYTES,
+  MAX_STORED_ARTIFACT_BYTES,
   MAX_SUMMARY_BYTES,
   VECTOR_DISTANCE,
   VECTOR_NAME,
   VECTOR_SIZE,
   corpusFailure as failure,
   deriveRecordId,
+  detailChunkIds,
   existingInstitutionalRecord,
   normalizeInstitutionalFilters,
+  normalizeInstitutionalManifestPoint,
   normalizeInstitutionalRecord,
   normalizeInstitutionalSummary,
+  reassembleInstitutionalManifest,
   utf8ByteLength,
   validateEmbedding,
   type CorpusResult,
   type ExistingInstitutionalRecord,
   type InstitutionalFilters,
   type InstitutionalRecord,
+  type LogicalCorpusPoint,
 } from "./qdrant-corpus.ts";
 import {
   DEFAULT_HTTP_TIMEOUT_MS,
@@ -48,15 +56,27 @@ export {
 export type { CorpusEndpoints, QdrantHttpDependencies } from "./qdrant-http-boundary.ts";
 
 export const MINIMUM_QDRANT_VERSION = "1.16.0";
+export const MAX_LOGICAL_RECORD_OUTPUT_BYTES = (MAX_STORED_ARTIFACT_BYTES * 6) + 32_000;
 const LEGACY_KNOWLEDGE_COLLECTION = "ima-knowledge";
-const REQUIRED_INDEXES = ["lifecycle_key", "project", "site", "repo"] as const;
+const REQUIRED_INDEXES = [
+  "lifecycle_key",
+  "phase",
+  "project",
+  "site",
+  "repo",
+  "record_kind",
+  "parent_record_key",
+] as const;
+const MAX_DIRECT_POINT_IDS = MAX_DETAIL_CHUNK_COUNT + 1;
 type CollectionDetails = JsonObject;
+
 export type CorpusStatus = {
   status: "ready";
   qdrantVersion: string;
   collection: "absent" | "needs_indexes" | "ready";
   missingIndexes: string[];
 };
+
 export type CorpusSummary = {
   id: string;
   recordKey: string;
@@ -68,22 +88,26 @@ export type CorpusSummary = {
   summary: string;
   score?: number;
 };
+
 export type FullInstitutionalRecord = CorpusSummary & {
   detail: string;
   sourceRefs: string[];
   contentHash: string;
   createdAt: string;
 };
+
 export type CorpusFilters = InstitutionalFilters;
 
 export type QdrantCorpusClient = {
   status: (signal?: AbortSignal) => Promise<CorpusResult<CorpusStatus>>;
   ensureCollection: (signal?: AbortSignal) => Promise<CorpusResult<CorpusStatus>>;
   getPoint: (id: string, signal?: AbortSignal) => Promise<CorpusResult<ExistingInstitutionalRecord | null>>;
+  getPoints: (ids: string[], signal?: AbortSignal) => Promise<CorpusResult<unknown[]>>;
   embedSummary: (summary: string, signal?: AbortSignal) => Promise<CorpusResult<number[]>>;
   insertPoint: (input: { record: InstitutionalRecord; vector: number[] }, signal?: AbortSignal) => Promise<CorpusResult<undefined>>;
+  insertPoints: (input: { points: LogicalCorpusPoint[] }, signal?: AbortSignal) => Promise<CorpusResult<undefined>>;
   findInstitutional: (input: { query: string; limit: number; filters?: CorpusFilters }, signal?: AbortSignal) => Promise<CorpusResult<CorpusSummary[]>>;
-  recallInstitutional: (input: { lifecycleKey: string; limit: number }, signal?: AbortSignal) => Promise<CorpusResult<CorpusSummary[]>>;
+  recallInstitutional: (input: { lifecycleKey: string; limit: number; phase?: string }, signal?: AbortSignal) => Promise<CorpusResult<CorpusSummary[]>>;
   getInstitutional: (recordKey: string, signal?: AbortSignal) => Promise<CorpusResult<FullInstitutionalRecord>>;
   findKnowledge: (input: { query: string; collection: string; limit: number }, signal?: AbortSignal) => Promise<CorpusResult<Array<{ summary: string; score: number }>>>;
 };
@@ -92,6 +116,7 @@ const versionParts = (value: string) => {
   const match = /^(\d+)\.(\d+)\.(\d+)/.exec(value);
   return match ? match.slice(1).map(Number) : null;
 };
+
 const versionAtLeast = (actual: string, minimum: string) => {
   const actualParts = versionParts(actual);
   const minimumParts = versionParts(minimum);
@@ -105,9 +130,13 @@ const versionAtLeast = (actual: string, minimum: string) => {
 
 const vectorMatches = (value: unknown) => {
   const vector = object(value);
-  return vector?.size === VECTOR_SIZE && text(vector.distance).toLowerCase() === VECTOR_DISTANCE.toLowerCase();
+  return vector?.size === VECTOR_SIZE
+    && text(vector.distance).toLowerCase() === VECTOR_DISTANCE.toLowerCase();
 };
-const indexType = (value: unknown) => text(object(value)?.data_type ?? object(value)?.field_type).toLowerCase();
+
+const indexType = (value: unknown) =>
+  text(object(value)?.data_type ?? object(value)?.field_type).toLowerCase();
+
 const indexState = (details: CollectionDetails) => {
   const schema = object(details.payload_schema) ?? {};
   const missingIndexes: string[] = [];
@@ -118,13 +147,17 @@ const indexState = (details: CollectionDetails) => {
   return { compatible: true, missingIndexes };
 };
 
-const validateInstitutionalCollection = (details: CollectionDetails): CorpusResult<{ missingIndexes: string[] }> => {
+const validateInstitutionalCollection = (
+  details: CollectionDetails,
+): CorpusResult<{ missingIndexes: string[] }> => {
   const config = object(details.config);
   const params = object(config?.params);
   const vectors = object(params?.vectors);
   if (!vectors || !vectorMatches(vectors[VECTOR_NAME])) return failure("collection_incompatible");
   const indexes = indexState(details);
-  return indexes.compatible ? success({ missingIndexes: indexes.missingIndexes }) : failure("collection_incompatible");
+  return indexes.compatible
+    ? success({ missingIndexes: indexes.missingIndexes })
+    : failure("collection_incompatible");
 };
 
 const validateLegacyCollection = (details: CollectionDetails): CorpusResult<undefined> => {
@@ -136,16 +169,75 @@ const validateLegacyCollection = (details: CollectionDetails): CorpusResult<unde
 
 const normalizedQuery = (value: unknown, maximum = 2_000) => {
   const query = text(value);
-  return query && query.length <= maximum && !/[\u0000-\u001f\u007f]/.test(query) ? query : "";
+  return query && query.length <= maximum && !/[\u0000-\u001f\u007f]/.test(query)
+    ? query
+    : "";
 };
+
 const boundedSummary = (value: unknown) => {
   const summary = text(value);
-  return summary && utf8ByteLength(summary) <= MAX_SUMMARY_BYTES && !summary.includes("\0") ? summary : "";
+  return summary
+    && utf8ByteLength(summary) <= MAX_SUMMARY_BYTES
+    && !/[\u0000-\u001f\u007f]/.test(summary)
+    ? summary
+    : "";
 };
+
 const normalizedLimit = (value: unknown) => {
   const limit = Number(value);
   return Number.isInteger(limit) && limit >= 1 && limit <= 20 ? limit : 0;
 };
+
+const directPointIds = (value: unknown): string[] | null => {
+  if (
+    !Array.isArray(value)
+    || value.length < 1
+    || value.length > MAX_DIRECT_POINT_IDS
+    || !value.every((id) => typeof id === "string" && /^[0-9a-f-]{36}$/i.test(id))
+  ) return null;
+  const ids = [...value];
+  return new Set(ids).size === ids.length ? ids : null;
+};
+
+const detailChunkFilter = () => ({
+  must_not: [{ key: "record_kind", match: { value: DETAIL_CHUNK_RECORD_KIND } }],
+});
+
+const withManifestFilter = (filter?: JsonObject) => ({
+  ...(filter ?? {}),
+  ...detailChunkFilter(),
+});
+
+const fullRecord = (input: {
+  id: string;
+  recordKey: string;
+  payload: {
+    project: string;
+    site: string;
+    repo: string;
+    lifecycle_key: string;
+    phase: string;
+    summary: string;
+    source_refs: string[];
+    content_hash: string;
+    created_at: string;
+  };
+  detail: string;
+}): FullInstitutionalRecord => ({
+  id: input.id,
+  recordKey: input.recordKey,
+  project: input.payload.project,
+  site: input.payload.site,
+  repo: input.payload.repo,
+  lifecycleKey: input.payload.lifecycle_key,
+  phase: input.payload.phase,
+  summary: input.payload.summary,
+  detail: input.detail,
+  sourceRefs: [...input.payload.source_refs],
+  contentHash: input.payload.content_hash,
+  createdAt: input.payload.created_at,
+});
+
 export function createQdrantCorpusClient(
   supplied: QdrantHttpDependencies = {},
 ): QdrantCorpusClient {
@@ -155,12 +247,35 @@ export function createQdrantCorpusClient(
   const endpoints = resolveCorpusEndpoints(supplied.env ?? process.env);
 
   const qdrant = (path: string, signal?: AbortSignal, method?: string, body?: unknown) => {
+    if (aborted(signal)) return Promise.resolve(failure("aborted"));
     if (!endpoints.success) return Promise.resolve(failure(endpoints.error.code));
-    return requestJson({ fetcher, endpoint: endpoints.data.qdrantUrl, path, signal, method, body, timeoutMs, maximumResponseBytes, unavailableCode: "qdrant_unavailable" });
+    return requestJson({
+      fetcher,
+      endpoint: endpoints.data.qdrantUrl,
+      path,
+      signal,
+      method,
+      body,
+      timeoutMs,
+      maximumResponseBytes,
+      unavailableCode: "qdrant_unavailable",
+    });
   };
+
   const ollama = (path: string, signal?: AbortSignal, method?: string, body?: unknown) => {
+    if (aborted(signal)) return Promise.resolve(failure("aborted"));
     if (!endpoints.success) return Promise.resolve(failure(endpoints.error.code));
-    return requestJson({ fetcher, endpoint: endpoints.data.ollamaUrl, path, signal, method, body, timeoutMs, maximumResponseBytes, unavailableCode: "ollama_unavailable" });
+    return requestJson({
+      fetcher,
+      endpoint: endpoints.data.ollamaUrl,
+      path,
+      signal,
+      method,
+      body,
+      timeoutMs,
+      maximumResponseBytes,
+      unavailableCode: "ollama_unavailable",
+    });
   };
 
   const qdrantVersion = async (signal?: AbortSignal): Promise<CorpusResult<string>> => {
@@ -175,7 +290,9 @@ export function createQdrantCorpusClient(
   const validateEmbeddingModel = async (signal?: AbortSignal): Promise<CorpusResult<undefined>> => {
     const response = bodyOrFailure(await ollama("api/tags", signal), "ollama_unavailable");
     if (!response.success) return response;
-    const models = Array.isArray(object(response.data)?.models) ? object(response.data)?.models : null;
+    const models = Array.isArray(object(response.data)?.models)
+      ? object(response.data)?.models
+      : null;
     if (!models) return failure("response_invalid");
     const model = models.map(object).find((candidate) =>
       text(candidate?.name) === EMBEDDING_MODEL || text(candidate?.model) === EMBEDDING_MODEL,
@@ -186,7 +303,10 @@ export function createQdrantCorpusClient(
       : failure("embedding_model_mismatch");
   };
 
-  const readCollection = async (name: string, signal?: AbortSignal): Promise<CorpusResult<CollectionDetails | null>> => {
+  const readCollection = async (
+    name: string,
+    signal?: AbortSignal,
+  ): Promise<CorpusResult<CollectionDetails | null>> => {
     const response = await qdrant(`collections/${encodeURIComponent(name)}`, signal);
     if (!response.success) return response;
     if (response.data.status === 404) return success(null);
@@ -233,7 +353,10 @@ export function createQdrantCorpusClient(
     return response.success ? success(undefined) : response;
   };
 
-  const createIndexes = async (fields: string[], signal?: AbortSignal): Promise<CorpusResult<undefined>> => {
+  const createIndexes = async (
+    fields: string[],
+    signal?: AbortSignal,
+  ): Promise<CorpusResult<undefined>> => {
     for (const field of fields) {
       const response = bodyOrFailure(await qdrant(
         `collections/${encodeURIComponent(INSTITUTIONAL_COLLECTION)}/index?wait=true`,
@@ -265,7 +388,10 @@ export function createQdrantCorpusClient(
       : verified.success ? failure("collection_bootstrap_failed") : verified;
   };
 
-  const embedSummary = async (summary: string, signal?: AbortSignal): Promise<CorpusResult<number[]>> => {
+  const embedSummary = async (
+    summary: string,
+    signal?: AbortSignal,
+  ): Promise<CorpusResult<number[]>> => {
     if (!boundedSummary(summary)) return failure("record_invalid");
     const model = await validateEmbeddingModel(signal);
     if (!model.success) return model;
@@ -293,36 +419,94 @@ export function createQdrantCorpusClient(
       { ids: [id], with_payload: true, with_vector: false },
     ), "query_failed");
     if (!response.success) return response;
-    const points = Array.isArray(object(response.data)?.result) ? object(response.data)?.result : null;
-    if (!points) return failure("response_invalid");
-    if (points.length === 0) return success(null);
-    const point = object(points[0]);
-    return point ? success(point) : failure("response_invalid");
+    const values = Array.isArray(object(response.data)?.result)
+      ? object(response.data)?.result
+      : null;
+    if (!values || values.some((value) => !object(value)) || values.length > 1) {
+      return failure("response_invalid");
+    }
+    if (values.length === 0) return success(null);
+    const point = object(values[0]);
+    return point && point.id === id ? success(point) : failure("response_invalid");
+  };
+
+  const getRawPoints = async (
+    collection: string,
+    ids: string[],
+    signal?: AbortSignal,
+  ): Promise<CorpusResult<JsonObject[]>> => {
+    const boundedIds = directPointIds(ids);
+    if (!boundedIds) return failure("record_invalid");
+
+    const points: JsonObject[] = [];
+    for (const id of boundedIds) {
+      if (aborted(signal)) return failure("aborted");
+      const point = await getRawPoint(collection, id, signal);
+      if (!point.success) return point;
+      if (point.data) points.push(point.data);
+    }
+    return success(points);
+  };
+
+  const getPoints = async (
+    ids: string[],
+    signal?: AbortSignal,
+  ): Promise<CorpusResult<unknown[]>> => {
+    const state = await institutionalState(signal);
+    if (!state.success) return state;
+    if (state.data.collection === "absent") return success([]);
+    return getRawPoints(INSTITUTIONAL_COLLECTION, ids, signal);
   };
 
   const getPoint = async (
     id: string,
     signal?: AbortSignal,
   ): Promise<CorpusResult<ExistingInstitutionalRecord | null>> => {
-    const state = await institutionalState(signal);
-    if (!state.success) return state;
-    if (state.data.collection === "absent") return success(null);
-    const point = await getRawPoint(INSTITUTIONAL_COLLECTION, id, signal);
-    if (!point.success || !point.data) return point;
-    return existingInstitutionalRecord({ id: String(point.data.id ?? ""), payload: point.data.payload });
+    const points = await getPoints([id], signal);
+    if (!points.success) return points;
+    if (points.data.length === 0) return success(null);
+    if (points.data.length !== 1) return failure("response_invalid");
+    return existingInstitutionalRecord(points.data[0]);
   };
 
-  const insertPoint = async (
-    input: { record: InstitutionalRecord; vector: number[] },
+  const insertPoints = async (
+    input: { points: LogicalCorpusPoint[] },
     signal?: AbortSignal,
   ): Promise<CorpusResult<undefined>> => {
-    const vector = validateEmbedding(input.vector);
-    if (!vector.success) return vector;
+    if (!Array.isArray(input.points) || input.points.length < 1 || input.points.length > MAX_DIRECT_POINT_IDS) {
+      return failure("record_invalid");
+    }
+    const ids = directPointIds(input.points.map((point) => point?.id));
+    if (!ids) return failure("record_invalid");
+
+    const vectorless = input.points.every((point) => point.vector === undefined);
+    if (!vectorless && input.points.some((point) => point.vector === undefined)) {
+      return failure("record_invalid");
+    }
+
+    const points: Array<{ id: string; payload: unknown; vector: Record<string, number[]> }> = [];
+    for (const point of input.points) {
+      if (!object(point?.payload)) return failure("record_invalid");
+      if (vectorless) continue;
+      const vector = validateEmbedding(point.vector);
+      if (!vector.success) return vector;
+      points.push({ id: point.id, payload: point.payload, vector: { [VECTOR_NAME]: vector.data } });
+    }
+
+    const body = vectorless
+      ? {
+        batch: {
+          ids,
+          vectors: {},
+          payloads: input.points.map((point) => point.payload),
+        },
+      }
+      : { points };
     const response = await qdrant(
       `collections/${encodeURIComponent(INSTITUTIONAL_COLLECTION)}/points?wait=true&update_mode=insert_only`,
       signal,
       "PUT",
-      { points: [{ id: input.record.id, vector: { [VECTOR_NAME]: vector.data }, payload: input.record.payload }] },
+      body,
     );
     if (!response.success) return response;
     if (response.data.status === 409) return failure("record_conflict");
@@ -330,6 +514,13 @@ export function createQdrantCorpusClient(
       ? success(undefined)
       : failure("store_failed");
   };
+
+  const insertPoint = async (
+    input: { record: InstitutionalRecord; vector: number[] },
+    signal?: AbortSignal,
+  ): Promise<CorpusResult<undefined>> => insertPoints({
+    points: [{ id: input.record.id, payload: input.record.payload, vector: input.vector }],
+  }, signal);
 
   const summaryFromPoint = (
     point: unknown,
@@ -357,85 +548,145 @@ export function createQdrantCorpusClient(
     return success(must.length ? { must } : undefined);
   };
 
-  const findInstitutional = async (input: { query: string; limit: number; filters?: CorpusFilters }, signal?: AbortSignal): Promise<CorpusResult<CorpusSummary[]>> => {
+  const findInstitutional = async (
+    input: { query: string; limit: number; filters?: CorpusFilters },
+    signal?: AbortSignal,
+  ): Promise<CorpusResult<CorpusSummary[]>> => {
     const query = normalizedQuery(input.query);
     const limit = normalizedLimit(input.limit);
     if (!query || !limit) return failure("record_invalid");
     const filters = queryFilters(input.filters);
     if (!filters.success) return filters;
     const state = await institutionalState(signal);
-    if (!state.success || state.data.collection === "absent") return state.success ? failure("query_failed") : state;
+    if (!state.success || state.data.collection === "absent") {
+      return state.success ? failure("query_failed") : state;
+    }
     const vector = await embedSummary(query, signal);
     if (!vector.success) return vector;
     const response = bodyOrFailure(await qdrant(
       `collections/${encodeURIComponent(INSTITUTIONAL_COLLECTION)}/points/query`,
       signal,
       "POST",
-      { query: vector.data, using: VECTOR_NAME, limit, with_payload: { exclude: ["detail"] }, with_vector: false, ...(filters.data ? { filter: filters.data } : {}) },
+      {
+        query: vector.data,
+        using: VECTOR_NAME,
+        limit,
+        with_payload: { exclude: ["detail", "detail_chunk"] },
+        with_vector: false,
+        filter: withManifestFilter(filters.data),
+      },
     ), "query_failed");
     return response.success
       ? summaries(object(response.data)?.result?.points ?? object(response.data)?.result, true)
       : response;
   };
 
-  const recallInstitutional = async (input: { lifecycleKey: string; limit: number }, signal?: AbortSignal): Promise<CorpusResult<CorpusSummary[]>> => {
+  const recallInstitutional = async (
+    input: { lifecycleKey: string; limit: number; phase?: string },
+    signal?: AbortSignal,
+  ): Promise<CorpusResult<CorpusSummary[]>> => {
     const lifecycleKey = normalizedQuery(input.lifecycleKey, 512);
+    const phase = input.phase === undefined ? "" : normalizedQuery(input.phase, 128);
     const limit = normalizedLimit(input.limit);
-    if (!lifecycleKey || !limit) return failure("record_invalid");
+    if (!lifecycleKey || !limit || (input.phase !== undefined && !phase)) {
+      return failure("record_invalid");
+    }
     const state = await institutionalState(signal);
-    if (!state.success || state.data.collection === "absent") return state.success ? failure("query_failed") : state;
+    if (!state.success || state.data.collection === "absent") {
+      return state.success ? failure("query_failed") : state;
+    }
+    const must = [
+      { key: "lifecycle_key", match: { value: lifecycleKey } },
+      ...(phase ? [{ key: "phase", match: { value: phase } }] : []),
+    ];
     const response = bodyOrFailure(await qdrant(
       `collections/${encodeURIComponent(INSTITUTIONAL_COLLECTION)}/points/scroll`,
       signal,
       "POST",
-      { filter: { must: [{ key: "lifecycle_key", match: { value: lifecycleKey } }] }, limit, with_payload: { exclude: ["detail"] }, with_vector: false },
+      {
+        filter: { must, ...detailChunkFilter() },
+        limit,
+        with_payload: { exclude: ["detail", "detail_chunk"] },
+        with_vector: false,
+      },
     ), "query_failed");
     return response.success
       ? summaries(object(object(response.data)?.result)?.points, false)
       : response;
   };
 
-  const getInstitutional = async (recordKey: string, signal?: AbortSignal): Promise<CorpusResult<FullInstitutionalRecord>> => {
+  const getInstitutional = async (
+    recordKey: string,
+    signal?: AbortSignal,
+  ): Promise<CorpusResult<FullInstitutionalRecord>> => {
     const id = deriveRecordId(recordKey);
     if (!id.success) return id;
-    const point = await getRawPoint(INSTITUTIONAL_COLLECTION, id.data, signal);
-    if (!point.success) return point;
-    if (!point.data) return failure("record_not_found");
-    const payload = object(point.data.payload);
-    if (!payload || payload.schema_version !== CORPUS_SCHEMA_VERSION) return failure("response_invalid");
-    const normalized = normalizeInstitutionalRecord({
-      recordKey: payload.record_key,
-      project: payload.project,
-      site: payload.site,
-      repo: payload.repo,
-      lifecycleKey: payload.lifecycle_key,
-      phase: payload.phase,
-      summary: payload.summary,
-      detail: payload.detail,
-      sourceRefs: payload.source_refs,
-    }, payload.created_at);
-    if (!normalized.success || normalized.data.id !== id.data || normalized.data.payload.content_hash !== payload.content_hash) {
-      return failure("response_invalid");
+    const points = await getRawPoints(INSTITUTIONAL_COLLECTION, [id.data], signal);
+    if (!points.success) return points;
+    if (points.data.length === 0) return failure("record_not_found");
+    if (points.data.length !== 1) return failure("response_invalid");
+
+    const point = object(points.data[0]);
+    const payload = object(point?.payload);
+    if (!point || !payload) return failure("response_invalid");
+
+    if (payload.schema_version === CORPUS_SCHEMA_VERSION) {
+      const normalized = normalizeInstitutionalRecord({
+        recordKey: payload.record_key,
+        project: payload.project,
+        site: payload.site,
+        repo: payload.repo,
+        lifecycleKey: payload.lifecycle_key,
+        phase: payload.phase,
+        summary: payload.summary,
+        detail: payload.detail,
+        sourceRefs: payload.source_refs,
+      }, payload.created_at);
+      if (
+        !normalized.success
+        || normalized.data.id !== id.data
+        || normalized.data.payload.content_hash !== payload.content_hash
+      ) return failure("response_invalid");
+      const output = fullRecord({
+        id: normalized.data.id,
+        recordKey: normalized.data.recordKey,
+        payload: normalized.data.payload,
+        detail: normalized.data.payload.detail,
+      });
+      return utf8ByteLength(JSON.stringify(output)) <= MAX_LOGICAL_RECORD_OUTPUT_BYTES
+        ? success(output)
+        : failure("record_too_large");
     }
-    const record = normalized.data;
-    const output: FullInstitutionalRecord = {
-      id: record.id,
-      recordKey: record.recordKey,
-      project: record.payload.project,
-      site: record.payload.site,
-      repo: record.payload.repo,
-      lifecycleKey: record.payload.lifecycle_key,
-      phase: record.payload.phase,
-      summary: record.payload.summary,
-      detail: record.payload.detail,
-      sourceRefs: [...record.payload.source_refs],
-      contentHash: record.payload.content_hash,
-      createdAt: record.payload.created_at,
-    };
-    return utf8ByteLength(JSON.stringify(output)) <= 50_000 ? success(output) : failure("record_too_large");
+
+    if (payload.schema_version !== CORPUS_SCHEMA_VERSION_V2) return failure("response_invalid");
+    const manifest = normalizeInstitutionalManifestPoint(point);
+    if (!manifest.success || manifest.data.id !== id.data) return failure("response_invalid");
+    const chunks = await getRawPoints(
+      INSTITUTIONAL_COLLECTION,
+      detailChunkIds(manifest.data.recordKey, manifest.data.payload.chunk_count),
+      signal,
+    );
+    if (!chunks.success) return chunks;
+    const reassembled = reassembleInstitutionalManifest({
+      manifestPoint: point,
+      chunkPoints: chunks.data,
+    });
+    if (!reassembled.success) return reassembled;
+    const output = fullRecord({
+      id: reassembled.data.id,
+      recordKey: reassembled.data.recordKey,
+      payload: reassembled.data.payload,
+      detail: reassembled.data.detail,
+    });
+    return utf8ByteLength(JSON.stringify(output)) <= MAX_LOGICAL_RECORD_OUTPUT_BYTES
+      ? success(output)
+      : failure("record_too_large");
   };
 
-  const findKnowledge = async (input: { query: string; collection: string; limit: number }, signal?: AbortSignal): Promise<CorpusResult<Array<{ summary: string; score: number }>>> => {
+  const findKnowledge = async (
+    input: { query: string; collection: string; limit: number },
+    signal?: AbortSignal,
+  ): Promise<CorpusResult<Array<{ summary: string; score: number }>>> => {
     const query = normalizedQuery(input.query);
     const collection = collectionName(input.collection);
     const limit = normalizedLimit(input.limit);
@@ -461,7 +712,10 @@ export function createQdrantCorpusClient(
       const payload = object(source?.payload);
       const summary = text(payload?.document ?? payload?.summary);
       const score = source?.score;
-      return summary && utf8ByteLength(summary) <= MAX_PAYLOAD_BYTES && typeof score === "number" && Number.isFinite(score)
+      return summary
+        && utf8ByteLength(summary) <= MAX_PAYLOAD_BYTES
+        && typeof score === "number"
+        && Number.isFinite(score)
         ? { summary, score }
         : null;
     });
@@ -474,8 +728,10 @@ export function createQdrantCorpusClient(
     status,
     ensureCollection,
     getPoint,
+    getPoints,
     embedSummary,
     insertPoint,
+    insertPoints,
     findInstitutional,
     recallInstitutional,
     getInstitutional,

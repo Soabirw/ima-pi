@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { derivePhaseContext, evaluateSerenaBootstrap, normalizeLifecycleRecallResult, normalizeSourcePayload, normalizeSourceReference, parseContextSourceIdentifier, prepareContextArguments, sanitizeContextError, sanitizeContextText, validateContextRequest } from "../lib/ima-context.ts";
+import { derivePhaseContext, evaluateSerenaBootstrap, normalizeCorpusLifecycleRecord, normalizeSourcePayload, normalizeSourceReference, parseContextSourceIdentifier, prepareContextArguments, sanitizeContextError, sanitizeContextText, validateContextRequest } from "../lib/ima-context.ts";
 
 const invalidVestigeId = "-".repeat(36);
 const sources = [{ type: "jira", key: "FNR-3016" }, { type: "taskwarrior", project: "FNR-3007", uuid: "689fa7ac-84b7-42d0-8912-b8ef76041370" }, { type: "file", path: "README.md" }, { type: "vestige", id: "7027acec-43d3-4fa4-83ec-16e993551720" }, { type: "text", title: "Brief", content: "Approved outcome" }, { type: "lifecycle", key: "ima-pi:adhoc:lifecycle-source-identifiers:2026-08-04" }];
@@ -47,21 +47,20 @@ test("parses canonical source identifiers and space-delimited aliases", () => {
   for (const identifier of ["taskwarrior:FNR-3007:689fa7ac-84b7-42d0-8912-b8ef76041370:extra", "jira:fnr-3016", "lifecycle:", "vestige:not-a-uuid", "unknown:source", "https://example.test/FNR-3016", "lifecycle:line\nbreak"]) assert.equal(parseContextSourceIdentifier(identifier), null);
 });
 
-test("normalizes only bounded authoritative lifecycle recall results", () => {
+test("normalizes only verified direct corpus lifecycle records", () => {
   const lifecycleKey = "ima-pi:adhoc:lifecycle-source-identifiers:2026-08-04";
   const marker = `<!-- ima-lifecycle verification: lifecycle_key=${lifecycleKey}; nonce=01234567-89ab-cdef-0123-456789abcdef; phase=plan; jira_key=; taskwarrior_uuid=; outcome=completed -->`;
   const content = `# Plan\n${marker}\n`;
-  const payload = { results: [{ id: "plan-artifact", content }] };
+  const record = { id: "plan-artifact", lifecycleKey, detail: content };
   const abbreviated = `<!-- ima-lifecycle verification: lifecycle_key=${lifecycleKey}; outcome=completed -->`;
-  assert.deepEqual(normalizeLifecycleRecallResult({ lifecycleKey, payload }), { id: "plan-artifact", content });
-  assert.equal(normalizeLifecycleRecallResult({ lifecycleKey, payload: { results: [{ id: "case-mismatch", content: content.replace(lifecycleKey, lifecycleKey.toUpperCase()) }] } }), null);
-  assert.equal(normalizeLifecycleRecallResult({ lifecycleKey, payload: { results: [{ id: "abbreviated", content: abbreviated }] } }), null);
-  assert.equal(normalizeLifecycleRecallResult({ lifecycleKey, payload: { results: [{ id: "invalid-nonce", content: content.replace("01234567-89ab-cdef-0123-456789abcdef", "not-a-uuid") }] } }), null);
-  assert.equal(normalizeLifecycleRecallResult({ lifecycleKey, payload: { results: [{ id: "invalid-phase", content: content.replace("phase=plan", "phase=unknown") }] } }), null);
-  assert.equal(normalizeLifecycleRecallResult({ lifecycleKey, payload: { results: [{ id: "trailing", content: `${content}unrelated` }] } }), null);
-  assert.equal(normalizeLifecycleRecallResult({ lifecycleKey, payload: { results: [{ id: "other", content: content.replace("outcome=completed", "outcome=blocked") }] } }), null);
-  assert.deepEqual(normalizeLifecycleRecallResult({ lifecycleKey, payload: { results: [{ id: "invalid", content: abbreviated }, { id: "later-valid", content }] } }), { id: "later-valid", content });
-  assert.equal(normalizeLifecycleRecallResult({ lifecycleKey, payload: { results: [...Array.from({ length: 10 }, () => ({ id: "invalid", content: "unverified" })), { id: "late", content }] } }), null);
+
+  assert.deepEqual(normalizeCorpusLifecycleRecord({ lifecycleKey, record }), { id: "plan-artifact", content });
+  assert.equal(normalizeCorpusLifecycleRecord({ lifecycleKey, record: { ...record, lifecycleKey: "other" } }), null);
+  assert.equal(normalizeCorpusLifecycleRecord({ lifecycleKey, record: { ...record, detail: abbreviated } }), null);
+  assert.equal(normalizeCorpusLifecycleRecord({ lifecycleKey, record: { ...record, detail: content.replace("01234567-89ab-cdef-0123-456789abcdef", "not-a-uuid") } }), null);
+  assert.equal(normalizeCorpusLifecycleRecord({ lifecycleKey, record: { ...record, detail: content.replace("phase=plan", "phase=unknown") } }), null);
+  assert.equal(normalizeCorpusLifecycleRecord({ lifecycleKey, record: { ...record, detail: `${content}unrelated` } }), null);
+  assert.equal(normalizeCorpusLifecycleRecord({ lifecycleKey, record: { ...record, detail: content.replace("outcome=completed", "outcome=blocked") } }), null);
 });
 
 test("validates durable knowledge boundaries", () => {

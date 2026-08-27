@@ -1,96 +1,104 @@
-import { createHash } from "node:crypto";
-import { v5 as uuidv5 } from "uuid";
-export const INSTITUTIONAL_COLLECTION = "ima-institutional-memory";
-export const EMBEDDING_MODEL = "nomic-embed-text:latest";
-export const EMBEDDING_MODEL_DIGEST = "0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f";
-export const VECTOR_SIZE = 768;
-export const VECTOR_DISTANCE = "Cosine";
-export const VECTOR_NAME = "nomic-embed-text-0a109f42";
-export const RECORD_ID_NAMESPACE = "0476e0b1-db93-536a-a78e-959ea945997f";
-export const CORPUS_SCHEMA_VERSION = 1;
-export const MAX_RECORD_KEY_LENGTH = 512;
-export const MAX_SUMMARY_BYTES = 2_000;
-export const MAX_PAYLOAD_BYTES = 44_000;
-export const MAX_SOURCE_REFERENCES = 64;
+import {
+  CORPUS_SCHEMA_VERSION,
+  MAX_CREATED_AT_LENGTH,
+  MAX_LIFECYCLE_KEY_LENGTH,
+  MAX_PAYLOAD_BYTES,
+  MAX_PHASE_LENGTH,
+  MAX_PROJECT_LENGTH,
+  MAX_REPOSITORY_LENGTH,
+  MAX_SITE_LENGTH,
+  MAX_SOURCE_REFERENCES,
+  MAX_SOURCE_REFERENCE_LENGTH,
+  MAX_SUMMARY_BYTES,
+  VECTOR_SIZE,
+  aborted,
+  canonicalSourceRefs,
+  corpusFailure,
+  deriveRecordId,
+  hasRequiredInstitutionalMetadata,
+  hashContent,
+  normalizedInstitutionalMetadata,
+  normalizeMetadataText,
+  normalizeRecordKey,
+  success,
+  textBytes,
+  utf8ByteLength,
+  validateEmbedding,
+  type CorpusResult,
+  type InstitutionalRecordInput,
+} from "./qdrant-corpus-contract.ts";
+import {
+  CORPUS_SCHEMA_VERSION_V2,
+  DETAIL_CHUNK_RECORD_KIND,
+  MANIFEST_RECORD_KIND,
+} from "./qdrant-corpus-chunks.ts";
+import {
+  normalizeInstitutionalManifest,
+  normalizeInstitutionalManifestPoint,
+  reassembleInstitutionalManifest,
+  storeInstitutionalManifest,
+  type InstitutionalManifest,
+  type InstitutionalManifestPayload,
+  type ManifestStoreOperations,
+  type ReassembledInstitutionalManifest,
+} from "./qdrant-corpus-manifest.ts";
 
-export const MAX_PROJECT_LENGTH = 256;
-export const MAX_SITE_LENGTH = 256;
-export const MAX_REPOSITORY_LENGTH = 1_024;
-export const MAX_LIFECYCLE_KEY_LENGTH = 512;
-export const MAX_PHASE_LENGTH = 128;
-export const MAX_SOURCE_REFERENCE_LENGTH = 1_024;
-export const MAX_CREATED_AT_LENGTH = 128;
-const CONTROL_CHARACTER = /[\u0000-\u001f\u007f]/;
-const encoder = new TextEncoder();
-export type CorpusErrorCode =
-  | "record_invalid"
-  | "record_too_large"
-  | "record_conflict"
-  | "embedding_dimension_mismatch"
-  | "embedding_failed"
-  | "store_failed"
-  | "store_unverified"
-  | "response_invalid"
-  | "record_not_found"
-  | "aborted"
-  | "qdrant_unavailable"
-  | "qdrant_version_unsupported"
-  | "ollama_unavailable"
-  | "embedding_model_missing"
-  | "embedding_model_mismatch"
-  | "collection_incompatible"
-  | "collection_bootstrap_failed"
-  | "query_failed";
-export type CorpusFailure = {
-  success: false;
-  error: { code: CorpusErrorCode; message: string };
-};
+export {
+  CORPUS_SCHEMA_VERSION,
+  EMBEDDING_MODEL,
+  EMBEDDING_MODEL_DIGEST,
+  INSTITUTIONAL_COLLECTION,
+  MAX_CREATED_AT_LENGTH,
+  MAX_LIFECYCLE_KEY_LENGTH,
+  MAX_MANIFEST_PAYLOAD_BYTES,
+  MAX_PAYLOAD_BYTES,
+  MAX_PHASE_LENGTH,
+  MAX_PROJECT_LENGTH,
+  MAX_RECORD_KEY_LENGTH,
+  MAX_REPOSITORY_LENGTH,
+  MAX_SITE_LENGTH,
+  MAX_SOURCE_REFERENCES,
+  MAX_SOURCE_REFERENCE_LENGTH,
+  MAX_SUMMARY_BYTES,
+  VECTOR_DISTANCE,
+  VECTOR_NAME,
+  VECTOR_SIZE,
+  CORPUS_ERROR_GUIDANCE,
+  corpusFailure,
+  compareCodeUnits,
+  deriveRecordId,
+  utf8ByteLength,
+  validateEmbedding,
+  type CorpusErrorCode,
+  type CorpusFailure,
+  type CorpusResult,
+  type CorpusSuccess,
+  type InstitutionalRecordInput,
+  type LogicalCorpusPoint,
+} from "./qdrant-corpus-contract.ts";
+export {
+  CORPUS_SCHEMA_VERSION_V2,
+  DETAIL_CHUNK_RECORD_KIND,
+  MANIFEST_RECORD_KIND,
+  MAX_DETAIL_CHUNK_BYTES,
+  MAX_DETAIL_CHUNK_COUNT,
+  MAX_STORED_ARTIFACT_BYTES,
+  RECORD_ID_NAMESPACE,
+  detailChunkIds,
+} from "./qdrant-corpus-chunks.ts";
+export {
+  normalizeInstitutionalManifest,
+  normalizeInstitutionalManifestPoint,
+  reassembleInstitutionalManifest,
+  storeInstitutionalManifest,
+  type InstitutionalManifest,
+  type InstitutionalManifestPayload,
+  type ManifestStoreOperations,
+  type ReassembledInstitutionalManifest,
+} from "./qdrant-corpus-manifest.ts";
 
-export type CorpusSuccess<Data> = {
-  success: true;
-  data: Data;
-};
-
-export type CorpusResult<Data> = CorpusSuccess<Data> | CorpusFailure;
-const corpusErrorGuidance: Record<CorpusErrorCode, string> = {
-  record_invalid: "Check required bounded record fields before retrying.",
-  record_too_large: "Reduce the bounded record or result payload before retrying.",
-  record_conflict: "Use a new record key; immutable records are never overwritten.",
-  embedding_dimension_mismatch: "Verify the approved embedding model and 768-value vector contract.",
-  embedding_failed: "Check the local Ollama service and approved embedding model.",
-  store_failed: "Check local Qdrant service and operator configuration; no overwrite was performed.",
-  store_unverified: "Inspect local Qdrant state before retrying; no successful store was reported.",
-  response_invalid: "Inspect local service compatibility; raw provider responses are withheld.",
-  record_not_found: "Verify the record key and institutional corpus state.",
-  aborted: "Retry only after the caller cancellation is cleared.",
-  qdrant_unavailable: "Check the local Qdrant service and operator configuration.",
-  qdrant_version_unsupported: "Use Qdrant 1.16.0 or later.",
-  ollama_unavailable: "Check the local Ollama service and operator configuration.",
-  embedding_model_missing: "Install or verify the approved nomic-embed-text:latest model.",
-  embedding_model_mismatch: "Verify the approved embedding model digest before writing records.",
-  collection_incompatible: "Inspect or migrate the collection; do not repair or overwrite it automatically.",
-  collection_bootstrap_failed: "Inspect local Qdrant configuration; no destructive repair was performed.",
-  query_failed: "Check corpus availability and compatibility before retrying.",
-};
-
-export const CORPUS_ERROR_GUIDANCE = Object.freeze(corpusErrorGuidance);
-export const corpusFailure = (code: CorpusErrorCode): CorpusFailure => ({
-  success: false,
-  error: { code, message: `Qdrant corpus failed: ${code}. ${CORPUS_ERROR_GUIDANCE[code]}` },
-});
-export type InstitutionalRecordInput = {
-  recordKey: string;
-  project: string;
-  site: string;
-  repo: string;
-  lifecycleKey: string;
-  phase: string;
-  summary: string;
-  detail: string;
-  sourceRefs?: string[];
-};
 export type InstitutionalPayload = {
-  schema_version: number;
+  schema_version: 1;
   record_key: string;
   project: string;
   site: string;
@@ -134,73 +142,22 @@ export type InstitutionalFilters = {
   repo?: string;
 };
 
-export type InstitutionalFilterClause = { key: "project" | "site" | "repo"; value: string };
+export type InstitutionalFilterClause = {
+  key: "project" | "site" | "repo";
+  value: string;
+};
 
 export type StoreOperations = {
   getPoint: (
     id: string,
     signal?: AbortSignal,
   ) => Promise<CorpusResult<ExistingInstitutionalRecord | null>>;
-  ensureCollection: (
-    signal?: AbortSignal,
-  ) => Promise<CorpusResult<unknown>>;
-  embedSummary: (
-    summary: string,
-    signal?: AbortSignal,
-  ) => Promise<CorpusResult<number[]>>;
+  ensureCollection: (signal?: AbortSignal) => Promise<CorpusResult<unknown>>;
+  embedSummary: (summary: string, signal?: AbortSignal) => Promise<CorpusResult<number[]>>;
   insertPoint: (
     input: { record: InstitutionalRecord; vector: number[] },
     signal?: AbortSignal,
   ) => Promise<CorpusResult<undefined>>;
-};
-
-const success = <Data>(data: Data): CorpusSuccess<Data> => ({ success: true, data });
-const failure = corpusFailure;
-const aborted = (signal?: AbortSignal) => signal?.aborted === true;
-const textBytes = (value: string) => encoder.encode(value).byteLength;
-const hasControlCharacter = (value: string) => CONTROL_CHARACTER.test(value);
-
-const normalizeText = (
-  value: unknown,
-  maximumLength: number,
-  allowEmpty = false,
-): string | null => {
-  if (typeof value !== "string") return null;
-  const normalized = value.trim();
-  if ((!allowEmpty && !normalized) || normalized.length > maximumLength) return null;
-  return normalized;
-};
-
-const normalizeMetadataText = (
-  value: unknown,
-  maximumLength: number,
-  allowEmpty = false,
-): string | null => {
-  const normalized = normalizeText(value, maximumLength, allowEmpty);
-  return normalized !== null && !hasControlCharacter(normalized) ? normalized : null;
-};
-
-const normalizeRecordKey = (value: unknown): string | null => {
-  const recordKey = normalizeMetadataText(value, MAX_RECORD_KEY_LENGTH);
-  return recordKey || null;
-};
-
-export const compareCodeUnits = (left: string, right: string) => {
-  if (left < right) return -1;
-  if (left > right) return 1;
-  return 0;
-};
-
-const normalizeSourceReferences = (value: unknown): string[] | null => {
-  if (value === undefined) return [];
-  if (!Array.isArray(value) || value.length > MAX_SOURCE_REFERENCES) return null;
-
-  const references = value.map((reference) => {
-    const normalized = normalizeText(reference, MAX_SOURCE_REFERENCE_LENGTH);
-    return normalized && !hasControlCharacter(normalized) ? normalized : null;
-  });
-  if (references.some((reference) => reference === null)) return null;
-  return [...new Set(references)].sort(compareCodeUnits);
 };
 
 const FILTER_FIELDS = [
@@ -213,11 +170,13 @@ export function normalizeInstitutionalFilters(
   value: unknown,
 ): CorpusResult<InstitutionalFilterClause[]> {
   if (value === undefined) return success([]);
-  if (!value || typeof value !== "object" || Array.isArray(value)) return failure("record_invalid");
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return corpusFailure("record_invalid");
+  }
   const filters = value as Record<string, unknown>;
   const keys = Object.keys(filters);
   if (keys.some((key) => !FILTER_FIELDS.some((field) => field.input === key))) {
-    return failure("record_invalid");
+    return corpusFailure("record_invalid");
   }
 
   const clauses: InstitutionalFilterClause[] = [];
@@ -228,7 +187,7 @@ export function normalizeInstitutionalFilters(
       field.maximum,
       field.allowEmpty,
     );
-    if (normalized === null) return failure("record_invalid");
+    if (normalized === null) return corpusFailure("record_invalid");
     clauses.push({ key: field.input, value: normalized });
   }
   return success(clauses);
@@ -257,75 +216,53 @@ const immutablePayload = (input: {
   source_refs: input.sourceRefs,
 });
 
-const hashContent = (payload: Record<string, unknown>) =>
-  createHash("sha256").update(JSON.stringify(payload)).digest("hex");
-
-export const utf8ByteLength = (value: string) => textBytes(value);
-
-export function deriveRecordId(recordKey: unknown): CorpusResult<string> {
-  const normalized = normalizeRecordKey(recordKey);
-  return normalized ? success(uuidv5(normalized, RECORD_ID_NAMESPACE)) : failure("record_invalid");
-}
-
-export function validateEmbedding(value: unknown): CorpusResult<number[]> {
-  if (!Array.isArray(value) || value.length !== VECTOR_SIZE || !value.every(Number.isFinite)) {
-    return failure("embedding_dimension_mismatch");
-  }
-  return success([...value]);
-}
-
 export function normalizeInstitutionalRecord(
   input: unknown,
   createdAt: unknown,
 ): CorpusResult<InstitutionalRecord> {
-  if (!input || typeof input !== "object" || Array.isArray(input)) return failure("record_invalid");
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return corpusFailure("record_invalid");
+  }
   const record = input as Partial<InstitutionalRecordInput>;
-  const recordKey = normalizeRecordKey(record.recordKey);
-  const project = normalizeMetadataText(record.project, MAX_PROJECT_LENGTH);
-  const site = normalizeMetadataText(record.site, MAX_SITE_LENGTH, true);
-  const repo = normalizeMetadataText(record.repo, MAX_REPOSITORY_LENGTH, true);
-  const lifecycleKey = normalizeMetadataText(record.lifecycleKey, MAX_LIFECYCLE_KEY_LENGTH);
-  const phase = normalizeMetadataText(record.phase, MAX_PHASE_LENGTH);
-  const summary = normalizeMetadataText(record.summary, MAX_SUMMARY_BYTES);
-  const detail = normalizeText(record.detail, MAX_PAYLOAD_BYTES);
-  const sourceRefs = normalizeSourceReferences(record.sourceRefs);
-  const normalizedCreatedAt = normalizeMetadataText(createdAt, MAX_CREATED_AT_LENGTH);
+  if (typeof record.detail !== "string" || !record.detail.trim()) {
+    return corpusFailure("record_invalid");
+  }
+  if (record.detail.length > MAX_PAYLOAD_BYTES) return corpusFailure("record_too_large");
 
-  if (
-    !recordKey
-    || !project
-    || site === null
-    || repo === null
-    || !lifecycleKey
-    || !phase
-    || !summary
-    || !detail
-    || !sourceRefs
-    || !normalizedCreatedAt
-  ) return failure("record_invalid");
-  if (textBytes(summary) > MAX_SUMMARY_BYTES) return failure("record_too_large");
+  const metadata = normalizedInstitutionalMetadata(record, createdAt);
+  const detail = record.detail.trim();
+  if (!hasRequiredInstitutionalMetadata(metadata) || !detail) {
+    return corpusFailure("record_invalid");
+  }
+  if (textBytes(metadata.summary!) > MAX_SUMMARY_BYTES) {
+    return corpusFailure("record_too_large");
+  }
 
   const immutable = immutablePayload({
-    recordKey,
-    project,
-    site,
-    repo,
-    lifecycleKey,
-    phase,
-    summary,
+    recordKey: metadata.recordKey!,
+    project: metadata.project!,
+    site: metadata.site!,
+    repo: metadata.repo!,
+    lifecycleKey: metadata.lifecycleKey!,
+    phase: metadata.phase!,
+    summary: metadata.summary!,
     detail,
-    sourceRefs,
+    sourceRefs: metadata.sourceRefs!,
   });
   const payload: InstitutionalPayload = {
     ...immutable,
     content_hash: hashContent(immutable),
-    created_at: normalizedCreatedAt,
+    created_at: metadata.normalizedCreatedAt!,
   };
-  if (textBytes(JSON.stringify(payload)) > MAX_PAYLOAD_BYTES) return failure("record_too_large");
+  if (textBytes(JSON.stringify(payload)) > MAX_PAYLOAD_BYTES) {
+    return corpusFailure("record_too_large");
+  }
 
+  const id = deriveRecordId(metadata.recordKey!);
+  if (!id.success) return id;
   return success({
-    id: uuidv5(recordKey, RECORD_ID_NAMESPACE),
-    recordKey,
+    id: id.data,
+    recordKey: metadata.recordKey!,
     payload: { ...payload, source_refs: [...payload.source_refs] },
   });
 }
@@ -334,12 +271,37 @@ export function normalizeInstitutionalSummary(
   value: unknown,
   options: { requireScore: boolean },
 ): CorpusResult<InstitutionalSummary> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return failure("response_invalid");
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return corpusFailure("response_invalid");
+  }
   const point = value as { id?: unknown; payload?: unknown; score?: unknown };
   if (!point.payload || typeof point.payload !== "object" || Array.isArray(point.payload)) {
-    return failure("response_invalid");
+    return corpusFailure("response_invalid");
   }
+
+  const scoreIsFinite = typeof point.score === "number" && Number.isFinite(point.score);
+  if (
+    (options.requireScore && !scoreIsFinite)
+    || (!options.requireScore && point.score !== undefined && !scoreIsFinite)
+  ) return corpusFailure("response_invalid");
+
   const payload = point.payload as Record<string, unknown>;
+  if (payload.schema_version === CORPUS_SCHEMA_VERSION_V2) {
+    const manifest = normalizeInstitutionalManifestPoint(value);
+    if (!manifest.success) return manifest;
+    return success({
+      id: manifest.data.id,
+      recordKey: manifest.data.recordKey,
+      project: manifest.data.payload.project,
+      site: manifest.data.payload.site,
+      repo: manifest.data.payload.repo,
+      lifecycleKey: manifest.data.payload.lifecycle_key,
+      phase: manifest.data.payload.phase,
+      summary: manifest.data.payload.summary,
+      ...(scoreIsFinite ? { score: point.score as number } : {}),
+    });
+  }
+
   const recordKey = normalizeRecordKey(payload.record_key);
   const project = normalizeMetadataText(payload.project, MAX_PROJECT_LENGTH);
   const site = normalizeMetadataText(payload.site, MAX_SITE_LENGTH, true);
@@ -347,14 +309,9 @@ export function normalizeInstitutionalSummary(
   const lifecycleKey = normalizeMetadataText(payload.lifecycle_key, MAX_LIFECYCLE_KEY_LENGTH);
   const phase = normalizeMetadataText(payload.phase, MAX_PHASE_LENGTH);
   const summary = normalizeMetadataText(payload.summary, MAX_SUMMARY_BYTES);
-  const sourceRefs = payload.source_refs === undefined ? null : normalizeSourceReferences(payload.source_refs);
-  const sourceRefsAreCanonical = Array.isArray(payload.source_refs)
-    && sourceRefs !== null
-    && payload.source_refs.length === sourceRefs.length
-    && payload.source_refs.every((reference, index) => reference === sourceRefs[index]);
+  const sourceRefs = canonicalSourceRefs(payload.source_refs);
   const createdAt = normalizeMetadataText(payload.created_at, MAX_CREATED_AT_LENGTH);
   const contentHash = typeof payload.content_hash === "string" && /^[a-f0-9]{64}$/i.test(payload.content_hash);
-  const scoreIsFinite = typeof point.score === "number" && Number.isFinite(point.score);
 
   if (
     payload.schema_version !== CORPUS_SCHEMA_VERSION
@@ -365,17 +322,17 @@ export function normalizeInstitutionalSummary(
     || repo === null
     || !lifecycleKey
     || !phase
-    || !summary || textBytes(summary) > MAX_SUMMARY_BYTES
+    || !summary
+    || textBytes(summary) > MAX_SUMMARY_BYTES
     || !sourceRefs
-    || !sourceRefsAreCanonical
     || !createdAt
     || !contentHash
-    || (options.requireScore && !scoreIsFinite)
-    || (!options.requireScore && point.score !== undefined && !scoreIsFinite)
-  ) return failure("response_invalid");
+  ) return corpusFailure("response_invalid");
 
   const expectedId = deriveRecordId(recordKey);
-  if (!expectedId.success || expectedId.data !== point.id) return failure("response_invalid");
+  if (!expectedId.success || expectedId.data !== point.id) {
+    return corpusFailure("response_invalid");
+  }
   return success({
     id: point.id,
     recordKey,
@@ -385,20 +342,24 @@ export function normalizeInstitutionalSummary(
     lifecycleKey,
     phase,
     summary,
-    ...(scoreIsFinite ? { score: point.score } : {}),
+    ...(scoreIsFinite ? { score: point.score as number } : {}),
   });
 }
 
-export function existingInstitutionalRecord(value: unknown): CorpusResult<ExistingInstitutionalRecord | null> {
+export function existingInstitutionalRecord(
+  value: unknown,
+): CorpusResult<ExistingInstitutionalRecord | null> {
   if (value === null) return success(null);
-  if (!value || typeof value !== "object" || Array.isArray(value)) return failure("response_invalid");
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return corpusFailure("response_invalid");
+  }
   const point = value as { id?: unknown; payload?: unknown };
   if (
     typeof point.id !== "string"
     || !point.payload
     || typeof point.payload !== "object"
     || Array.isArray(point.payload)
-  ) return failure("response_invalid");
+  ) return corpusFailure("response_invalid");
   const payload = point.payload as { record_key?: unknown; content_hash?: unknown };
   const recordKey = normalizeRecordKey(payload.record_key);
   const contentHash = typeof payload.content_hash === "string" && /^[a-f0-9]{64}$/i.test(payload.content_hash)
@@ -406,17 +367,19 @@ export function existingInstitutionalRecord(value: unknown): CorpusResult<Existi
     : null;
   return recordKey && contentHash
     ? success({ id: point.id, recordKey, contentHash })
-    : failure("response_invalid");
+    : corpusFailure("response_invalid");
 }
 
 const existingOutcome = (
   existing: ExistingInstitutionalRecord,
   record: InstitutionalRecord,
 ): CorpusResult<{ status: "unchanged"; id: string; recordKey: string }> => {
-  if (existing.id !== record.id || existing.recordKey !== record.recordKey) return failure("record_conflict");
+  if (existing.id !== record.id || existing.recordKey !== record.recordKey) {
+    return corpusFailure("record_conflict");
+  }
   return existing.contentHash === record.payload.content_hash
     ? success({ status: "unchanged", id: record.id, recordKey: record.recordKey })
-    : failure("record_conflict");
+    : corpusFailure("record_conflict");
 };
 
 const readExisting = async (
@@ -424,25 +387,25 @@ const readExisting = async (
   operations: StoreOperations,
   signal?: AbortSignal,
 ): Promise<CorpusResult<ExistingInstitutionalRecord | null>> => {
-  if (aborted(signal)) return failure("aborted");
+  if (aborted(signal)) return corpusFailure("aborted");
   try {
     const result = await operations.getPoint(record.id, signal);
-    return aborted(signal) ? failure("aborted") : result;
+    return aborted(signal) ? corpusFailure("aborted") : result;
   } catch {
-    return aborted(signal) ? failure("aborted") : failure("store_failed");
+    return aborted(signal) ? corpusFailure("aborted") : corpusFailure("store_failed");
   }
 };
 
 const ensureCollection = async (
-  operations: StoreOperations,
+  operations: Pick<StoreOperations, "ensureCollection">,
   signal?: AbortSignal,
 ): Promise<CorpusResult<unknown>> => {
-  if (aborted(signal)) return failure("aborted");
+  if (aborted(signal)) return corpusFailure("aborted");
   try {
     const result = await operations.ensureCollection(signal);
-    return aborted(signal) ? failure("aborted") : result;
+    return aborted(signal) ? corpusFailure("aborted") : result;
   } catch {
-    return aborted(signal) ? failure("aborted") : failure("store_failed");
+    return aborted(signal) ? corpusFailure("aborted") : corpusFailure("store_failed");
   }
 };
 
@@ -453,7 +416,7 @@ export async function storeInstitutionalRecord(input: {
   signal?: AbortSignal;
 }): Promise<CorpusResult<{ status: "stored" | "unchanged"; id: string; recordKey: string }>> {
   const { record: rawRecord, createdAt, operations, signal } = input;
-  if (aborted(signal)) return failure("aborted");
+  if (aborted(signal)) return corpusFailure("aborted");
 
   const normalized = normalizeInstitutionalRecord(rawRecord, createdAt);
   if (!normalized.success) return normalized;
@@ -470,9 +433,9 @@ export async function storeInstitutionalRecord(input: {
   try {
     embedded = await operations.embedSummary(record.payload.summary, signal);
   } catch {
-    return aborted(signal) ? failure("aborted") : failure("embedding_failed");
+    return aborted(signal) ? corpusFailure("aborted") : corpusFailure("embedding_failed");
   }
-  if (aborted(signal)) return failure("aborted");
+  if (aborted(signal)) return corpusFailure("aborted");
   if (!embedded.success) return embedded;
 
   const vector = validateEmbedding(embedded.data);
@@ -482,18 +445,30 @@ export async function storeInstitutionalRecord(input: {
   try {
     inserted = await operations.insertPoint({ record, vector: vector.data }, signal);
   } catch {
-    return aborted(signal) ? failure("aborted") : failure("store_failed");
+    return aborted(signal) ? corpusFailure("aborted") : corpusFailure("store_failed");
   }
-  if (aborted(signal)) return failure("aborted");
+  if (aborted(signal)) return corpusFailure("aborted");
 
   if (!inserted.success && inserted.error.code !== "record_conflict") return inserted;
   const verified = await readExisting(record, operations, signal);
   if (!verified.success) return verified;
-  if (!verified.data) return inserted.success ? failure("store_unverified") : failure("record_conflict");
+  if (!verified.data) return inserted.success ? corpusFailure("store_unverified") : corpusFailure("record_conflict");
 
   const outcome = existingOutcome(verified.data, record);
   if (!outcome.success) return outcome;
   return inserted.success
     ? success({ status: "stored", id: record.id, recordKey: record.recordKey })
     : outcome;
+}
+
+export async function storeLogicalInstitutionalRecord(input: {
+  record: unknown;
+  createdAt: unknown;
+  operations: StoreOperations & ManifestStoreOperations;
+  signal?: AbortSignal;
+}): Promise<CorpusResult<{ status: "stored" | "unchanged"; id: string; recordKey: string }>> {
+  const v1 = normalizeInstitutionalRecord(input.record, input.createdAt);
+  if (v1.success) return storeInstitutionalRecord(input);
+  if (v1.error.code !== "record_too_large") return v1;
+  return storeInstitutionalManifest(input);
 }

@@ -1,33 +1,22 @@
 ---
 name: mcp-vestige
-description: Vestige working memory and task lifecycle continuity through the Pi MCP adapter.
+description: Vestige preference retrieval through the Pi MCP adapter.
 ---
 # Vestige MCP
-Use Vestige for preferences, decisions, plans, active task state, findings, and closeout
-learning. Use Serena for stable project instructions and Qdrant for durable references.
+
+Use Vestige only for bounded user preferences and explicit preference decisions. Serena owns
+stable project instructions. Qdrant owns formal lifecycle artifacts and institutional detail.
+Do not use Vestige for lifecycle persistence, lifecycle recall, per-node lifecycle reads, or a
+fallback when corpus work fails.
 
 ## Preference load and recovery
 
-Use the package MCP adapter. Discover direct Vestige tools through mcp. Common native
-tools include `session_start`, `recall`, `memory`, `intention`, `smart_ingest`, and
-`memory_status`. One bounded `session_start` for broad context or focused `recall` for
-a topic is the preference LOAD; do not seek a separate helper. Use one lifecycle thread
-through plan, implementation, test, review, resolution, rereview, and closeout.
+Use the package MCP adapter. Discover direct Vestige tools through mcp. One bounded
+`session_start` for broad context or one focused `recall` for a supplied preference topic is the
+preference load; do not seek a separate helper.
 
-For a transient read-only transport failure (`-32000`, `Connection closed`, or adapter
-timeout), call `mcp({ connect: "vestige" })`. After a successful reconnect, repeat the
-same read with identical arguments exactly once. Never retry `smart_ingest` or any
-mutation. Accept preference evidence only when it is an explicit, topic-relevant
-preference or decision from the live current invocation; reject unrelated merged
-lifecycle or log content and stale cached output. Stop after an adequate summary.
-Retrieve a selected full memory only when its summary cannot support relevance
-validation or preference summarization. If that required retrieval fails, report partial
-or failed evidence rather than guessing.
-
-## Bounded lifecycle discovery
-
-For focused lifecycle discovery, call `recall` through the package MCP adapter with the
-existing bounded shape:
+For a focused topic, pass the exact non-empty topic only as `recall` query data with the bounded
+shape:
 
 ```js
 {
@@ -41,14 +30,19 @@ existing bounded shape:
 }
 ```
 
-Reuse these package-standard limits rather than inventing another set. Validate candidate
-IDs and summaries, then use `vestige_memory` with `{ action: "get", id }` only for
-selected candidates whose summaries are insufficient. A failed or oversized exact read
-is partial or failed evidence; never broaden to unbounded recall or mutate memory.
+On a transient read-only transport failure (`-32000`, `Connection closed`, or adapter timeout),
+call `mcp({ connect: "vestige" })`. After a successful reconnect, repeat the same read with
+identical arguments exactly once. Never retry `smart_ingest` or any mutation.
 
-Persist preferences through `/ima:memorize`, which owns its approval and verification
-flow. Writes including `smart_ingest` are explicit mutations requiring authority.
-`ima_lifecycle` persists and semantically verifies lifecycle artifacts directly through
-Vestige MCP: it calls `smart_ingest`, then requires a successful receipt and `recall`
-nonce/identity/outcome match. Callers must continue to use `ima_lifecycle` rather than
-bypassing its lifecycle receipt protocol.
+Accept evidence only when it is an explicit, topic-relevant preference or decision from the live
+current invocation. Reject unrelated merged lifecycle or log content and stale cached output.
+Retrieve one selected full memory only when the summary is insufficient for preference relevance or summarization; use `vestige_memory` with `{ action: "get", id }`. If that required read
+fails, report partial or failed evidence rather than guessing. Stop after an adequate summary of preferences.
+
+## Mutation boundary
+
+Preference writes route through `/ima:memorize`, which owns preview, approval, and verification.
+Writes including `smart_ingest` require separate explicit authority and are never part of a
+preference bootstrap. Formal lifecycle persistence and verification remain owned by
+`ima_lifecycle`, which stores a Qdrant manifest plus verified detail chunks and has no Vestige
+fallback.

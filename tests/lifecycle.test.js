@@ -1,13 +1,50 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildLifecycleArtifact, buildLifecycleNonceMarker, deriveLifecycleResult, evaluateLifecycleRecall, LIFECYCLE_PHASES, sanitizeLifecycleError, validateLifecycleRequest, validateVestigeSaveReceipt } from "../lib/ima-lifecycle.ts";
-const identity = { project: "ima-pi", lifecycleKey: "ima-pi:taskwarrior:FNR-3007:uuid", lifecycleRootMemoryId: "root", taskwarriorProject: "FNR-3007", taskwarriorTask: "uuid", taskwarriorUuid: "task-uuid", jiraKey: "FNR-3016", sourceRefs: ["Taskwarrior:task-uuid"], priorArtifactIds: ["plan"] };
-const standalone = { ...identity, lifecycleRootMemoryId: "", taskwarriorProject: "", taskwarriorTask: "", taskwarriorUuid: "", jiraKey: "", sourceRefs: [], priorArtifactIds: [] };
-const artifact = "# Source and approved outcome\n## Scope\n## Non-goals\n## Phase result\n## Changed files\n## Decisions\n## Verification commands/results\n## Blockers\n## Residual risk\n## Prior artifacts\n## Recommended next phase";
+import {
+  LIFECYCLE_PHASES,
+  MAX_LIFECYCLE_REQUEST_CHARACTERS,
+  MAX_LIFECYCLE_SUMMARY_BYTES,
+  buildLifecycleArtifact,
+  buildLifecycleNonceMarker,
+  buildLifecycleRecordKey,
+  deriveLifecycleNonce,
+  deriveLifecycleResult,
+  normalizeLifecycleIdentity,
+  prepareLifecycleArtifact,
+  evaluateLifecycleArtifact,
+  hasBoundedLifecycleRecordKey,
+  sanitizeLifecycleError,
+  validateLifecycleRequest,
+  validateLifecycleStoreReceipt,
+} from "../lib/ima-lifecycle.ts";
+
+const identity = {
+  project: "ima-pi",
+  lifecycleKey: "ima-pi:taskwarrior:FNR-3007:uuid",
+  lifecycleRootMemoryId: "root",
+  taskwarriorProject: "FNR-3007",
+  taskwarriorTask: "uuid",
+  taskwarriorUuid: "task-uuid",
+  jiraKey: "FNR-3016",
+  sourceRefs: ["Taskwarrior:task-uuid"],
+  priorArtifactIds: ["plan"],
+};
+const standalone = {
+  ...identity,
+  lifecycleRootMemoryId: "",
+  taskwarriorProject: "",
+  taskwarriorTask: "",
+  taskwarriorUuid: "",
+  jiraKey: "",
+  sourceRefs: [],
+  priorArtifactIds: [],
+};
+const summary = "Implementation stores verified lifecycle artifacts in the institutional corpus.";
+const artifact = "# Source and approved outcome\n\n## Scope\n\n## Verification";
 const nonce = "01234567-89ab-cdef-0123-456789abcdef";
-const phaseMarker = "phase=implementation;";
-const recall = (content, overrides = {}) => evaluateLifecycleRecall({
-  envelope: { structuredContent: { results: [{ nested: { content } }] } },
+
+const verification = (content, overrides = {}) => evaluateLifecycleArtifact({
+  artifact: content,
   lifecycleKey: identity.lifecycleKey,
   nonce,
   type: "implementation",
@@ -15,256 +52,186 @@ const recall = (content, overrides = {}) => evaluateLifecycleRecall({
   taskwarriorUuid: identity.taskwarriorUuid,
   ...overrides,
 });
-test("validates every supported phase and lifecycle identity", () => { for (const type of LIFECYCLE_PHASES) assert.equal(validateLifecycleRequest({ type, identity, artifact }).valid, true); assert.equal(validateLifecycleRequest({ type: "decision", identity: standalone, artifact }).valid, true); assert.equal(validateLifecycleRequest({ type: "other", identity, artifact }).valid, false); assert.equal(validateLifecycleRequest({ type: "plan", identity: { ...standalone, project: "" }, artifact }).valid, false); assert.equal(validateLifecycleRequest({ type: "plan", identity: { ...standalone, jiraKey: 3 }, artifact }).valid, false); });
-test("rejects non-string lifecycle identity array members", () => {
-  const invalidMembers = [null, 1, {}, []];
+const completedArtifact = (overrides = {}) => {
+  const input = {
+    lifecycleKey: identity.lifecycleKey,
+    nonce,
+    type: "implementation",
+    jiraKey: identity.jiraKey,
+    taskwarriorUuid: identity.taskwarriorUuid,
+    ...overrides,
+  };
+  return `${artifact}\n${buildLifecycleNonceMarker(input)}\n`;
+};
 
-  for (const key of ["sourceRefs", "priorArtifactIds"]) {
-    for (const member of invalidMembers) {
-      const result = validateLifecycleRequest({
-        type: "implementation",
-        identity: { ...identity, [key]: [member] },
-        artifact,
-      });
-
-      assert.equal(result.valid, false);
-      assert.equal(result.error.code, "invalid_lifecycle_request");
-    }
+test("validates every supported phase with an explicit summary and identity", () => {
+  for (const type of LIFECYCLE_PHASES) {
+    assert.equal(validateLifecycleRequest({ type, identity, summary, artifact }).valid, true);
   }
+  assert.equal(validateLifecycleRequest({ type: "decision", identity: standalone, summary, artifact }).valid, true);
+  assert.equal(validateLifecycleRequest({ type: "other", identity, summary, artifact }).valid, false);
+  assert.equal(validateLifecycleRequest({ type: "plan", identity: { ...standalone, project: "" }, summary, artifact }).valid, false);
+  assert.equal(validateLifecycleRequest({ type: "plan", identity: { ...standalone, jiraKey: 3 }, summary, artifact }).valid, false);
 });
 
-test("keeps non-empty lifecycle artifact bounds without heading requirements", () => {
-  const request = (artifact) => validateLifecycleRequest({ type: "plan", identity, artifact }).valid;
-  assert.equal(request("minimal artifact"), true);
-  assert.equal(request("x".repeat(128_000)), true);
-  const redactedBoundary = validateLifecycleRequest({ type: "plan", identity, artifact: `${"x".repeat(127_993)}token=z` });
-  assert.equal(redactedBoundary.valid, true);
-  assert.equal(redactedBoundary.artifact.length, 128_000);
-  assert.doesNotMatch(redactedBoundary.artifact, /token=z/);
-  assert.equal(request(""), false);
-  assert.equal(request(" \n\t "), false);
-  assert.equal(request("x".repeat(128_001)), false);
-});
-
-test("rejects an embedded persisted lifecycle verification marker", () => {
-  const embeddedMarker = buildLifecycleNonceMarker({
-    lifecycleKey: identity.lifecycleKey,
-    nonce,
-    type: "plan",
-    jiraKey: identity.jiraKey,
-    taskwarriorUuid: identity.taskwarriorUuid,
-  });
-  const result = validateLifecycleRequest({ type: "plan", identity, artifact: `${artifact}\n${embeddedMarker}` });
-
-  assert.equal(result.valid, false);
-  assert.equal(result.error.code, "lifecycle_artifact_embeds_prior_artifact");
-  assert.equal(
-    result.error.message,
-    "Lifecycle artifact embeds a prior artifact. Reference prior IDs in prior_artifact_ids or source_refs instead of pasting content.",
-  );
-});
-
-test("allows lifecycle marker data split across closed comments", () => {
-  const result = validateLifecycleRequest({
-    type: "plan",
-    identity,
-    artifact: `${artifact}\n<!-- ima-lifecycle verification: nonce=${nonce} -->\n<!-- ima-lifecycle verification: outcome=completed -->`,
-  });
-
-  assert.equal(result.valid, true);
-});
-
-test("rejects emitted lifecycle front matter with LF and CRLF endings", () => {
-  const lifecycleMarker = buildLifecycleNonceMarker({
-    lifecycleKey: identity.lifecycleKey,
-    nonce,
-    type: "plan",
-    jiraKey: identity.jiraKey,
-    taskwarriorUuid: identity.taskwarriorUuid,
-  });
-  const emittedArtifact = buildLifecycleArtifact({ type: "plan", identity, artifact, nonce });
-  const frontMatterArtifact = emittedArtifact.replace(lifecycleMarker, "");
-
-  for (const candidate of [frontMatterArtifact, frontMatterArtifact.replaceAll("\n", "\r\n")]) {
-    const result = validateLifecycleRequest({ type: "plan", identity, artifact: candidate });
+test("requires a bounded control-character-safe UTF-8 summary", () => {
+  for (const invalidSummary of ["", " \t", "line\nbreak", "\0", "é".repeat(1_001)]) {
+    const result = validateLifecycleRequest({ type: "plan", identity, summary: invalidSummary, artifact });
     assert.equal(result.valid, false);
-    assert.equal(result.error.code, "lifecycle_artifact_embeds_prior_artifact");
+    assert.equal(result.error.code, "invalid_lifecycle_summary");
   }
+  assert.equal(MAX_LIFECYCLE_SUMMARY_BYTES, 2_000);
 });
 
-test("allows unrelated nested YAML lifecycle_key fields", () => {
-  const result = validateLifecycleRequest({
-    type: "plan",
-    identity,
-    artifact: `${artifact}\nsettings:\n  lifecycle_key: '${identity.lifecycleKey}'`,
-  });
-
-  assert.equal(result.valid, true);
+test("preserves the approved raw request ceiling while rejecting empty artifacts", () => {
+  const request = (value) => validateLifecycleRequest({ type: "plan", identity, summary, artifact: value });
+  assert.equal(request("x".repeat(MAX_LIFECYCLE_REQUEST_CHARACTERS)).valid, true);
+  assert.equal(request("x".repeat(MAX_LIFECYCLE_REQUEST_CHARACTERS + 1)).valid, false);
+  assert.equal(request(" \n\t ").valid, false);
 });
 
-test("limits lifecycle error messages to registered codes", () => {
-  assert.deepEqual(
-    sanitizeLifecycleError("lifecycle_artifact_embeds_prior_artifact", undefined),
-    {
-      code: "lifecycle_artifact_embeds_prior_artifact",
-      message: "Lifecycle artifact embeds a prior artifact. Reference prior IDs in prior_artifact_ids or source_refs instead of pasting content.",
-    },
-  );
-
-  for (const code of ["constructor", "toString", "__proto__", "invalid_lifecycle_request", "vestige_save_failed"]) {
-    assert.deepEqual(sanitizeLifecycleError(code, undefined), {
-      code,
-      message: `Lifecycle integration failed: ${code}.`,
-    });
+test("rejects closed identity violations before serialization", () => {
+  const invalidIdentities = [
+    { ...identity, extra: "forbidden" },
+    { ...identity, lifecycleKey: "line\nbreak" },
+    { ...identity, project: "\u0085" },
+    { ...identity, taskwarriorProject: "p".repeat(257) },
+    { ...identity, lifecycleRootMemoryId: "r".repeat(513) },
+    { ...identity, jiraKey: "J".repeat(129) },
+    { ...identity, sourceRefs: Array.from({ length: 65 }, () => "source") },
+    { ...identity, priorArtifactIds: ["x".repeat(1_025)] },
+  ];
+  for (const candidate of invalidIdentities) {
+    assert.equal(normalizeLifecycleIdentity(candidate), null);
+    assert.equal(validateLifecycleRequest({ type: "implementation", identity: candidate, summary, artifact }).valid, false);
   }
+  const normalized = normalizeLifecycleIdentity({ ...identity, project: " ima-pi ", sourceRefs: [" source "] });
+  assert.deepEqual(normalized?.project, "ima-pi");
+  assert.deepEqual(normalized?.sourceRefs, ["source"]);
 });
 
-test("accepts lifecycle artifacts that reference prior IDs only", () => {
-  const result = validateLifecycleRequest({
-    type: "plan",
-    identity,
-    artifact: `${artifact}\n\n## Prior artifacts\n- ${nonce}`,
+test("derives deterministic lifecycle nonces and rejects projected storage overflows", () => {
+  const valid = validateLifecycleRequest({ type: "implementation", identity, summary, artifact });
+  assert.equal(valid.valid, true);
+  const first = prepareLifecycleArtifact(valid);
+  const second = prepareLifecycleArtifact(valid);
+  assert.equal(first.valid, true);
+  assert.equal(second.valid, true);
+  assert.equal(first.data.nonce, second.data.nonce);
+  assert.equal(first.data.recordKey, second.data.recordKey);
+  assert.equal(deriveLifecycleNonce(valid), first.data.nonce);
+
+  const changedArtifact = validateLifecycleRequest({ type: "implementation", identity, summary, artifact: `${artifact} changed` });
+  const changedIdentity = validateLifecycleRequest({ type: "implementation", identity: { ...identity, taskwarriorTask: "other" }, summary, artifact });
+  assert.equal(changedArtifact.valid, true);
+  assert.equal(changedIdentity.valid, true);
+  assert.notEqual(prepareLifecycleArtifact(changedArtifact).data.recordKey, first.data.recordKey);
+  assert.notEqual(prepareLifecycleArtifact(changedIdentity).data.recordKey, first.data.recordKey);
+
+  const changedSummary = validateLifecycleRequest({ type: "implementation", identity, summary: "A different immutable summary.", artifact });
+  assert.equal(changedSummary.valid, true);
+  assert.equal(prepareLifecycleArtifact(changedSummary).data.recordKey, first.data.recordKey);
+
+  const oversized = validateLifecycleRequest({ type: "implementation", identity, summary, artifact: "é".repeat(80_000) });
+  assert.equal(oversized.valid, true);
+  assert.deepEqual(prepareLifecycleArtifact(oversized), {
+    valid: false,
+    error: sanitizeLifecycleError("lifecycle_artifact_too_large", oversized),
   });
 
-  assert.equal(result.valid, true);
+  const longKey = validateLifecycleRequest({ type: "implementation", identity: { ...identity, lifecycleKey: "l".repeat(512) }, summary, artifact });
+  assert.equal(hasBoundedLifecycleRecordKey("l".repeat(512), "implementation"), false);
+  assert.equal(longKey.valid, false);
+  const forged = {
+    ...valid,
+    identity: { ...valid.identity, lifecycleKey: "l".repeat(512) },
+  };
+  assert.equal(prepareLifecycleArtifact(forged).valid, false);
 });
 
-test("allows discussion of lifecycle markers without a persisted nonce", () => {
-  const result = validateLifecycleRequest({
+test("rejects embedded persisted lifecycle artifacts but permits cycle outcomes", () => {
+  const persistedMarker = buildLifecycleNonceMarker({
+    lifecycleKey: identity.lifecycleKey,
+    nonce,
     type: "plan",
-    identity,
-    artifact: `${artifact}\n<!-- ima-lifecycle verification: nonce=<uuid>; outcome=completed -->\nThe lifecycle_key field is discussed in prose.`,
+    jiraKey: identity.jiraKey,
+    taskwarriorUuid: identity.taskwarriorUuid,
   });
-
-  assert.equal(result.valid, true);
-});
-
-test("allows ima-cycle outcome markers", () => {
-  const result = validateLifecycleRequest({
+  const rejected = validateLifecycleRequest({
     type: "plan",
     identity,
+    summary,
+    artifact: `${artifact}\n${persistedMarker}`,
+  });
+  assert.equal(rejected.valid, false);
+  assert.equal(rejected.error.code, "lifecycle_artifact_embeds_prior_artifact");
+
+  const accepted = validateLifecycleRequest({
+    type: "plan",
+    identity,
+    summary,
     artifact: `${artifact}\n<!-- ima-cycle outcome: phase=implementation; outcome=COMPLETED -->`,
   });
-
-  assert.equal(result.valid, true);
+  assert.equal(accepted.valid, true);
 });
 
-test("builds labeled lifecycle metadata without inventing standalone identifiers", () => { const standaloneResult = buildLifecycleArtifact({ type: "decision", identity: standalone, artifact, nonce }); assert.match(standaloneResult, /lifecycle_root_memory_id: ''/); assert.match(standaloneResult, /taskwarrior_uuid: ''/); assert.match(standaloneResult, /jira_key: ''/); assert.match(standaloneResult, /source_refs: \[\]/); assert.match(standaloneResult, /prior_artifact_ids: \[\]/); assert.doesNotMatch(standaloneResult, /- ''/); const correlatedResult = buildLifecycleArtifact({ type: "decision", identity, artifact, nonce }); assert.match(correlatedResult, /source_refs:\n    - 'Taskwarrior:task-uuid'/); assert.match(correlatedResult, /prior_artifact_ids:\n    - 'plan'/); assert.match(buildLifecycleNonceMarker({ lifecycleKey: identity.lifecycleKey, nonce, type: "implementation", jiraKey: identity.jiraKey, taskwarriorUuid: identity.taskwarriorUuid }), /outcome=completed/); });
-test("validates one-item batch force-create Vestige receipts", () => {
-  const nodeId = "abcdefab-cdef-abcd-efab-cdefabcdefab";
-  const acceptedReceipt = validateVestigeSaveReceipt(
-    {
-      isError: false,
-      structuredContent: {
-        results: [{ status: "saved", decision: "create", nodeId }],
-      },
-    },
-    "plan",
-  );
-  const rejectedReceipts = [
-    { isError: true, structuredContent: { results: [{ status: "saved", decision: "create", nodeId }] } },
-    { isError: false, structuredContent: { results: [] } },
-    { isError: false, structuredContent: { results: [{ status: "saved", decision: "create", nodeId }, { status: "saved", decision: "create", nodeId }] } },
-    { isError: false, structuredContent: { results: [{ status: "saved", decision: "update", nodeId }] } },
-    { isError: false, structuredContent: { results: [{ status: "merged", decision: "create", nodeId }] } },
-    { isError: false, structuredContent: { results: [{ status: "saved", decision: "create", nodeId: "not-a-uuid" }] } },
-    { isError: false, structuredContent: { results: [{ status: "saved", decision: "create", id: nodeId }] } },
-    { isError: false, structuredContent: { results: [{ status: "saved", decision: "create", nodeId, error: "failed" }] } },
-  ];
+test("serializes lifecycle metadata and derives a deterministic content-addressed manifest key", () => {
+  const serialized = buildLifecycleArtifact({ type: "implementation", identity, artifact, nonce });
+  const first = buildLifecycleRecordKey({ lifecycleKey: identity.lifecycleKey, type: "implementation", artifact: serialized });
+  const second = buildLifecycleRecordKey({ lifecycleKey: identity.lifecycleKey, type: "implementation", artifact: serialized });
+  const changed = buildLifecycleRecordKey({ lifecycleKey: identity.lifecycleKey, type: "implementation", artifact: `${serialized}changed` });
 
-  assert.deepEqual(acceptedReceipt, { accepted: true, artifactId: nodeId });
-  for (const receipt of rejectedReceipts) {
-    assert.deepEqual(validateVestigeSaveReceipt(receipt, "plan"), {
-      accepted: false,
-      artifactId: null,
-    });
+  assert.match(serialized, /lifecycle_key: 'ima-pi:taskwarrior:FNR-3007:uuid'/);
+  assert.match(serialized, /source_refs:\n    - 'Taskwarrior:task-uuid'/);
+  assert.match(serialized, /outcome=completed/);
+  assert.equal(first, second);
+  assert.notEqual(first, changed);
+  assert.match(first, /:implementation:[a-f0-9]{12}$/);
+});
+
+test("accepts only successful corpus store receipts with deterministic point IDs", () => {
+  const id = "abcdefab-cdef-abcd-efab-cdefabcdefab";
+  assert.deepEqual(validateLifecycleStoreReceipt({ status: "stored", id }), { accepted: true, artifactId: id });
+  assert.deepEqual(validateLifecycleStoreReceipt({ status: "unchanged", id }), { accepted: true, artifactId: id });
+  for (const receipt of [null, {}, { status: "stored", id: "not-a-uuid" }, { status: "failed", id }]) {
+    assert.deepEqual(validateLifecycleStoreReceipt(receipt), { accepted: false, artifactId: null });
   }
 });
 
-test("recall requires all nonempty external identities in one result", () => {
-  const completed = `${identity.lifecycleKey} ${nonce} ${phaseMarker} ${identity.jiraKey} ${identity.taskwarriorUuid} outcome=completed`;
-  assert.equal(recall(completed).matched, true);
-  assert.equal(recall(`${identity.lifecycleKey} ${nonce} ${phaseMarker} ${identity.jiraKey} outcome=completed`).matched, false);
-  assert.equal(recall(`${identity.lifecycleKey} ${nonce} ${phaseMarker} ${identity.taskwarriorUuid} outcome=completed`).matched, false);
+test("direct reassembled artifacts must contain every lifecycle completion marker", () => {
+  const content = completedArtifact();
+  assert.equal(verification(content).matched, true);
+  assert.equal(verification(content.replace(nonce, "other")).matched, false);
+  assert.equal(verification(content.replace("phase=implementation", "phase=review")).matched, false);
+  assert.equal(verification(content.replace(identity.jiraKey, "")).matched, false);
+  assert.equal(verification(content.replace("outcome=completed", "outcome=blocked")).matched, false);
+  assert.equal(verification(`${content}unrelated`).matched, false);
+  const lifecycleOnly = completedArtifact({ jiraKey: "", taskwarriorUuid: "" });
+  assert.equal(verification(lifecycleOnly, { jiraKey: "", taskwarriorUuid: "" }).matched, true);
+});
 
-  const split = evaluateLifecycleRecall({
-    envelope: {
-      structuredContent: {
-        results: [
-          { content: identity.lifecycleKey },
-          { content: `${nonce} ${phaseMarker} ${identity.jiraKey} ${identity.taskwarriorUuid} outcome=completed` },
-        ],
-      },
-    },
-    lifecycleKey: identity.lifecycleKey,
-    nonce,
+test("derivation retains the stable public result shape and sanitized failures", () => {
+  const recall = verification(completedArtifact());
+  const completed = deriveLifecycleResult({
     type: "implementation",
-    jiraKey: identity.jiraKey,
-    taskwarriorUuid: identity.taskwarriorUuid,
-  });
-
-  assert.equal(split.matched, false);
-});
-
-test("recall requires the authoritative completed outcome marker", () => {
-  const prefix = `${identity.lifecycleKey} ${nonce} ${phaseMarker} ${identity.jiraKey} ${identity.taskwarriorUuid}`;
-
-  for (const outcome of ["outcome=failed", "outcome=pending", "outcome"]) {
-    assert.equal(recall(`${prefix} ${outcome}`).matched, false);
-  }
-});
-
-test("recall requires its exact phase marker", () => {
-  const content = `${identity.lifecycleKey} ${nonce} phase=review test ${identity.jiraKey} ${identity.taskwarriorUuid} outcome=completed`;
-  const result = evaluateLifecycleRecall({
-    envelope: { structuredContent: { results: [{ content }] } },
     lifecycleKey: identity.lifecycleKey,
-    nonce,
-    type: "test",
-    jiraKey: identity.jiraKey,
-    taskwarriorUuid: identity.taskwarriorUuid,
+    receipt: { accepted: true, artifactId: "abcdefab-cdef-abcd-efab-cdefabcdefab" },
+    recall,
   });
+  assert.equal(completed.status, "completed");
+  assert.equal(completed.receiptAccepted, true);
+  assert.equal(completed.semanticRecall.matched, true);
 
-  assert.equal(result.matched, false);
-  assert.equal(result.phaseMatched, false);
-});
-
-test("recall ignores error-marked MCP payloads", () => {
-  const content = `${identity.lifecycleKey} ${nonce} ${phaseMarker} ${identity.jiraKey} ${identity.taskwarriorUuid} outcome=completed`;
-  const result = evaluateLifecycleRecall({
-    envelope: { isError: true, structuredContent: { results: [{ content }] } },
+  const failed = deriveLifecycleResult({
+    type: "plan",
     lifecycleKey: identity.lifecycleKey,
-    nonce,
-    type: "implementation",
-    jiraKey: identity.jiraKey,
-    taskwarriorUuid: identity.taskwarriorUuid,
+    receipt: { accepted: false, artifactId: null },
+    recall: verification(""),
+    error: "corpus_store_failed",
   });
-
-  assert.deepEqual(result, {
-    matched: false,
-    lifecycleKeyMatched: false,
-    nonceMatched: false,
-    phaseMatched: false,
-    sourceIdentityMatched: false,
-    outcomeMatched: false,
-    physicalShapeIgnored: true,
+  assert.equal(failed.status, "failed");
+  assert.deepEqual(sanitizeLifecycleError("invalid_lifecycle_summary", "token=secret"), {
+    code: "invalid_lifecycle_summary",
+    message: "Lifecycle summary must be non-empty, control-character-safe, and at most 2,000 UTF-8 bytes.",
   });
 });
-
-test("recall parses JSON text content from an MCP result", () => {
-  const content = `${identity.lifecycleKey} ${nonce} ${phaseMarker} ${identity.jiraKey} ${identity.taskwarriorUuid} outcome=completed`;
-  const result = evaluateLifecycleRecall({
-    envelope: {
-      content: [{ type: "text", text: JSON.stringify({ results: [{ content }] }) }],
-    },
-    lifecycleKey: identity.lifecycleKey,
-    nonce,
-    type: "implementation",
-    jiraKey: identity.jiraKey,
-    taskwarriorUuid: identity.taskwarriorUuid,
-  });
-
-  assert.equal(result.matched, true);
-});
-test("recall supports lifecycle-key-only, Jira-only, and Taskwarrior-only identities", () => { const base = `${identity.lifecycleKey} ${nonce} ${phaseMarker} outcome=completed`; assert.equal(recall(base, { jiraKey: "", taskwarriorUuid: "" }).matched, true); assert.equal(recall(`${base} ${identity.jiraKey}`, { taskwarriorUuid: "" }).matched, true); assert.equal(recall(`${base} ${identity.taskwarriorUuid}`, { jiraKey: "" }).matched, true); });
-test("derivation reports save-success recall failure without inferring IDs", () => { const result = deriveLifecycleResult({ type: "plan", lifecycleKey: identity.lifecycleKey, receipt: { accepted: true, artifactId: "receipt-id" }, recall: { matched: false, lifecycleKeyMatched: false, nonceMatched: false, phaseMatched: false, sourceIdentityMatched: false, outcomeMatched: false, physicalShapeIgnored: true } }); assert.equal(result.status, "failed"); assert.equal(result.artifactId, "receipt-id"); });

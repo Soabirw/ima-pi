@@ -12,8 +12,10 @@ import {
   compareCodeUnits,
   corpusFailure,
   deriveRecordId,
+  normalizeInstitutionalManifest,
   normalizeInstitutionalRecord,
   normalizeInstitutionalSummary,
+  storeInstitutionalManifest,
   storeInstitutionalRecord,
   utf8ByteLength,
   validateEmbedding,
@@ -288,6 +290,73 @@ test("invalid records and post-read aborts cause no later store effects", async 
   });
   assert.deepEqual(abortedResult, failure("aborted"));
   assert.deepEqual(calls, ["get"]);
+});
+
+test("stores vectorless chunks before the manifest commit marker and verifies direct reassembly", async () => {
+  const detail = "x".repeat(40_000);
+  const rawRecord = { ...record(), recordKey: "ima-pi:implementation:chunked", detail };
+  const normalized = normalizeInstitutionalManifest(rawRecord, createdAt);
+  assert.equal(normalized.success, true);
+  const points = new Map();
+  const calls = [];
+  const result = await storeInstitutionalManifest({
+    record: rawRecord,
+    createdAt,
+    operations: {
+      getPoints: async (ids) => {
+        calls.push(`get:${ids.length}`);
+        return success(ids.flatMap((id) => points.has(id) ? [points.get(id)] : []));
+      },
+      ensureCollection: async () => {
+        calls.push("ensure");
+        return success(undefined);
+      },
+      embedSummary: async () => {
+        calls.push("embed");
+        return success(vector());
+      },
+      insertPoints: async ({ points: inserted }) => {
+        const kind = inserted[0].payload.record_kind;
+        calls.push(`insert:${kind}`);
+        for (const point of inserted) points.set(point.id, { id: point.id, payload: point.payload });
+        return success(undefined);
+      },
+    },
+  });
+
+  assert.deepEqual(result, success({ status: "stored", id: normalized.data.id, recordKey: normalized.data.recordKey }));
+  const firstManifestInsert = calls.indexOf("insert:manifest");
+  assert.equal(firstManifestInsert > calls.lastIndexOf("insert:detail_chunk"), true);
+  assert.equal(points.size, normalized.data.chunks.length + 1);
+});
+
+test("an interrupted pre-manifest write reuses verified chunks on an identical retry", async () => {
+  const rawRecord = { ...record(), recordKey: "ima-pi:implementation:retry", detail: "x".repeat(40_000) };
+  const points = new Map();
+  let failManifest = true;
+  const operations = {
+    getPoints: async (ids) => success(ids.flatMap((id) => points.has(id) ? [points.get(id)] : [])),
+    ensureCollection: async () => success(undefined),
+    embedSummary: async () => success(vector()),
+    insertPoints: async ({ points: inserted }) => {
+      if (inserted[0].payload.record_kind === "manifest" && failManifest) return failure("store_failed");
+      for (const point of inserted) {
+        if (points.has(point.id)) return failure("record_conflict");
+        points.set(point.id, { id: point.id, payload: point.payload });
+      }
+      return success(undefined);
+    },
+  };
+
+  const first = await storeInstitutionalManifest({ record: rawRecord, createdAt, operations });
+  assert.deepEqual(first, failure("manifest_store_failed"));
+  assert.equal([...points.values()].every(({ payload }) => payload.record_kind === "detail_chunk"), true);
+
+  failManifest = false;
+  const second = await storeInstitutionalManifest({ record: rawRecord, createdAt, operations });
+  assert.equal(second.success, true);
+  assert.equal(second.data.status, "stored");
+  assert.equal([...points.values()].some(({ payload }) => payload.record_kind === "manifest"), true);
 });
 
 test("central error guidance is immutable, actionable, and secret-free", () => {

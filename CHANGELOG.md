@@ -6,11 +6,14 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ### Added
 
+- Added schema-v2 Tier-1 lifecycle manifests with deterministic vectorless detail chunks, UTF-8-aware lossless splitting/reassembly, chunks-first/manifest-last persistence, and fail-closed integrity validation.
+- Added an explicit required `ima_lifecycle.summary` contract for manifest-only semantic lifecycle recall.
 - Added package-native Qdrant/Ollama institutional corpus tools for bounded immutable storage, semantic search, lifecycle-key recall, full retrieval, and read-only prerequisite status.
 - Added `/ima:vestige-migrate` with bounded Vestige export, migration-local secret redaction, idempotent Tier-1 import, quarantine reporting, a non-destructive default, and later explicit Tier-1-verified cleanup that counts a purge only after a positive deletion acknowledgment.
 
 ### Changed
 
+- Reoriented `ima_lifecycle`, lifecycle-source hydration, `/ima:cycle` reconciliation, and the gateway lifecycle probe to Tier-1 Qdrant manifest/direct-detail retrieval. Vestige is now preferences-only on active lifecycle paths, with no lifecycle write, recall, per-node read, or fallback.
 - Replaced the `qdrant-memory` MCP dependency with direct abort-aware Node fetch boundaries while preserving `ima_context.durableKnowledge`.
 - Restricted optional durable-knowledge lookups to the known legacy `ima-knowledge` collection so unknown embedding compatibility fails closed.
 - Updated Qdrant skills, preflight, migration, gateway, activity, and documentation contracts for the native corpus boundary.

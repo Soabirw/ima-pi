@@ -608,7 +608,7 @@ export function buildResumeSource(stateValue: unknown): string | null {
     `cyclePhase: ${state.phase}`,
     `validOutcomes: ${validOutcomes.join(", ")}`,
     ...autonomousPlanDirectives,
-    "Persist this phase through ima_lifecycle. Finish the saved artifact with exactly one cycle outcome marker for cyclePhase using one validOutcomes value; do not include any other cycle outcome marker.",
+    "Persist this phase through ima_lifecycle with an explicit one-line summary. Finish the saved artifact with exactly one cycle outcome marker for cyclePhase using one validOutcomes value; do not include any other cycle outcome marker.",
     `requiredMarker: <!-- ima-cycle outcome: phase=${state.phase}; outcome=<valid-outcome> -->`,
   ].join("\n");
 }

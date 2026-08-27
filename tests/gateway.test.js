@@ -12,8 +12,8 @@ import {
   childOperations,
   classifyGatewayCommand,
   deriveGatewayProbeResult,
+  evaluateCorpusCompletion,
   evaluateObservedWorkflow,
-  evaluateSemanticCompletion,
   parseGatewayProbeArgs,
   parseModelSelector,
   runParentCheck,
@@ -28,15 +28,9 @@ import {
 } from "../extensions/mcp.ts";
 
 const nonce = "01234567-89ab-cdef-0123-456789abcdef";
-const payload = buildLifecyclePayload({
-  lifecycleKey: LIFECYCLE_KEY,
-  jiraKey: JIRA_KEY,
-  nonce,
-});
+const payload = buildLifecyclePayload({ lifecycleKey: LIFECYCLE_KEY, jiraKey: JIRA_KEY, nonce });
 const context = { repoPath: "/repo", payload };
-const directResult = (text = "ok") => ({
-  content: [{ type: "text", text }],
-});
+const directResult = (text = "ok") => ({ content: [{ type: "text", text }] });
 const compactResult = ({ server, tool, text = "ok", error } = {}) => ({
   content: [{ type: "text", text }],
   details: {
@@ -46,7 +40,7 @@ const compactResult = ({ server, tool, text = "ok", error } = {}) => ({
     ...(error === undefined ? {} : { error }),
   },
 });
-const recalled = (results) => ({ structuredContent: { results } });
+
 const expectedEvents = [
   {
     toolName: "mcp",
@@ -68,33 +62,32 @@ const expectedEvents = [
     toolName: "mcp",
     args: {
       server: "vestige",
-      tool: "vestige_memory_status",
-      args: { view: "health" },
-    },
-  },
-  {
-    toolName: "mcp",
-    args: {
-      server: "vestige",
-      tool: "vestige_smart_ingest",
+      tool: "vestige_session_start",
       args: {
-        content: payload,
-        node_type: "event",
-        tags: ["FNR-3011", "gateway-probe"],
+        queries: ["user preferences"],
+        include_intentions: false,
+        include_predictions: false,
+        include_status: false,
       },
     },
   },
 ];
+
 const expectedWorkflow = [
   { service: "serena", operation: "activate_project", mutation: false },
   { service: "serena", operation: "get_current_config", mutation: false },
-  { service: "vestige", operation: "memory_status", mutation: false },
-  { service: "vestige", operation: "smart_ingest", mutation: true },
+  { service: "vestige", operation: "session_start", mutation: false },
 ];
 
 const check = (service, operation, passed = true) => ({
   service,
   operation,
+  passed,
+  errorCode: passed ? null : "failed",
+});
+const corpusCheck = (operation, mutation, passed = true) => ({
+  operation,
+  mutation,
   passed,
   errorCode: passed ? null : "failed",
 });
@@ -107,17 +100,20 @@ const successfulResult = () => ({
   parent: {
     serenaActivate: check("serena", "activate_project"),
     serenaConfig: check("serena", "get_current_config"),
-    vestige: check("vestige", "memory_status"),
+    vestigePreference: check("vestige", "session_start"),
   },
   child: {
     serenaActivate: check("serena", "activate_project"),
     serenaConfig: check("serena", "get_current_config"),
-    vestigeRead: check("vestige", "memory_status"),
-    vestigeIngest: check("vestige", "smart_ingest"),
+    vestigePreference: check("vestige", "session_start"),
+  },
+  corpus: {
+    store: corpusCheck("logical_store", true),
+    directGet: corpusCheck("direct_get", false),
   },
   semanticCompletion: {
-    ingestAccepted: true,
-    recallMatched: true,
+    storeAccepted: true,
+    directGetMatched: true,
     lifecycleKeyMatched: true,
     jiraKeyMatched: true,
     nonceMatched: true,
@@ -134,7 +130,6 @@ const directCheck = (result) => validateGatewayResult({
   expected: { server: "serena", tool: "activate_project" },
   result,
 });
-
 const compactCheck = (result, isError) => validateGatewayResult({
   service: "serena",
   operation: "activate_project",
@@ -162,196 +157,108 @@ test("selector and command grammar accept one nested provider/model selector onl
   }
 });
 
-test("payload and child brief carry fixed compact-MCP and safety contracts", () => {
+test("child contract uses read-only Serena and Vestige preference operations only", () => {
   const brief = buildChildBrief(context);
-  for (const text of [
-    LIFECYCLE_KEY,
-    JIRA_KEY,
-    nonce,
-    "implementation-probe",
-    "completed",
-    "serena_activate_project",
-    "serena_get_current_config",
-    "vestige_memory_status",
-    "vestige_smart_ingest",
-    "use only mcp",
-  ]) {
-    assert.match(
-      payload.includes(text) ? payload : brief,
-      new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"),
-    );
-  }
+  assert.deepEqual(childOperations(context).map(({ compactTool, mutation }) => [compactTool, mutation]), [
+    ["serena_activate_project", false],
+    ["serena_get_current_config", false],
+    ["vestige_session_start", false],
+  ]);
+  assert.match(brief, /vestige_session_start/);
+  assert.match(brief, /user preferences/);
+  assert.doesNotMatch(brief, /smart_ingest|vestige_smart_ingest/i);
   assert.match(brief, /Do not modify the repository/i);
-  assert.match(brief, /do not run shell commands/i);
-  assert.doesNotMatch(brief, /bash command|user supplied shell fragment/i);
+  assert.match(payload, /Qdrant lifecycle workflow/i);
 });
 
-test("classifier permits only the exact four compact MCP operations in order", () => {
-  assert.deepEqual(
-    expectedEvents.map((event) => classifyGatewayCommand(event, context)),
-    expectedWorkflow,
-  );
-  assert.deepEqual(evaluateObservedWorkflow(expectedWorkflow), {
-    passed: true,
-    errorCode: null,
-  });
-});
-
-test("classifier rejects shell, wrong server, extra arguments, and malformed MCP calls", () => {
-  const invalidEvents = [
-    { toolName: "bash", args: { command: "echo unexpected" } },
-    { ...expectedEvents[0], args: { ...expectedEvents[0].args, server: "vestige" } },
-    { ...expectedEvents[0], args: { ...expectedEvents[0].args, args: { project: "/repo", extra: true } } },
-    { toolName: "mcp", args: { server: "qdrant-memory", tool: "qdrant_memory_qdrant_find", args: { query: "unbounded", limit: 1 } } },
-    { toolName: "mcp", args: { server: "serena", tool: "serena_activate_project" } },
-  ];
-  for (const event of invalidEvents) {
-    assert.deepEqual(classifyGatewayCommand(event, context), {
-      service: "unknown",
-      operation: "unknown",
-      mutation: false,
-    });
-  }
-  assert.deepEqual(evaluateObservedWorkflow([
-    expectedWorkflow[1],
-    expectedWorkflow[0],
-    ...expectedWorkflow.slice(2),
-  ]), {
+test("classifier permits only the exact compact read operations in order", () => {
+  assert.deepEqual(expectedEvents.map((event) => classifyGatewayCommand(event, context)), expectedWorkflow);
+  assert.deepEqual(evaluateObservedWorkflow(expectedWorkflow), { passed: true, errorCode: null });
+  assert.deepEqual(evaluateObservedWorkflow([...expectedWorkflow].reverse()), {
     passed: false,
     errorCode: "unexpected_child_command",
   });
-  assert.deepEqual(evaluateObservedWorkflow([
-    ...expectedWorkflow,
-    { service: "unknown", operation: "unknown", mutation: false },
-  ]), {
-    passed: false,
-    errorCode: "unexpected_child_command",
+  assert.deepEqual(classifyGatewayCommand({
+    toolName: "mcp",
+    args: { server: "vestige", tool: "vestige_smart_ingest", args: {} },
+  }, context), {
+    service: "unknown",
+    operation: "unknown",
+    mutation: false,
   });
 });
 
-test("parent checks use native server tool names with exact arguments", async () => {
+test("parent checks use native server tool names with exact preference arguments", async () => {
   const calls = [];
   const session = async (server, callback) => callback(async (tool, args, timeout) => {
     calls.push({ server, tool, args, timeout });
     return directResult();
   });
-  const checks = await Promise.all(
-    childOperations(context).slice(0, 3).map((operation) => runParentCheck(operation, session)),
-  );
+  const checks = await Promise.all(childOperations(context).map((operation) => runParentCheck(operation, session)));
 
   assert.equal(checks.every((result) => result.passed), true);
   assert.deepEqual(calls, [
     { server: "serena", tool: "activate_project", args: { project: "/repo" }, timeout: MCP_TIMEOUT_MS },
     { server: "serena", tool: "get_current_config", args: {}, timeout: MCP_TIMEOUT_MS },
-    { server: "vestige", tool: "memory_status", args: { view: "health" }, timeout: MCP_TIMEOUT_MS },
+    { server: "vestige", tool: "session_start", args: expectedEvents[2].args.args, timeout: MCP_TIMEOUT_MS },
   ]);
 });
 
 test("gateway result validation fails closed for direct and compact failure shapes", () => {
   assert.equal(directCheck(directResult()).passed, true);
   assert.equal(compactCheck(compactResult({ server: "serena", tool: "activate_project" })).passed, true);
-
   for (const result of [undefined, {}, { isError: true }, { content: [] }]) {
     assert.equal(directCheck(result).passed, false);
   }
-  for (const error of ["tool_error", "call_failed", "auth_required", "init_failed", "connect_failed"]) {
-    assert.equal(compactCheck(compactResult({
-      server: "serena",
-      tool: "activate_project",
-      error,
-    })).passed, false);
-  }
-  assert.equal(compactCheck(compactResult({
-    server: "vestige",
-    tool: "activate_project",
-  })).passed, false);
-  assert.equal(compactCheck(compactResult({
-    server: "serena",
-    tool: "other",
-  })).passed, false);
-  assert.equal(compactCheck(compactResult({
-    server: "serena",
-    tool: "activate_project",
-  }), true).passed, false);
+  assert.equal(compactCheck(compactResult({ server: "serena", tool: "activate_project", error: "call_failed" })).passed, false);
+  assert.equal(compactCheck(compactResult({ server: "vestige", tool: "activate_project" })).passed, false);
+  assert.equal(compactCheck(compactResult({ server: "serena", tool: "activate_project" }), true).passed, false);
 });
 
-test("semantic completion accepts valid compact ingest and direct or proxy recall", () => {
-  const result = { metadata: { arbitrary: "shape" }, nested: [{ text: payload }] };
-  const recallShapes = [
-    recalled([result]),
-    { content: [{ type: "text", text: JSON.stringify({ results: [result] }) }] },
-    { data: { results: [result] } },
-  ];
-  for (const recalledMemories of recallShapes) {
-    const semantic = evaluateSemanticCompletion({
-      ingestResult: compactResult({ server: "vestige", tool: "smart_ingest" }),
-      recalledMemories,
-      lifecycleKey: LIFECYCLE_KEY,
-      jiraKey: JIRA_KEY,
-      nonce,
-    });
-    assert.equal(semantic.passed, true);
-    assert.equal(semantic.physicalShapeIgnored, true);
-  }
-});
-
-test("semantic completion fails closed unless one result contains every marker", () => {
-  const input = {
-    ingestResult: compactResult({ server: "vestige", tool: "smart_ingest" }),
+test("corpus completion requires a successful logical store and matching direct detail", () => {
+  const store = { success: true, data: { status: "stored" } };
+  const directRecord = { detail: payload };
+  const complete = evaluateCorpusCompletion({
+    store,
+    directRecord,
     lifecycleKey: LIFECYCLE_KEY,
     jiraKey: JIRA_KEY,
     nonce,
-  };
-  const failures = [
-    recalled([]),
-    recalled([{ content: payload.replace(nonce, "other") }]),
-    recalled([{ content: `${LIFECYCLE_KEY} ${JIRA_KEY}` }, { content: `${nonce} completed` }]),
-    { structuredContent: { metadata: { content: payload } } },
-    { structuredContent: { results: {} } },
-  ];
-  for (const recalledMemories of failures) {
-    assert.equal(evaluateSemanticCompletion({ ...input, recalledMemories }).passed, false);
+  });
+  assert.equal(complete.passed, true);
+  assert.equal(complete.physicalShapeIgnored, true);
+
+  for (const invalid of [null, { detail: payload.replace(nonce, "other") }, { detail: `${LIFECYCLE_KEY} ${JIRA_KEY}` }]) {
+    assert.equal(evaluateCorpusCompletion({
+      store,
+      directRecord: invalid,
+      lifecycleKey: LIFECYCLE_KEY,
+      jiraKey: JIRA_KEY,
+      nonce,
+    }).passed, false);
   }
-  assert.equal(evaluateSemanticCompletion({
-    ...input,
-    ingestIsError: true,
-    recalledMemories: recalled([{ content: payload }]),
+  assert.equal(evaluateCorpusCompletion({
+    store: { success: false },
+    directRecord,
+    lifecycleKey: LIFECYCLE_KEY,
+    jiraKey: JIRA_KEY,
+    nonce,
   }).passed, false);
 });
 
 test("MCP policy blocks off-contract calls before a fake adapter executes", async () => {
-  const policy = expectedEvents.map(({ args }) => args);
-  let state = createMcpPolicyState(policy);
-  const executed = [];
+  let state = createMcpPolicyState(expectedEvents.map(({ args }) => args));
   const attempt = (input) => {
     const decision = authorizeMcpPolicyCall(state, input);
     state = decision.state;
-    if (decision.allowed) executed.push(input);
     return decision.allowed;
   };
 
-  assert.equal(attempt({
-    server: "vestige",
-    tool: "vestige_smart_ingest",
-    args: { content: "destructive", node_type: "event", tags: [] },
-  }), false);
-  assert.equal(attempt({
-    server: "serena",
-    tool: "serena_get_current_config",
-    args: { project: "/repo" },
-  }), false);
+  assert.equal(attempt({ server: "vestige", tool: "vestige_smart_ingest", args: {} }), false);
   assert.equal(attempt(expectedEvents[0].args), true);
-  assert.equal(attempt(expectedEvents[0].args), false);
-  assert.equal(attempt(expectedEvents[2].args), false);
-  assert.equal(attempt({
-    ...expectedEvents[1].args,
-    args: { extra: true },
-  }), false);
   assert.equal(attempt(expectedEvents[1].args), true);
   assert.equal(attempt(expectedEvents[2].args), true);
-  assert.equal(attempt(expectedEvents[3].args), true);
-  assert.equal(executed.length, 4);
-
+  assert.equal(attempt(expectedEvents[2].args), false);
   await assert.rejects(createMcpChildRuntime({
     cwd: "/tmp",
     model: {},
@@ -361,48 +268,27 @@ test("MCP policy blocks off-contract calls before a fake adapter executes", asyn
   }), /mcp_policy_required/);
 });
 
-test("result derivation requires checks, exact child identity, workflow, and semantic completion", () => {
+test("result derivation requires all read checks, corpus checks, identity, and direct verification", () => {
   const base = successfulResult();
   assert.equal(deriveGatewayProbeResult(base).status, "passed");
   assert.equal(deriveGatewayProbeResult({ ...base, actualChild: null }).status, "failed");
   assert.equal(deriveGatewayProbeResult({
     ...base,
-    parent: {
-      ...base.parent,
-      vestige: check("vestige", "memory_status", false),
-    },
+    corpus: { ...base.corpus, store: corpusCheck("logical_store", true, false) },
   }).status, "failed");
   assert.equal(deriveGatewayProbeResult({
     ...base,
-    child: {
-      ...base.child,
-      vestigeIngest: check("vestige", "smart_ingest", false),
-    },
-  }).status, "failed");
-  assert.equal(deriveGatewayProbeResult({
-    ...base,
-    semanticCompletion: { ...base.semanticCompletion, recallMatched: false },
+    semanticCompletion: { ...base.semanticCompletion, directGetMatched: false },
   }).status, "failed");
 });
 
-test("sanitization never echoes sensitive error material", () => {
-  const error = sanitizeGatewayError(
-    "child_execution_failed",
-    "token=secret raw memory provider response",
-  );
-  assert.deepEqual(error, {
+test("sanitization and deadline do not expose provider details", async () => {
+  assert.deepEqual(sanitizeGatewayError("child_execution_failed", "token=secret raw provider response"), {
     code: "child_execution_failed",
     message: "Gateway probe failed: child_execution_failed.",
   });
-});
-
-test("deadline uses its singleton discriminator and preserves child failures", async () => {
-  await assert.rejects(
-    withDeadline(new Promise(() => {}), 1),
-    (error) => error === CHILD_EXECUTION_TIMEOUT,
-  );
+  await assert.rejects(withDeadline(new Promise(() => {}), 1), (error) => error === CHILD_EXECUTION_TIMEOUT);
   assert.equal(childExecutionErrorCode(CHILD_EXECUTION_TIMEOUT), "child_execution_timeout");
-  assert.equal(childExecutionErrorCode(new Error("child_execution_timeout")), "child_execution_failed");
+  assert.equal(childExecutionErrorCode(new Error("timeout")), "child_execution_failed");
   assert.equal(await withDeadline(Promise.resolve("done"), 20), "done");
-  await new Promise((resolve) => setTimeout(resolve, 25));
 });

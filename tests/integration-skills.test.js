@@ -31,25 +31,25 @@ test("integration skills retain Pi-native safety and workflow boundaries", async
   assert.match(await read("skills/mcp-serena/SKILL.md"), /JetBrains/i);
   const vestige = await read("skills/mcp-vestige/SKILL.md");
   assert.match(vestige, /session_start.*recall/is);
-  assert.match(vestige, /focused\s+lifecycle\s+discovery.*mode:\s*"lookup".*retrieval_mode:\s*"precise".*detail_level:\s*"brief".*concrete:\s*true.*limit:\s*10.*token_budget:\s*1000/is);
-  assert.match(vestige, /vestige_memory.*action:\s*"get".*id.*selected candidates/is);
-  assert.match(vestige, /preference LOAD/i);
+  assert.match(vestige, /focused\s+topic.*mode:\s*"lookup".*retrieval_mode:\s*"precise".*detail_level:\s*"brief".*concrete:\s*true.*limit:\s*10.*token_budget:\s*1000/is);
+  assert.match(vestige, /selected full memory only when the summary is insufficient[\s\S]*vestige_memory.*action:\s*"get".*id/i);
+  assert.match(vestige, /preference load/i);
+  assert.match(vestige, /Do not use Vestige for lifecycle persistence.*lifecycle recall.*per-node lifecycle reads/is);
   assert.match(vestige, /mcp\(\{ connect: "vestige" \}\)/);
   assert.match(vestige, /same read.*identical arguments.*exactly once/is);
   assert.match(vestige, /Never retry.*smart_ingest.*mutation/is);
   assert.match(vestige, /current invocation.*unrelated merged/is);
   assert.match(vestige, /Stop after an adequate summary/i);
-  assert.match(
-    vestige,
-    /selected full memory only when its summary cannot support relevance\s+validation or preference\s+summarization/is,
-  );
+  assert.match(vestige, /Retrieve one selected full memory only when the summary is insufficient for preference relevance or summarization/i);
   assert.match(vestige, /partial\s+or failed evidence rather than guessing/i);
   assert.match(vestige, /\/ima:memorize/);
-  assert.match(vestige, /receipt protocol/i);
+  assert.match(vestige, /Qdrant manifest plus verified detail chunks/i);
+  assert.match(vestige, /no Vestige\s+fallback/i);
   const qdrant = await read("skills/ima-qdrant/SKILL.md");
   assert.match(qdrant, /package-native/i);
   assert.match(qdrant, /ima_corpus_status/);
   assert.match(qdrant, /never add.*qdrant-memory/is);
+  assert.match(qdrant, /schema-v2.*vectorless detail chunks/is);
   assert.match(await read("skills/mcp-atlassian/SKILL.md"), /REST helper/i);
   assert.match(await read("skills/mcp-taskwarrior/SKILL.md"), /project plus UUID/i);
   assert.match(await read("skills/mcp-context7/SKILL.md"), /resolve.*library ID.*query/is);

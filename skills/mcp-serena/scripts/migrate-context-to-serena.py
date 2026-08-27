@@ -26,11 +26,11 @@ MEMORIES = (
 
 ORG_STANDARD_SEEDS = {
     "conventions": [
-        "## Org Standard: Vestige Task Lifecycle",
-        "- For task-scoped project work, use Vestige as the living task memory across planning, implementation, review, resolution, and closeout.",
-        "- Before planning, implementing, reviewing, or closing a task, search Vestige by the Taskwarrior ID/UUID, Jira key, project task key, and related task keys.",
-        "- Store lifecycle updates with a shared task key so future recipe sessions can reconstruct the task history.",
-        "- Serena stores stable project instructions; Vestige stores the evolving task thread.",
+        "## Org Standard: Tier-1 Lifecycle Memory",
+        "- For task-scoped project work, use Tier-1 Qdrant lifecycle manifests and verified direct detail across planning, implementation, review, resolution, and closeout.",
+        "- Before planning, implementing, reviewing, or closing a task, recall the exact derived lifecycle key through Qdrant and fetch selected full detail only when needed.",
+        "- Persist formal lifecycle updates through ima_lifecycle so deterministic manifest/chunk verification keeps one correlated task history.",
+        "- Serena stores stable project instructions; Vestige stores bounded preferences; Qdrant stores the formal lifecycle thread.",
         "## Org Standard: Testing Contract",
         "- Inspect project evidence before choosing a test level; choose the smallest supported level that proves the behavior.",
         "- Do not introduce unsupported integration or E2E infrastructure implicitly.",
@@ -40,26 +40,26 @@ ORG_STANDARD_SEEDS = {
         "- Record configured test frameworks, dependency evidence, test configuration paths, and available test infrastructure.",
     ],
     "suggested_commands": [
-        "## Org Standard: Vestige Task Lookup",
-        "- Search Vestige for the active task key before acting, then search related keys and feature names when the first result is incomplete.",
-        "- Useful search examples: `CM-001`, `CM-010`, `CM-011`, Jira keys, Taskwarrior UUIDs, and user-provided feature names.",
-        "- When using Taskwarrior, read the task first, capture the UUID or stable project key, then use that key in Vestige updates.",
+        "## Org Standard: Tier-1 Lifecycle Lookup",
+        "- Recall Qdrant manifests for the exact active lifecycle key before acting, then fetch selected deterministic record detail only when the summary is insufficient.",
+        "- Useful lifecycle keys include derived `ima-pi:taskwarrior:<project>:<uuid>` and `ima-pi:jira:<KEY>` values.",
+        "- When using Taskwarrior, read the task first, capture the project and UUID, then use the derived lifecycle key in Qdrant recall.",
         "## Org Standard: Testing Commands",
         "- Record canonical targeted and broader test commands plus required environment prerequisites.",
     ],
     "task_completion": [
-        "## Org Standard: Vestige Closeout",
-        "- Before marking a Taskwarrior task or equivalent tracker item complete, update Vestige with the final outcome.",
+        "## Org Standard: Tier-1 Lifecycle Closeout",
+        "- Before marking a Taskwarrior task or equivalent tracker item complete, persist the final lifecycle outcome through ima_lifecycle and require verified Qdrant reassembly.",
         "- Include verification performed, review concerns resolved, changed files or modules, remaining risk, and follow-up task references.",
-        "- If review found issues, re-read the Vestige review memory before resolving and store the resolution summary afterward.",
+        "- If review found issues, recall the verified Tier-1 review artifact before resolving and persist the resolution summary through ima_lifecycle afterward.",
         "## Org Standard: Testing Completion",
         "- Record mandatory validation gates, expected signals, and unverified-path reporting.",
     ],
     "memory_maintenance": [
         "## Org Standard: Memory Roles",
         "- Serena memories hold stable project context loaded at startup.",
-        "- Vestige memories carry the living task lifecycle from plan to implementation, review, resolution, and closeout.",
-        "- Keep the Vestige lifecycle rule in Serena `conventions`, `suggested_commands`, and `task_completion` so recipes load it consistently.",
+        "- Vestige holds bounded preferences; Tier-1 Qdrant carries the formal lifecycle from plan to implementation, review, resolution, and closeout.",
+        "- Keep the Tier-1 lifecycle rule in Serena `conventions`, `suggested_commands`, and `task_completion` so prompts load it consistently.",
         "- Treat the testing-contract seeds as reusable guidance alongside the lifecycle seeds.",
     ],
 }
@@ -144,7 +144,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--include-org-standards",
         action="store_true",
-        help="Add shared IMA/agent workflow seeds, including Vestige lifecycle and testing-contract guidance.",
+        help="Add shared IMA/agent workflow seeds, including Tier-1 lifecycle and testing-contract guidance.",
     )
     return parser.parse_args()
 
@@ -215,7 +215,7 @@ def build_memories(
     )
     if include_org_standards:
         buckets["memory_maintenance"].append(
-            "- Included org-standard seeds, including Vestige lifecycle and testing-contract guidance."
+            "- Included org-standard seeds, including Tier-1 lifecycle and testing-contract guidance."
         )
     return buckets
 
