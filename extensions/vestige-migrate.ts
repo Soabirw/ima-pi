@@ -1,11 +1,12 @@
-import { basename, isAbsolute, join, relative } from "node:path";
+import { basename, join, relative } from "node:path";
 import { withFileMutationQueue, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
   MAX_BACKUP_FILE_BYTES,
   MAX_EXPORT_FILE_BYTES,
-  copyVerifiedArtifact,
   createMigrationArtifactRun,
+  hashReadableFile,
+  hashReadableSqliteFile,
   migrationArtifactQueueKey,
   readMigrationReportArtifact,
   readVerifiedText,
@@ -13,34 +14,34 @@ import {
   withReservedExclusiveText,
   writeExclusiveText,
 } from "../lib/vestige-migrate-artifacts.ts";
+import { runVestigeBackup, runVestigeExport } from "../lib/vestige-cli.ts";
+import { withVestigeMigrationLock } from "../lib/vestige-migrate-lock.ts";
 import {
   MAX_MIGRATION_REPORT_BYTES,
   buildCleanupReport,
   buildMigrationReport,
   classifyVestigeExport,
-  cleanupOutcomeIsVerified,
-  cleanupOutcomes,
-  importOutcome,
-  institutionalExpectationMatches,
-  lifecycleRecallContains,
+  cleanupSources,
   parseMigrationReport,
   parseVestigeExport,
   serializeCleanupReport,
   serializeMigrationReport,
   type CleanupRetentionReason,
-  type ImportReason,
-  type ImportOutcome,
-  type MigrationCandidate,
   type MigrationReport,
 } from "../lib/vestige-migrate.ts";
-import { storeInstitutionalRecord, utf8ByteLength, type CorpusResult } from "../lib/qdrant-corpus.ts";
+import {
+  importMigrationSource,
+  verifyMigrationSourceForCleanup,
+} from "../lib/vestige-migrate-qdrant.ts";
+import { utf8ByteLength, type CorpusResult } from "../lib/qdrant-corpus.ts";
 import { createInstitutionalSnapshot } from "../lib/qdrant-http-boundary.ts";
 import { createQdrantCorpusClient, type QdrantCorpusClient } from "../lib/qdrant-http.ts";
 import { withConfiguredMcpSession, type McpSession, type McpToolCaller } from "./integrations.ts";
 
 const MCP_TIMEOUT_MS = 300_000;
-const MAX_RECALL_RESULTS = 20;
 const MAX_TOOL_OUTPUT_BYTES = 10 * 1024;
+const BACKUP_ARTIFACT_NAME = "vestige-backup.sqlite";
+const EXPORT_ARTIFACT_NAME = "vestige-export.json";
 const migrateParameters = Type.Object({}, { additionalProperties: false });
 const cleanupParameters = Type.Object({
   reportPath: Type.String({ minLength: 1, maxLength: 1_024 }),
@@ -52,6 +53,9 @@ export type VestigeMigrateDependencies = {
   createSnapshot?: (signal?: AbortSignal) => Promise<CorpusResult<{ name: string }>>;
   mcpSession?: McpSession;
   now?: () => Date;
+  runVestigeBackup?: typeof runVestigeBackup;
+  runVestigeExport?: typeof runVestigeExport;
+  migrationLockPath?: string;
 };
 
 const object = (value: unknown): Record<string, unknown> | null =>
@@ -59,7 +63,6 @@ const object = (value: unknown): Record<string, unknown> | null =>
     ? value as Record<string, unknown>
     : null;
 
-const text = (value: unknown) => typeof value === "string" ? value.trim() : "";
 const fail = (code: string): never => { throw new Error(`Vestige migration failed: ${code}.`); };
 const throwIfAborted = (signal?: AbortSignal) => signal?.throwIfAborted();
 
@@ -109,21 +112,13 @@ const timestamp = (date: Date) => {
   }
 };
 
-const artifactFromResponse = (data: Record<string, unknown>, extension?: string) => {
-  const path = text(data.path);
-  const sizeBytes = data.sizeBytes;
-  return isAbsolute(path)
-    && (extension === undefined || path.endsWith(extension))
-    && (sizeBytes === undefined || (Number.isInteger(sizeBytes) && Number(sizeBytes) >= 0))
-    ? { path, sizeBytes: typeof sizeBytes === "number" ? sizeBytes : null }
-    : null;
-};
-
 const dependenciesFor = (supplied: VestigeMigrateDependencies = {}) => ({
   client: supplied.client ?? createQdrantCorpusClient(),
   createSnapshot: supplied.createSnapshot ?? ((signal?: AbortSignal) => createInstitutionalSnapshot({}, signal)),
   mcpSession: supplied.mcpSession ?? withConfiguredMcpSession,
   now: supplied.now ?? (() => new Date()),
+  runVestigeBackup: supplied.runVestigeBackup ?? runVestigeBackup,
+  runVestigeExport: supplied.runVestigeExport ?? runVestigeExport,
 });
 
 const safeQdrant = async <Data>(operation: () => Promise<CorpusResult<Data>>, signal?: AbortSignal) => {
@@ -150,35 +145,25 @@ const safeArtifact = async <Data>(operation: () => Promise<Data>, signal?: Abort
   }
 };
 
-const importReason = (result: { success: false; error: { code: string } }): ImportReason =>
-  result.error.code === "qdrant_unavailable" ? "qdrant_unavailable" : "store_failed";
-
-const verifyInstitutionalImport = async (
-  candidate: MigrationCandidate,
-  client: QdrantCorpusClient,
-  signal?: AbortSignal,
-): Promise<{ verified: true } | { verified: false; reason: ImportReason }> => {
+const runVestigeArtifact = async (input: {
+  operation: () => Promise<void>;
+  outputPath: string;
+  relativePath: string;
+  maximumBytes: number;
+  unavailableCode: "backup_unavailable" | "export_unavailable";
+  hashFile: typeof hashReadableFile;
+  signal?: AbortSignal;
+}) => {
   try {
-    throwIfAborted(signal);
-    const full = await client.getInstitutional(candidate.expected.recordKey, signal);
-    throwIfAborted(signal);
-    if (!full.success) {
-      return { verified: false, reason: full.error.code === "qdrant_unavailable" ? "qdrant_unavailable" : "verification_failed" };
-    }
-    if (!institutionalExpectationMatches(candidate.expected, full.data)) {
-      return { verified: false, reason: "qdrant_response_invalid" };
-    }
-    const recalled = await client.recallInstitutional({
-      lifecycleKey: candidate.expected.lifecycleKey,
-      limit: MAX_RECALL_RESULTS,
-    }, signal);
-    throwIfAborted(signal);
-    return recalled.success && lifecycleRecallContains(candidate.expected, recalled.data)
-      ? { verified: true }
-      : { verified: false, reason: recalled.success ? "verification_failed" : "qdrant_unavailable" };
+    throwIfAborted(input.signal);
+    await input.operation();
+    throwIfAborted(input.signal);
+    const receipt = await input.hashFile(input.outputPath, input.maximumBytes, input.signal);
+    throwIfAborted(input.signal);
+    return { relativePath: input.relativePath, ...receipt };
   } catch (error) {
-    if (signal?.aborted) throw error;
-    return { verified: false, reason: "qdrant_unavailable" };
+    if (input.signal?.aborted) throw error;
+    return fail(input.unavailableCode);
   }
 };
 
@@ -208,11 +193,11 @@ const writeMigrationReport = async (
   );
 };
 
-const migrationRecovery = (backup: MigrationReport["recovery"]["backup"], exported: MigrationReport["recovery"]["export"], snapshot: MigrationReport["recovery"]["snapshot"]) => ({
-  backup,
-  export: exported,
-  snapshot,
-});
+const migrationRecovery = (
+  backup: MigrationReport["recovery"]["backup"],
+  exported: MigrationReport["recovery"]["export"],
+  snapshot: MigrationReport["recovery"]["snapshot"],
+) => ({ backup, export: exported, snapshot });
 
 export async function migrateVestige(
   cwd: string,
@@ -224,68 +209,41 @@ export async function migrateVestige(
   if (!status.success) fail(status.error.code);
 
   const run = await safeArtifact(() => createMigrationArtifactRun(cwd, timestamp(dependencies.now()), signal), signal);
-  let sourceArtifacts: { backup: Record<string, unknown>; export: Record<string, unknown> } | null = null;
-  try {
-    sourceArtifacts = await dependencies.mcpSession("vestige", async (call) => ({
-      backup: await callMcpData(call, "maintain", { action: "backup" }, signal),
-      export: await callMcpData(call, "maintain", { action: "export", format: "json" }, signal),
-    }), signal);
-    throwIfAborted(signal);
-  } catch (error) {
-    if (signal?.aborted) throw error;
-    fail("vestige_unavailable");
-  }
-  if (!sourceArtifacts) fail("vestige_unavailable");
-
-  const backupSource = artifactFromResponse(sourceArtifacts.backup);
-  const exportSource = artifactFromResponse(sourceArtifacts.export, ".json");
-  if (!backupSource || !exportSource) fail("vestige_artifact_invalid");
-  const backup = await safeArtifact(
-    () => copyVerifiedArtifact({
-      sourcePath: backupSource.path,
-      run,
-      destinationName: "vestige-backup.sqlite",
-      maximumBytes: MAX_BACKUP_FILE_BYTES,
-      signal,
-    }),
+  const backupPath = join(run.directory, BACKUP_ARTIFACT_NAME);
+  const exportPath = join(run.directory, EXPORT_ARTIFACT_NAME);
+  const backup = await runVestigeArtifact({
+    operation: () => dependencies.runVestigeBackup({ outputPath: backupPath, signal }),
+    outputPath: backupPath,
+    relativePath: BACKUP_ARTIFACT_NAME,
+    maximumBytes: MAX_BACKUP_FILE_BYTES,
+    unavailableCode: "backup_unavailable",
+    hashFile: hashReadableSqliteFile,
     signal,
-  );
-  const exported = await safeArtifact(
-    () => copyVerifiedArtifact({
-      sourcePath: exportSource.path,
-      run,
-      destinationName: "vestige-export.json",
-      maximumBytes: MAX_EXPORT_FILE_BYTES,
-      signal,
-    }),
+  });
+  const exported = await runVestigeArtifact({
+    operation: () => dependencies.runVestigeExport({ outputPath: exportPath, signal }),
+    outputPath: exportPath,
+    relativePath: EXPORT_ARTIFACT_NAME,
+    maximumBytes: MAX_EXPORT_FILE_BYTES,
+    unavailableCode: "export_unavailable",
+    hashFile: hashReadableFile,
     signal,
-  );
-  if (
-    (backupSource.sizeBytes !== null && backupSource.sizeBytes !== backup.sizeBytes)
-    || (exportSource.sizeBytes !== null && exportSource.sizeBytes !== exported.sizeBytes)
-  ) fail("vestige_artifact_invalid");
+  });
 
   const exportText = await safeArtifact(
-    () => readVerifiedText(join(run.directory, exported.relativePath), MAX_EXPORT_FILE_BYTES, signal),
+    () => readVerifiedText(exportPath, MAX_EXPORT_FILE_BYTES, signal),
     signal,
   );
   const parsed = parseVestigeExport(exportText);
-  const exportedCount = sourceArtifacts.export.memoriesExported;
-  if (
-    !parsed
-    || (
-      Object.hasOwn(sourceArtifacts.export, "memoriesExported")
-      && (!Number.isInteger(exportedCount) || exportedCount !== parsed.records.length)
-    )
-  ) fail("export_invalid");
+  if (!parsed) fail("export_invalid");
 
   const classification = classifyVestigeExport(parsed.records);
   let recovery = migrationRecovery(backup, exported, { status: "not_applicable" });
-  if (classification.lifecycle.length === 0) {
+  if (classification.institutional.length === 0) {
     const report = buildMigrationReport({ classification, outcomes: [], recovery });
     if (!report) fail("report_invalid");
     const output = await writeMigrationReport(run.directory, report, signal);
-    fail(`no_lifecycle_records; see ${relative(run.projectRoot, output)}`);
+    return { artifactPath: relative(run.projectRoot, output), report };
   }
   if (status.data.collection !== "absent") {
     const created = await safeQdrant(() => dependencies.createSnapshot(signal), signal);
@@ -296,32 +254,10 @@ export async function migrateVestige(
   const ensured = await safeQdrant(() => dependencies.client.ensureCollection(signal), signal);
   if (!ensured.success) fail(ensured.error.code);
 
-  const outcomes: ImportOutcome[] = [];
-  for (const candidate of classification.lifecycle) {
-    let stored: Awaited<ReturnType<typeof storeInstitutionalRecord>>;
-    try {
-      stored = await storeInstitutionalRecord({
-        record: candidate.record,
-        createdAt: candidate.createdAt,
-        operations: dependencies.client,
-        signal,
-      });
-      throwIfAborted(signal);
-    } catch (error) {
-      if (signal?.aborted) throw error;
-      outcomes.push(importOutcome(candidate, "failed", "qdrant_unavailable"));
-      continue;
-    }
-    if (!stored.success) {
-      outcomes.push(stored.error.code === "record_conflict"
-        ? importOutcome(candidate, "record_conflict")
-        : importOutcome(candidate, "failed", importReason(stored)));
-      continue;
-    }
-    const verification = await verifyInstitutionalImport(candidate, dependencies.client, signal);
-    outcomes.push(verification.verified
-      ? importOutcome(candidate, stored.data.status === "stored" ? "migrated" : "unchanged")
-      : importOutcome(candidate, "unverified", verification.reason));
+  const outcomes = [];
+  for (const source of classification.institutional) {
+    throwIfAborted(signal);
+    outcomes.push(await importMigrationSource({ source, client: dependencies.client, signal }));
   }
 
   const report = buildMigrationReport({ classification, outcomes, recovery });
@@ -329,23 +265,6 @@ export async function migrateVestige(
   const output = await writeMigrationReport(run.directory, report, signal);
   return { artifactPath: relative(run.projectRoot, output), report };
 }
-
-const cleanupVerification = async (
-  outcome: ImportOutcome,
-  client: QdrantCorpusClient,
-  signal?: AbortSignal,
-): Promise<CleanupRetentionReason | null> => {
-  try {
-    throwIfAborted(signal);
-    const record = await client.getInstitutional(outcome.recordKey, signal);
-    throwIfAborted(signal);
-    if (!record.success) return record.error.code === "qdrant_unavailable" ? "qdrant_unavailable" : "qdrant_unverified";
-    return cleanupOutcomeIsVerified(outcome, record.data) ? null : "qdrant_unverified";
-  } catch (error) {
-    if (signal?.aborted) throw error;
-    return "qdrant_unavailable";
-  }
-};
 
 const cleanupReportContent = (report: Parameters<typeof buildCleanupReport>[0]) => {
   const built = buildCleanupReport(report);
@@ -380,6 +299,7 @@ export async function cleanupVestige(
       reportDirectory: source.reportDirectory,
       receipt: report.recovery.backup,
       maximumBytes: MAX_BACKUP_FILE_BYTES,
+      hashFile: hashReadableSqliteFile,
       signal,
     }),
     signal,
@@ -395,7 +315,7 @@ export async function cleanupVestige(
   );
   if (!backupVerified || !exportVerified) fail("cleanup_recovery_invalid");
 
-  const candidates = cleanupOutcomes(report);
+  const candidates = cleanupSources(report);
   const name = `cleanup-${timestamp(dependencies.now())}.json`;
   return safeArtifact(
     () => withReservedExclusiveText({
@@ -411,7 +331,11 @@ export async function cleanupVestige(
           const session = await dependencies.mcpSession("vestige", async (call) => {
             for (const candidate of candidates) {
               throwIfAborted(signal);
-              const verification = await cleanupVerification(candidate, dependencies.client, signal);
+              const verification = await verifyMigrationSourceForCleanup({
+                source: candidate,
+                client: dependencies.client,
+                signal,
+              });
               if (verification) {
                 retained.push({ vestigeId: candidate.vestigeId, reason: verification });
                 pending.delete(candidate.vestigeId);
@@ -463,6 +387,16 @@ const queuedMutation = async <Data>(cwd: string, callback: () => Promise<Data>, 
   return withFileMutationQueue(target, callback);
 };
 
+const lockedMutation = async <Data>(input: {
+  cwd: string;
+  callback: () => Promise<Data>;
+  lockPath?: string;
+  signal?: AbortSignal;
+}) => withVestigeMigrationLock(
+  () => queuedMutation(input.cwd, input.callback, input.signal),
+  { lockPath: input.lockPath, signal: input.signal },
+);
+
 export function registerVestigeMigrateTools(
   pi: Pick<ExtensionAPI, "registerTool">,
   supplied: VestigeMigrateDependencies = {},
@@ -470,20 +404,30 @@ export function registerVestigeMigrateTools(
   pi.registerTool({
     name: "ima_vestige_migrate",
     label: "Migrate Vestige lifecycle memories",
-    description: "Back up, export, classify, redact, and idempotently migrate Vestige lifecycle memories to the institutional corpus. It never deletes Vestige memories.",
+    description: "Back up, export, classify, redact, and idempotently migrate Vestige institutional memories to the institutional corpus. It never deletes Vestige memories.",
     parameters: migrateParameters,
     async execute(_id, _request, signal, _update, ctx) {
-      const result = await queuedMutation(ctx.cwd, () => migrateVestige(ctx.cwd, supplied, signal), signal);
+      const result = await lockedMutation({
+        cwd: ctx.cwd,
+        callback: () => migrateVestige(ctx.cwd, supplied, signal),
+        lockPath: supplied.migrationLockPath,
+        signal,
+      });
       return reportResult(result.artifactPath, result.report);
     },
   });
   pi.registerTool({
     name: "ima_vestige_cleanup",
-    label: "Clean up verified Vestige lifecycle memories",
-    description: "Explicitly delete only report-listed Vestige lifecycle memories after recovery and Tier-1 verification. Requires confirm: true and never deletes preferences.",
+    label: "Clean up verified Vestige institutional memories",
+    description: "Explicitly delete only report-listed Vestige institutional memories after recovery and every-record Tier-1 verification. Requires confirm: true and never deletes preferences.",
     parameters: cleanupParameters,
     async execute(_id, request, signal, _update, ctx) {
-      const result = await queuedMutation(ctx.cwd, () => cleanupVestige(ctx.cwd, request, supplied, signal), signal);
+      const result = await lockedMutation({
+        cwd: ctx.cwd,
+        callback: () => cleanupVestige(ctx.cwd, request, supplied, signal),
+        lockPath: supplied.migrationLockPath,
+        signal,
+      });
       return { content: [{ type: "text" as const, text: JSON.stringify(result) }], details: result };
     },
   });

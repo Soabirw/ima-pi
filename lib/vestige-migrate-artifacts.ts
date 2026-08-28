@@ -8,6 +8,8 @@ import type { RecoveryReceipt } from "./vestige-migrate.ts";
 const READ_FLAGS = constants.O_RDONLY | constants.O_NOFOLLOW;
 const WRITE_FLAGS = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW;
 const COPY_BUFFER_BYTES = 64 * 1024;
+const SQLITE_HEADER_BYTES = 100;
+const SQLITE_MAGIC = Buffer.from("SQLite format 3\0", "ascii");
 const ARTIFACT_NAME = /^[A-Za-z0-9._-]{1,128}$/;
 
 export const MAX_EXPORT_FILE_BYTES = 64 * 1024 * 1024;
@@ -114,10 +116,17 @@ const writeAll = async (handle: FileHandle, content: Uint8Array, signal?: AbortS
   }
 };
 
-const hashReadableFile = async (path: string, maximumBytes: number, signal?: AbortSignal) => {
+const hashReadable = async (
+  path: string,
+  maximumBytes: number,
+  requireSqliteHeader: boolean,
+  signal?: AbortSignal,
+) => {
   const source = await openReadable(path, maximumBytes, signal);
   const buffer = Buffer.allocUnsafe(COPY_BUFFER_BYTES);
+  const header = Buffer.alloc(SQLITE_HEADER_BYTES);
   const hash = createHash("sha256");
+  let headerBytes = 0;
   let total = 0;
   try {
     for (;;) {
@@ -127,16 +136,31 @@ const hashReadableFile = async (path: string, maximumBytes: number, signal?: Abo
       if (bytesRead === 0) break;
       total += bytesRead;
       if (total > maximumBytes) artifactFailure("source_invalid");
+      const copied = Math.min(bytesRead, SQLITE_HEADER_BYTES - headerBytes);
+      if (copied > 0) {
+        buffer.copy(header, headerBytes, 0, copied);
+        headerBytes += copied;
+      }
       hash.update(buffer.subarray(0, bytesRead));
     }
     const end = await source.handle.stat();
     throwIfAborted(signal);
     if (!sameNode(source.start, end) || total !== source.start.size) artifactFailure("source_changed");
+    if (
+      requireSqliteHeader
+      && (total < SQLITE_HEADER_BYTES || headerBytes < SQLITE_HEADER_BYTES || !header.subarray(0, SQLITE_MAGIC.byteLength).equals(SQLITE_MAGIC))
+    ) artifactFailure("source_invalid");
     return { sizeBytes: total, sha256: hash.digest("hex") };
   } finally {
     await source.handle.close();
   }
 };
+
+export const hashReadableFile = (path: string, maximumBytes: number, signal?: AbortSignal) =>
+  hashReadable(path, maximumBytes, false, signal);
+
+export const hashReadableSqliteFile = (path: string, maximumBytes: number, signal?: AbortSignal) =>
+  hashReadable(path, maximumBytes, true, signal);
 
 const checkedWritableDirectory = async (directory: string, signal?: AbortSignal) => {
   const info = await lstat(directory);
@@ -320,6 +344,7 @@ export async function verifyRecoveryReceipt(input: {
   reportDirectory: string;
   receipt: RecoveryReceipt;
   maximumBytes: number;
+  hashFile?: typeof hashReadableFile;
   signal?: AbortSignal;
 }) {
   if (!ARTIFACT_NAME.test(input.receipt.relativePath)) return false;
@@ -327,7 +352,7 @@ export async function verifyRecoveryReceipt(input: {
   if (!inside(input.reportDirectory, target)) return false;
   try {
     await noSymlinkPath(input.reportDirectory, target, input.signal);
-    const observed = await hashReadableFile(target, input.maximumBytes, input.signal);
+    const observed = await (input.hashFile ?? hashReadableFile)(target, input.maximumBytes, input.signal);
     return observed.sizeBytes === input.receipt.sizeBytes && observed.sha256 === input.receipt.sha256;
   } catch (error) {
     if (input.signal?.aborted) throw error;

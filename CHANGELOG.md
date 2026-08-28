@@ -4,6 +4,13 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ## [Unreleased]
 
+### Fixed
+
+- Corrected `/ima:vestige-migrate` to classify legacy and unknown non-preference records as institutional by default while retaining only explicit standalone preferences.
+- Added logical-record migration for 44–160 KB records, Unicode-safe source bundles for larger records, index-last storage, direct destination verification, and source-level all-or-nothing cleanup verification.
+- Rejected legacy schema-v2 migration reports without the required `source-bundles` layout; operators must run a new non-destructive migration before cleanup.
+
+
 ## [1.14.0] - 2026-08-27
 
 ### Added

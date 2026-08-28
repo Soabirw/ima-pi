@@ -1,53 +1,56 @@
+import { utf8ByteLength } from "./qdrant-corpus.ts";
 import {
-  MAX_LIFECYCLE_KEY_LENGTH,
-  MAX_PHASE_LENGTH,
-  MAX_RECORD_KEY_LENGTH,
-  utf8ByteLength,
-} from "./qdrant-corpus.ts";
+  MAX_EXPORTED_RECORDS,
+  MAX_SOURCE_BUNDLE_RECORDS,
+  cleanupDestinationIsVerified,
+  deriveSourceStatus,
+  destinationRecordOutcome,
+  hasUniqueDestinationRecordKeys,
+  institutionalExpectationMatches,
+  isQuarantineReason,
+  migrationOutcomeMatchesCandidate,
+  parseMigrationSourceOutcome,
+  sourceDestinationOutcome,
+  type DestinationRecordOutcome,
+  type ImportReason,
+  type ImportStatus,
+  type MigrationSourceOutcome,
+} from "./vestige-migrate-outcomes.ts";
 import type {
-  InstitutionalExpectation,
-  MigrationCandidate,
   MigrationClassification,
-  QuarantineReason,
   QuarantinedMemory,
+  RetainedPreference,
 } from "./vestige-migrate.ts";
 
-const UUID_LENGTH = 36;
-const SHA256_LENGTH = 64;
-const MAX_ARTIFACT_NAME_LENGTH = 128;
-const MAX_IMPORT_REASON_LENGTH = 32;
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const SQLITE_HEADER_BYTES = 100;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/i;
 const ARTIFACT_NAME_PATTERN = /^[A-Za-z0-9._-]{1,128}$/;
 
-export const MAX_EXPORTED_RECORDS = 10_000;
-const MAX_ESCAPED_METADATA_BYTES = 2 * (
-  UUID_LENGTH * 2
-  + MAX_RECORD_KEY_LENGTH
-  + MAX_LIFECYCLE_KEY_LENGTH
-  + MAX_PHASE_LENGTH
-  + SHA256_LENGTH
-  + MAX_IMPORT_REASON_LENGTH
-);
-const MAX_IMPORT_OUTCOME_BYTES = 512 + MAX_ESCAPED_METADATA_BYTES;
-const MAX_QUARANTINE_BYTES = 192;
-const MAX_RECOVERY_RECEIPT_BYTES = 512 * 1024 * 1024;
-export const MAX_MIGRATION_REPORT_BYTES = 8_192
-  + MAX_EXPORTED_RECORDS * (MAX_IMPORT_OUTCOME_BYTES + MAX_QUARANTINE_BYTES);
+export { MAX_EXPORTED_RECORDS, MAX_SOURCE_BUNDLE_RECORDS };
+export {
+  cleanupDestinationIsVerified,
+  deriveSourceStatus,
+  destinationRecordOutcome,
+  institutionalExpectationMatches,
+  sourceDestinationOutcome,
+};
+export type {
+  DestinationRecordOutcome,
+  ImportReason,
+  ImportStatus,
+  MigrationSourceOutcome,
+};
 
-export type ImportStatus = "migrated" | "unchanged" | "record_conflict" | "failed" | "unverified";
-export type ImportReason = "store_failed" | "qdrant_unavailable" | "verification_failed" | "qdrant_response_invalid";
-export type ImportOutcome = Pick<InstitutionalExpectation, "id" | "recordKey" | "lifecycleKey" | "phase" | "contentHash">
-  & { vestigeId: string; status: ImportStatus; reason?: ImportReason };
+export const MAX_MIGRATION_REPORT_BYTES = 16 * 1024 * 1024;
 
 export type RecoveryReceipt = {
   relativePath: string;
   sizeBytes: number;
   sha256: string;
 };
-
 export type MigrationReport = {
   schemaVersion: 2;
+  layout: "source-bundles";
   recovery: {
     backup: RecoveryReceipt;
     export: RecoveryReceipt;
@@ -63,20 +66,9 @@ export type MigrationReport = {
     unverified: number;
     redacted: number;
   };
-  outcomes: ImportOutcome[];
+  outcomes: MigrationSourceOutcome[];
+  retainedPreferences: RetainedPreference[];
   quarantined: QuarantinedMemory[];
-};
-
-export type CleanupRetentionReason =
-  | "qdrant_unverified"
-  | "qdrant_unavailable"
-  | "vestige_negative_ack"
-  | "vestige_unavailable";
-export type CleanupReport = {
-  schemaVersion: 2;
-  sourceReport: string;
-  purgedIds: string[];
-  retained: Array<{ vestigeId: string; reason: CleanupRetentionReason }>;
 };
 
 type SerializationResult = { success: true; data: string } | { success: false; error: "report_invalid" | "report_too_large" };
@@ -89,196 +81,21 @@ const object = (value: unknown): Record<string, unknown> | null =>
 const text = (value: unknown) => typeof value === "string" ? value.trim() : "";
 const onlyKeys = (value: Record<string, unknown>, keys: string[]) =>
   Object.keys(value).every((key) => keys.includes(key));
-const stringArray = (value: unknown, maximum = MAX_EXPORTED_RECORDS) =>
-  Array.isArray(value) && value.length <= maximum && value.every((item) => typeof item === "string")
-    ? value
-    : null;
 const nonNegativeInteger = (value: unknown, maximum = MAX_MIGRATION_REPORT_BYTES) =>
   Number.isInteger(value) && Number(value) >= 0 && Number(value) <= maximum ? Number(value) : null;
-
-export function importOutcome(
-  candidate: MigrationCandidate,
-  status: ImportStatus,
-  reason?: ImportReason,
-): ImportOutcome {
-  return {
-    vestigeId: candidate.vestigeId,
-    id: candidate.expected.id,
-    recordKey: candidate.expected.recordKey,
-    lifecycleKey: candidate.expected.lifecycleKey,
-    phase: candidate.expected.phase,
-    contentHash: candidate.expected.contentHash,
-    status,
-    ...(reason ? { reason } : {}),
-  };
-}
-
-const importStatuses = new Set<ImportStatus>(["migrated", "unchanged", "record_conflict", "failed", "unverified"]);
-const importReasons = new Set<ImportReason>(["store_failed", "qdrant_unavailable", "verification_failed", "qdrant_response_invalid"]);
-const cleanupReasons = new Set<CleanupRetentionReason>([
-  "qdrant_unverified",
-  "qdrant_unavailable",
-  "vestige_negative_ack",
-  "vestige_unavailable",
-]);
-
-const validImportOutcome = (value: unknown): ImportOutcome | null => {
-  const outcome = object(value);
-  if (!outcome || !onlyKeys(outcome, ["vestigeId", "id", "recordKey", "lifecycleKey", "phase", "contentHash", "status", "reason"])) return null;
-  const status = text(outcome.status) as ImportStatus;
-  const reason = outcome.reason === undefined ? undefined : text(outcome.reason) as ImportReason;
-  if (
-    !UUID_PATTERN.test(text(outcome.vestigeId))
-    || !UUID_PATTERN.test(text(outcome.id))
-    || !text(outcome.recordKey)
-    || text(outcome.recordKey).length > MAX_RECORD_KEY_LENGTH
-    || !text(outcome.lifecycleKey)
-    || text(outcome.lifecycleKey).length > MAX_LIFECYCLE_KEY_LENGTH
-    || !text(outcome.phase)
-    || text(outcome.phase).length > MAX_PHASE_LENGTH
-    || !SHA256_PATTERN.test(text(outcome.contentHash))
-    || !importStatuses.has(status)
-    || (reason !== undefined && !importReasons.has(reason))
-    || ((status === "failed" || status === "unverified") !== (reason !== undefined))
-  ) return null;
-  return {
-    vestigeId: text(outcome.vestigeId),
-    id: text(outcome.id),
-    recordKey: text(outcome.recordKey),
-    lifecycleKey: text(outcome.lifecycleKey),
-    phase: text(outcome.phase),
-    contentHash: text(outcome.contentHash),
-    status,
-    ...(reason ? { reason } : {}),
-  };
-};
 
 const validReceipt = (value: unknown): RecoveryReceipt | null => {
   const receipt = object(value);
   if (!receipt || !onlyKeys(receipt, ["relativePath", "sizeBytes", "sha256"])) return null;
   const relativePath = text(receipt.relativePath);
-  const sizeBytes = nonNegativeInteger(receipt.sizeBytes, MAX_RECOVERY_RECEIPT_BYTES);
+  const sizeBytes = nonNegativeInteger(receipt.sizeBytes, 512 * 1024 * 1024);
   return ARTIFACT_NAME_PATTERN.test(relativePath) && sizeBytes !== null && SHA256_PATTERN.test(text(receipt.sha256))
-    ? { relativePath, sizeBytes, sha256: text(receipt.sha256) }
+    ? { relativePath, sizeBytes, sha256: text(receipt.sha256).toLowerCase() }
     : null;
 };
 
-const derivedSummary = (input: { outcomes: ImportOutcome[]; retainedPreferences: number; quarantined: number; redacted: number }) =>
-  input.outcomes.reduce(
-    (summary, outcome) => ({
-      ...summary,
-      migrated: summary.migrated + Number(outcome.status === "migrated"),
-      unchanged: summary.unchanged + Number(outcome.status === "unchanged"),
-      conflicts: summary.conflicts + Number(outcome.status === "record_conflict"),
-      failed: summary.failed + Number(outcome.status === "failed"),
-      unverified: summary.unverified + Number(outcome.status === "unverified"),
-    }),
-    {
-      migrated: 0,
-      unchanged: 0,
-      retainedPreferences: input.retainedPreferences,
-      quarantined: input.quarantined,
-      conflicts: 0,
-      failed: 0,
-      unverified: 0,
-      redacted: input.redacted,
-    },
-  );
-
-export function buildMigrationReport(input: {
-  classification: MigrationClassification;
-  outcomes: ImportOutcome[];
-  recovery: MigrationReport["recovery"];
-}): MigrationReport | null {
-  if (
-    input.outcomes.length !== input.classification.lifecycle.length
-    || input.outcomes.some((outcome) => !validImportOutcome(outcome))
-  ) return null;
-  const candidates = new Map(input.classification.lifecycle.map((candidate) => [candidate.vestigeId, candidate]));
-  const outcomes = new Map(input.outcomes.map((outcome) => [outcome.vestigeId, outcome]));
-  if (candidates.size !== input.classification.lifecycle.length || outcomes.size !== input.outcomes.length) return null;
-
-  for (const [vestigeId, candidate] of candidates) {
-    const outcome = outcomes.get(vestigeId);
-    if (
-      !outcome
-      || outcome.id !== candidate.expected.id
-      || outcome.recordKey !== candidate.expected.recordKey
-      || outcome.lifecycleKey !== candidate.expected.lifecycleKey
-      || outcome.phase !== candidate.expected.phase
-      || outcome.contentHash !== candidate.expected.contentHash
-    ) return null;
-  }
-
-  return {
-    schemaVersion: 2,
-    recovery: input.recovery,
-    summary: derivedSummary({
-      outcomes: input.outcomes,
-      retainedPreferences: input.classification.retained.length,
-      quarantined: input.classification.quarantined.length,
-      redacted: input.classification.lifecycle.reduce((count, candidate) => count + Number(candidate.wasRedacted), 0),
-    }),
-    outcomes: input.outcomes.map((outcome) => ({ ...outcome })),
-    quarantined: input.classification.quarantined.map((item) => ({ ...item })),
-  };
-}
-
-const sameStrings = (left: string[], right: string[]) =>
-  left.length === right.length && left.every((value, index) => value === right[index]);
-
-export function institutionalExpectationMatches(expectation: InstitutionalExpectation, value: unknown) {
-  const record = object(value);
-  const sourceRefs = stringArray(record?.sourceRefs, 64);
-  return Boolean(
-    record
-    && sourceRefs
-    && record.id === expectation.id
-    && record.recordKey === expectation.recordKey
-    && record.project === expectation.project
-    && record.site === expectation.site
-    && record.repo === expectation.repo
-    && record.lifecycleKey === expectation.lifecycleKey
-    && record.phase === expectation.phase
-    && record.summary === expectation.summary
-    && record.detail === expectation.detail
-    && record.contentHash === expectation.contentHash
-    && record.createdAt === expectation.createdAt
-    && sameStrings(sourceRefs, expectation.sourceRefs),
-  );
-}
-
-export function lifecycleRecallContains(expectation: InstitutionalExpectation, value: unknown) {
-  if (!Array.isArray(value)) return false;
-  return value.some((item) => {
-    const record = object(item);
-    return record?.id === expectation.id
-      && record.recordKey === expectation.recordKey
-      && record.lifecycleKey === expectation.lifecycleKey
-      && record.phase === expectation.phase;
-  });
-}
-
-export function cleanupOutcomeIsVerified(outcome: ImportOutcome, value: unknown) {
-  const record = object(value);
-  const sourceRefs = stringArray(record?.sourceRefs, 64);
-  return Boolean(
-    record
-    && sourceRefs
-    && record.id === outcome.id
-    && record.recordKey === outcome.recordKey
-    && record.lifecycleKey === outcome.lifecycleKey
-    && record.phase === outcome.phase
-    && record.contentHash === outcome.contentHash
-    && sourceRefs.includes(`vestige:${outcome.vestigeId}`),
-  );
-}
-
-export function parseMigrationReport(value: unknown): MigrationReport | null {
-  const report = object(value);
-  if (!report || !onlyKeys(report, ["schemaVersion", "recovery", "summary", "outcomes", "quarantined"])) return null;
-  if (report.schemaVersion !== 2) return null;
-  const recovery = object(report.recovery);
+const validRecovery = (value: unknown): MigrationReport["recovery"] | null => {
+  const recovery = object(value);
   if (!recovery || !onlyKeys(recovery, ["backup", "export", "snapshot"])) return null;
   const backup = validReceipt(recovery.backup);
   const exported = validReceipt(recovery.export);
@@ -291,58 +108,194 @@ export function parseMigrationReport(value: unknown): MigrationReport | null {
         ? { status: "created" as const, name: snapshotName }
         : null
     : null;
-  const outcomes = Array.isArray(report.outcomes) ? report.outcomes.map(validImportOutcome) : null;
+  return backup && backup.sizeBytes >= SQLITE_HEADER_BYTES && exported && validSnapshot
+    ? { backup, export: exported, snapshot: validSnapshot }
+    : null;
+};
+
+const validRetainedPreference = (value: unknown): RetainedPreference | null => {
+  const preference = object(value);
+  if (!preference || !onlyKeys(preference, ["vestigeId", "reason"])) return null;
+  const vestigeId = text(preference.vestigeId).toLowerCase();
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(vestigeId)
+    && preference.reason === "explicit_preference"
+    ? { vestigeId, reason: "explicit_preference" }
+    : null;
+};
+
+const validQuarantinedMemory = (value: unknown): QuarantinedMemory | null => {
+  const candidate = object(value);
+  const vestigeId = candidate?.vestigeId === null ? null : text(candidate?.vestigeId).toLowerCase();
+  const reason = text(candidate?.reason);
+  return candidate
+    && onlyKeys(candidate, ["vestigeId", "reason"])
+    && (vestigeId === null || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(vestigeId))
+    && isQuarantineReason(reason)
+    ? { vestigeId, reason }
+    : null;
+};
+
+const derivedSummary = (input: {
+  outcomes: MigrationSourceOutcome[];
+  retainedPreferences: number;
+  quarantined: number;
+  redacted: number;
+}) => input.outcomes.reduce(
+  (summary, outcome) => ({
+    ...summary,
+    migrated: summary.migrated + Number(outcome.status === "migrated"),
+    unchanged: summary.unchanged + Number(outcome.status === "unchanged"),
+    conflicts: summary.conflicts + Number(outcome.status === "record_conflict"),
+    failed: summary.failed + Number(outcome.status === "failed"),
+    unverified: summary.unverified + Number(outcome.status === "unverified"),
+  }),
+  {
+    migrated: 0,
+    unchanged: 0,
+    retainedPreferences: input.retainedPreferences,
+    quarantined: input.quarantined,
+    conflicts: 0,
+    failed: 0,
+    unverified: 0,
+    redacted: input.redacted,
+  },
+);
+
+const distinctSourceIds = (input: {
+  outcomes: MigrationSourceOutcome[];
+  retained: RetainedPreference[];
+  quarantined: QuarantinedMemory[];
+}) => {
+  const imported = input.outcomes.map((outcome) => outcome.vestigeId);
+  const retained = input.retained.map((preference) => preference.vestigeId);
+  const quarantined = input.quarantined.flatMap((memory) => memory.vestigeId ? [memory.vestigeId] : []);
+  const all = [...imported, ...retained, ...quarantined];
+  return new Set(all).size === all.length;
+};
+
+const uniqueRecordKeys = hasUniqueDestinationRecordKeys;
+
+export function buildMigrationReport(input: {
+  classification: MigrationClassification;
+  outcomes: MigrationSourceOutcome[];
+  recovery: MigrationReport["recovery"];
+}): MigrationReport | null {
+  const recovery = validRecovery(input.recovery);
+  if (
+    !recovery
+    || input.outcomes.length !== input.classification.institutional.length
+    || input.outcomes.length > MAX_EXPORTED_RECORDS
+    || input.outcomes.some((outcome) => !parseMigrationSourceOutcome(outcome))
+    || input.classification.retained.some((preference) => !validRetainedPreference(preference))
+    || input.classification.quarantined.some((memory) => !validQuarantinedMemory(memory))
+  ) return null;
+
+  const candidates = new Map(input.classification.institutional.map((candidate) => [candidate.vestigeId, candidate]));
+  const outcomes = new Map(input.outcomes.map((outcome) => [outcome.vestigeId, outcome]));
+  if (candidates.size !== input.classification.institutional.length || outcomes.size !== input.outcomes.length) return null;
+
+  for (const [vestigeId, candidate] of candidates) {
+    const outcome = outcomes.get(vestigeId);
+    if (
+      !outcome
+      || outcome.sourceHash !== candidate.sourceHash
+      || outcome.sourceBytes !== candidate.sourceBytes
+      || outcome.records.length !== candidate.records.length
+      || outcome.records.some((record, index) => !migrationOutcomeMatchesCandidate(candidate.records[index], record))
+      || outcome.status !== deriveSourceStatus(outcome.records)
+    ) return null;
+  }
+
+  if (!distinctSourceIds({
+    outcomes: input.outcomes,
+    retained: input.classification.retained,
+    quarantined: input.classification.quarantined,
+  }) || !uniqueRecordKeys(input.outcomes)) return null;
+
+  const parsedOutcomes = input.outcomes.map((outcome) => ({
+    ...outcome,
+    records: outcome.records.map((record) => ({ ...record })),
+  }));
+  const retainedPreferences = input.classification.retained.map((preference) => ({ ...preference }));
+  const quarantined = input.classification.quarantined.map((memory) => ({ ...memory }));
+  return {
+    schemaVersion: 2,
+    layout: "source-bundles",
+    recovery,
+    summary: derivedSummary({
+      outcomes: parsedOutcomes,
+      retainedPreferences: retainedPreferences.length,
+      quarantined: quarantined.length,
+      redacted: input.classification.institutional.reduce((count, candidate) => count + Number(candidate.wasRedacted), 0),
+    }),
+    outcomes: parsedOutcomes,
+    retainedPreferences,
+    quarantined,
+  };
+}
+
+export function parseMigrationReport(value: unknown): MigrationReport | null {
+  const report = object(value);
+  if (!report || !onlyKeys(report, [
+    "schemaVersion",
+    "layout",
+    "recovery",
+    "summary",
+    "outcomes",
+    "retainedPreferences",
+    "quarantined",
+  ])) return null;
+  if (report.schemaVersion !== 2 || report.layout !== "source-bundles") return null;
+
+  const recovery = validRecovery(report.recovery);
+  const outcomes = Array.isArray(report.outcomes) ? report.outcomes.map(parseMigrationSourceOutcome) : null;
+  const retainedPreferences = Array.isArray(report.retainedPreferences)
+    ? report.retainedPreferences.map(validRetainedPreference)
+    : null;
   const quarantined = Array.isArray(report.quarantined)
-    ? report.quarantined.map((item) => {
-      const candidate = object(item);
-      const vestigeId = candidate?.vestigeId === null ? null : text(candidate?.vestigeId);
-      const reason = text(candidate?.reason) as QuarantineReason;
-      return candidate
-        && onlyKeys(candidate, ["vestigeId", "reason"])
-        && (vestigeId === null || UUID_PATTERN.test(vestigeId))
-        && ["record_invalid", "record_too_large", "lifecycle_invalid", "export_invalid"].includes(reason)
-        ? { vestigeId, reason }
-        : null;
-    })
+    ? report.quarantined.map(validQuarantinedMemory)
     : null;
   const summary = object(report.summary);
   if (
-    !backup
-    || !exported
-    || !validSnapshot
+    !recovery
     || !outcomes
-    || outcomes.some((outcome) => outcome === null)
+    || !retainedPreferences
     || !quarantined
-    || quarantined.some((item) => item === null)
+    || outcomes.some((outcome) => outcome === null)
+    || retainedPreferences.some((preference) => preference === null)
+    || quarantined.some((memory) => memory === null)
     || outcomes.length > MAX_EXPORTED_RECORDS
+    || retainedPreferences.length > MAX_EXPORTED_RECORDS
     || quarantined.length > MAX_EXPORTED_RECORDS
     || !summary
     || !onlyKeys(summary, ["migrated", "unchanged", "retainedPreferences", "quarantined", "conflicts", "failed", "unverified", "redacted"])
   ) return null;
 
-  const parsedOutcomes = outcomes as ImportOutcome[];
+  const parsedOutcomes = outcomes as MigrationSourceOutcome[];
+  const parsedRetained = retainedPreferences as RetainedPreference[];
   const parsedQuarantined = quarantined as QuarantinedMemory[];
-  const uniqueVestigeIds = new Set(parsedOutcomes.map((outcome) => outcome.vestigeId));
-  const retainedPreferences = nonNegativeInteger(summary.retainedPreferences, MAX_EXPORTED_RECORDS);
   const redacted = nonNegativeInteger(summary.redacted, MAX_EXPORTED_RECORDS);
   if (
-    uniqueVestigeIds.size !== parsedOutcomes.length
-    || retainedPreferences === null
-    || redacted === null
+    redacted === null
+    || redacted > parsedOutcomes.length
+    || !distinctSourceIds({ outcomes: parsedOutcomes, retained: parsedRetained, quarantined: parsedQuarantined })
+    || !uniqueRecordKeys(parsedOutcomes)
   ) return null;
 
   const expected = derivedSummary({
     outcomes: parsedOutcomes,
-    retainedPreferences,
+    retainedPreferences: parsedRetained.length,
     quarantined: parsedQuarantined.length,
     redacted,
   });
   return Object.entries(expected).every(([key, value]) => summary[key] === value)
     ? {
       schemaVersion: 2,
-      recovery: { backup, export: exported, snapshot: validSnapshot },
+      layout: "source-bundles",
+      recovery,
       summary: expected,
       outcomes: parsedOutcomes,
+      retainedPreferences: parsedRetained,
       quarantined: parsedQuarantined,
     }
     : null;
@@ -359,31 +312,6 @@ export function serializeMigrationReport(report: MigrationReport): Serialization
   return parseMigrationReport(report) ? serialize(report) : { success: false, error: "report_invalid" };
 }
 
-export function cleanupOutcomes(report: MigrationReport) {
+export function cleanupSources(report: MigrationReport) {
   return report.outcomes.filter((outcome) => outcome.status === "migrated" || outcome.status === "unchanged");
-}
-
-export function buildCleanupReport(input: {
-  sourceReport: string;
-  purgedIds: string[];
-  retained: Array<{ vestigeId: string; reason: CleanupRetentionReason }>;
-}): CleanupReport | null {
-  const sourceReport = text(input.sourceReport);
-  const purgedIds = stringArray(input.purgedIds, MAX_EXPORTED_RECORDS);
-  const retained = input.retained.map((item) => ({ vestigeId: text(item.vestigeId), reason: item.reason }));
-  if (
-    !ARTIFACT_NAME_PATTERN.test(sourceReport)
-    || sourceReport.length > MAX_ARTIFACT_NAME_LENGTH
-    || !purgedIds
-    || !purgedIds.every((id) => UUID_PATTERN.test(id))
-    || retained.length > MAX_EXPORTED_RECORDS
-    || !retained.every((item) => UUID_PATTERN.test(item.vestigeId) && cleanupReasons.has(item.reason))
-    || new Set([...purgedIds, ...retained.map((item) => item.vestigeId)]).size !== purgedIds.length + retained.length
-  ) return null;
-  return { schemaVersion: 2, sourceReport, purgedIds: [...purgedIds], retained };
-}
-
-export function serializeCleanupReport(report: CleanupReport): SerializationResult {
-  const valid = buildCleanupReport(report);
-  return valid ? serialize(valid) : { success: false, error: "report_invalid" };
 }
