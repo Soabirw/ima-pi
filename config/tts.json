@@ -1,0 +1,8 @@
+{
+  "enable": false,
+  "autoSpeak": false,
+  "provider": "openai",
+  "model": "gpt-4o-mini-tts",
+  "voice": "alloy",
+  "playerCommand": "ffplay"
+}

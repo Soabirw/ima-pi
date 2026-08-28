@@ -4,6 +4,10 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ## [Unreleased]
 
+### Added
+
+- Added the bundled TTS S1 foundation: disabled by default, with validated local configuration and TUI-only non-fatal credential/player readiness notices; synthesis and playback remain deferred.
+
 ## [1.15.0] - 2026-08-28
 
 ### Added

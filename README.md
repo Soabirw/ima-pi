@@ -10,6 +10,21 @@ Pi-native IMA agent harness, packaged through Pi's standard Git/npm package mode
 - **A guided development lifecycle with bounded autonomy:** use the manual phases or the explicit, user-gated `/ima:cycle`; autonomous progression requires an approved bounded, conflict-free, low-risk plan and verified evidence, and it stops at `document`.
 - **Bounded specialist delegation** keeps work scoped while parent-owned lifecycle gates preserve accountability.
 
+## Text-to-speech foundation (S1)
+
+The bundled TTS foundation is disabled by default. To opt into readiness checks for later
+speech features, create `~/.pi/agent/ima/tts.json` with the supported keys:
+`enable`, `autoSpeak`, `provider`, `model`, `voice`, and `playerCommand`. The package
+defaults are `enable: false`, `autoSpeak: false`, `provider: "openai"`,
+`model: "gpt-4o-mini-tts"`, `voice: "alloy"`, and `playerCommand: "ffplay"`.
+`playerCommand` must be an absolute executable path or a bare command name resolved through
+`PATH`; relative paths are rejected.
+
+TTS reuses Pi's existing OpenAI authentication, including `OPENAI_API_KEY`, and never
+stores credentials. Readiness checks run only in the interactive TUI; print, JSON, and RPC
+modes remain silent. `autoSpeak` has no S1 runtime effect, and S1 does not synthesize,
+play, or save audio; `/speak` and automatic speech are later units.
+
 Start with the [package guide](docs/guide.md). For the memory and lifecycle contracts, see [FNR-3016](docs/foundation/FNR-3016.md) and [FNR-3036](docs/foundation/FNR-3036.md).
 
 ## Install and get started
