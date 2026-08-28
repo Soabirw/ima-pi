@@ -4,21 +4,16 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ## [Unreleased]
 
-### Fixed
-
-- Corrected `/ima:vestige-migrate` to classify legacy and unknown non-preference records as institutional by default while retaining only explicit standalone preferences.
-- Added logical-record migration for 44–160 KB records, Unicode-safe source bundles for larger records, index-last storage, direct destination verification, and source-level all-or-nothing cleanup verification.
-- Rejected legacy schema-v2 migration reports without the required `source-bundles` layout; operators must run a new non-destructive migration before cleanup.
-
-
-## [1.14.0] - 2026-08-27
+## [1.15.0] - 2026-08-28
 
 ### Added
 
+- Completed the package-native Vestige-to-Tier-1 migration workflow, including bounded export, migration-local secret redaction, institutional-by-default classification, idempotent import, and direct destination verification. See the [Vestige migration quick guide](README.md#vestige-migration-quick-guide).
 - Added schema-v2 Tier-1 lifecycle manifests with deterministic vectorless detail chunks, UTF-8-aware lossless splitting/reassembly, chunks-first/manifest-last persistence, and fail-closed integrity validation.
 - Added an explicit required `ima_lifecycle.summary` contract for manifest-only semantic lifecycle recall.
 - Added package-native Qdrant/Ollama institutional corpus tools for bounded immutable storage, semantic search, lifecycle-key recall, full retrieval, and read-only prerequisite status.
-- Added `/ima:vestige-migrate` with bounded Vestige export, migration-local secret redaction, idempotent Tier-1 import, quarantine reporting, a non-destructive default, and later explicit Tier-1-verified cleanup that counts a purge only after a positive deletion acknowledgment.
+- Added logical-record migration for 44–160 KB records, Unicode-safe source bundles for larger records, index-last storage, and source-level all-or-nothing cleanup verification.
+- Added itemized `/ima:vestige-migrate dry-run` diagnostics with sanitized prerequisite context, restricted local backup/export/report artifacts, explicit `READY`/`NOT_READY` readiness, and no Qdrant or Vestige record mutation.
 
 ### Changed
 
@@ -26,6 +21,14 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 - Replaced the `qdrant-memory` MCP dependency with direct abort-aware Node fetch boundaries while preserving `ima_context.durableKnowledge`.
 - Restricted optional durable-knowledge lookups to the known legacy `ima-knowledge` collection so unknown embedding compatibility fails closed.
 - Updated Qdrant skills, preflight, migration, gateway, activity, and documentation contracts for the native corpus boundary.
+
+### Fixed
+
+- Corrected `/ima:vestige-migrate` to classify legacy and unknown non-preference records as institutional by default while retaining only explicit standalone preferences.
+- Rejected legacy schema-v2 migration reports without the required `source-bundles` layout; operators must run a new non-destructive migration before cleanup.
+- Corrected cleanup to send Vestige's canonical `purge` action and count a source as purged only after an identity-bound receipt; verified `migrated` and idempotently `unchanged` sources are cleanup-eligible after re-verification.
+
+## [1.14.0] - 2026-08-27
 
 ### Fixed
 
