@@ -11,6 +11,7 @@ import {
   migrationOutcomeMatchesCandidate,
   parseMigrationSourceOutcome,
   sourceDestinationOutcome,
+  vestigePurgeAcknowledged,
   type DestinationRecordOutcome,
   type ImportReason,
   type ImportStatus,
@@ -33,6 +34,7 @@ export {
   destinationRecordOutcome,
   institutionalExpectationMatches,
   sourceDestinationOutcome,
+  vestigePurgeAcknowledged,
 };
 export type {
   DestinationRecordOutcome,

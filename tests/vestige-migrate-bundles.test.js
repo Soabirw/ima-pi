@@ -20,7 +20,11 @@ import {
   verifyMigrationSourceForCleanup,
 } from "../lib/vestige-migrate-qdrant.ts";
 import { cleanupVestige, migrateVestige } from "../extensions/vestige-migrate.ts";
-import { createLogicalQdrantFixture, sqliteBackup } from "./vestige-migrate-fixtures.js";
+import {
+  createLogicalQdrantFixture,
+  purgeReceipt,
+  sqliteBackup,
+} from "./vestige-migrate-fixtures.js";
 
 const createdAt = "2026-08-27T22:43:29.085Z";
 const sourceId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -183,20 +187,64 @@ test("cleanup deletes one verified source once after all bundle records verify",
     now: () => new Date("2026-08-27T22:43:29.085Z"),
   });
   const deleted = [];
+  const actions = [];
   const cleanup = await cleanupVestige(root, {
     reportPath: migration.artifactPath,
     confirm: true,
   }, {
     client: fixture.client,
-    mcpSession: async (_server, callback) => callback(async (_name, args) => {
+    mcpSession: async (_server, callback) => callback(async (name, args) => {
+      actions.push({ name, action: args.action });
       deleted.push(args.id);
-      return { structuredContent: { deleted: true } };
+      return purgeReceipt(args.id);
     }),
     now: () => new Date("2026-08-27T22:44:29.085Z"),
   });
 
   assert.equal(cleanup.purged, 1);
   assert.deepEqual(deleted, [sourceId]);
+  assert.deepEqual(actions, [{ name: "memory", action: "purge" }]);
+});
+
+test("cleanup deletes an idempotently unchanged bundle after all records verify", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "ima-pi-vestige-bundle-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const fixture = createLogicalQdrantFixture();
+  const content = "é".repeat(Math.ceil((MAX_STORED_ARTIFACT_BYTES + 8) / 2));
+  const exportText = JSON.stringify([{ id: sourceId, content, createdAt }]);
+  let migrationMinute = 50;
+  const dependencies = {
+    client: fixture.client,
+    createSnapshot: async () => ({ success: true, data: { name: "snapshot.snapshot" } }),
+    runVestigeBackup: async ({ outputPath }) => writeFile(outputPath, sqliteBackup()),
+    runVestigeExport: async ({ outputPath }) => writeFile(outputPath, exportText),
+    now: () => new Date(`2026-08-27T22:${migrationMinute++}:29.085Z`),
+  };
+  const first = await migrateVestige(root, dependencies);
+  const second = await migrateVestige(root, dependencies);
+  assert.equal(first.report.outcomes[0].status, "migrated");
+  assert.equal(second.report.outcomes[0].status, "unchanged");
+  assert.equal(second.report.outcomes[0].records.length > 1, true);
+
+  const deleted = [];
+  const actions = [];
+  const cleanup = await cleanupVestige(root, {
+    reportPath: second.artifactPath,
+    confirm: true,
+  }, {
+    client: fixture.client,
+    mcpSession: async (_server, callback) => callback(async (name, args) => {
+      actions.push({ name, action: args.action });
+      deleted.push(args.id);
+      return purgeReceipt(args.id);
+    }),
+    now: () => new Date("2026-08-27T22:52:29.085Z"),
+  });
+
+  assert.equal(cleanup.purged, 1);
+  assert.equal(cleanup.retained, 0);
+  assert.deepEqual(deleted, [sourceId]);
+  assert.deepEqual(actions, [{ name: "memory", action: "purge" }]);
 });
 
 test("cleanup verification retains an entire bundle when one destination is missing", async () => {

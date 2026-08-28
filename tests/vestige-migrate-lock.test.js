@@ -6,10 +6,10 @@ import test from "node:test";
 import { registerVestigeMigrateTools } from "../extensions/vestige-migrate.ts";
 import { withVestigeMigrationLock } from "../lib/vestige-migrate-lock.ts";
 import {
+  corpusPrerequisites,
   createdAt,
   retainedId,
   sqliteBackup,
-  success,
   temporaryProject,
 } from "./vestige-migrate-fixtures.js";
 
@@ -64,26 +64,56 @@ test("migration lock fails closed while held, releases on settlement, and preser
   await rm(lockPath);
 });
 
+test("migration lock preserves rejected operation identity when release fails", async (t) => {
+  const root = await temporaryProject(t);
+  const lockPath = join(root, "locks", "rejected.lock");
+  const sentinel = { reason: "original_interruption" };
+
+  await assert.rejects(
+    withVestigeMigrationLock(async () => {
+      await rm(lockPath);
+      throw sentinel;
+    }, { lockPath }),
+    (error) => {
+      assert.equal(error, sentinel);
+      return true;
+    },
+  );
+});
+
+test("migration lock reports release failure after a successful callback", async (t) => {
+  const root = await temporaryProject(t);
+  const lockPath = join(root, "locks", "fulfilled.lock");
+
+  await assert.rejects(
+    withVestigeMigrationLock(async () => {
+      await rm(lockPath);
+      return "completed";
+    }, { lockPath }),
+    /migration lock release_failed/,
+  );
+});
+
 test("registered tools serialize shared Vestige/Qdrant operations before project queues", async (t) => {
   const rootA = await temporaryProject(t);
   const rootB = await temporaryProject(t);
   const lockPath = join(rootA, "shared", "vestige-migrate.lock");
   const tools = [];
-  const statusStarted = deferred();
-  const releaseStatus = deferred();
-  let statusCalls = 0;
+  const preflightStarted = deferred();
+  const releasePreflight = deferred();
+  let preflightCalls = 0;
   let backups = 0;
   let exports = 0;
   const dependencies = {
     migrationLockPath: lockPath,
     client: {
-      status: async () => {
-        statusCalls += 1;
-        if (statusCalls === 1) {
-          statusStarted.resolve();
-          await releaseStatus.promise;
+      preflight: async () => {
+        preflightCalls += 1;
+        if (preflightCalls === 1) {
+          preflightStarted.resolve();
+          await releasePreflight.promise;
         }
-        return success({ status: "ready", qdrantVersion: "1.17.1", collection: "ready", missingIndexes: [] });
+        return corpusPrerequisites("ready");
       },
     },
     runVestigeBackup: async ({ outputPath }) => {
@@ -102,19 +132,71 @@ test("registered tools serialize shared Vestige/Qdrant operations before project
   assert.ok(migrate);
   assert.ok(cleanup);
 
-  const first = migrate.execute("first", {}, undefined, () => {}, { cwd: rootA });
-  await statusStarted.promise;
+  const first = migrate.execute("first", { confirm: true }, undefined, () => {}, { cwd: rootA });
+  await preflightStarted.promise;
   await assert.rejects(
-    migrate.execute("second", {}, undefined, () => {}, { cwd: rootB }),
+    migrate.execute("second", { confirm: true }, undefined, () => {}, { cwd: rootB }),
     /migration lock in_progress/,
   );
   await assert.rejects(
     cleanup.execute("cleanup", { reportPath: ".ima/report.json", confirm: false }, undefined, () => {}, { cwd: rootB }),
     /migration lock in_progress/,
   );
-  assert.deepEqual({ statusCalls, backups, exports }, { statusCalls: 1, backups: 0, exports: 0 });
+  assert.deepEqual({ preflightCalls, backups, exports }, { preflightCalls: 1, backups: 0, exports: 0 });
 
-  releaseStatus.resolve();
+  releasePreflight.resolve();
   await first;
-  assert.deepEqual({ statusCalls, backups, exports }, { statusCalls: 1, backups: 1, exports: 1 });
+  assert.deepEqual({ preflightCalls, backups, exports }, { preflightCalls: 1, backups: 1, exports: 1 });
+});
+
+test("dry-run tool holds the shared migration lock before safe preparation completes", async (t) => {
+  const rootA = await temporaryProject(t);
+  const rootB = await temporaryProject(t);
+  const lockPath = join(rootA, "shared", "vestige-migrate.lock");
+  const tools = [];
+  const preflightStarted = deferred();
+  const releasePreflight = deferred();
+  let preflightCalls = 0;
+  let backups = 0;
+  let exports = 0;
+  const dependencies = {
+    migrationLockPath: lockPath,
+    client: {
+      preflight: async () => {
+        preflightCalls += 1;
+        if (preflightCalls === 1) {
+          preflightStarted.resolve();
+          await releasePreflight.promise;
+        }
+        return corpusPrerequisites("ready");
+      },
+    },
+    runVestigeBackup: async ({ outputPath }) => {
+      backups += 1;
+      await writeFile(outputPath, sqliteBackup());
+    },
+    runVestigeExport: async ({ outputPath }) => {
+      exports += 1;
+      await writeFile(outputPath, JSON.stringify([
+        { id: retainedId, content: "User prefers shared lock safety.", createdAt },
+      ]));
+    },
+    now: () => new Date("2026-08-28T00:01:00.000Z"),
+  };
+  registerVestigeMigrateTools({ registerTool: (tool) => tools.push(tool) }, dependencies);
+  const migrate = tools.find((tool) => tool.name === "ima_vestige_migrate");
+  assert.ok(migrate);
+
+  const dryRun = migrate.execute("dry-run", { dryRun: true }, undefined, () => {}, { cwd: rootA });
+  await preflightStarted.promise;
+  await assert.rejects(
+    migrate.execute("actual", { confirm: true }, undefined, () => {}, { cwd: rootB }),
+    /migration lock in_progress/,
+  );
+  assert.deepEqual({ preflightCalls, backups, exports }, { preflightCalls: 1, backups: 0, exports: 0 });
+
+  releasePreflight.resolve();
+  const output = await dryRun;
+  assert.equal(output.details.outcome, "READY");
+  assert.deepEqual({ preflightCalls, backups, exports }, { preflightCalls: 1, backups: 1, exports: 1 });
 });

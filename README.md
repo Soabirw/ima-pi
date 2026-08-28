@@ -136,12 +136,23 @@ Then try:
 
 - `/ima:serena-bootstrap [context]` loads Serena instructions and standard project memories through direct MCP, read-only.
 - `/ima:vestige-bootstrap [topic]` reads relevant user preferences through direct MCP without mutation.
-- `/ima:vestige-migrate [cleanup <report-path>]` performs a non-destructive Vestige lifecycle-memory migration; cleanup is a later explicit, re-verified action, and operators should not run migrations for the same project concurrently.
+- `/ima:vestige-migrate [dry-run|cleanup <report-path> confirm]` supports a non-destructive
+  readiness check, a separate migration, and later explicit, re-verified cleanup. Do not run these
+  shared-artifact operations concurrently; see the [Vestige migration quick guide](#vestige-migration-quick-guide).
 - `/ima:memorize [what should be remembered]` lets users say what should be remembered; it infers project memory versus cross-project preference, asks only when scope is ambiguous, previews exact wording, and requires approval before one verified write.
 - `/ima:preflight [offline|quick|full or request]` reports bounded read-only Pi/IMA diagnostics. It can spool large raw gateway evidence into restrictive temporary files and optionally retain only a redacted final report.
 - `/ima:migrate [request]` classifies legacy configuration and, after an exact preview and approval, writes only supported Pi/IMA configuration atomically.
 
 See [`docs/foundation/FNR-3025.md`](docs/foundation/FNR-3025.md) for source coverage, authority boundaries, verification, limitations, and rollback.
+
+## Vestige migration quick guide
+
+1. Run `/ima:vestige-migrate dry-run` first to create an itemized `READY`/`NOT_READY` checklist and restricted local backup, export, and report artifacts. It does not mutate Vestige or Qdrant records.
+2. When the operator approves the actual migration, run `/ima:vestige-migrate`. It migrates institutional records to Tier-1 Qdrant while retaining only explicit standalone preferences in Vestige.
+3. Review the returned report before any cleanup. A normal rerun is the supported idempotent recovery path.
+4. Only then run `/ima:vestige-migrate cleanup <report-path> confirm`, using the exact relative report path and literal `confirm`. Cleanup re-verifies every destination and applies only to verified `migrated` or idempotently `unchanged` sources; it never deletes standalone preferences.
+
+Unavailable, negative, malformed, or incomplete cleanup evidence retains the source in Vestige. There is no reset or collection-drop command.
 
 ## Pi operational guidance
 

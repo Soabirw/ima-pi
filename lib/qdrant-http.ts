@@ -23,6 +23,7 @@ import {
   reassembleInstitutionalManifest,
   utf8ByteLength,
   validateEmbedding,
+  type CorpusFailureOperation,
   type CorpusResult,
   type ExistingInstitutionalRecord,
   type InstitutionalFilters,
@@ -39,6 +40,7 @@ import {
   collectionName,
   object,
   requestJson,
+  resolveCorpusEndpoint,
   resolveCorpusEndpoints,
   success,
   text,
@@ -57,6 +59,8 @@ export type { CorpusEndpoints, QdrantHttpDependencies } from "./qdrant-http-boun
 
 export const MINIMUM_QDRANT_VERSION = "1.16.0";
 export const MAX_LOGICAL_RECORD_OUTPUT_BYTES = (MAX_STORED_ARTIFACT_BYTES * 6) + 32_000;
+const MAX_QDRANT_VERSION_LENGTH = 32;
+const QDRANT_VERSION = /^(\d{1,9})\.(\d{1,9})\.(\d{1,9})$/;
 const LEGACY_KNOWLEDGE_COLLECTION = "ima-knowledge";
 const REQUIRED_INDEXES = [
   "lifecycle_key",
@@ -70,11 +74,35 @@ const REQUIRED_INDEXES = [
 const MAX_DIRECT_POINT_IDS = MAX_DETAIL_CHUNK_COUNT + 1;
 type CollectionDetails = JsonObject;
 
-export type CorpusStatus = {
-  status: "ready";
-  qdrantVersion: string;
+export type CorpusCollectionState = {
   collection: "absent" | "needs_indexes" | "ready";
   missingIndexes: string[];
+};
+
+export type CorpusStatus = CorpusCollectionState & {
+  status: "ready";
+  qdrantVersion: string;
+};
+
+export type CorpusPrerequisites = {
+  endpointConfiguration: CorpusResult<undefined>;
+  qdrantServiceAndVersion: CorpusResult<string>;
+  ollamaEmbeddingModel: CorpusResult<undefined>;
+  institutionalCollection: CorpusResult<CorpusCollectionState>;
+};
+
+export const corpusStatusFromPrerequisites = (
+  prerequisites: CorpusPrerequisites,
+): CorpusResult<CorpusStatus> => {
+  if (!prerequisites.endpointConfiguration.success) return prerequisites.endpointConfiguration;
+  if (!prerequisites.qdrantServiceAndVersion.success) return prerequisites.qdrantServiceAndVersion;
+  if (!prerequisites.ollamaEmbeddingModel.success) return prerequisites.ollamaEmbeddingModel;
+  if (!prerequisites.institutionalCollection.success) return prerequisites.institutionalCollection;
+  return success({
+    status: "ready",
+    qdrantVersion: prerequisites.qdrantServiceAndVersion.data,
+    ...prerequisites.institutionalCollection.data,
+  });
 };
 
 export type CorpusSummary = {
@@ -99,6 +127,7 @@ export type FullInstitutionalRecord = CorpusSummary & {
 export type CorpusFilters = InstitutionalFilters;
 
 export type QdrantCorpusClient = {
+  preflight: (signal?: AbortSignal) => Promise<CorpusResult<CorpusPrerequisites>>;
   status: (signal?: AbortSignal) => Promise<CorpusResult<CorpusStatus>>;
   ensureCollection: (signal?: AbortSignal) => Promise<CorpusResult<CorpusStatus>>;
   getPoint: (id: string, signal?: AbortSignal) => Promise<CorpusResult<ExistingInstitutionalRecord | null>>;
@@ -113,15 +142,16 @@ export type QdrantCorpusClient = {
 };
 
 const versionParts = (value: string) => {
-  const match = /^(\d+)\.(\d+)\.(\d+)/.exec(value);
-  return match ? match.slice(1).map(Number) : null;
+  if (value.length > MAX_QDRANT_VERSION_LENGTH) return null;
+  const match = QDRANT_VERSION.exec(value);
+  const parts = match?.slice(1).map(Number);
+  return parts?.every(Number.isSafeInteger) ? parts : null;
 };
 
-const versionAtLeast = (actual: string, minimum: string) => {
-  const actualParts = versionParts(actual);
+const versionAtLeast = (actual: number[], minimum: string) => {
   const minimumParts = versionParts(minimum);
-  if (!actualParts || !minimumParts) return false;
-  for (const [index, part] of actualParts.entries()) {
+  if (!minimumParts) return false;
+  for (const [index, part] of actual.entries()) {
     if (part > minimumParts[index]) return true;
     if (part < minimumParts[index]) return false;
   }
@@ -244,103 +274,205 @@ export function createQdrantCorpusClient(
   const fetcher = supplied.fetch ?? globalThis.fetch;
   const timeoutMs = supplied.timeoutMs ?? DEFAULT_HTTP_TIMEOUT_MS;
   const maximumResponseBytes = supplied.maxResponseBytes ?? MAX_HTTP_RESPONSE_BYTES;
-  const endpoints = resolveCorpusEndpoints(supplied.env ?? process.env);
+  const maxAttempts = supplied.maxAttempts;
+  const environment = supplied.env ?? process.env;
+  const resolvedEndpoints = resolveCorpusEndpoints(environment);
+  const endpointConfiguration = resolvedEndpoints.success
+    ? success(undefined)
+    : resolvedEndpoints;
+  const qdrantUrl = resolveCorpusEndpoint(environment.IMA_QDRANT_URL, DEFAULT_QDRANT_URL);
+  const ollamaUrl = resolveCorpusEndpoint(environment.IMA_OLLAMA_URL, DEFAULT_OLLAMA_URL);
 
-  const qdrant = (path: string, signal?: AbortSignal, method?: string, body?: unknown) => {
+  const endpointFailure = (
+    code: "qdrant_unavailable" | "ollama_unavailable",
+  ) => failure(code, {
+    operation: "endpoint_configuration",
+    cause: "invalid_configuration",
+  });
+
+  const qdrant = (
+    path: string,
+    signal?: AbortSignal,
+    method?: string,
+    body?: unknown,
+    operation?: CorpusFailureOperation,
+  ) => {
     if (aborted(signal)) return Promise.resolve(failure("aborted"));
-    if (!endpoints.success) return Promise.resolve(failure(endpoints.error.code));
+    if (!qdrantUrl) return Promise.resolve(endpointFailure("qdrant_unavailable"));
     return requestJson({
       fetcher,
-      endpoint: endpoints.data.qdrantUrl,
+      endpoint: qdrantUrl,
       path,
       signal,
       method,
       body,
       timeoutMs,
       maximumResponseBytes,
+      maxAttempts,
       unavailableCode: "qdrant_unavailable",
+      operation,
     });
   };
 
-  const ollama = (path: string, signal?: AbortSignal, method?: string, body?: unknown) => {
+  const ollama = (
+    path: string,
+    signal?: AbortSignal,
+    method?: string,
+    body?: unknown,
+    operation?: CorpusFailureOperation,
+  ) => {
     if (aborted(signal)) return Promise.resolve(failure("aborted"));
-    if (!endpoints.success) return Promise.resolve(failure(endpoints.error.code));
+    if (!ollamaUrl) return Promise.resolve(endpointFailure("ollama_unavailable"));
     return requestJson({
       fetcher,
-      endpoint: endpoints.data.ollamaUrl,
+      endpoint: ollamaUrl,
       path,
       signal,
       method,
       body,
       timeoutMs,
       maximumResponseBytes,
+      maxAttempts,
       unavailableCode: "ollama_unavailable",
+      operation,
     });
   };
 
   const qdrantVersion = async (signal?: AbortSignal): Promise<CorpusResult<string>> => {
-    const response = bodyOrFailure(await qdrant("", signal), "qdrant_unavailable");
+    const response = bodyOrFailure(
+      await qdrant("", signal, undefined, undefined, "qdrant_version"),
+      "qdrant_unavailable",
+      "qdrant_version",
+    );
     if (!response.success) return response;
     const version = text(object(response.data)?.version);
-    return version && versionAtLeast(version, MINIMUM_QDRANT_VERSION)
+    const parts = versionParts(version);
+    if (!parts) {
+      return failure("response_invalid", {
+        operation: "qdrant_version",
+        cause: "invalid_response",
+      });
+    }
+    return versionAtLeast(parts, MINIMUM_QDRANT_VERSION)
       ? success(version)
-      : version ? failure("qdrant_version_unsupported") : failure("response_invalid");
+      : failure("qdrant_version_unsupported", {
+        operation: "qdrant_version",
+        cause: "incompatible",
+      });
   };
 
   const validateEmbeddingModel = async (signal?: AbortSignal): Promise<CorpusResult<undefined>> => {
-    const response = bodyOrFailure(await ollama("api/tags", signal), "ollama_unavailable");
+    const response = bodyOrFailure(
+      await ollama("api/tags", signal, undefined, undefined, "ollama_embedding_model"),
+      "ollama_unavailable",
+      "ollama_embedding_model",
+    );
     if (!response.success) return response;
     const models = Array.isArray(object(response.data)?.models)
       ? object(response.data)?.models
       : null;
-    if (!models) return failure("response_invalid");
+    if (!models) {
+      return failure("response_invalid", {
+        operation: "ollama_embedding_model",
+        cause: "invalid_response",
+      });
+    }
     const model = models.map(object).find((candidate) =>
       text(candidate?.name) === EMBEDDING_MODEL || text(candidate?.model) === EMBEDDING_MODEL,
     );
-    if (!model) return failure("embedding_model_missing");
+    if (!model) {
+      return failure("embedding_model_missing", {
+        operation: "ollama_embedding_model",
+        cause: "incompatible",
+      });
+    }
     return text(model.digest) === EMBEDDING_MODEL_DIGEST
       ? success(undefined)
-      : failure("embedding_model_mismatch");
+      : failure("embedding_model_mismatch", {
+        operation: "ollama_embedding_model",
+        cause: "incompatible",
+      });
   };
 
   const readCollection = async (
     name: string,
     signal?: AbortSignal,
+    operation?: CorpusFailureOperation,
   ): Promise<CorpusResult<CollectionDetails | null>> => {
-    const response = await qdrant(`collections/${encodeURIComponent(name)}`, signal);
+    const response = await qdrant(
+      `collections/${encodeURIComponent(name)}`,
+      signal,
+      undefined,
+      undefined,
+      operation,
+    );
     if (!response.success) return response;
     if (response.data.status === 404) return success(null);
-    if (response.data.status < 200 || response.data.status >= 300) return failure("qdrant_unavailable");
-    const details = object(object(response.data.body)?.result);
-    return details ? success(details) : failure("response_invalid");
+    const body = bodyOrFailure(response, "qdrant_unavailable", operation);
+    if (!body.success) return body;
+    const details = object(object(body.data)?.result);
+    return details
+      ? success(details)
+      : operation
+        ? failure("response_invalid", { operation, cause: "invalid_response" })
+        : failure("response_invalid");
   };
 
   const institutionalState = async (
     signal?: AbortSignal,
-  ): Promise<CorpusResult<{
-    collection: "absent" | "needs_indexes" | "ready";
-    missingIndexes: string[];
-  }>> => {
-    const collection = await readCollection(INSTITUTIONAL_COLLECTION, signal);
+  ): Promise<CorpusResult<CorpusCollectionState>> => {
+    const collection = await readCollection(
+      INSTITUTIONAL_COLLECTION,
+      signal,
+      "institutional_collection",
+    );
     if (!collection.success) return collection;
     if (!collection.data) return success({ collection: "absent", missingIndexes: [...REQUIRED_INDEXES] });
     const valid = validateInstitutionalCollection(collection.data);
-    if (!valid.success) return valid;
+    if (!valid.success) {
+      return failure(valid.error.code, {
+        operation: "institutional_collection",
+        cause: "incompatible",
+      });
+    }
     return success({
       collection: valid.data.missingIndexes.length ? "needs_indexes" : "ready",
       missingIndexes: valid.data.missingIndexes,
     });
   };
 
+  const preflight = async (
+    signal?: AbortSignal,
+  ): Promise<CorpusResult<CorpusPrerequisites>> => {
+    if (aborted(signal)) return failure("aborted");
+    try {
+      const [qdrantServiceAndVersion, ollamaEmbeddingModel, institutionalCollection] = await Promise.all([
+        qdrantVersion(signal),
+        validateEmbeddingModel(signal),
+        institutionalState(signal),
+      ]);
+      if (aborted(signal)) return failure("aborted");
+      if ([qdrantServiceAndVersion, ollamaEmbeddingModel, institutionalCollection].some(
+        (result) => !result.success && result.error.code === "aborted",
+      )) return failure("aborted");
+      return success({
+        endpointConfiguration,
+        qdrantServiceAndVersion,
+        ollamaEmbeddingModel,
+        institutionalCollection,
+      });
+    } catch {
+      if (aborted(signal)) return failure("aborted");
+      return failure("qdrant_unavailable", {
+        operation: "qdrant_version",
+        cause: "client_exception",
+      });
+    }
+  };
+
   const status = async (signal?: AbortSignal): Promise<CorpusResult<CorpusStatus>> => {
-    const version = await qdrantVersion(signal);
-    if (!version.success) return version;
-    const model = await validateEmbeddingModel(signal);
-    if (!model.success) return model;
-    const state = await institutionalState(signal);
-    return state.success
-      ? success({ status: "ready", qdrantVersion: version.data, ...state.data })
-      : state;
+    const prerequisites = await preflight(signal);
+    return prerequisites.success ? corpusStatusFromPrerequisites(prerequisites.data) : prerequisites;
   };
 
   const createCollection = async (signal?: AbortSignal): Promise<CorpusResult<undefined>> => {
@@ -507,6 +639,7 @@ export function createQdrantCorpusClient(
       signal,
       "PUT",
       body,
+      "institutional_collection",
     );
     if (!response.success) return response;
     if (response.data.status === 409) return failure("record_conflict");
@@ -725,6 +858,7 @@ export function createQdrantCorpusClient(
   };
 
   return {
+    preflight,
     status,
     ensureCollection,
     getPoint,

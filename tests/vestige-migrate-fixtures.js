@@ -21,6 +21,13 @@ export const sqliteBackup = () => {
   return backup;
 };
 
+export const corpusPrerequisites = (collection = "ready", missingIndexes = []) => success({
+  endpointConfiguration: success(undefined),
+  qdrantServiceAndVersion: success("1.17.1"),
+  ollamaEmbeddingModel: success(undefined),
+  institutionalCollection: success({ collection, missingIndexes }),
+});
+
 export const lifecycleId = "11111111-1111-4111-8111-111111111111";
 export const retainedId = "22222222-2222-4222-8222-222222222222";
 export const nonce = "33333333-3333-4333-8333-333333333333";
@@ -42,6 +49,23 @@ ${detail}
 <!-- ima-lifecycle verification: lifecycle_key=ima-pi:lifecycle:vestige-migrate-command-2026-08-26; nonce=${nonce}; phase=plan; jira_key=; taskwarrior_uuid=7742b1e1-af39-44d1-9c7e-39c455b15828; outcome=completed -->`;
 export const lifecycleRecord = (content = lifecycleContent(), id = lifecycleId) => ({ id, content, createdAt });
 export const response = (data) => ({ structuredContent: data });
+
+export const purgeReceipt = (id, overrides = {}) => ({
+  content: [{
+    type: "text",
+    text: JSON.stringify({
+      action: "purge",
+      success: true,
+      nodeId: id,
+      deletedAt: "2026-08-28T00:00:00.000Z",
+      edgesPruned: 0,
+      insightsRewritten: 0,
+      insightsDeleted: 0,
+      childrenOrphaned: 0,
+      ...overrides,
+    }),
+  }],
+});
 
 export const temporaryProject = async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "ima-pi-vestige-migrate-"));
@@ -71,6 +95,7 @@ export const fakeClient = (state = { collection: "absent" }) => {
     points,
     records,
     client: {
+      preflight: async () => corpusPrerequisites(state.collection),
       status: async () => success({
         status: "ready", qdrantVersion: "1.17.1", collection: state.collection, missingIndexes: [],
       }),
@@ -186,6 +211,7 @@ export const createLogicalQdrantFixture = (options = {}) => {
   };
 
   const client = {
+    preflight: async () => corpusPrerequisites(collection),
     status: async () => success({
       status: "ready",
       qdrantVersion: "1.17.1",

@@ -51,9 +51,38 @@ export type CorpusErrorCode =
   | "collection_bootstrap_failed"
   | "query_failed";
 
+export type CorpusFailureOperation =
+  | "endpoint_configuration"
+  | "qdrant_version"
+  | "ollama_embedding_model"
+  | "institutional_collection";
+
+export type CorpusFailureCause =
+  | "invalid_configuration"
+  | "timeout"
+  | "transport"
+  | "transport_connect"
+  | "transport_reset"
+  | "transport_closed"
+  | "transport_other"
+  | "http_status"
+  | "invalid_response"
+  | "incompatible"
+  | "client_exception";
+
+export type CorpusFailureContext = {
+  operation: CorpusFailureOperation;
+  cause: CorpusFailureCause;
+  httpStatus?: number;
+};
+
 export type CorpusFailure = {
   success: false;
-  error: { code: CorpusErrorCode; message: string };
+  error: {
+    code: CorpusErrorCode;
+    message: string;
+    context?: CorpusFailureContext;
+  };
 };
 
 export type CorpusSuccess<Data> = {
@@ -87,11 +116,109 @@ const corpusErrorGuidance: Record<CorpusErrorCode, string> = {
   query_failed: "Check corpus availability and compatibility before retrying.",
 };
 
+const failureOperations = new Set<CorpusFailureOperation>([
+  "endpoint_configuration",
+  "qdrant_version",
+  "ollama_embedding_model",
+  "institutional_collection",
+]);
+const failureCauses = new Set<CorpusFailureCause>([
+  "invalid_configuration",
+  "timeout",
+  "transport",
+  "transport_connect",
+  "transport_reset",
+  "transport_closed",
+  "transport_other",
+  "http_status",
+  "invalid_response",
+  "incompatible",
+  "client_exception",
+]);
+
+const transportFailureCauses = new Map<string, CorpusFailureCause>([
+  ["ECONNREFUSED", "transport_connect"],
+  ["ECONNRESET", "transport_reset"],
+  ["UND_ERR_SOCKET", "transport_reset"],
+  ["other side closed", "transport_reset"],
+  ["ECONNABORTED", "transport_closed"],
+  ["premature close", "transport_closed"],
+]);
+
+const matchingTransportFailureCause = (value: unknown) =>
+  typeof value === "string" ? transportFailureCauses.get(value) : undefined;
+
+export const classifyTransportError = (error: unknown): CorpusFailureCause => {
+  if (!error || typeof error !== "object") return "transport_other";
+  const transportError = error as { name?: unknown; cause?: unknown };
+  const cause = transportError.cause;
+  const causeCode = cause && typeof cause === "object"
+    ? (cause as { code?: unknown }).code
+    : undefined;
+  return matchingTransportFailureCause(causeCode)
+    ?? matchingTransportFailureCause(transportError.name)
+    ?? "transport_other";
+};
+
+export const isRetriablePreSend = (cause: CorpusFailureCause) =>
+  cause === "transport_connect"
+  || cause === "transport_reset"
+  || cause === "transport_closed";
+
 export const CORPUS_ERROR_GUIDANCE = Object.freeze(corpusErrorGuidance);
-export const corpusFailure = (code: CorpusErrorCode): CorpusFailure => ({
-  success: false,
-  error: { code, message: `Qdrant corpus failed: ${code}. ${CORPUS_ERROR_GUIDANCE[code]}` },
-});
+export const isCorpusErrorCode = (value: unknown): value is CorpusErrorCode =>
+  typeof value === "string" && Object.hasOwn(CORPUS_ERROR_GUIDANCE, value);
+
+export const normalizeCorpusFailureContext = (
+  value: unknown,
+): CorpusFailureContext | undefined => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const context = value as Record<string, unknown>;
+  const operation = context.operation;
+  const cause = context.cause;
+  if (!failureOperations.has(operation as CorpusFailureOperation) || !failureCauses.has(cause as CorpusFailureCause)) {
+    return undefined;
+  }
+
+  const httpStatus = context.httpStatus;
+  if (httpStatus === undefined) {
+    return cause === "http_status" ? undefined : {
+      operation: operation as CorpusFailureOperation,
+      cause: cause as CorpusFailureCause,
+    };
+  }
+  return cause === "http_status"
+    && Number.isInteger(httpStatus)
+    && httpStatus >= 100
+    && httpStatus <= 599
+    ? {
+      operation: operation as CorpusFailureOperation,
+      cause: cause as CorpusFailureCause,
+      httpStatus,
+    }
+    : undefined;
+};
+
+const failureContextMessage = (context?: CorpusFailureContext) => context
+  ? ` operation=${context.operation}; cause=${context.cause}${
+    context.httpStatus === undefined ? "" : `; status=${context.httpStatus}`
+  }.`
+  : "";
+
+export const corpusFailure = (
+  code: CorpusErrorCode,
+  context?: CorpusFailureContext,
+): CorpusFailure => {
+  const normalizedContext = normalizeCorpusFailureContext(context);
+  return {
+    success: false,
+    error: {
+      code,
+      message: `Qdrant corpus failed: ${code}.${failureContextMessage(normalizedContext)} ${CORPUS_ERROR_GUIDANCE[code]}`,
+      ...(normalizedContext ? { context: normalizedContext } : {}),
+    },
+  };
+};
 export const success = <Data>(data: Data): CorpusSuccess<Data> => ({ success: true, data });
 export const aborted = (signal?: AbortSignal) => signal?.aborted === true;
 export const object = (value: unknown): Record<string, unknown> | null =>

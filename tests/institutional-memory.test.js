@@ -21,7 +21,7 @@ import {
 } from "../lib/qdrant-http.ts";
 
 const success = (data) => ({ success: true, data });
-const failure = (code) => corpusFailure(code);
+const failure = (code, context) => corpusFailure(code, context);
 const vector = () => Array.from({ length: VECTOR_SIZE }, () => 0.25);
 const json = (body, status = 200) => new Response(JSON.stringify(body), {
   status,
@@ -341,6 +341,33 @@ test("insert uses named vectors with insert_only and wait", async () => {
   assert.deepEqual(calls[0].body.points[0].vector, { [VECTOR_NAME]: vector() });
 });
 
+test("effectful insert does not retry an indeterminate transport reset by default", async () => {
+  const secret = "insert-transport-secret";
+  let calls = 0;
+  const client = createQdrantCorpusClient({
+    env: environment,
+    fetch: async (input, init = {}) => {
+      calls += 1;
+      const request = new URL(String(input));
+      assert.equal(init.method, "PUT");
+      assert.match(request.pathname, /\/points$/);
+      throw Object.assign(new Error(secret), { cause: { code: "ECONNRESET" } });
+    },
+  });
+
+  const result = await client.insertPoint({
+    record: institutionalPoint("effectful-transport"),
+    vector: vector(),
+  });
+
+  assert.deepEqual(result, failure("qdrant_unavailable", {
+    operation: "institutional_collection",
+    cause: "transport_reset",
+  }));
+  assert.equal(calls, 1);
+  assert.doesNotMatch(JSON.stringify(result), /insert-transport-secret|qdrant\.test/);
+});
+
 test("vectorless chunk insertion uses an empty Qdrant batch vector map", async () => {
   const calls = [];
   const client = createQdrantCorpusClient({
@@ -379,7 +406,10 @@ test("status fails closed for an approved-model digest mismatch", async () => {
       return json({ models: [{ name: "nomic-embed-text:latest", digest: "wrong-digest" }] });
     },
   });
-  assert.deepEqual(await client.status(), failure("embedding_model_mismatch"));
+  assert.deepEqual(await client.status(), failure("embedding_model_mismatch", {
+    operation: "ollama_embedding_model",
+    cause: "incompatible",
+  }));
 });
 
 test("lifecycle recall uses an exact keyword filter and excludes full detail", async () => {
@@ -658,7 +688,10 @@ test("status fails closed for an unavailable Qdrant without exposing transport t
   });
 
   const result = await client.status();
-  assert.deepEqual(result, failure("qdrant_unavailable"));
+  assert.deepEqual(result, failure("qdrant_unavailable", {
+    operation: "qdrant_version",
+    cause: "transport_other",
+  }));
   assert.equal(JSON.stringify(result).includes(secret), false);
 });
 
@@ -673,7 +706,10 @@ test("status fails closed when the approved embedding model is absent", async ()
     },
   });
 
-  assert.deepEqual(await client.status(), failure("embedding_model_missing"));
+  assert.deepEqual(await client.status(), failure("embedding_model_missing", {
+    operation: "ollama_embedding_model",
+    cause: "incompatible",
+  }));
 });
 
 test("status fails closed for an incompatible collection vector configuration", async () => {
@@ -690,7 +726,10 @@ test("status fails closed for an incompatible collection vector configuration", 
     },
   });
 
-  assert.deepEqual(await client.status(), failure("collection_incompatible"));
+  assert.deepEqual(await client.status(), failure("collection_incompatible", {
+    operation: "institutional_collection",
+    cause: "incompatible",
+  }));
 });
 
 test("status rejects malformed and oversized Qdrant responses without exposing response text", async () => {
@@ -710,7 +749,10 @@ test("status rejects malformed and oversized Qdrant responses without exposing r
       fetch: async () => response(),
     });
     const result = await client.status();
-    assert.deepEqual(result, failure("response_invalid"));
+    assert.deepEqual(result, failure("response_invalid", {
+      operation: "qdrant_version",
+      cause: "invalid_response",
+    }));
     assert.equal(JSON.stringify(result).includes(secret), false);
   }
 });

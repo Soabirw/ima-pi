@@ -290,5 +290,18 @@ export function cleanupDestinationIsVerified(
   );
 }
 
+export function vestigePurgeAcknowledged(value: unknown, vestigeId: string) {
+  const record = object(value);
+  return Boolean(
+    record
+    && record.action === "purge"
+    && record.success === true
+    && typeof record.nodeId === "string"
+    && record.nodeId.trim().toLowerCase() === vestigeId.trim().toLowerCase()
+    && typeof record.deletedAt === "string"
+    && record.deletedAt.trim().length > 0,
+  );
+}
+
 export const isQuarantineReason = (value: string): value is QuarantineReason =>
   quarantineReasons.has(value as QuarantineReason);

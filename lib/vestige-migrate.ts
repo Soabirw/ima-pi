@@ -47,6 +47,7 @@ export {
   institutionalExpectationMatches,
   parseMigrationReport,
   serializeMigrationReport,
+  vestigePurgeAcknowledged,
 } from "./vestige-migrate-report.ts";
 export type {
   DestinationRecordOutcome,

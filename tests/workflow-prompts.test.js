@@ -404,6 +404,36 @@ test("FNR-3025 support prompts encode gateway, safety, and terminal contracts", 
   for (const value of ["Pi-native", "external through the package MCP adapter", "Serena and Vestige remain external", "Qdrant corpus support is Pi-native", "qdrant-memory", "ima_corpus_*", "~/.pi/agent/ima/config.json", "trusted `.pi/ima/config.json`", "exact redacted preview", "explicit approval", "atomically", "secret", "Validate JSON", "Stop after"]) has(migrate, value);
 });
 
+test("Vestige migration prompt separates dry-run readiness from actual migration", async () => {
+  const migrate = await prompt("vestige-migrate");
+  for (const value of [
+    "$ARGUMENTS",
+    "Invocation arguments",
+    "untrusted command data",
+    "Empty arguments: live migration.",
+    "Exactly `dry-run`: dry run.",
+    "Exactly `cleanup <report-path> confirm`: cleanup.",
+    "unsupported or incomplete arguments",
+    "call no tool",
+    "Usage: /ima:vestige-migrate [dry-run|cleanup <report-path> confirm]",
+    "{ dryRun: true }",
+    "{ confirm: true }",
+    "literal `confirm` token",
+    "exactly once",
+    "READY",
+    "NOT_READY",
+    "never means migrated",
+    "Qdrant snapshot",
+    "Vestige MCP",
+    "does not create",
+    "Do not paraphrase",
+    "separate migration",
+    "idempotent rerun",
+    "cleanup",
+    "restore",
+  ]) has(migrate, value);
+});
+
 test("Unit D scoped guidance uses direct package MCP instructions", async () => {
   const guidance = await Promise.all([
     [skill("mcp-serena"), "package MCP adapter"],

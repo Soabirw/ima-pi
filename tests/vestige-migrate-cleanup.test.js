@@ -4,6 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { Check } from "typebox/value";
 import { createMigrationArtifactRun } from "../lib/vestige-migrate-artifacts.ts";
+import { vestigePurgeAcknowledged } from "../lib/vestige-migrate.ts";
 import { cleanupVestige, migrateVestige, registerVestigeMigrateTools } from "../extensions/vestige-migrate.ts";
 import {
   createdAt,
@@ -11,10 +12,38 @@ import {
   lifecycleId,
   lifecycleRecord,
   migrationCli,
+  purgeReceipt,
   readReport,
+  retainedId,
   response,
   temporaryProject,
 } from "./vestige-migrate-fixtures.js";
+
+test("vestigePurgeAcknowledged requires an identity-bound purge receipt", () => {
+  const receipt = {
+    action: "purge",
+    success: true,
+    nodeId: ` ${lifecycleId.toUpperCase()} `,
+    deletedAt: "2026-08-28T00:00:00.000Z",
+  };
+  const missingDeletedAt = {
+    action: receipt.action,
+    success: receipt.success,
+    nodeId: receipt.nodeId,
+  };
+
+  assert.equal(vestigePurgeAcknowledged(receipt, lifecycleId), true);
+  for (const invalid of [
+    { ...receipt, action: "delete" },
+    { ...receipt, success: false },
+    { ...receipt, nodeId: retainedId },
+    { ...receipt, deletedAt: " " },
+    missingDeletedAt,
+    null,
+  ]) {
+    assert.equal(vestigePurgeAcknowledged(invalid, lifecycleId), false);
+  }
+});
 
 test("cleanup rejects v1 reports and damaged recovery receipts before opening Vestige", async (t) => {
   const root = await temporaryProject(t);
@@ -80,7 +109,7 @@ test("cleanup records complete ID-level outcomes and refuses identity mismatches
     client: fake.client,
     mcpSession: async (_server, callback) => callback(async (name, args) => {
       deleted.push({ name, args });
-      return response({ deleted: true });
+      return purgeReceipt(args.id);
     }),
     now: () => new Date("2026-08-26T21:43:00.000Z"),
   });
@@ -93,7 +122,7 @@ test("cleanup records complete ID-level outcomes and refuses identity mismatches
   assert.deepEqual(cleanup.retained, [{ vestigeId: lifecycleId, reason: "qdrant_unverified" }]);
 });
 
-test("cleanup requires positive Vestige acknowledgement and confirms every retained reason", async (t) => {
+test("cleanup retains every non-acknowledged Vestige purge receipt", async (t) => {
   const root = await temporaryProject(t);
   const exportText = JSON.stringify([lifecycleRecord()]);
   const fake = fakeClient();
@@ -117,14 +146,31 @@ test("cleanup requires positive Vestige acknowledgement and confirms every retai
   );
   assert.equal(collisionCalls, 0);
 
-  for (const acknowledgement of [{ deleted: false }, {}]) {
+  const acknowledgements = [
+    { label: "legacy deleted flag", reply: response({ deleted: false }) },
+    { label: "empty response", reply: response({}) },
+    { label: "already absent", reply: purgeReceipt(lifecycleId, { success: false }) },
+    { label: "mismatched node", reply: purgeReceipt(retainedId) },
+    { label: "missing deletion time", reply: purgeReceipt(lifecycleId, { deletedAt: undefined }) },
+  ];
+  for (const [index, acknowledgement] of acknowledgements.entries()) {
+    const calls = [];
     const result = await cleanupVestige(root, { reportPath: migration.artifactPath, confirm: true }, {
       client: fake.client,
-      mcpSession: async (_server, callback) => callback(async () => response(acknowledgement)),
-      now: () => new Date(`2026-08-26T21:4${acknowledgement.deleted === false ? "7" : "8"}:00.000Z`),
+      mcpSession: async (_server, callback) => callback(async (name, args) => {
+        calls.push({ name, args });
+        return acknowledgement.reply;
+      }),
+      now: () => new Date(`2026-08-26T21:${String(47 + index).padStart(2, "0")}:00.000Z`),
     });
-    assert.equal(result.purged, 0);
-    assert.equal(result.retained, 1);
+    assert.equal(result.purged, 0, acknowledgement.label);
+    assert.equal(result.retained, 1, acknowledgement.label);
+    assert.deepEqual(
+      calls.map(({ name, args }) => ({ name, action: args.action, id: args.id, confirm: args.confirm })),
+      [{ name: "memory", action: "purge", id: lifecycleId, confirm: true }],
+    );
+    const cleanup = JSON.parse(await readFile(join(root, result.reportPath), "utf8"));
+    assert.deepEqual(cleanup.retained, [{ vestigeId: lifecycleId, reason: "vestige_negative_ack" }]);
   }
 });
 
@@ -138,11 +184,13 @@ test("cleanup removes a short outer-whitespace source after normalized verificat
     now: () => new Date("2026-08-26T21:46:00.000Z"),
   });
   const deleted = [];
+  const actions = [];
   const cleanup = await cleanupVestige(root, { reportPath: migration.artifactPath, confirm: true }, {
     client: fake.client,
-    mcpSession: async (_server, callback) => callback(async (_name, args) => {
+    mcpSession: async (_server, callback) => callback(async (name, args) => {
+      actions.push({ name, action: args.action });
       deleted.push(args.id);
-      return response({ deleted: true });
+      return purgeReceipt(args.id);
     }),
     now: () => new Date("2026-08-26T21:47:00.000Z"),
   });
@@ -150,6 +198,41 @@ test("cleanup removes a short outer-whitespace source after normalized verificat
   assert.equal(cleanup.purged, 1);
   assert.equal(cleanup.retained, 0);
   assert.deepEqual(deleted, [sourceId]);
+  assert.deepEqual(actions, [{ name: "memory", action: "purge" }]);
+});
+
+test("cleanup removes an idempotently unchanged single-record source", async (t) => {
+  const root = await temporaryProject(t);
+  const exportText = JSON.stringify([lifecycleRecord()]);
+  const fake = fakeClient();
+  let migrationMinute = 0;
+  const dependencies = {
+    client: fake.client,
+    createSnapshot: async () => ({ success: true, data: { name: "snapshot.snapshot" } }),
+    ...migrationCli("backup", exportText),
+    now: () => new Date(`2026-08-28T00:${String(migrationMinute++).padStart(2, "0")}:00.000Z`),
+  };
+  const first = await migrateVestige(root, dependencies);
+  const second = await migrateVestige(root, dependencies);
+  assert.equal(first.report.outcomes[0].status, "migrated");
+  assert.equal(second.report.outcomes[0].status, "unchanged");
+
+  const deleted = [];
+  const actions = [];
+  const cleanup = await cleanupVestige(root, { reportPath: second.artifactPath, confirm: true }, {
+    client: fake.client,
+    mcpSession: async (_server, callback) => callback(async (name, args) => {
+      actions.push({ name, action: args.action });
+      deleted.push(args.id);
+      return purgeReceipt(args.id);
+    }),
+    now: () => new Date("2026-08-28T00:02:00.000Z"),
+  });
+
+  assert.equal(cleanup.purged, 1);
+  assert.equal(cleanup.retained, 0);
+  assert.deepEqual(deleted, [lifecycleId]);
+  assert.deepEqual(actions, [{ name: "memory", action: "purge" }]);
 });
 
 test("cancellation reaches snapshot and cleanup boundaries without normal reports", async (t) => {
@@ -198,7 +281,7 @@ test("cancellation reaches snapshot and cleanup boundaries without normal report
       client: cleanupClient.client,
       mcpSession: async (_server, callback) => callback(async () => {
         cleanupMcpCalls += 1;
-        return response({ deleted: true });
+        return purgeReceipt(lifecycleId);
       }),
     }, cleanupAbort.signal),
     /abort/i,

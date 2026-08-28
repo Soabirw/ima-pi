@@ -12,6 +12,10 @@ export type VestigeMigrationLockInput = {
   signal?: AbortSignal;
 };
 
+type LockOperationSettlement<Result> =
+  | { status: "fulfilled"; value: Result }
+  | { status: "rejected"; error: unknown };
+
 const lockFailure = (code: "in_progress" | "invalid" | "unavailable" | "release_failed"): never => {
   throw new Error(`Vestige migration lock ${code}.`);
 };
@@ -73,10 +77,22 @@ export async function withVestigeMigrationLock<Result>(
   if (!isAbsolute(path)) lockFailure("invalid");
   await prepareLockDirectory(path, input.signal);
   const handle = await acquireLock(path, input.signal);
+
+  let settlement: LockOperationSettlement<Result>;
   try {
     throwIfAborted(input.signal);
-    return await operation();
-  } finally {
-    await releaseLock(path, handle);
+    settlement = { status: "fulfilled", value: await operation() };
+  } catch (error) {
+    settlement = { status: "rejected", error };
   }
+
+  try {
+    await releaseLock(path, handle);
+  } catch (error) {
+    if (settlement.status === "fulfilled") throw error;
+    // A secondary release failure must not mask the original operation failure.
+  }
+
+  if (settlement.status === "fulfilled") return settlement.value;
+  throw settlement.error;
 }

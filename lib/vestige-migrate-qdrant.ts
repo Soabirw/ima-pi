@@ -127,6 +127,22 @@ export async function importMigrationSource(input: {
   };
 }
 
+export const failedMigrationSourceOutcome = (
+  source: MigrationSourceCandidate,
+  reason: "dependency_blocked" = "dependency_blocked",
+): MigrationSourceOutcome => {
+  const records = source.records.map((candidate) =>
+    sourceDestinationOutcome(source.vestigeId, candidate, "failed", reason),
+  );
+  return {
+    vestigeId: source.vestigeId,
+    sourceHash: source.sourceHash,
+    sourceBytes: source.sourceBytes,
+    status: deriveSourceStatus(records),
+    records,
+  };
+};
+
 const cleanupRecord = async (input: {
   outcome: DestinationRecordOutcome;
   client: QdrantCorpusClient;

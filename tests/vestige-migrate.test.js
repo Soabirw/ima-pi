@@ -6,16 +6,19 @@ import {
   MAX_MIGRATION_REPORT_BYTES,
   buildMigrationReport,
   classifyVestigeExport,
+  cleanupSources,
   parseMigrationReport,
   redactSecrets,
   serializeMigrationReport,
 } from "../lib/vestige-migrate.ts";
 import { migrateVestige } from "../extensions/vestige-migrate.ts";
+import { failedMigrationSourceOutcome } from "../lib/vestige-migrate-qdrant.ts";
 import {
   fakeClient,
   lifecycleContent,
   lifecycleId,
   lifecycleRecord,
+  nonce,
   migrationCli,
   readReport,
   retainedId,
@@ -25,7 +28,16 @@ import {
 const MCP_ARTIFACT_LIMIT_BYTES = 64 * 1024;
 const LARGE_EXPORT_RECORD_COUNT = 80;
 const LARGE_EXPORT_RECORD_BYTES = 1_024;
+const FIXTURE_LIFECYCLE_KEY = "ima-pi:lifecycle:vestige-migrate-command-2026-08-26";
 const reportPath = (migration) => migration.artifactPath;
+
+const distinctLifecycleRecord = (id, lifecycleKey, lifecycleNonce) =>
+  lifecycleRecord(
+    lifecycleContent()
+      .replaceAll(FIXTURE_LIFECYCLE_KEY, lifecycleKey)
+      .replaceAll(nonce, lifecycleNonce),
+    id,
+  );
 
 test("redactSecrets stays deterministic and counts changed records instead of matches", () => {
   const source = [
@@ -58,6 +70,34 @@ test("classification retains only explicit standalone preferences", () => {
   assert.deepEqual(classification.quarantined, [{ vestigeId: null, reason: "export_invalid" }]);
   assert.equal(classification.institutional[0].records[0].expected.sourceRefs.includes(`vestige:${lifecycleId}`), true);
   assert.doesNotMatch(classification.institutional[0].records[0].expected.detail, /lifecycle-secret/);
+});
+
+test("failed source outcomes stay report-valid and block cleanup", () => {
+  const classification = classifyVestigeExport([lifecycleRecord()]);
+  const source = classification.institutional[0];
+  const outcome = failedMigrationSourceOutcome(source);
+  const report = buildMigrationReport({
+    classification,
+    outcomes: [outcome],
+    recovery: {
+      backup: { relativePath: "vestige-backup.sqlite", sizeBytes: 100, sha256: "a".repeat(64) },
+      export: { relativePath: "vestige-export.json", sizeBytes: 2, sha256: "b".repeat(64) },
+      snapshot: { status: "not_applicable" },
+    },
+  });
+
+  assert.ok(report);
+  assert.equal(report.outcomes[0].status, "failed");
+  assert.deepEqual(
+    report.outcomes[0].records.map(({ recordKey }) => recordKey),
+    source.records.map(({ expected }) => expected.recordKey),
+  );
+  assert.equal(
+    report.outcomes[0].records.every(({ status, reason }) =>
+      status === "failed" && reason === "dependency_blocked"),
+    true,
+  );
+  assert.deepEqual(cleanupSources(report), []);
 });
 
 test("migration creates a strict source-bundles v2 report and verifies full records", async (t) => {
@@ -197,6 +237,96 @@ test("a preferences-only export writes a successful report without snapshot or c
   assert.equal(migration.report.summary.retainedPreferences, 1);
   assert.equal(snapshots, 0);
   assert.equal(ensured, 0);
+});
+
+test("actual migration snapshots only existing institutional collections", async (t) => {
+  const exportText = JSON.stringify([lifecycleRecord()]);
+  for (const [collection, expectedSnapshots] of [
+    ["absent", 0],
+    ["needs_indexes", 1],
+    ["ready", 1],
+  ]) {
+    const root = await temporaryProject(t);
+    const fake = fakeClient({ collection });
+    let snapshots = 0;
+    await migrateVestige(root, {
+      client: fake.client,
+      createSnapshot: async () => {
+        snapshots += 1;
+        return { success: true, data: { name: "snapshot.snapshot" } };
+      },
+      ...migrationCli("backup", exportText),
+      now: () => new Date("2026-08-28T02:00:00.000Z"),
+    });
+    assert.equal(snapshots, expectedSnapshots);
+  }
+});
+
+test("an interrupted migration writes a recoverable report without masking cancellation", async (t) => {
+  const root = await temporaryProject(t);
+  const interruptedSourceId = "44444444-4444-4444-8444-444444444444";
+  const remainingSourceId = "55555555-5555-4555-8555-555555555555";
+  const sources = [
+    lifecycleRecord(),
+    distinctLifecycleRecord(
+      interruptedSourceId,
+      "ima-pi:lifecycle:vestige-migrate-command-2026-08-26-interrupted",
+      "66666666-6666-4666-8666-666666666666",
+    ),
+    distinctLifecycleRecord(
+      remainingSourceId,
+      "ima-pi:lifecycle:vestige-migrate-command-2026-08-26-remaining",
+      "77777777-7777-4777-8777-777777777777",
+    ),
+  ];
+  const fake = fakeClient();
+  const controller = new AbortController();
+  const abortReason = new Error("migration_cancelled");
+  const insertPoint = fake.client.insertPoint;
+  let writes = 0;
+  fake.client.insertPoint = async (input) => {
+    const result = await insertPoint(input);
+    writes += 1;
+    if (writes === 2) controller.abort(abortReason);
+    return result;
+  };
+
+  await assert.rejects(
+    migrateVestige(root, {
+      client: fake.client,
+      ...migrationCli("backup", JSON.stringify(sources)),
+      now: () => new Date("2026-08-28T03:00:00.000Z"),
+    }, controller.signal),
+    (error) => {
+      assert.equal(error, abortReason);
+      return true;
+    },
+  );
+
+  const report = await readReport(root, join(
+    ".ima",
+    "vestige-migrate",
+    "2026-08-28T03-00-00-000Z",
+    "report.json",
+  ));
+  assert.equal(report.schemaVersion, 2);
+  assert.equal(report.layout, "source-bundles");
+  assert.ok(parseMigrationReport(report));
+  assert.deepEqual(
+    report.outcomes.map(({ vestigeId, status }) => ({ vestigeId, status })),
+    [
+      { vestigeId: lifecycleId, status: "migrated" },
+      { vestigeId: interruptedSourceId, status: "failed" },
+      { vestigeId: remainingSourceId, status: "failed" },
+    ],
+  );
+  assert.equal(
+    report.outcomes.slice(1).every((outcome) =>
+      outcome.records.every(({ status, reason }) =>
+        status === "failed" && reason === "dependency_blocked")),
+    true,
+  );
+  assert.deepEqual(cleanupSources(report).map(({ vestigeId }) => vestigeId), [lifecycleId]);
 });
 
 test("snapshot boundary posts only to the fixed institutional collection", async () => {
