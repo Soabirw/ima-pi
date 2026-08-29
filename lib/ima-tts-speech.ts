@@ -1,8 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { cleanForSpeech } from "./ima-tts-clean.ts";
+import {
+  MAX_SPEECH_INPUT_CHARACTERS,
+  segmentSpeechText,
+} from "./ima-tts-segment.ts";
 import { isValidPlayerCommand } from "./ima-tts.ts";
 
 const OPENAI_SPEECH_ENDPOINT = "https://api.openai.com/v1/audio/speech";
@@ -154,6 +158,15 @@ const ownsOperation = (
   operation: ActiveOperation,
 ): boolean => activeOperation?.generation === operation.generation;
 
+const playerArguments = (
+  playerCommand: string,
+  path: string,
+): readonly string[] => Object.freeze(
+  basename(playerCommand) === "ffplay"
+    ? ["-autoexit", path]
+    : [path],
+);
+
 const playerSucceeded = (result: unknown): boolean =>
   typeof result === "object"
   && result !== null
@@ -173,12 +186,12 @@ export const synthesizeSpeech = async ({
   const normalizedApiKey = nonEmptyString(apiKey);
   const normalizedModel = nonEmptyString(model);
   const normalizedVoice = nonEmptyString(voice);
-  const normalizedText = nonEmptyString(text);
+  const nonBlankText = nonEmptyString(text);
   if (
     !normalizedApiKey
     || !normalizedModel
     || !normalizedVoice
-    || !normalizedText
+    || !nonBlankText
     || signal.aborted
     || typeof fetchImpl !== "function"
   ) {
@@ -195,7 +208,7 @@ export const synthesizeSpeech = async ({
       body: JSON.stringify({
         model: normalizedModel,
         voice: normalizedVoice,
-        input: normalizedText,
+        input: text,
         response_format: MP3_RESPONSE_FORMAT,
       }),
       signal,
@@ -230,6 +243,10 @@ export const createSpeechEngine = (
   let nextGeneration = 0;
   let activeOperation: ActiveOperation | null = null;
 
+  const operationWasCancelled = (operation: ActiveOperation): boolean =>
+    !ownsOperation(activeOperation, operation)
+    || operation.controller.signal.aborted;
+
   const removeTemporaryAudio = async (path: string | null): Promise<void> => {
     if (!path) return;
 
@@ -249,6 +266,99 @@ export const createSpeechEngine = (
     void removeTemporaryAudio(operation.tempPath);
   };
 
+  const speakSegment = async (
+    operation: ActiveOperation,
+    request: SpeakRequest,
+    playerCommand: string,
+    text: string,
+  ): Promise<SpeakResult> => {
+    let path: string | null = null;
+
+    try {
+      if (operationWasCancelled(operation)) return cancelledSpeech();
+
+      let synthesis: SynthesisResult;
+      try {
+        synthesis = await synthesize({
+          apiKey: request.apiKey,
+          model: request.model,
+          voice: request.voice,
+          text,
+          signal: operation.controller.signal,
+        });
+      } catch {
+        return operationWasCancelled(operation)
+          ? cancelledSpeech()
+          : synthesisFailure();
+      }
+
+      if (operationWasCancelled(operation)) return cancelledSpeech();
+      if (
+        !synthesis.ok
+        || !(synthesis.audio instanceof Uint8Array)
+        || !synthesis.audio.byteLength
+      ) {
+        return synthesisFailure();
+      }
+
+      try {
+        path = temporaryAudioPath(getTemporaryDirectory(), createIdentifier());
+      } catch {
+        path = null;
+      }
+      if (!path) {
+        return failure(
+          "tts_audio_write_failed",
+          "Temporary TTS audio could not be prepared.",
+        );
+      }
+      operation.tempPath = path;
+
+      if (operationWasCancelled(operation)) return cancelledSpeech();
+      try {
+        await writeAudio(path, synthesis.audio, {
+          mode: TEMP_FILE_MODE,
+          flag: TEMP_FILE_FLAG,
+        });
+      } catch {
+        return operationWasCancelled(operation)
+          ? cancelledSpeech()
+          : failure(
+            "tts_audio_write_failed",
+            "Temporary TTS audio could not be written.",
+          );
+      }
+
+      if (operationWasCancelled(operation)) return cancelledSpeech();
+
+      const playbackArguments = [...playerArguments(playerCommand, path)];
+      let playback: unknown;
+      try {
+        playback = await dependencies.exec(playerCommand, playbackArguments, {
+          signal: operation.controller.signal,
+        });
+      } catch {
+        return operationWasCancelled(operation)
+          ? cancelledSpeech()
+          : failure(
+            "tts_playback_failed",
+            "TTS audio playback could not be completed.",
+          );
+      }
+
+      if (operationWasCancelled(operation)) return cancelledSpeech();
+      return playerSucceeded(playback)
+        ? successfulSpeech
+        : failure(
+          "tts_playback_failed",
+          "TTS audio playback could not be completed.",
+        );
+    } finally {
+      await removeTemporaryAudio(path);
+      if (path && operation.tempPath === path) operation.tempPath = null;
+    }
+  };
+
   const speak = async (request: SpeakRequest): Promise<SpeakResult> => {
     cancel();
 
@@ -257,7 +367,8 @@ export const createSpeechEngine = (
     }
 
     const text = cleanForSpeech(request.text);
-    if (!text) return skippedSpeech;
+    const segments = segmentSpeechText(text, MAX_SPEECH_INPUT_CHARACTERS);
+    if (!segments.length) return skippedSpeech;
 
     const playerCommand = nonEmptyString(request.playerCommand);
     if (!playerCommand || !isValidPlayerCommand(playerCommand)) {
@@ -276,77 +387,20 @@ export const createSpeechEngine = (
     activeOperation = operation;
 
     try {
-      let synthesis: SynthesisResult;
-      try {
-        synthesis = await synthesize({
-          apiKey: request.apiKey,
-          model: request.model,
-          voice: request.voice,
-          text,
-          signal: operation.controller.signal,
-        });
-      } catch {
-        return synthesisFailure();
-      }
+      for (const segment of segments) {
+        if (operationWasCancelled(operation)) return cancelledSpeech();
 
-      if (!ownsOperation(activeOperation, operation) || operation.controller.signal.aborted) {
-        return cancelledSpeech();
-      }
-      if (!synthesis.ok || !(synthesis.audio instanceof Uint8Array) || !synthesis.audio.byteLength) {
-        return synthesisFailure();
-      }
-
-      let path: string | null;
-      try {
-        path = temporaryAudioPath(getTemporaryDirectory(), createIdentifier());
-      } catch {
-        path = null;
-      }
-      if (!path) {
-        return failure(
-          "tts_audio_write_failed",
-          "Temporary TTS audio could not be prepared.",
+        const result = await speakSegment(
+          operation,
+          request,
+          playerCommand,
+          segment,
         );
-      }
-      operation.tempPath = path;
-
-      try {
-        await writeAudio(path, synthesis.audio, {
-          mode: TEMP_FILE_MODE,
-          flag: TEMP_FILE_FLAG,
-        });
-      } catch {
-        if (!ownsOperation(activeOperation, operation) || operation.controller.signal.aborted) {
-          return cancelledSpeech();
-        }
-        return failure(
-          "tts_audio_write_failed",
-          "Temporary TTS audio could not be written.",
-        );
+        if (!result.ok) return result;
+        if (operationWasCancelled(operation)) return cancelledSpeech();
       }
 
-      if (!ownsOperation(activeOperation, operation) || operation.controller.signal.aborted) {
-        return cancelledSpeech();
-      }
-
-      let playback: unknown;
-      try {
-        playback = await dependencies.exec(playerCommand, [path], {
-          signal: operation.controller.signal,
-        });
-      } catch {
-        if (!ownsOperation(activeOperation, operation) || operation.controller.signal.aborted) {
-          return cancelledSpeech();
-        }
-        return failure("tts_playback_failed", "TTS audio playback could not be completed.");
-      }
-
-      if (!ownsOperation(activeOperation, operation) || operation.controller.signal.aborted) {
-        return cancelledSpeech();
-      }
-      return playerSucceeded(playback)
-        ? successfulSpeech
-        : failure("tts_playback_failed", "TTS audio playback could not be completed.");
+      return successfulSpeech;
     } finally {
       await removeTemporaryAudio(operation.tempPath);
       if (ownsOperation(activeOperation, operation)) activeOperation = null;

@@ -10,7 +10,7 @@ Pi-native IMA agent harness, packaged through Pi's standard Git/npm package mode
 - **A guided development lifecycle with bounded autonomy:** use the manual phases or the explicit, user-gated `/ima:cycle`; autonomous progression requires an approved bounded, conflict-free, low-risk plan and verified evidence, and it stops at `document`.
 - **Bounded specialist delegation** keeps work scoped while parent-owned lifecycle gates preserve accountability.
 
-## Text-to-speech command and engine (S1–S3)
+## Text-to-speech command and engine (S1–S3, S6)
 
 The bundled TTS feature is disabled by default. To opt in, create
 `~/.pi/agent/ima/tts.json` with the supported keys: `enable`, `autoSpeak`, `provider`,
@@ -23,7 +23,9 @@ The reusable engine removes Markdown and code from response text, requests MP3 a
 OpenAI using explicit credentials, writes a private temporary file, and runs the configured
 Linux player with a separate command and file argument. Starting another request cancels the
 previous synthesis or playback; contained synthesis, file, and player failures return results
-rather than escaping the engine.
+rather than escaping the engine. Long cleaned responses are automatically divided at natural
+boundaries into ordered segments of at most 3,000 characters and spoken one after another. No
+manual `next` is required; a next prompt or `/ima:speak stop` cancels the remaining segments.
 
 When enabled in an interactive TUI, `/ima:speak` speaks the latest completed assistant
 response. Run it again to replay that response, or use `/ima:speak stop` to cancel active

@@ -8,6 +8,7 @@ import {
   createSpeechEngine,
   synthesizeSpeech,
 } from "../lib/ima-tts-speech.ts";
+import { MAX_SPEECH_INPUT_CHARACTERS } from "../lib/ima-tts-segment.ts";
 import {
   playerCandidatePaths,
   TTS_CONFIG_DEFAULTS,
@@ -26,6 +27,8 @@ const successfulSynthesis = () => Object.freeze({
   ok: true,
   audio: Uint8Array.of(1, 2, 3),
 });
+
+const longSpeechText = () => "Sentence. ".repeat(1_000).trim();
 
 const deferred = () => {
   let resolve;
@@ -167,6 +170,46 @@ test("posts an MP3 OpenAI synthesis request with the supplied abort signal", asy
   assert.equal(request.options.signal, controller.signal);
 });
 
+test("preserves nonblank segment boundaries in provider input", async () => {
+  const text = " \nSegment boundary text.\n ";
+  let providerInput;
+  let fetchCalls = 0;
+
+  const result = await synthesizeSpeech({
+    ...speechRequest({ text }),
+    signal: new AbortController().signal,
+    fetchImpl: async (_url, options) => {
+      fetchCalls += 1;
+      providerInput = JSON.parse(options.body).input;
+      return {
+        ok: true,
+        arrayBuffer: async () => Uint8Array.of(1).buffer,
+      };
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(fetchCalls, 1);
+  assert.equal(providerInput, text);
+
+  let blankFetchCalls = 0;
+  const blankResult = await synthesizeSpeech({
+    ...speechRequest({ text: " \n\t " }),
+    signal: new AbortController().signal,
+    fetchImpl: async () => {
+      blankFetchCalls += 1;
+      return {
+        ok: true,
+        arrayBuffer: async () => Uint8Array.of(1).buffer,
+      };
+    },
+  });
+
+  assert.equal(blankResult.ok, false);
+  assert.equal(blankResult.error.code, "tts_synthesis_failed");
+  assert.equal(blankFetchCalls, 0);
+});
+
 test("contains synthesis transport, API, abort, and malformed-audio failures", async () => {
   const failedFetches = [
     async () => {
@@ -285,10 +328,64 @@ test("writes private temporary MP3 audio, plays it without a shell, and removes 
   assert.deepEqual(calls.write[0].audio, Uint8Array.of(1, 2, 3));
   assert.deepEqual(calls.write[0].options, { mode: 0o600, flag: "wx" });
   assert.deepEqual(calls.execute.map(({ command, args }) => ({ command, args })), [
-    { command: "ffplay", args: [path] },
+    { command: "ffplay", args: ["-autoexit", path] },
   ]);
   assert.equal(calls.execute[0].options.signal, calls.synthesize[0].signal);
   assert.deepEqual(calls.remove, [path]);
+});
+
+test("adds autoexit only to FFplay playback commands", async (t) => {
+  const commands = [
+    {
+      label: "bare FFplay",
+      playerCommand: "ffplay",
+      prefix: ["-autoexit"],
+    },
+    {
+      label: "absolute FFplay",
+      playerCommand: "/usr/bin/ffplay",
+      prefix: ["-autoexit"],
+    },
+    {
+      label: "bare custom player",
+      playerCommand: "mpv",
+      prefix: [],
+    },
+    {
+      label: "absolute custom player",
+      playerCommand: "/usr/bin/mpv",
+      prefix: [],
+    },
+  ];
+
+  for (const [index, { label, playerCommand, prefix }] of commands.entries()) {
+    await t.test(label, async () => {
+      let execution;
+      let synthesisSignal;
+      const engine = createSpeechEngine({
+        exec: async (command, args, options) => {
+          execution = { command, args, options };
+          return { code: 0, killed: false };
+        },
+        synthesize: async ({ signal }) => {
+          synthesisSignal = signal;
+          return successfulSynthesis();
+        },
+        writeAudio: async () => {},
+        removeAudio: async () => {},
+        getTemporaryDirectory: () => "/tmp/ima-tts-test",
+        createIdentifier: () => `player-${index}`,
+      });
+      const path = `/tmp/ima-tts-test/ima-tts-player-${index}.mp3`;
+
+      const result = await engine.speak(speechRequest({ playerCommand }));
+
+      assert.deepEqual(result, { ok: true, spoke: true });
+      assert.equal(execution.command, playerCommand);
+      assert.deepEqual(execution.args, [...prefix, path]);
+      assert.equal(execution.options.signal, synthesisSignal);
+    });
+  }
 });
 
 test("contains synthesis, write, and player failures while cleaning owned audio", async (t) => {
@@ -403,7 +500,7 @@ test("supersedes stale synthesis without letting it clear the current operation"
   assert.deepEqual(await second, { ok: true, spoke: true });
   assert.deepEqual(executions, [{
     command: "ffplay",
-    args: ["/tmp/ima-tts-test/ima-tts-current.mp3"],
+    args: ["-autoexit", "/tmp/ima-tts-test/ima-tts-current.mp3"],
   }]);
 });
 
@@ -479,6 +576,271 @@ test("cancels in-flight playback and starts temporary-file cleanup", async () =>
     "/tmp/ima-tts-test/ima-tts-cancelled.mp3",
   ]);
 });
+
+test("speaks long cleaned text in ordered sequential segments", async () => {
+  const calls = {
+    events: [],
+    synthesis: [],
+    writes: [],
+    playback: [],
+    removals: [],
+  };
+  let identifier = 0;
+  const engine = createSpeechEngine({
+    exec: async (_command, args) => {
+      const path = args.at(-1);
+      calls.playback.push(path);
+      calls.events.push(`play:${path}`);
+      return { code: 0, killed: false };
+    },
+    synthesize: async ({ text }) => {
+      calls.synthesis.push(text);
+      calls.events.push(`synthesize:${calls.synthesis.length}`);
+      return successfulSynthesis();
+    },
+    writeAudio: async (path) => {
+      calls.writes.push(path);
+      calls.events.push(`write:${path}`);
+    },
+    removeAudio: async (path) => {
+      calls.removals.push(path);
+      calls.events.push(`remove:${path}`);
+    },
+    getTemporaryDirectory: () => "/tmp/ima-tts-test",
+    createIdentifier: () => `chunk-${identifier += 1}`,
+  });
+  const text = longSpeechText();
+
+  const result = await engine.speak(speechRequest({ text }));
+  const paths = calls.writes;
+
+  assert.deepEqual(result, { ok: true, spoke: true });
+  assert.ok(calls.synthesis.length > 1);
+  assert.equal(calls.synthesis.join(""), cleanForSpeech(text));
+  assert.ok(calls.synthesis.every((chunk) => (
+    chunk.length > 0 && chunk.length <= MAX_SPEECH_INPUT_CHARACTERS
+  )));
+  assert.equal(new Set(paths).size, paths.length);
+  assert.deepEqual(calls.playback, paths);
+  assert.deepEqual(calls.removals, paths);
+  assert.deepEqual(
+    calls.events,
+    paths.flatMap((path, index) => [
+      `synthesize:${index + 1}`,
+      `write:${path}`,
+      `play:${path}`,
+      `remove:${path}`,
+    ]),
+  );
+});
+
+test("avoids separator-only synthesis at a paragraph straddle", async () => {
+  const inputs = [];
+  const text = [
+    "x".repeat(MAX_SPEECH_INPUT_CHARACTERS - 1),
+    "\n\n",
+    "y".repeat(MAX_SPEECH_INPUT_CHARACTERS),
+  ].join("");
+  const engine = createSpeechEngine({
+    exec: async () => ({ code: 0, killed: false }),
+    synthesize: async ({ text: segment }) => {
+      inputs.push(segment);
+      return segment.trim()
+        ? successfulSynthesis()
+        : {
+          ok: false,
+          error: {
+            code: "tts_synthesis_failed",
+            message: "blank segment",
+          },
+        };
+    },
+    writeAudio: async () => {},
+    removeAudio: async () => {},
+  });
+
+  const result = await engine.speak(speechRequest({ text }));
+
+  assert.deepEqual(result, { ok: true, spoke: true });
+  assert.equal(inputs.join(""), cleanForSpeech(text));
+  assert.ok(inputs.every((segment) => (
+    segment.trim() && segment.length <= MAX_SPEECH_INPUT_CHARACTERS
+  )));
+});
+
+test("cancels a segmented sequence before later chunks start", async (t) => {
+  await t.test("during a pending chunk", async () => {
+    const pendingSynthesis = deferred();
+    const secondSynthesisStarted = deferred();
+    const synthesisInputs = [];
+    let writes = 0;
+    let playback = 0;
+    const engine = createSpeechEngine({
+      exec: async () => {
+        playback += 1;
+        return { code: 0, killed: false };
+      },
+      synthesize: async ({ text }) => {
+        synthesisInputs.push(text);
+        if (synthesisInputs.length === 2) {
+          secondSynthesisStarted.resolve();
+          return pendingSynthesis.promise;
+        }
+        return successfulSynthesis();
+      },
+      writeAudio: async () => {
+        writes += 1;
+      },
+      removeAudio: async () => {},
+    });
+
+    const speaking = engine.speak(speechRequest({ text: longSpeechText() }));
+    await secondSynthesisStarted.promise;
+    engine.cancel();
+    pendingSynthesis.resolve(successfulSynthesis());
+
+    const result = await speaking;
+
+    assert.equal(result.ok, false);
+    assert.equal(result.error.code, "tts_cancelled");
+    assert.equal(synthesisInputs.length, 2);
+    assert.equal(writes, 1);
+    assert.equal(playback, 1);
+  });
+
+  await t.test("between completed chunks", async () => {
+    const firstCleanup = deferred();
+    const cleanupStarted = deferred();
+    const synthesisInputs = [];
+    let cleanupCalls = 0;
+    const engine = createSpeechEngine({
+      exec: async () => ({ code: 0, killed: false }),
+      synthesize: async ({ text }) => {
+        synthesisInputs.push(text);
+        return successfulSynthesis();
+      },
+      writeAudio: async () => {},
+      removeAudio: async () => {
+        cleanupCalls += 1;
+        if (cleanupCalls === 1) {
+          cleanupStarted.resolve();
+          await firstCleanup.promise;
+        }
+      },
+    });
+
+    const speaking = engine.speak(speechRequest({ text: longSpeechText() }));
+    await cleanupStarted.promise;
+    engine.cancel();
+    firstCleanup.resolve();
+
+    const result = await speaking;
+
+    assert.equal(result.ok, false);
+    assert.equal(result.error.code, "tts_cancelled");
+    assert.equal(synthesisInputs.length, 1);
+    assert.equal(cleanupCalls, 2);
+  });
+});
+
+test("stops a segmented sequence at the first middle failure", async (t) => {
+  const scenarios = [
+    { failurePoint: "synthesis", expectedCode: "tts_synthesis_failed" },
+    { failurePoint: "write", expectedCode: "tts_audio_write_failed" },
+    { failurePoint: "playback", expectedCode: "tts_playback_failed" },
+  ];
+
+  for (const { failurePoint, expectedCode } of scenarios) {
+    await t.test(`${failurePoint} failure prevents later chunks`, async () => {
+      let synthesisCalls = 0;
+      let writeCalls = 0;
+      let playbackCalls = 0;
+      const engine = createSpeechEngine({
+        exec: async () => {
+          playbackCalls += 1;
+          return failurePoint === "playback" && playbackCalls === 2
+            ? { code: 1, killed: false }
+            : { code: 0, killed: false };
+        },
+        synthesize: async () => {
+          synthesisCalls += 1;
+          return failurePoint === "synthesis" && synthesisCalls === 2
+            ? {
+              ok: false,
+              error: {
+                code: "tts_synthesis_failed",
+                message: "provider failure",
+              },
+            }
+            : successfulSynthesis();
+        },
+        writeAudio: async () => {
+          writeCalls += 1;
+          if (failurePoint === "write" && writeCalls === 2) {
+            throw new Error("write failure");
+          }
+        },
+        removeAudio: async () => {
+          throw new Error("cleanup failure");
+        },
+      });
+
+      const result = await engine.speak(speechRequest({ text: longSpeechText() }));
+
+      assert.equal(result.ok, false);
+      assert.equal(result.error.code, expectedCode);
+      assert.equal(synthesisCalls, 2);
+    });
+  }
+});
+
+test(
+  "runs one opt-in default FFplay multi-segment acceptance check",
+  { skip: process.env.IMA_TTS_IT !== "1" },
+  async (t) => {
+    if (process.platform !== "linux") {
+      t.skip("Linux playback is outside this platform.");
+      return;
+    }
+
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      t.skip("OPENAI_API_KEY is required when IMA_TTS_IT=1.");
+      return;
+    }
+
+    const playerCommand = TTS_CONFIG_DEFAULTS.playerCommand;
+    if (!(await playerIsAvailable(playerCommand))) {
+      t.skip(`A usable Linux player is required: ${playerCommand}.`);
+      return;
+    }
+
+    let synthesisCalls = 0;
+    const engine = createSpeechEngine({
+      exec: runLivePlayer,
+      synthesize: async (request) => {
+        synthesisCalls += 1;
+        return synthesizeSpeech(request);
+      },
+    });
+    const text = (
+      "This is a sequential default FFplay acceptance segment. "
+    ).repeat(60);
+
+    const result = await engine.speak({
+      text,
+      apiKey,
+      model: TTS_CONFIG_DEFAULTS.model,
+      voice: TTS_CONFIG_DEFAULTS.voice,
+      playerCommand,
+    });
+
+    assert.ok(cleanForSpeech(text).length > MAX_SPEECH_INPUT_CHARACTERS);
+    assert.deepEqual(result, { ok: true, spoke: true });
+    assert.ok(synthesisCalls > 1);
+    t.diagnostic("Confirm that default FFplay exits after each segment and segment two begins.");
+  },
+);
 
 test(
   "runs one opt-in live OpenAI MP3 playback acceptance check",
