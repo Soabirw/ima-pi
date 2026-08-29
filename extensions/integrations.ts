@@ -23,6 +23,7 @@ import {
 import {
   deriveLifecycleResult,
   evaluateLifecycleArtifact,
+  normalizeLifecycleRecordKey,
   prepareLifecycleArtifact,
   validateLifecycleRequest,
   validateLifecycleStoreReceipt,
@@ -120,12 +121,18 @@ export const recallCorpusLifecycle = async (
     throwIfAborted(signal);
     if (!recalled.success) return null;
 
-    const records: Array<{ id: string; content: string }> = [];
+    const records: Array<{ id: string; recordKey: string; content: string }> = [];
     for (const summary of recalled.data) {
       const full = await corpus.getInstitutional(summary.recordKey, signal);
       throwIfAborted(signal);
       if (!full.success) return null;
-      records.push({ id: full.data.id, content: full.data.detail });
+      const recordKey = normalizeLifecycleRecordKey(full.data.recordKey);
+      if (!recordKey) return null;
+      records.push({
+        id: full.data.id,
+        recordKey,
+        content: full.data.detail,
+      });
     }
     return { structuredContent: { results: records } };
   } catch {
@@ -406,7 +413,7 @@ async function sourcePayload(
         key: source.key,
         title: `Lifecycle ${source.key}`,
         content: artifact.content,
-        references: [`Qdrant:${artifact.id}`],
+        references: [`Qdrant:${artifact.id}`, `QdrantRecordKey:${artifact.recordKey}`],
       };
     }
     return null;
@@ -507,7 +514,14 @@ export async function coordinateLifecycle(
   signal?: AbortSignal,
 ) {
   const valid = validateLifecycleRequest(request);
-  if (!valid.valid) return { status: "failed", error: valid.error };
+  if (!valid.valid) {
+    return {
+      status: "failed",
+      artifactId: null,
+      recordKey: null,
+      error: valid.error,
+    };
+  }
 
   throwIfAborted(signal);
   const deps = depsFor(supplied);
@@ -524,6 +538,7 @@ export async function coordinateLifecycle(
     return deriveLifecycleResult({
       type: valid.type,
       lifecycleKey: valid.identity.lifecycleKey,
+      recordKey: null,
       receipt: { accepted: false, artifactId: null },
       recall: emptyRecall,
       error: preparation.error.code,
@@ -562,6 +577,7 @@ export async function coordinateLifecycle(
     return deriveLifecycleResult({
       type: valid.type,
       lifecycleKey: valid.identity.lifecycleKey,
+      recordKey: null,
       receipt: { accepted: false, artifactId: null },
       recall: emptyRecall,
       error: "corpus_store_failed",
@@ -575,6 +591,7 @@ export async function coordinateLifecycle(
     return deriveLifecycleResult({
       type: valid.type,
       lifecycleKey: valid.identity.lifecycleKey,
+      recordKey: null,
       receipt,
       recall: emptyRecall,
       error: stored.success ? "corpus_receipt_invalid" : stored.error.code,
@@ -590,6 +607,7 @@ export async function coordinateLifecycle(
     return deriveLifecycleResult({
       type: valid.type,
       lifecycleKey: valid.identity.lifecycleKey,
+      recordKey,
       receipt,
       recall: emptyRecall,
       error: "corpus_recall_failed",
@@ -599,6 +617,7 @@ export async function coordinateLifecycle(
     return deriveLifecycleResult({
       type: valid.type,
       lifecycleKey: valid.identity.lifecycleKey,
+      recordKey,
       receipt,
       recall: emptyRecall,
       error: recalled.error.code,
@@ -608,6 +627,7 @@ export async function coordinateLifecycle(
   return deriveLifecycleResult({
     type: valid.type,
     lifecycleKey: valid.identity.lifecycleKey,
+    recordKey,
     receipt,
     recall: evaluateLifecycleArtifact({ artifact: recalled.data.detail, ...verification }),
   });

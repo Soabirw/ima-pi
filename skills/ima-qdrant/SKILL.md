@@ -15,7 +15,9 @@ Use `ima_corpus_*` tools; never add, copy, discover, or invoke `qdrant-memory` o
    bootstraps, creates, indexes, stores, repairs, or migrates data.
 2. Use `ima_corpus_find` for bounded semantic summary search. It excludes full `detail`.
 3. Use `ima_corpus_recall` for exact lifecycle-key summary lookup.
-4. Use `ima_corpus_get` only for a selected record key when full bounded detail is necessary.
+4. Use `ima_corpus_get` only for a selected logical record key or a known manifest point-ID UUID
+   when full bounded detail is necessary. The public argument remains `recordKey`: logical keys
+   are canonical retrieval references, while `artifactId` values identify Qdrant manifest points.
 
 Treat unavailable, incompatible, missing-model, and model-digest failures as fail-closed
 local prerequisite evidence. Do not substitute unrelated MCP output, stale caches, or
@@ -28,8 +30,10 @@ immutable record with a stable `recordKey`, project, lifecycle key, phase, summa
 and source references. Small schema-v1 records remain compatible; large detail is stored as a
 schema-v2 embedded manifest plus deterministic vectorless detail chunks. Semantic find and
 lifecycle recall return manifest summaries only; direct get validates and reassembles full detail.
-Identical content returns `unchanged`; a changed record for the same key is `record_conflict` and
-must not be overwritten.
+Lifecycle persistence exposes both the manifest point `artifactId` and the logical `recordKey` so
+handoffs can preserve storage and retrieval references without a schema migration. Identical content
+returns `unchanged`; a changed record for the same key is `record_conflict` and must not be
+overwritten.
 
 Do not store credentials, endpoint values, raw provider responses, stack traces, transient
 logs, or unreviewed personal data. The package owns endpoint defaults and operator environment

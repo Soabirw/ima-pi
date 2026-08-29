@@ -1,6 +1,7 @@
 import {
   LIFECYCLE_PHASES,
   MAX_SERIALIZED_LIFECYCLE_ARTIFACT_BYTES,
+  normalizeLifecycleRecordKey,
 } from "./ima-lifecycle.ts";
 import { utf8ByteLength } from "./qdrant-corpus.ts";
 
@@ -187,14 +188,16 @@ const lifecycleArtifact = (value: unknown) => {
     ? result.detail
     : typeof result?.content === "string" ? result.content : "";
   const id = string(result?.id);
+  const recordKey = normalizeLifecycleRecordKey(result?.recordKey);
   const lifecycleKey = string(result?.lifecycleKey);
   const sanitizedContent = redactContextText(content);
   return bounded(id, 1_024)
     && !/[\r\n]/.test(id)
+    && recordKey
     && lifecycleKey
     && sanitizedContent
     && utf8ByteLength(sanitizedContent) <= LIFECYCLE_ARTIFACT_MAXIMUM
-    ? { id, lifecycleKey, content: sanitizedContent }
+    ? { id, recordKey, lifecycleKey, content: sanitizedContent }
     : null;
 };
 
@@ -210,14 +213,14 @@ const verifiedLifecycleArtifact = (content: string, key: string) => {
   return trailingContent === "" || trailingContent === "\n";
 };
 
-export function normalizeCorpusLifecycleRecord(input: { lifecycleKey: string; record: unknown }): { id: string; content: string } | null {
+export function normalizeCorpusLifecycleRecord(input: { lifecycleKey: string; record: unknown }): { id: string; recordKey: string; content: string } | null {
   const source = lifecycleSource(input.lifecycleKey);
   const artifact = lifecycleArtifact(input.record);
   return source
     && artifact
     && artifact.lifecycleKey === source.key
     && verifiedLifecycleArtifact(artifact.content, source.key)
-    ? { id: artifact.id, content: artifact.content }
+    ? { id: artifact.id, recordKey: artifact.recordKey, content: artifact.content }
     : null;
 }
 

@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   LIFECYCLE_PHASES,
   MAX_LIFECYCLE_REQUEST_CHARACTERS,
+  MAX_LIFECYCLE_RECORD_KEY_BYTES,
   MAX_LIFECYCLE_SUMMARY_BYTES,
   buildLifecycleArtifact,
   buildLifecycleNonceMarker,
@@ -10,6 +11,7 @@ import {
   deriveLifecycleNonce,
   deriveLifecycleResult,
   normalizeLifecycleIdentity,
+  normalizeLifecycleRecordKey,
   prepareLifecycleArtifact,
   evaluateLifecycleArtifact,
   hasBoundedLifecycleRecordKey,
@@ -81,6 +83,27 @@ test("requires a bounded control-character-safe UTF-8 summary", () => {
     assert.equal(result.error.code, "invalid_lifecycle_summary");
   }
   assert.equal(MAX_LIFECYCLE_SUMMARY_BYTES, 2_000);
+});
+
+test("normalizes only raw control-safe bounded lifecycle record keys", () => {
+  const valid = "ima-pi:jira:FNR-3036:implementation:abcdefabcdef";
+  const controls = [
+    ...Array.from({ length: 0x20 }, (_, code) => String.fromCodePoint(code)),
+    String.fromCodePoint(0x7f),
+    ...Array.from({ length: 0x20 }, (_, offset) => String.fromCodePoint(0x80 + offset)),
+  ];
+  assert.equal(normalizeLifecycleRecordKey(` ${valid} `), valid);
+  assert.equal(normalizeLifecycleRecordKey("é".repeat(256)), "é".repeat(256));
+  assert.equal(MAX_LIFECYCLE_RECORD_KEY_BYTES, 512);
+
+  for (const control of controls) {
+    for (const invalid of [`${control}${valid}`, `${valid}${control}`, control]) {
+      assert.equal(normalizeLifecycleRecordKey(invalid), null);
+    }
+  }
+  for (const invalid of ["", "é".repeat(257)]) {
+    assert.equal(normalizeLifecycleRecordKey(invalid), null);
+  }
 });
 
 test("preserves the approved raw request ceiling while rejecting empty artifacts", () => {
@@ -210,26 +233,43 @@ test("direct reassembled artifacts must contain every lifecycle completion marke
   assert.equal(verification(lifecycleOnly, { jiraKey: "", taskwarriorUuid: "" }).matched, true);
 });
 
-test("derivation retains the stable public result shape and sanitized failures", () => {
+test("derivation retains both lifecycle references and sanitized failures", () => {
+  const recordKey = `${identity.lifecycleKey}:implementation:abcdefabcdef`;
   const recall = verification(completedArtifact());
   const completed = deriveLifecycleResult({
     type: "implementation",
     lifecycleKey: identity.lifecycleKey,
+    recordKey,
     receipt: { accepted: true, artifactId: "abcdefab-cdef-abcd-efab-cdefabcdefab" },
     recall,
   });
   assert.equal(completed.status, "completed");
+  assert.equal(completed.recordKey, recordKey);
   assert.equal(completed.receiptAccepted, true);
   assert.equal(completed.semanticRecall.matched, true);
+
+  const unverified = deriveLifecycleResult({
+    type: "implementation",
+    lifecycleKey: identity.lifecycleKey,
+    recordKey,
+    receipt: { accepted: true, artifactId: "abcdefab-cdef-abcd-efab-cdefabcdefab" },
+    recall: verification(""),
+    error: "corpus_recall_failed",
+  });
+  assert.equal(unverified.status, "failed");
+  assert.equal(unverified.artifactId, "abcdefab-cdef-abcd-efab-cdefabcdefab");
+  assert.equal(unverified.recordKey, recordKey);
 
   const failed = deriveLifecycleResult({
     type: "plan",
     lifecycleKey: identity.lifecycleKey,
+    recordKey,
     receipt: { accepted: false, artifactId: null },
     recall: verification(""),
     error: "corpus_store_failed",
   });
   assert.equal(failed.status, "failed");
+  assert.equal(failed.recordKey, null);
   assert.deepEqual(sanitizeLifecycleError("invalid_lifecycle_summary", "token=secret"), {
     code: "invalid_lifecycle_summary",
     message: "Lifecycle summary must be non-empty, control-character-safe, and at most 2,000 UTF-8 bytes.",

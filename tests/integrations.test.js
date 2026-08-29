@@ -201,7 +201,11 @@ test("context hydrates an exact lifecycle source through corpus summary recall a
     key: lifecycleKey,
     title: `Lifecycle ${lifecycleKey}`,
     content: detail,
-    references: [`Lifecycle:${lifecycleKey}`, `Qdrant:${stored.id}`],
+    references: [
+      `Lifecycle:${lifecycleKey}`,
+      `Qdrant:${stored.id}`,
+      `QdrantRecordKey:${stored.recordKey}`,
+    ],
   });
   assert.equal(calls.every(([server]) => server === "serena"), true);
 });
@@ -209,13 +213,37 @@ test("context hydrates an exact lifecycle source through corpus summary recall a
 test("corpus lifecycle reconciliation adapts verified direct detail to the existing cycle envelope", async () => {
   const corpus = createCorpus();
   const marker = `<!-- ima-lifecycle verification: lifecycle_key=${lifecycleKey}; nonce=01234567-89ab-cdef-0123-456789abcdef; phase=plan; jira_key=; taskwarrior_uuid=${identity.taskwarriorUuid}; outcome=completed -->`;
-  await seedLifecycleRecord(corpus, `# Plan\n${marker}\n`);
+  const stored = await seedLifecycleRecord(corpus, `# Plan\n${marker}\n`);
 
   const recalled = await recallCorpusLifecycle(`${lifecycleKey} plan`, corpus);
   assert.equal(Array.isArray(recalled.structuredContent.results), true);
   assert.equal(recalled.structuredContent.results.length, 1);
+  assert.equal(recalled.structuredContent.results[0].recordKey, stored.recordKey);
   assert.match(recalled.structuredContent.results[0].content, /outcome=completed/);
   assert.equal(await recallCorpusLifecycle("malformed", corpus), null);
+});
+
+test("corpus lifecycle reconciliation rejects C1 and trim-sensitive C0 record keys", async () => {
+  const marker = `<!-- ima-lifecycle verification: lifecycle_key=${lifecycleKey}; nonce=01234567-89ab-cdef-0123-456789abcdef; phase=plan; jira_key=; taskwarrior_uuid=${identity.taskwarriorUuid}; outcome=completed -->`;
+  const malformedRecordKeys = [
+    (recordKey) => `${recordKey}\u0085`,
+    (recordKey) => `\t${recordKey}`,
+    (recordKey) => `${recordKey}\r`,
+  ];
+
+  for (const malformedRecordKey of malformedRecordKeys) {
+    const corpus = createCorpus();
+    await seedLifecycleRecord(corpus, `# Plan\n${marker}\n`);
+    const getInstitutional = corpus.getInstitutional;
+    corpus.getInstitutional = async (recordKey) => {
+      const full = await getInstitutional(recordKey);
+      return full.success
+        ? success({ ...full.data, recordKey: malformedRecordKey(full.data.recordKey) })
+        : full;
+    };
+
+    assert.equal(await recallCorpusLifecycle(`${lifecycleKey} plan`, corpus), null);
+  }
 });
 
 test("cycle reconciliation filters lifecycle recall by phase before the bounded limit", async () => {
@@ -258,9 +286,35 @@ test("lifecycle persists a manifest and vectorless chunks, then directly verifie
   assert.equal(result.receiptAccepted, true);
   assert.equal(result.semanticRecall.matched, true);
   const stored = [...corpus.points.values()];
+  const manifest = stored.find(({ payload }) => payload.record_kind === "manifest");
+  assert.equal(result.artifactId, manifest.id);
+  assert.equal(result.recordKey, manifest.payload.record_key);
   assert.equal(stored.filter(({ payload }) => payload.record_kind === "manifest").length, 1);
   assert.equal(stored.filter(({ payload }) => payload.record_kind === "detail_chunk").length, 1);
   assert.equal(stored.every(({ payload }) => payload.record_kind === "manifest" || payload.record_kind === "detail_chunk"), true);
+});
+
+test("lifecycle retains both references when direct verification fails", async () => {
+  const corpus = createCorpus();
+  let readReference = "";
+  corpus.getInstitutional = async (recordKey) => {
+    readReference = recordKey;
+    return failure("record_not_found");
+  };
+
+  const result = await coordinateLifecycle({
+    type: "implementation",
+    identity,
+    summary: "Accepted persistence retains references when direct verification fails.",
+    artifact: "# Implementation\n\nVerification failed after storage.",
+  }, { corpus, now: () => new Date("2026-08-27T00:00:00.000Z") });
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.receiptAccepted, true);
+  assert.match(result.artifactId, /^[0-9a-f-]{36}$/i);
+  assert.equal(result.recordKey, readReference);
+  assert.match(result.recordKey, /:implementation:[a-f0-9]{12}$/);
+  assert.equal(result.error.code, "record_not_found");
 });
 
 test("lifecycle retries keep a deterministic manifest identity and reuse orphan chunks", async () => {
@@ -279,6 +333,7 @@ test("lifecycle retries keep a deterministic manifest identity and reuse orphan 
   assert.equal(first.status, "completed");
   assert.equal(second.status, "completed");
   assert.equal(first.artifactId, second.artifactId);
+  assert.equal(first.recordKey, second.recordKey);
   assert.equal(corpus.points.size, pointCount);
 
   const changedSummary = await coordinateLifecycle({
@@ -311,6 +366,7 @@ test("lifecycle retries keep a deterministic manifest identity and reuse orphan 
   });
   assert.equal(retried.status, "completed");
   assert.equal(retried.artifactId, first.artifactId);
+  assert.equal(retried.recordKey, first.recordKey);
 });
 
 test("lifecycle stores artifacts over 44 KB as multiple vectorless chunks and reassembles them exactly", async () => {
@@ -343,6 +399,8 @@ test("lifecycle rejects missing summaries and request-bound violations before co
     artifact: "artifact",
   }, { corpus });
   assert.equal(missingSummary.status, "failed");
+  assert.equal(missingSummary.artifactId, null);
+  assert.equal(missingSummary.recordKey, null);
   assert.equal(missingSummary.error.code, "invalid_lifecycle_summary");
 
   const oversized = await coordinateLifecycle({
@@ -395,4 +453,5 @@ test("lifecycle fails closed on chunk-store errors without a Vestige fallback", 
   assert.equal(result.status, "failed");
   assert.equal(result.error.code, "chunk_store_failed");
   assert.equal(result.receiptAccepted, false);
+  assert.equal(result.recordKey, null);
 });

@@ -55,7 +55,11 @@ const recallParameters = Type.Object({
   limit: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_LIMIT })),
 }, { additionalProperties: false });
 const getParameters = Type.Object({
-  recordKey: Type.String({ minLength: 1, maxLength: MAX_RECORD_KEY_LENGTH }),
+  recordKey: Type.String({
+    minLength: 1,
+    maxLength: MAX_RECORD_KEY_LENGTH,
+    description: "Logical record key or Qdrant manifest point-ID UUID. The argument name remains recordKey for compatibility.",
+  }),
 }, { additionalProperties: false });
 
 const toolResult = (data: unknown) => {
@@ -146,7 +150,7 @@ export function registerInstitutionalMemoryTools(
   pi.registerTool({
     name: "ima_corpus_get",
     label: "Get IMA corpus record",
-    description: "Retrieve one full bounded institutional record by deterministic record key. It fails instead of returning a partial record.",
+    description: "Retrieve one full bounded institutional record by logical record key or Qdrant manifest point-ID UUID. It fails instead of returning a partial record.",
     parameters: getParameters,
     async execute(_id, request, signal) {
       return toolResult(resultOrThrow(await client.getInstitutional(request.recordKey, signal)));

@@ -127,6 +127,14 @@ const normalizeIdentityText = (
   return utf8ByteLength(normalized) <= maximumBytes ? normalized : null;
 };
 
+export const normalizeLifecycleRecordKey = (value: unknown): string | null => {
+  if (typeof value !== "string" || CONTROL_CHARACTER.test(value)) return null;
+  const normalized = value.trim();
+  return normalized && utf8ByteLength(normalized) <= MAX_LIFECYCLE_RECORD_KEY_BYTES
+    ? normalized
+    : null;
+};
+
 const normalizeIdentityReferences = (value: unknown): string[] | null => {
   if (!Array.isArray(value) || value.length > MAX_LIFECYCLE_REFERENCES) return null;
   const normalized = value.map((reference) =>
@@ -308,7 +316,7 @@ export function prepareLifecycleArtifact(input: ValidLifecycleRequest):
     type: input.type,
     artifact,
   });
-  if (CONTROL_CHARACTER.test(recordKey) || utf8ByteLength(recordKey) > MAX_LIFECYCLE_RECORD_KEY_BYTES) {
+  if (!normalizeLifecycleRecordKey(recordKey)) {
     return { valid: false, error: sanitizeLifecycleError("invalid_lifecycle_request", input) };
   }
   return { valid: true, data: { nonce, artifact, recordKey } };
@@ -369,6 +377,7 @@ export function validateLifecycleStoreReceipt(value: unknown): LifecycleStoreRec
 export function deriveLifecycleResult(input: {
   type: LifecyclePhase;
   lifecycleKey: string;
+  recordKey: string | null;
   receipt: LifecycleStoreReceipt;
   recall: ReturnType<typeof evaluateLifecycleArtifact>;
   error?: string;
@@ -380,6 +389,7 @@ export function deriveLifecycleResult(input: {
     phase: input.type,
     lifecycleKey: input.lifecycleKey,
     artifactId: input.receipt.artifactId,
+    recordKey: input.receipt.accepted ? input.recordKey : null,
     receiptAccepted: input.receipt.accepted,
     semanticRecall: input.recall,
     error: completed

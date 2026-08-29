@@ -51,11 +51,27 @@ test("normalizes only verified direct corpus lifecycle records", () => {
   const lifecycleKey = "ima-pi:adhoc:lifecycle-source-identifiers:2026-08-04";
   const marker = `<!-- ima-lifecycle verification: lifecycle_key=${lifecycleKey}; nonce=01234567-89ab-cdef-0123-456789abcdef; phase=plan; jira_key=; taskwarrior_uuid=; outcome=completed -->`;
   const content = `# Plan\n${marker}\n`;
-  const record = { id: "plan-artifact", lifecycleKey, detail: content };
+  const record = {
+    id: "plan-artifact",
+    recordKey: "ima-pi:adhoc:lifecycle-source-identifiers:2026-08-04:plan:artifact",
+    lifecycleKey,
+    detail: content,
+  };
   const abbreviated = `<!-- ima-lifecycle verification: lifecycle_key=${lifecycleKey}; outcome=completed -->`;
 
-  assert.deepEqual(normalizeCorpusLifecycleRecord({ lifecycleKey, record }), { id: "plan-artifact", content });
+  assert.deepEqual(normalizeCorpusLifecycleRecord({ lifecycleKey, record }), {
+    id: "plan-artifact",
+    recordKey: record.recordKey,
+    content,
+  });
   assert.equal(normalizeCorpusLifecycleRecord({ lifecycleKey, record: { ...record, lifecycleKey: "other" } }), null);
+  for (const recordKey of [
+    `\t${record.recordKey}`,
+    `${record.recordKey}\r`,
+    `${record.recordKey}\u0085`,
+  ]) {
+    assert.equal(normalizeCorpusLifecycleRecord({ lifecycleKey, record: { ...record, recordKey } }), null);
+  }
   assert.equal(normalizeCorpusLifecycleRecord({ lifecycleKey, record: { ...record, detail: abbreviated } }), null);
   assert.equal(normalizeCorpusLifecycleRecord({ lifecycleKey, record: { ...record, detail: content.replace("01234567-89ab-cdef-0123-456789abcdef", "not-a-uuid") } }), null);
   assert.equal(normalizeCorpusLifecycleRecord({ lifecycleKey, record: { ...record, detail: content.replace("phase=plan", "phase=unknown") } }), null);

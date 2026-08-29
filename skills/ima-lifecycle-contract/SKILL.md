@@ -87,16 +87,21 @@ Persist lifecycle artifacts through `ima_lifecycle`; do not substitute a generat
 direct service storage, or an undocumented fallback. It stores deterministic Qdrant schema-v2
 manifest/detail chunks in chunks-first, manifest-last order, then directly reassembles and verifies
 the full detail, nonce, phase, completed outcome, lifecycle key, and required source identity.
-`artifactId` is the deterministic Qdrant manifest point ID. No Vestige lifecycle write, recall, or fallback is permitted.
+`artifactId` is the deterministic Qdrant manifest point ID; `recordKey` is the canonical logical
+retrieval key. Both are additive lifecycle-result references, and `ima_corpus_get` accepts either
+value through its compatible `recordKey` argument. No Vestige lifecycle write, recall, or fallback
+is permitted.
 
 A complete artifact includes the approved outcome, scope and non-goals, phase result,
 changed/reviewed/tested files, decisions, verification commands and results, blockers, residual
-risk, prior artifact IDs, and the recommended next phase. Equivalent organization is accepted; the
-artifact must remain bounded and lossless.
+risk, both references for every relevant prior artifact, and the recommended next phase.
+`priorArtifactIds` remains point-ID-only; handoffs list logical keys separately as
+`priorArtifactRecordKeys`. Equivalent organization is accepted; the artifact must remain bounded
+and lossless.
 
 When a concrete next phase is appropriate, emit a compact pointer containing only the next command,
-one-line outcome, lifecycle key, and latest artifact reference. Do not duplicate the detailed
-artifact or prescribe the destination phase's work.
+one-line outcome, lifecycle key, and the latest `artifactId` plus `recordKey`. Do not duplicate the
+detailed artifact or prescribe the destination phase's work.
 
 ## Cycle outcome marker
 

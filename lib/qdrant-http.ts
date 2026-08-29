@@ -223,10 +223,15 @@ const directPointIds = (value: unknown): string[] | null => {
     !Array.isArray(value)
     || value.length < 1
     || value.length > MAX_DIRECT_POINT_IDS
-    || !value.every((id) => typeof id === "string" && /^[0-9a-f-]{36}$/i.test(id))
+    || !value.every((id) => typeof id === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))
   ) return null;
   const ids = [...value];
   return new Set(ids).size === ids.length ? ids : null;
+};
+
+const resolveInstitutionalPointId = (reference: string): CorpusResult<string> => {
+  const [directPointId] = directPointIds([reference]) ?? [];
+  return directPointId ? success(directPointId) : deriveRecordId(reference);
 };
 
 const detailChunkFilter = () => ({
@@ -752,7 +757,7 @@ export function createQdrantCorpusClient(
     recordKey: string,
     signal?: AbortSignal,
   ): Promise<CorpusResult<FullInstitutionalRecord>> => {
-    const id = deriveRecordId(recordKey);
+    const id = resolveInstitutionalPointId(recordKey);
     if (!id.success) return id;
     const points = await getRawPoints(INSTITUTIONAL_COLLECTION, [id.data], signal);
     if (!points.success) return points;

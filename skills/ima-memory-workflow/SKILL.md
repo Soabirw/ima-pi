@@ -28,10 +28,12 @@ Use each memory system for its own job. Do not treat them as interchangeable scr
    Never retry a mutation.
 3. For lifecycle evidence, use package-native Tier-1 Qdrant tools, never Vestige:
    - `ima_corpus_recall` with the exact lifecycle key returns bounded manifest summaries only;
-   - select a matching summary and call `ima_corpus_get` by its deterministic `recordKey` only
-     when complete detail is required;
-   - accept an artifact only after full direct retrieval verifies its lifecycle key, phase,
-     nonce, source identity, and completion marker.
+   - prefer a selected summary's logical `recordKey` for `ima_corpus_get` when complete detail is
+     required; a known manifest `artifactId` point UUID is also accepted through that compatible
+     `recordKey` argument;
+   - accept an artifact only after full direct retrieval verifies its lifecycle key, phase, nonce,
+     source identity, completion marker, and the returned record's identity plus logical
+     `recordKey`.
 
    Derive `ima-pi:taskwarrior:<project>:<uuid>` for a Taskwarrior source and
    `ima-pi:jira:<KEY>` for a Jira source. For `lifecycle:<lifecycle-key>`, use the supplied key.

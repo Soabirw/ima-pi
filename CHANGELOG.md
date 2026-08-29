@@ -9,9 +9,15 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 - Added the bundled TTS S1 foundation: disabled by default, with validated local configuration and TUI-only non-fatal credential/player readiness notices; synthesis and playback remain deferred.
 - Added the reusable TTS S2 engine with deterministic spoken-text cleanup, OpenAI MP3 synthesis, private temporary audio, Linux player execution, single-active cancellation, non-fatal results, and an opt-in audible acceptance test; command and event wiring remain deferred.
 
+### Changed
+
+- Lifecycle persistence, corpus retrieval, and cycle handoffs now preserve both Qdrant manifest `artifactId` and logical `recordKey` references; `ima_corpus_get` accepts either identifier while legacy artifact-ID-only state remains supported.
+
 ### Fixed
 
 - Corrected TTS S2 cleanup to remove short POSIX absolute paths before OpenAI synthesis while preserving delimiters and ordinary slash prose.
+- Hardened lifecycle record-key validation to reject raw C0, DEL, and C1 controls before trimming at persistence, context, recall, and cycle boundaries.
+- Restricted direct Qdrant point-ID lookup to exact UUIDs so logical record keys continue through deterministic resolution.
 
 ## [1.15.0] - 2026-08-28
 

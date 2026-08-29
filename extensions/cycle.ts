@@ -37,7 +37,10 @@ import {
   type CycleState,
 } from "../lib/ima-cycle.ts";
 import { CYCLE_ROOT_MARKERS, CYCLE_STORE_FILENAME, CYCLE_STORE_GITIGNORE_BODY, cycleStorePaths, parseCycleRecord, selectProjectRoot, serializeCycleRecord } from "../lib/ima-cycle-store.ts";
-import type { LifecycleIdentity } from "../lib/ima-lifecycle.ts";
+import {
+  normalizeLifecycleRecordKey,
+  type LifecycleIdentity,
+} from "../lib/ima-lifecycle.ts";
 
 export const CYCLE_STATUS_KEY = "ima-cycle";
 const JIRA_HELPER = join(homedir(), ".agents", "skills", "mcp-atlassian", "scripts", "atlassian-api.mjs");
@@ -50,7 +53,8 @@ const safeArtifactReference = (value: unknown) => {
   const reference = text(value).replace(/[\r\n]+/g, " ").replace(/(?:authorization|token|secret|password)\s*[:=]\s*\S+/gi, "[redacted]").slice(0, 512);
   return reference || null;
 };
-const unresolvedOutcomeMessage = (phase: CyclePhase, artifactId: string | null) => `Cycle lifecycle outcome is unresolved for ${phase}; inspect persisted artifact ${artifactId ?? "reference unavailable"}. State was preserved.`;
+const safeRecordKey = (value: unknown) => normalizeLifecycleRecordKey(value);
+const unresolvedOutcomeMessage = (phase: CyclePhase, artifactId: string | null, recordKey: string | null) => `Cycle lifecycle outcome is unresolved for ${phase}; inspect persisted artifactId ${artifactId ?? "unavailable"}; recordKey ${recordKey ?? "unavailable"}. State was preserved.`;
 const notify = (ctx: ExtensionContext, message: string, level: "info" | "warning" | "error" = "info") => { if (ctx.hasUI) ctx.ui.notify(message, level); };
 const copyState = (state: CycleState): CycleState => structuredClone(state);
 const CYCLE_PROMPT_PATH = fileURLToPath(new URL("../prompts", import.meta.url));
@@ -332,7 +336,11 @@ export type CycleObservationInput = {
   timestamp?: string;
 };
 
-export type CycleObservationDiagnostic = { phase: CyclePhase; artifactId: string | null };
+export type CycleObservationDiagnostic = {
+  phase: CyclePhase;
+  artifactId: string | null;
+  recordKey: string | null;
+};
 export type CycleObservationResult =
   | { matched: true; state: CycleState; evidence: CycleEvidence }
   | { matched: false; state: CycleState; error: ReturnType<typeof sanitizeCycleError>; diagnostic?: CycleObservationDiagnostic };
@@ -346,8 +354,13 @@ export function observeLifecycleResult(input: CycleObservationInput): CycleObser
   const expectedLifecycleType = lifecycleTypeForPhase(input.state.phase);
   if (text(payload.lifecycleKey) !== input.state.lifecycleKey || text(payload.phase) !== expectedLifecycleType || text(request.type) !== expectedLifecycleType || !sameLifecycleIdentity(input.state, request.identity)) return { matched: false, state: input.state, error: sanitizeCycleError("lifecycle_identity_mismatch") };
   const artifactId = safeArtifactReference(payload.artifactId);
+  const rawRecordKey = payload.recordKey;
+  const recordKey = rawRecordKey === undefined || rawRecordKey === null
+    ? null
+    : safeRecordKey(rawRecordKey);
+  if (rawRecordKey !== undefined && rawRecordKey !== null && !recordKey) return { matched: false, state: input.state, error: sanitizeCycleError("lifecycle_completion_unverified") };
   const outcome = resolvePhaseOutcome(text(request.artifact), input.state.phase);
-  if (!outcome.ok) return { matched: false, state: input.state, error: outcome.error, diagnostic: { phase: input.state.phase, artifactId } };
+  if (!outcome.ok) return { matched: false, state: input.state, error: outcome.error, diagnostic: { phase: input.state.phase, artifactId, recordKey } };
   const toolCallId = text(input.toolCallId);
   if (!toolCallId) return { matched: false, state: input.state, error: sanitizeCycleError("lifecycle_tool_call_missing") };
   const reduced = reduceCycleState(input.state, {
@@ -355,6 +368,7 @@ export function observeLifecycleResult(input: CycleObservationInput): CycleObser
     outcome: outcome.outcome,
     marker: outcome.marker,
     artifactId,
+    recordKey,
     toolCallId,
     timestamp: input.timestamp,
   }, { timestamp: input.timestamp });
@@ -420,7 +434,13 @@ export async function coordinateCycleReconcile(input: CycleReconcileInput): Prom
       ok: false,
       state: reconciled.state ?? state,
       error: reconciled.error,
-      ...(reconciled.error.code === "lifecycle_outcome_undetermined" ? { diagnostic: { phase: state.phase, artifactId: safeArtifactReference(reconciled.artifactId) } } : {}),
+      ...(reconciled.error.code === "lifecycle_outcome_undetermined" ? {
+        diagnostic: {
+          phase: state.phase,
+          artifactId: safeArtifactReference(reconciled.artifactId),
+          recordKey: safeRecordKey(reconciled.recordKey),
+        },
+      } : {}),
     };
   }
   if (!reconciled.reconciled) return { ok: true, state: reconciled.state, reconciled: false };
@@ -807,7 +827,7 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
     const result = await coordinateCycleRecovery({ state, recall: dependencies.recall, appendState: appendFor(pi, ctx, dependencies.persistDurableState) });
     if (!result.ok) {
       if (result.state) state = copyState(result.state);
-      notify(ctx, result.diagnostic ? unresolvedOutcomeMessage(result.diagnostic.phase, result.diagnostic.artifactId) : result.error.message, "warning");
+      notify(ctx, result.diagnostic ? unresolvedOutcomeMessage(result.diagnostic.phase, result.diagnostic.artifactId, result.diagnostic.recordKey) : result.error.message, "warning");
       return false;
     }
     state = copyState(result.state);
@@ -825,7 +845,7 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
     if (ctx.hasUI) ctx.ui.setStatus(CYCLE_STATUS_KEY, stateText(state));
   };
   const warnObservation = (ctx: ExtensionContext, observed: CycleObservationResult) => {
-    if (!observed.matched && observed.diagnostic) notify(ctx, unresolvedOutcomeMessage(observed.diagnostic.phase, observed.diagnostic.artifactId), "warning");
+    if (!observed.matched && observed.diagnostic) notify(ctx, unresolvedOutcomeMessage(observed.diagnostic.phase, observed.diagnostic.artifactId, observed.diagnostic.recordKey), "warning");
   };
 
   pi.on("session_start", async (_event, ctx) => restore(ctx, true));

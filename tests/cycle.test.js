@@ -8,6 +8,7 @@ import {
   CYCLE_REVIEW_CAP_DEFAULT,
   buildCycleOutcomeMarker,
   buildCycleStatus,
+  buildFinalCloseoutArtifact,
   buildResumeSource,
   createCycleState,
   IMA_PROJECT,
@@ -48,8 +49,14 @@ const task = normalizeCycleSource({ type: "taskwarrior", project: "FNR-3007", uu
 const identity = { project: "ima-pi", lifecycleKey: "ima-pi:jira:FNR-3036", lifecycleRootMemoryId: "", taskwarriorProject: "", taskwarriorTask: "", taskwarriorUuid: "", jiraKey: "FNR-3036", sourceRefs: ["Jira:FNR-3036"], priorArtifactIds: [] };
 const marker = (phase, outcome) => `artifact\n${buildCycleOutcomeMarker({ phase, outcome })}`;
 
-const evidence = (state, phase, outcome, id = phase, artifactId = null) => {
-  const result = reduceCycleState(state, { artifact: marker(phase, outcome), toolCallId: id, artifactId, timestamp: at }, { timestamp: at });
+const evidence = (state, phase, outcome, id = phase, artifactId = null, recordKey = null) => {
+  const result = reduceCycleState(state, {
+    artifact: marker(phase, outcome),
+    toolCallId: id,
+    artifactId,
+    recordKey,
+    timestamp: at,
+  }, { timestamp: at });
   assert.equal(result.ok, true, JSON.stringify(result));
   return result.state;
 };
@@ -76,6 +83,7 @@ const lifecycleVerification = (state, phase, options = {}) => {
 
 const persistedRecord = (state, phase, outcome, options = {}) => ({
   id: options.id ?? `${phase}-persisted`,
+  ...(options.recordKey === undefined ? {} : { recordKey: options.recordKey }),
   content: `---\nlifecycle: {}\n---\n\n${options.artifact ?? marker(phase, outcome)}\n\n${lifecycleVerification(state, phase, options)}`,
 });
 
@@ -304,6 +312,24 @@ test("normalizes legacy implementation mode and rejects invalid present modes", 
   assert.throws(() => createCycleState(jira, { implementationMode: "ruby" }), /implementation_mode_invalid/);
 });
 
+test("normalizes artifact-only legacy evidence with a null record key", () => {
+  const current = evidence(
+    createCycleState(jira, { timestamp: at }),
+    "plan",
+    "APPROVED",
+    "plan",
+    "plan-artifact",
+    "plan-record-key",
+  );
+  const legacy = structuredClone(current);
+  delete legacy.evidence[0].recordKey;
+
+  const normalized = validateCycleState(legacy);
+  assert.equal(normalized.valid, true);
+  assert.equal(normalized.state.evidence[0].recordKey, null);
+  assert.match(buildResumeSource(legacy), /recordKey: none/);
+});
+
 test("defaults legacy cycle mode to guided and rejects invalid present modes", () => {
   const current = createCycleState(jira, { timestamp: at });
   const legacy = { ...current };
@@ -452,10 +478,17 @@ test("prepares stopped and recoverable phase blocks for explicit resume", () => 
   assert.equal(prepareCycleResume({ ...blocked, status: "blocked-after-tracker-close", blockers: [] }).error.code, "cycle_resume_unavailable");
 });
 
-test("renders ordered sanitized evidence with explicit source fields", () => {
+test("renders ordered sanitized evidence with both lifecycle references", () => {
   let state = createCycleState(jira, { timestamp: at });
-  state = evidence(state, "plan", "APPROVED", "plan", null);
-  state = evidence(awaitingEvidence(state), "implementation", "COMPLETED", "implementation", "implementation-artifact");
+  state = evidence(state, "plan", "APPROVED", "plan", null, "plan-record-key");
+  state = evidence(
+    awaitingEvidence(state),
+    "implementation",
+    "COMPLETED",
+    "implementation",
+    "implementation-artifact",
+    "implementation-record-key",
+  );
   const packet = buildResumeSource(state);
   const lines = packet.split("\n");
   assert.deepEqual(lines.slice(0, 13), [
@@ -473,12 +506,22 @@ test("renders ordered sanitized evidence with explicit source fields", () => {
     "orderedPhaseEvidence:",
     "phase: plan",
   ]);
-  assert.match(packet, /phase: plan\noutcome: APPROVED\ntimestamp: 2026-08-04T18:00:00.000Z\nartifactId: none\ntoolCallId: plan/);
-  assert.match(packet, /phase: implementation\noutcome: COMPLETED\ntimestamp: 2026-08-04T18:00:00.000Z\nartifactId: implementation-artifact\ntoolCallId: implementation/);
+  assert.match(packet, /phase: plan\noutcome: APPROVED\ntimestamp: 2026-08-04T18:00:00.000Z\nartifactId: none\nrecordKey: plan-record-key\ntoolCallId: plan/);
+  assert.match(packet, /phase: implementation\noutcome: COMPLETED\ntimestamp: 2026-08-04T18:00:00.000Z\nartifactId: implementation-artifact\nrecordKey: implementation-record-key\ntoolCallId: implementation/);
   assert.match(packet, /priorArtifactIds: implementation-artifact/);
+  assert.match(packet, /priorArtifactRecordKeys: plan-record-key, implementation-record-key/);
+  assert.deepEqual(buildCycleStatus(state).evidence[1], {
+    phase: "implementation",
+    outcome: "COMPLETED",
+    artifactId: "implementation-artifact",
+    recordKey: "implementation-record-key",
+    timestamp: at,
+  });
+  assert.match(buildFinalCloseoutArtifact(state), /artifactId: implementation-artifact; recordKey: implementation-record-key/);
   assert.ok(packet.indexOf("phase: plan") < packet.indexOf("phase: implementation"));
   assert.ok(packet.indexOf("orderedPhaseEvidence:") < packet.indexOf("priorArtifactIds:"));
-  assert.ok(packet.indexOf("priorArtifactIds:") < packet.indexOf("Cycle dispatch contract"));
+  assert.ok(packet.indexOf("priorArtifactIds:") < packet.indexOf("priorArtifactRecordKeys:"));
+  assert.ok(packet.indexOf("priorArtifactRecordKeys:") < packet.indexOf("Cycle dispatch contract"));
 });
 
 test("caps review request-change loops and rejects out-of-order or duplicate evidence", () => {
@@ -525,11 +568,12 @@ test("observes only fully verified matching lifecycle results", () => {
     toolName: "ima_lifecycle",
     toolCallId: "tool-plan",
     input: { type: "plan", identity, artifact },
-    result: { details: { status: "completed", phase: "plan", lifecycleKey: state.lifecycleKey, artifactId: "plan-id", receiptAccepted: true, semanticRecall: { matched: true } }, content: [], isError: false },
+    result: { details: { status: "completed", phase: "plan", lifecycleKey: state.lifecycleKey, artifactId: "plan-id", recordKey: "plan-record-key", receiptAccepted: true, semanticRecall: { matched: true } }, content: [], isError: false },
     timestamp: at,
   });
   assert.equal(result.matched, true);
   assert.equal(result.state.evidence[0].artifactId, "plan-id");
+  assert.equal(result.state.evidence[0].recordKey, "plan-record-key");
   const mismatch = observeLifecycleResult({
     state,
     toolName: "ima_lifecycle",
@@ -554,6 +598,97 @@ test("observes only fully verified matching lifecycle results", () => {
   assert.equal(invalid.matched, false);
   const failed = observeLifecycleResult({ state, toolName: "ima_lifecycle", toolCallId: "failed", input: { type: "plan", identity, artifact }, result: { details: { status: "completed", phase: "plan", lifecycleKey: state.lifecycleKey, receiptAccepted: true, semanticRecall: { matched: true } }, content: [], isError: true }, timestamp: at });
   assert.equal(failed.matched, false);
+});
+
+test("rejects control-character record keys before state and handoffs", () => {
+  const state = createCycleState(jira, { timestamp: at });
+  const artifact = marker("plan", "APPROVED");
+  const selection = {
+    lifecycleKey: state.lifecycleKey,
+    phase: "plan",
+    jiraKey: state.source.key,
+    taskwarriorUuid: "",
+  };
+  const malformedRecordKeys = [
+    ["embedded NUL", "ima-pi:jira:FNR-3036:plan\u0000malformed"],
+    ["DEL", "ima-pi:jira:FNR-3036:plan\u007fmalformed"],
+    ["C1 U+0080", "ima-pi:jira:FNR-3036:plan\u0080malformed"],
+    ["C1 U+0085", "ima-pi:jira:FNR-3036:plan\u0085malformed"],
+    ["C1 U+009F", "ima-pi:jira:FNR-3036:plan\u009fmalformed"],
+    ["trailing TAB", "ima-pi:jira:FNR-3036:plan\t"],
+    ["leading LF", "\nima-pi:jira:FNR-3036:plan"],
+    ["trailing CR", "ima-pi:jira:FNR-3036:plan\r"],
+    ["control-only TAB", "\t"],
+  ];
+
+  for (const [label, malformedRecordKey] of malformedRecordKeys) {
+    const reduced = reduceCycleState(state, {
+      artifact,
+      toolCallId: `${label}-reduce`,
+      recordKey: malformedRecordKey,
+      timestamp: at,
+    }, { timestamp: at });
+    assert.equal(reduced.ok, false, label);
+    assert.equal(reduced.error.code, "phase_evidence_invalid", label);
+    assert.deepEqual(reduced.state, state, label);
+
+    const observed = observeLifecycleResult({
+      state,
+      toolName: "ima_lifecycle",
+      toolCallId: `${label}-observe`,
+      input: { type: "plan", identity, artifact },
+      result: {
+        details: {
+          status: "completed",
+          phase: "plan",
+          lifecycleKey: state.lifecycleKey,
+          artifactId: "plan-id",
+          recordKey: malformedRecordKey,
+          receiptAccepted: true,
+          semanticRecall: { matched: true },
+        },
+        content: [],
+        isError: false,
+      },
+      timestamp: at,
+    });
+    assert.equal(observed.matched, false, label);
+    assert.equal(observed.error.code, "lifecycle_completion_unverified", label);
+    assert.deepEqual(observed.state, state, label);
+
+    const parsed = parseLifecycleSearchRecords({
+      results: [persistedRecord(state, "plan", "APPROVED", {
+        id: "control-persisted",
+        recordKey: malformedRecordKey,
+      })],
+    }, selection);
+    assert.equal(parsed.valid, true, label);
+    assert.equal(parsed.records[0].recordKey, null, label);
+
+    const reconciled = reconcileCycleFromLifecycle(state, parsed.records, { timestamp: at });
+    assert.equal(reconciled.ok, true, label);
+    assert.equal(reconciled.reconciled, true, label);
+    assert.equal(reconciled.state.evidence[0].artifactId, "control-persisted", label);
+    assert.equal(reconciled.state.evidence[0].recordKey, null, label);
+    const packet = buildResumeSource(reconciled.state);
+    const status = buildCycleStatus(reconciled.state);
+    const closeout = buildFinalCloseoutArtifact(reconciled.state);
+    assert.ok(packet, label);
+    assert.match(packet, /recordKey: none/, label);
+    for (const output of [JSON.stringify(observed), packet, JSON.stringify(status), closeout]) {
+      assert.equal(output.includes(malformedRecordKey), false, label);
+    }
+
+    const unsafeState = {
+      ...reconciled.state,
+      evidence: reconciled.state.evidence.map((item) => ({
+        ...item,
+        recordKey: malformedRecordKey,
+      })),
+    };
+    assert.equal(validateCycleState(unsafeState).valid, false, label);
+    assert.equal(buildResumeSource(unsafeState), null, label);
+  }
 });
 
 test("enforces literal ima-pi identity for custom lifecycle keys", () => {
@@ -1416,6 +1551,15 @@ test("parses only persisted lifecycle records with exact identity, phase, and co
   assert.deepEqual(nested.records[0].artifactId, "nested");
   assert.equal(nested.records[0].verified, true);
 
+  const keyed = parseLifecycleSearchRecords({
+    results: [persistedRecord(state, "plan", "APPROVED", {
+      id: "keyed",
+      recordKey: "ima-pi:jira:FNR-3036:plan:keyed",
+    })],
+  }, selection);
+  assert.equal(keyed.valid, true);
+  assert.equal(keyed.records[0].recordKey, "ima-pi:jira:FNR-3036:plan:keyed");
+
   const documentState = awaitingPhaseState("document");
   const documentSelection = { lifecycleKey: documentState.lifecycleKey, phase: "document", jiraKey: documentState.source.key, taskwarriorUuid: "" };
   const document = parseLifecycleSearchRecords({ data: { results: [persistedRecord(documentState, "document", "READY")] } }, documentSelection);
@@ -1519,7 +1663,10 @@ test("keeps reconciliation idempotent and fails loudly for verified unresolved o
 test("uses only fresh identified records for repeated phase reconciliation", () => {
   const firstAttempt = awaitingPhaseState("resolution");
   const firstSelection = { lifecycleKey: firstAttempt.lifecycleKey, phase: "resolution", jiraKey: firstAttempt.source.key, taskwarriorUuid: "" };
-  const firstArtifact = parseLifecycleSearchRecords({ data: { results: [persistedRecord(firstAttempt, "resolution", "RESOLVED", { id: "resolution-first" })] } }, firstSelection);
+  const firstArtifact = parseLifecycleSearchRecords({ data: { results: [persistedRecord(firstAttempt, "resolution", "RESOLVED", {
+    id: "resolution-first",
+    recordKey: "ima-pi:jira:FNR-3036:resolution:first",
+  })] } }, firstSelection);
   const firstRecovery = reconcileCycleFromLifecycle(firstAttempt, firstArtifact.records, { timestamp: at });
   assert.equal(firstRecovery.ok, true);
 
@@ -1534,6 +1681,8 @@ test("uses only fresh identified records for repeated phase reconciliation", () 
     ...secondAttempt,
     evidence: secondAttempt.evidence.map((item) => item.artifactId === "resolution-first" ? { ...item, artifactId: null } : item),
   };
+  assert.equal(toolCallOnly.evidence.find((item) => item.recordKey)?.artifactId, null);
+  assert.equal(toolCallOnly.evidence.find((item) => item.recordKey)?.recordKey, "ima-pi:jira:FNR-3036:resolution:first");
   const toolCallReplay = reconcileCycleFromLifecycle(toolCallOnly, firstArtifact.records, { timestamp: at });
   assert.equal(toolCallReplay.ok, true);
   assert.equal(toolCallReplay.reconciled, false);
@@ -1630,10 +1779,23 @@ test("coordinates a direct-MCP persisted-evidence reconciliation shell", async (
   assert.equal(malformed.ok, false);
   assert.equal(malformed.error.code, "cycle_reconcile_read_failed");
 
-  const unresolved = await coordinateCycleReconcile({ state, recall: async () => vestigeSearch([persistedRecord(state, "plan", "APPROVED", { id: "unclear", artifact: "No cycle marker." })]), appendState: () => {}, timestamp: at });
+  const unresolved = await coordinateCycleReconcile({
+    state,
+    recall: async () => vestigeSearch([persistedRecord(state, "plan", "APPROVED", {
+      id: "unclear",
+      recordKey: "ima-pi:jira:FNR-3036:plan:unclear",
+      artifact: "No cycle marker.",
+    })]),
+    appendState: () => {},
+    timestamp: at,
+  });
   assert.equal(unresolved.ok, false);
   assert.equal(unresolved.error.code, "lifecycle_outcome_undetermined");
-  assert.deepEqual(unresolved.diagnostic, { phase: "plan", artifactId: "unclear" });
+  assert.deepEqual(unresolved.diagnostic, {
+    phase: "plan",
+    artifactId: "unclear",
+    recordKey: "ima-pi:jira:FNR-3036:plan:unclear",
+  });
 });
 
 test("recovers consecutive verified phases before any resume dispatch", async () => {

@@ -91,6 +91,7 @@ test("strict corpus tool schemas and registration expose all five native tools",
   const store = tools[1];
   const find = tools[2];
   const recall = tools[3];
+  const get = tools[4];
   assert.equal(Check(status.parameters, {}), true);
   assert.equal(Check(status.parameters, { unwanted: true }), false);
   assert.equal(Check(store.parameters, {
@@ -99,6 +100,9 @@ test("strict corpus tool schemas and registration expose all five native tools",
   assert.equal(Check(store.parameters, { recordKey: "key" }), false);
   assert.equal(Check(find.parameters, { query: "evidence", limit: 21 }), false);
   assert.equal(Check(recall.parameters, { lifecycleKey: "life", phase: "plan" }), false);
+  assert.equal(Check(get.parameters, { recordKey: "abcdefab-cdef-abcd-efab-cdefabcdefab" }), true);
+  assert.match(get.description, /logical record key or Qdrant manifest point-ID UUID/);
+  assert.match(get.parameters.properties.recordKey.description, /argument name remains recordKey/);
 });
 
 test("status is read-only and store returns only its immutable outcome", async () => {
@@ -450,19 +454,66 @@ test("full retrieval validates deterministic identity and returns bounded detail
   assert.equal(normalized.success, true);
   const client = createQdrantCorpusClient({
     env: environment,
-    fetch: async (inputUrl) => {
+    fetch: async (inputUrl, init = {}) => {
       const request = new URL(String(inputUrl));
-      if (request.pathname === "/collections/ima-institutional-memory/points") {
+      const ids = JSON.parse(String(init.body)).ids;
+      if (
+        request.pathname === "/collections/ima-institutional-memory/points"
+        && ids.length === 1
+        && ids[0] === normalized.data.id
+      ) {
         return json({ result: [{ id: normalized.data.id, payload: normalized.data.payload }] });
       }
       throw new Error(`unexpected ${request}`);
     },
   });
 
-  const result = await client.getInstitutional("ima-pi:plan:story-a");
+  const result = await client.getInstitutional(input.recordKey);
+  const byArtifactId = await client.getInstitutional(normalized.data.id);
   assert.equal(result.success, true);
+  assert.equal(byArtifactId.success, true);
   assert.equal(result.data.detail, "exact full detail");
+  assert.equal(byArtifactId.data.detail, "exact full detail");
   assert.deepEqual(result.data.sourceRefs, ["source"]);
+});
+
+test("pseudo-UUID logical keys use deterministic manifest IDs", async () => {
+  const input = {
+    recordKey: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa-",
+    project: "ima-pi",
+    site: "",
+    repo: "ima-pi",
+    lifecycleKey: "life",
+    phase: "plan",
+    summary: "Pseudo-UUID keys remain logical record keys.",
+    detail: "exact full detail",
+    sourceRefs: ["source"],
+  };
+  assert.equal(input.recordKey.length, 36);
+  const normalized = normalizeInstitutionalRecord(input, "2026-08-25T00:00:00.000Z");
+  assert.equal(normalized.success, true);
+  const requestedIds = [];
+  const client = createQdrantCorpusClient({
+    env: environment,
+    fetch: async (inputUrl, init = {}) => {
+      const request = new URL(String(inputUrl));
+      const ids = JSON.parse(String(init.body)).ids;
+      requestedIds.push(ids);
+      if (
+        request.pathname === "/collections/ima-institutional-memory/points"
+        && ids.length === 1
+        && ids[0] === normalized.data.id
+      ) {
+        return json({ result: [{ id: normalized.data.id, payload: normalized.data.payload }] });
+      }
+      throw new Error(`unexpected ${request}`);
+    },
+  });
+
+  const result = await client.getInstitutional(input.recordKey);
+  assert.equal(result.success, true);
+  assert.equal(result.data.detail, input.detail);
+  assert.deepEqual(requestedIds, [[normalized.data.id]]);
 });
 
 test("schema-v2 full retrieval directly reassembles vectorless chunks from singleton reads", async () => {
@@ -496,9 +547,50 @@ test("schema-v2 full retrieval directly reassembles vectorless chunks from singl
   });
 
   const result = await client.getInstitutional(input.recordKey);
+  const byArtifactId = await client.getInstitutional(manifest.data.id);
   assert.equal(result.success, true);
+  assert.equal(byArtifactId.success, true);
   assert.equal(result.data.detail, input.detail);
+  assert.equal(byArtifactId.data.detail, input.detail);
   assert.equal(result.data.contentHash, manifest.data.payload.content_hash);
+});
+
+test("direct point-ID retrieval keeps missing and chunk points fail closed", async () => {
+  const input = {
+    recordKey: "ima-pi:implementation:direct-point-validation",
+    project: "ima-pi",
+    site: "",
+    repo: "ima-pi",
+    lifecycleKey: "life",
+    phase: "implementation",
+    summary: "Direct point IDs validate manifest identity.",
+    detail: "x".repeat(40_000),
+    sourceRefs: ["source"],
+  };
+  const manifest = normalizeInstitutionalManifest(input, "2026-08-25T00:00:00.000Z");
+  assert.equal(manifest.success, true);
+  const unknownId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+  const chunkId = manifest.data.chunks[0].id;
+  const calls = [];
+  const client = createQdrantCorpusClient({
+    env: environment,
+    fetch: async (inputUrl, init = {}) => {
+      const request = new URL(String(inputUrl));
+      const ids = JSON.parse(String(init.body)).ids;
+      calls.push(ids);
+      if (request.pathname !== "/collections/ima-institutional-memory/points") {
+        throw new Error(`unexpected ${request}`);
+      }
+      if (ids[0] === chunkId) {
+        return json({ result: [{ id: chunkId, payload: manifest.data.chunks[0].payload }] });
+      }
+      return json({ result: [] });
+    },
+  });
+
+  assert.deepEqual(await client.getInstitutional(unknownId), failure("record_not_found"));
+  assert.deepEqual(await client.getInstitutional(chunkId), failure("response_invalid"));
+  assert.deepEqual(calls, [[unknownId], [chunkId]]);
 });
 
 test("schema-v2 singleton reads keep escaped near-limit chunks below the response bound", async () => {
