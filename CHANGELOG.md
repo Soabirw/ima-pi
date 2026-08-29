@@ -7,6 +7,11 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 ### Added
 
 - Added the bundled TTS S1 foundation: disabled by default, with validated local configuration and TUI-only non-fatal credential/player readiness notices; synthesis and playback remain deferred.
+- Added the reusable TTS S2 engine with deterministic spoken-text cleanup, OpenAI MP3 synthesis, private temporary audio, Linux player execution, single-active cancellation, non-fatal results, and an opt-in audible acceptance test; command and event wiring remain deferred.
+
+### Fixed
+
+- Corrected TTS S2 cleanup to remove short POSIX absolute paths before OpenAI synthesis while preserving delimiters and ordinary slash prose.
 
 ## [1.15.0] - 2026-08-28
 

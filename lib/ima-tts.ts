@@ -82,7 +82,7 @@ const nonEmptyString = (value: unknown): string | null => {
   return normalized ? normalized : null;
 };
 
-const isPlayerCommand = (value: string): boolean => {
+export const isValidPlayerCommand = (value: string): boolean => {
   if (!value || value === "." || value === "..") return false;
   return isAbsolute(value) || (!value.includes("/") && !value.includes("\\"));
 };
@@ -123,7 +123,7 @@ export const parseTtsConfigLayer = (raw: unknown): ParsedTtsConfigLayer => {
     }
 
     if (key === "playerCommand") {
-      if (isPlayerCommand(normalized)) values.playerCommand = normalized;
+      if (isValidPlayerCommand(normalized)) values.playerCommand = normalized;
       else diagnostics.push(diagnostic("tts_config_invalid_string", [key]));
       continue;
     }
@@ -158,7 +158,7 @@ export const playerCandidatePaths = (
   pathEnv: string | undefined,
 ): readonly string[] => {
   const command = playerCommand.trim();
-  if (!isPlayerCommand(command)) return Object.freeze([]);
+  if (!isValidPlayerCommand(command)) return Object.freeze([]);
   if (isAbsolute(command)) return Object.freeze([command]);
 
   return Object.freeze(
