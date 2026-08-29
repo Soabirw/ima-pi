@@ -10,31 +10,35 @@ Pi-native IMA agent harness, packaged through Pi's standard Git/npm package mode
 - **A guided development lifecycle with bounded autonomy:** use the manual phases or the explicit, user-gated `/ima:cycle`; autonomous progression requires an approved bounded, conflict-free, low-risk plan and verified evidence, and it stops at `document`.
 - **Bounded specialist delegation** keeps work scoped while parent-owned lifecycle gates preserve accountability.
 
-## Text-to-speech foundation and engine (S1/S2)
+## Text-to-speech command and engine (S1–S3)
 
-The bundled TTS foundation is disabled by default. To opt into readiness checks for later
-speech features, create `~/.pi/agent/ima/tts.json` with the supported keys:
-`enable`, `autoSpeak`, `provider`, `model`, `voice`, and `playerCommand`. The package
-defaults are `enable: false`, `autoSpeak: false`, `provider: "openai"`,
-`model: "gpt-4o-mini-tts"`, `voice: "alloy"`, and `playerCommand: "ffplay"`.
-`playerCommand` must be an absolute executable path or a bare command name resolved through
-`PATH`; relative paths are rejected.
+The bundled TTS feature is disabled by default. To opt in, create
+`~/.pi/agent/ima/tts.json` with the supported keys: `enable`, `autoSpeak`, `provider`,
+`model`, `voice`, and `playerCommand`. The package defaults are `enable: false`,
+`autoSpeak: false`, `provider: "openai"`, `model: "gpt-4o-mini-tts"`,
+`voice: "alloy"`, and `playerCommand: "ffplay"`. `playerCommand` must be an absolute
+executable path or a bare command name resolved through `PATH`; relative paths are rejected.
 
-S2 provides a reusable, library-only engine. It deterministically removes Markdown and code
-from response text, requests MP3 audio from OpenAI using explicit credentials, writes a
-private temporary file, and runs the configured Linux player with a separate command and
-file argument. Starting another request cancels the previous synthesis or playback; contained
-synthesis, file, and player failures return results rather than escaping the engine. S2 does
-not register `/speak`, automatic speech, or any event wiring.
+The reusable engine removes Markdown and code from response text, requests MP3 audio from
+OpenAI using explicit credentials, writes a private temporary file, and runs the configured
+Linux player with a separate command and file argument. Starting another request cancels the
+previous synthesis or playback; contained synthesis, file, and player failures return results
+rather than escaping the engine.
+
+When enabled in an interactive TUI, `/ima:speak` speaks the latest completed assistant
+response. Run it again to replay that response, or use `/ima:speak stop` to cancel active
+synthesis or playback. Submitting the next real prompt also cancels active speech without
+changing the prompt. The command reports non-fatal readiness notices for missing OpenAI
+credentials or player support, and reports when there is no completed response to speak.
 
 TTS reuses Pi's existing OpenAI authentication, including `OPENAI_API_KEY`, and never stores
 credentials. The default `ffplay` and common VLC/mpv players support MP3. PCM-only
-`paplay` and `aplay` are unsupported unless configured around a compatible decoder. S1 checks
+`paplay` and `aplay` are unsupported unless configured around a compatible decoder. TTS checks
 only the configured command's `PATH` candidates; it does not auto-detect a different player.
 
-Readiness checks run only in the interactive TUI; print, JSON, and RPC modes remain silent.
-`autoSpeak` has no runtime effect until a later unit wires it. To opt into one live audible
-acceptance check, run:
+Readiness checks and commands run only in the interactive TUI; print, JSON, and RPC modes
+remain silent. `autoSpeak` has no runtime effect, and TTS does not automatically speak settled
+responses. To opt into one live audible acceptance check, run:
 
 ```bash
 IMA_TTS_IT=1 OPENAI_API_KEY=<configured-secret> node --test tests/tts-speech.test.js

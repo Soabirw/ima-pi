@@ -44,9 +44,9 @@ const registerSessionStart = (dependencies = {}) => {
   let handler;
   ttsExtension({
     on: (event, callback) => {
-      assert.equal(event, "session_start");
-      handler = callback;
+      if (event === "session_start") handler = callback;
     },
+    registerCommand: () => {},
   }, dependencies);
   return handler;
 };
@@ -255,12 +255,17 @@ test("ships the approved disabled-by-default TTS package configuration", async (
   assert.deepEqual(config, TTS_CONFIG_DEFAULTS);
 });
 
-test("registers only the session-start readiness check for TTS S1", () => {
+test("retains S1 readiness while registering S3 command, input, and shutdown wiring", () => {
   const events = [];
+  const commands = [];
 
-  ttsExtension({ on: (event) => events.push(event) });
+  ttsExtension({
+    on: (event) => events.push(event),
+    registerCommand: (name) => commands.push(name),
+  });
 
-  assert.deepEqual(events, ["session_start"]);
+  assert.deepEqual(events, ["session_start", "input", "session_shutdown"]);
+  assert.deepEqual(commands, ["ima:speak"]);
 });
 
 test("skips every noninteractive session-start context before effects", async () => {

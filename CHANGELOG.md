@@ -7,7 +7,8 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 ### Added
 
 - Added the bundled TTS S1 foundation: disabled by default, with validated local configuration and TUI-only non-fatal credential/player readiness notices; synthesis and playback remain deferred.
-- Added the reusable TTS S2 engine with deterministic spoken-text cleanup, OpenAI MP3 synthesis, private temporary audio, Linux player execution, single-active cancellation, non-fatal results, and an opt-in audible acceptance test; command and event wiring remain deferred.
+- Added the reusable TTS S2 engine with deterministic spoken-text cleanup, OpenAI MP3 synthesis, private temporary audio, Linux player execution, single-active cancellation, non-fatal results, and an opt-in audible acceptance test.
+- Added TTS S3 interactive `/ima:speak` replay, `/ima:speak stop`, and next-prompt cancellation with non-blocking, contained speech results; no bare `/speak` alias or automatic settlement speech is registered.
 
 ### Changed
 
@@ -15,6 +16,7 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ### Fixed
 
+- Hardened TTS S3 cancellation handling so intentional cancellations stay silent and stale pending requests are invalidated on input or session shutdown.
 - Corrected TTS S2 cleanup to remove short POSIX absolute paths before OpenAI synthesis while preserving delimiters and ordinary slash prose.
 - Hardened lifecycle record-key validation to reject raw C0, DEL, and C1 controls before trimming at persistence, context, recall, and cycle boundaries.
 - Restricted direct Qdrant point-ID lookup to exact UUIDs so logical record keys continue through deterministic resolution.
