@@ -9,6 +9,7 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 - Added the bundled TTS S1 foundation: disabled by default, with validated local configuration and TUI-only non-fatal credential/player readiness notices; synthesis and playback remain deferred.
 - Added the reusable TTS S2 engine with deterministic spoken-text cleanup, OpenAI MP3 synthesis, private temporary audio, Linux player execution, single-active cancellation, non-fatal results, and an opt-in audible acceptance test.
 - Added TTS S3 interactive `/ima:speak` replay, `/ima:speak stop`, and next-prompt cancellation with non-blocking, contained speech results; no bare `/speak` alias or automatic settlement speech is registered.
+- Added TTS S5 read-only `/ima:narrated-review` prompt and `narrated-review` skill for one visible walkthrough grounded in a verified completed review; operators explicitly invoke `/ima:speak` for its existing automatic segmented sequential playback.
 - Added TTS S6 automatic long-response segmentation into ordered, provider-safe 3,000-character speech requests with sequential playback, cancellation, and bounded first-failure behavior.
 
 ### Changed
