@@ -15,6 +15,7 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 ### Changed
 
 - Lifecycle persistence, corpus retrieval, and cycle handoffs now preserve both Qdrant manifest `artifactId` and logical `recordKey` references; `ima_corpus_get` accepts either identifier while legacy artifact-ID-only state remains supported.
+- Updated `/ima:speak` with Starting, multi-segment progress, and Complete notices while preserving explicit-stop notices and silent input/session-shutdown cancellation.
 
 ### Fixed
 

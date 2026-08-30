@@ -20,6 +20,7 @@ import {
   createSpeechEngine,
   type SpeechEngine,
   type SpeechEngineDependencies,
+  type SpeakHooks,
   type SpeakRequest,
   type SpeakResult,
 } from "../lib/ima-tts-speech.ts";
@@ -37,8 +38,13 @@ const TTS_DISABLED = "TTS is disabled. Enable it before using /ima:speak.";
 const NO_COMPLETED_RESPONSE = "No completed assistant response is available to speak.";
 const CLEANUP_EMPTY = "The latest assistant response has no speakable text.";
 const SPEAK_USAGE = "Usage: /ima:speak or /ima:speak stop";
+const SPEAK_STARTING = "Speaking the latest response.";
+const SPEAK_COMPLETE = "Finished speaking the latest response.";
 const SPEAK_STOPPED = "TTS playback stopped.";
 const SPEAK_UNEXPECTED_FAILURE = "TTS speech could not be completed.";
+
+const speakingSegmentMessage = (index: number, total: number): string =>
+  `Speaking part ${index} of ${total}.`;
 
 type JsonFile =
   | { ok: true; value: unknown }
@@ -160,9 +166,14 @@ const hasUsableApiKey = (apiKey: unknown): apiKey is string =>
 const reportSpeakResult = (
   result: SpeakResult,
   ctx: Pick<ExtensionContext, "ui">,
+  isCurrent: () => boolean,
 ): void => {
   if (result.ok) {
-    if (!result.spoke) ctx.ui.notify(CLEANUP_EMPTY, "info");
+    if (!result.spoke) {
+      ctx.ui.notify(CLEANUP_EMPTY, "info");
+      return;
+    }
+    if (isCurrent()) ctx.ui.notify(SPEAK_COMPLETE, "info");
     return;
   }
 
@@ -174,14 +185,26 @@ const startSpeech = (
   engine: SpeechEngine,
   request: SpeakRequest,
   ctx: Pick<ExtensionContext, "ui">,
+  isCurrent: () => boolean,
 ): void => {
+  const hooks: SpeakHooks = {
+    onSegmentStart: ({ index, total }) => {
+      if (total <= 1 || !isCurrent()) return;
+      ctx.ui.notify(speakingSegmentMessage(index, total), "info");
+    },
+  };
+  const notifyUnexpectedFailure = (): void => {
+    if (!isCurrent()) return;
+    ctx.ui.notify(SPEAK_UNEXPECTED_FAILURE, "warning");
+  };
+
   try {
     void engine
-      .speak(request)
-      .then((result) => reportSpeakResult(result, ctx))
-      .catch(() => ctx.ui.notify(SPEAK_UNEXPECTED_FAILURE, "warning"));
+      .speak(request, hooks)
+      .then((result) => reportSpeakResult(result, ctx, isCurrent))
+      .catch(notifyUnexpectedFailure);
   } catch {
-    ctx.ui.notify(SPEAK_UNEXPECTED_FAILURE, "warning");
+    notifyUnexpectedFailure();
   }
 };
 
@@ -316,13 +339,20 @@ export default function ttsExtension(
       }
       if (!isCurrentSpeechIntent(speechIntent)) return;
 
-      startSpeech(engine, {
-        text,
-        apiKey,
-        model: loaded.config.model,
-        voice: loaded.config.voice,
-        playerCommand: loaded.config.playerCommand,
-      }, ctx);
+      const isCurrent = (): boolean => isCurrentSpeechIntent(speechIntent);
+      ctx.ui.notify(SPEAK_STARTING, "info");
+      startSpeech(
+        engine,
+        {
+          text,
+          apiKey,
+          model: loaded.config.model,
+          voice: loaded.config.voice,
+          playerCommand: loaded.config.playerCommand,
+        },
+        ctx,
+        isCurrent,
+      );
     },
   });
 

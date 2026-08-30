@@ -99,8 +99,14 @@ export type SpeakRequest = Readonly<{
   playerCommand: string;
 }>;
 
+export type SpeakHooks = Readonly<{
+  onSegmentStart?: (
+    progress: Readonly<{ index: number; total: number }>,
+  ) => void | PromiseLike<void>;
+}>;
+
 export type SpeechEngine = Readonly<{
-  speak: (request: SpeakRequest) => Promise<SpeakResult>;
+  speak: (request: SpeakRequest, hooks?: SpeakHooks) => Promise<SpeakResult>;
   cancel: () => void;
 }>;
 
@@ -359,7 +365,10 @@ export const createSpeechEngine = (
     }
   };
 
-  const speak = async (request: SpeakRequest): Promise<SpeakResult> => {
+  const speak = async (
+    request: SpeakRequest,
+    hooks?: SpeakHooks,
+  ): Promise<SpeakResult> => {
     cancel();
 
     if (typeof request?.text !== "string") {
@@ -387,7 +396,23 @@ export const createSpeechEngine = (
     activeOperation = operation;
 
     try {
-      for (const segment of segments) {
+      const total = segments.length;
+      for (const [offset, segment] of segments.entries()) {
+        if (operationWasCancelled(operation)) return cancelledSpeech();
+
+        try {
+          const hookResult = hooks?.onSegmentStart?.({
+            index: offset + 1,
+            total,
+          });
+          if (hookResult) {
+            void Promise.resolve(hookResult).catch(() => {
+              // Progress reporting is best effort and must not interrupt playback.
+            });
+          }
+        } catch {
+          // Synchronous progress-hook failures are also best effort.
+        }
         if (operationWasCancelled(operation)) return cancelledSpeech();
 
         const result = await speakSegment(
