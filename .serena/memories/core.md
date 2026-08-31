@@ -7,3 +7,4 @@
 - Pi-native artifact direction: commands/prompts, agents, skills, extensions, policies, and config; preserve outcomes rather than Goose YAML/ETA internals.
 - Package resources are declared by root `package.json`; technical-spike evidence lives under `docs/spikes/`.
 - Manual phase workflows remain available alongside `/ima:cycle`; neither introduces a generic workflow DSL.
+- Release exception: `ima-pi` is a Pi package, not a WordPress or deployable site; its version/tag releases do not require a project `npm run ship-it` script or `ship-it` dry-run. Retain the ordinary Git safeguards for related changes, immutable annotated tags, and remote-ref verification.
