@@ -136,6 +136,7 @@ export const commandContext = ({
   entries = [],
   modelRegistry = {},
   calls,
+  isIdle = () => true,
 } = {}) => {
   const notifications = [];
 
@@ -144,6 +145,7 @@ export const commandContext = ({
       mode,
       hasUI,
       modelRegistry,
+      isIdle,
       sessionManager: {
         getBranch: () => {
           if (calls) calls.getBranch += 1;

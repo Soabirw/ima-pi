@@ -24,7 +24,10 @@ import {
   type SpeakRequest,
   type SpeakResult,
 } from "../lib/ima-tts-speech.ts";
-import { selectLatestCompletedAssistantText } from "../lib/ima-tts-session.ts";
+import {
+  selectCurrentSettledAssistantText,
+  selectLatestCompletedAssistantText,
+} from "../lib/ima-tts-session.ts";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const packageConfigPath = join(packageRoot, "config", "tts.json");
@@ -57,6 +60,14 @@ export type TtsConfigLoadResult =
     hasUserConfigDiagnostics: boolean;
   }
   | { packageReady: false };
+
+type ResponseTextSelector = (entries: readonly unknown[]) => string | null;
+
+type SpeakLatestResponseOptions = Readonly<{
+  announceSkips: boolean;
+  selectResponseText: ResponseTextSelector;
+  canContinueSetup: () => boolean;
+}>;
 
 export type TtsExtensionDependencies = Readonly<{
   loadConfig: () => Promise<TtsConfigLoadResult>;
@@ -163,6 +174,9 @@ const hasPlayer = async (candidatePaths: readonly string[]): Promise<boolean> =>
 const hasUsableApiKey = (apiKey: unknown): apiKey is string =>
   typeof apiKey === "string" && apiKey.trim().length > 0;
 
+const isSessionIdle = (ctx: ExtensionContext): boolean =>
+  typeof ctx.isIdle !== "function" || ctx.isIdle();
+
 const reportSpeakResult = (
   result: SpeakResult,
   ctx: Pick<ExtensionContext, "ui">,
@@ -242,6 +256,63 @@ export default function ttsExtension(
     engine.cancel();
   };
 
+  const speakLatestResponse = async (
+    ctx: ExtensionContext,
+    loaded: Extract<TtsConfigLoadResult, { packageReady: true }>,
+    speechIntent: number,
+    {
+      announceSkips,
+      selectResponseText,
+      canContinueSetup,
+    }: SpeakLatestResponseOptions,
+  ): Promise<void> => {
+    const [apiKey, playerResolved] = await Promise.all([
+      dependencies.getOpenAiApiKey(ctx),
+      dependencies.hasPlayer(
+        playerCandidatePaths(loaded.config.playerCommand, dependencies.getPath()),
+      ),
+    ]);
+    if (!canContinueSetup()) return;
+
+    const hasApiKey = hasUsableApiKey(apiKey);
+    const readiness = resolveTtsReadiness({
+      enable: loaded.config.enable,
+      mode: ctx.mode,
+      hasUI: ctx.hasUI,
+      hasApiKey,
+      playerResolved,
+    });
+
+    if (announceSkips) {
+      for (const notice of readiness.notices) {
+        ctx.ui.notify(notice.message, "warning");
+      }
+    }
+    if (!readiness.ready || !hasApiKey) return;
+
+    const text = selectResponseText(ctx.sessionManager.getBranch());
+    if (!text) {
+      if (announceSkips) ctx.ui.notify(NO_COMPLETED_RESPONSE, "info");
+      return;
+    }
+    if (!canContinueSetup()) return;
+
+    const isCurrent = (): boolean => isCurrentSpeechIntent(speechIntent);
+    ctx.ui.notify(SPEAK_STARTING, "info");
+    startSpeech(
+      engine,
+      {
+        text,
+        apiKey,
+        model: loaded.config.model,
+        voice: loaded.config.voice,
+        playerCommand: loaded.config.playerCommand,
+      },
+      ctx,
+      isCurrent,
+    );
+  };
+
   pi.on("session_start", async (_event, ctx) => {
     if (ctx.mode !== "tui" || !ctx.hasUI) return;
 
@@ -310,54 +381,36 @@ export default function ttsExtension(
       }
 
       if (speechIntent === undefined || !isCurrentSpeechIntent(speechIntent)) return;
-      const [apiKey, playerResolved] = await Promise.all([
-        dependencies.getOpenAiApiKey(ctx),
-        dependencies.hasPlayer(
-          playerCandidatePaths(loaded.config.playerCommand, dependencies.getPath()),
-        ),
-      ]);
-      if (!isCurrentSpeechIntent(speechIntent)) return;
-
-      const readiness = resolveTtsReadiness({
-        enable: loaded.config.enable,
-        mode: ctx.mode,
-        hasUI: ctx.hasUI,
-        hasApiKey: hasUsableApiKey(apiKey),
-        playerResolved,
+      await speakLatestResponse(ctx, loaded, speechIntent, {
+        announceSkips: true,
+        selectResponseText: selectLatestCompletedAssistantText,
+        canContinueSetup: () => isCurrentSpeechIntent(speechIntent),
       });
-
-      for (const notice of readiness.notices) {
-        ctx.ui.notify(notice.message, "warning");
-      }
-      if (!readiness.ready || !hasUsableApiKey(apiKey)) return;
-      if (!isCurrentSpeechIntent(speechIntent)) return;
-
-      const text = selectLatestCompletedAssistantText(ctx.sessionManager.getBranch());
-      if (!text) {
-        ctx.ui.notify(NO_COMPLETED_RESPONSE, "info");
-        return;
-      }
-      if (!isCurrentSpeechIntent(speechIntent)) return;
-
-      const isCurrent = (): boolean => isCurrentSpeechIntent(speechIntent);
-      ctx.ui.notify(SPEAK_STARTING, "info");
-      startSpeech(
-        engine,
-        {
-          text,
-          apiKey,
-          model: loaded.config.model,
-          voice: loaded.config.voice,
-          playerCommand: loaded.config.playerCommand,
-        },
-        ctx,
-        isCurrent,
-      );
     },
   });
 
   pi.on("input", () => {
     cancelSpeech();
+  });
+
+  pi.on("agent_settled", async (_event, ctx) => {
+    if (ctx.mode !== "tui" || !ctx.hasUI) return;
+    if (!isSessionIdle(ctx)) return;
+
+    const settlementIntent = latestSpeechIntent;
+    const loaded = await dependencies.loadConfig();
+    // Input can advance the intent while configuration loads.
+    if (!isCurrentSpeechIntent(settlementIntent)) return;
+    if (!isSessionIdle(ctx)) return;
+    if (!loaded.packageReady || !loaded.config.enable || !loaded.config.autoSpeak) return;
+
+    const speechIntent = reserveSpeechIntent();
+    await speakLatestResponse(ctx, loaded, speechIntent, {
+      announceSkips: false,
+      selectResponseText: selectCurrentSettledAssistantText,
+      canContinueSetup: () =>
+        isCurrentSpeechIntent(speechIntent) && isSessionIdle(ctx),
+    });
   });
 
   pi.on("session_shutdown", () => {

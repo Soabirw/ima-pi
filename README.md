@@ -10,7 +10,7 @@ Pi-native IMA agent harness, packaged through Pi's standard Git/npm package mode
 - **A guided development lifecycle with bounded autonomy:** use the manual phases or the explicit, user-gated `/ima:cycle`; autonomous progression requires an approved bounded, conflict-free, low-risk plan and verified evidence, and it stops at `document`.
 - **Bounded specialist delegation** keeps work scoped while parent-owned lifecycle gates preserve accountability.
 
-## Text-to-speech command and engine (S1–S3, S6)
+## Text-to-speech command and engine (S1–S4, S6)
 
 The bundled TTS feature is disabled by default. To opt in, create
 `~/.pi/agent/ima/tts.json` with the supported keys: `enable`, `autoSpeak`, `provider`,
@@ -39,11 +39,14 @@ credentials. The default `ffplay` and common VLC/mpv players support MP3. PCM-on
 only the configured command's `PATH` candidates; it does not auto-detect a different player.
 
 Readiness checks and commands run only in the interactive TUI; print, JSON, and RPC modes
-remain silent. `autoSpeak` has no runtime effect, and TTS does not automatically speak settled
-responses. To opt into one live audible acceptance check, run:
+remain silent. When both `enable` and `autoSpeak` are true, automatic TTS speaks the current
+settled assistant response once after final settlement, never on intermediate turns. It does not
+replay an older response if the current settled response was aborted or incomplete, and remains
+silent when automatic setup becomes non-idle or stale. It retains the existing next-prompt and
+`/ima:speak stop` cancellation behavior. To opt into live audible acceptance checks, run:
 
 ```bash
-IMA_TTS_IT=1 OPENAI_API_KEY=<configured-secret> node --test tests/tts-speech.test.js
+IMA_TTS_IT=1 OPENAI_API_KEY=<configured-secret> node --test tests/tts-speech-live.test.js
 ```
 
 The live test uses the configured default player (`ffplay`) or

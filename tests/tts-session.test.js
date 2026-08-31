@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { selectLatestCompletedAssistantText } from "../lib/ima-tts-session.ts";
+import {
+  selectCurrentSettledAssistantText,
+  selectLatestCompletedAssistantText,
+} from "../lib/ima-tts-session.ts";
 
 const assistantEntry = (content, stopReason = "stop") => ({
   type: "message",
@@ -23,6 +26,22 @@ test("selects the newest completed assistant response without mutating session e
 
   assert.equal(selectLatestCompletedAssistantText(entries), "Newest response");
   assert.deepEqual(entries, original);
+});
+
+test("selects only the current settled assistant response", () => {
+  const completed = [
+    assistantEntry([textPart("Earlier response")]),
+    assistantEntry([textPart("Current response")]),
+    { type: "message", message: { role: "user", content: "next prompt" } },
+  ];
+  const aborted = [
+    assistantEntry([textPart("Completed response")]),
+    assistantEntry([textPart("Aborted response")], "aborted"),
+    { type: "custom", data: { text: "ignored" } },
+  ];
+
+  assert.equal(selectCurrentSettledAssistantText(completed), "Current response");
+  assert.equal(selectCurrentSettledAssistantText(aborted), null);
 });
 
 test("ignores non-completed and non-assistant session entries", () => {

@@ -25,7 +25,7 @@ const CREDENTIALS_MISSING =
   + "Configure Pi authentication or OPENAI_API_KEY.";
 const PLAYER_MISSING = "TTS is enabled, but its configured audio player is unavailable.";
 
-test("registers only /ima:speak, input and shutdown handlers, and a command-and-args exec adapter", async () => {
+test("registers only /ima:speak and TTS lifecycle handlers, and a command-and-args exec adapter", async () => {
   const harness = createHarness();
   const signal = new AbortController().signal;
 
@@ -34,7 +34,7 @@ test("registers only /ima:speak, input and shutdown handlers, and a command-and-
   assert.match(harness.command.description, /stop/i);
   assert.deepEqual(
     [...harness.handlers.keys()],
-    ["session_start", "input", "session_shutdown"],
+    ["session_start", "input", "agent_settled", "session_shutdown"],
   );
   assert.equal(harness.calls.createEngine, 1);
 
@@ -206,6 +206,27 @@ test("reports when no completed assistant response is available", async () => {
   assert.deepEqual(notifications, [{ message: NO_COMPLETED_RESPONSE, type: "info" }]);
   assert.equal(harness.calls.getBranch, 1);
   assert.equal(harness.engineState.calls.speak.length, 0);
+});
+
+test("replays the latest completed response after a newer aborted response", async () => {
+  const harness = createHarness();
+  const { ctx, notifications } = commandContext({
+    entries: [
+      assistantEntry([textPart("Completed response")]),
+      assistantEntry([textPart("Aborted response")], "aborted"),
+    ],
+    calls: harness.calls,
+  });
+
+  await harness.command.handler("", ctx);
+  await flushPromises();
+
+  assert.equal(harness.engineState.calls.speak.length, 1);
+  assert.equal(harness.engineState.calls.speak[0].text, "Completed response");
+  assert.deepEqual(notifications, [
+    { message: SPEAK_STARTING, type: "info" },
+    { message: SPEAK_COMPLETE, type: "info" },
+  ]);
 });
 
 test("speaks the selected response with exact configured request values", async () => {

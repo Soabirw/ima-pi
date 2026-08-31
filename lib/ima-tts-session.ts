@@ -16,6 +16,23 @@ const textFromContent = (content: unknown): string | null => {
   return text || null;
 };
 
+export const selectCurrentSettledAssistantText = (
+  entries: readonly unknown[],
+): string | null => {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (!isRecord(entry) || entry.type !== "message") continue;
+
+    const message = entry.message;
+    if (!isRecord(message) || message.role !== "assistant") continue;
+
+    if (message.stopReason !== "stop") return null;
+    return textFromContent(message.content);
+  }
+
+  return null;
+};
+
 export const selectLatestCompletedAssistantText = (
   entries: readonly unknown[],
 ): string | null => {

@@ -255,7 +255,7 @@ test("ships the approved disabled-by-default TTS package configuration", async (
   assert.deepEqual(config, TTS_CONFIG_DEFAULTS);
 });
 
-test("retains S1 readiness while registering S3 command, input, and shutdown wiring", () => {
+test("retains S1 readiness while registering S3/S4 command and lifecycle wiring", () => {
   const events = [];
   const commands = [];
 
@@ -264,7 +264,7 @@ test("retains S1 readiness while registering S3 command, input, and shutdown wir
     registerCommand: (name) => commands.push(name),
   });
 
-  assert.deepEqual(events, ["session_start", "input", "session_shutdown"]);
+  assert.deepEqual(events, ["session_start", "input", "agent_settled", "session_shutdown"]);
   assert.deepEqual(commands, ["ima:speak"]);
 });
 
