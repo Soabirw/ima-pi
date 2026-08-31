@@ -4,7 +4,7 @@ Pi-native IMA agent harness, packaged through Pi's standard Git/npm package mode
 
 ## Features
 
-- **52 packaged skills and 30 `/ima:*` prompt templates** for engineering, web, WordPress, IMA, MCP, research, and operational workflows.
+- **54 packaged skills and 32 `/ima:*` prompt templates** for engineering, web, WordPress, IMA, MCP, research, and operational workflows.
 - **Pi-native package resources**—prompts, skills, agents, extensions, policies, and configuration guidance—distributed through Pi's normal Git/npm package model.
 - **Memory-aware project work:** Serena provides stable project context, Vestige preserves bounded user preferences, and package-native Tier-1 Qdrant/Ollama corpus tools store formal lifecycle artifacts and durable reference knowledge. None are bundled services.
 - **A guided development lifecycle with bounded autonomy:** use the manual phases or the explicit, user-gated `/ima:cycle`; autonomous progression requires an approved bounded, conflict-free, low-risk plan and verified evidence, and it stops at `document`.
@@ -32,6 +32,14 @@ response. Run it again to replay that response, or use `/ima:speak stop` to canc
 synthesis or playback. Submitting the next real prompt also cancels active speech without
 changing the prompt. The command reports non-fatal readiness notices for missing OpenAI
 credentials or player support, and reports when there is no completed response to speak.
+
+`/ima:narrate [presentation-instruction]` reforms the last completed assistant response into one
+visible, narration-friendly Markdown response. Its optional instruction changes presentation only:
+it may shape audience, tone, depth, organization, or emphasis, but cannot request new analysis or
+change conclusions. The original response remains visible, and `/ima:narrate` never starts speech
+automatically; after a narration, the operator may run `/ima:speak` explicitly. Use
+`/ima:narrated-review` instead when the presentation must be grounded in a verified completed
+review rather than the last general response.
 
 TTS reuses Pi's existing OpenAI authentication, including `OPENAI_API_KEY`, and never stores
 credentials. The default `ffplay` and common VLC/mpv players support MP3. PCM-only

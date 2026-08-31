@@ -12,6 +12,7 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 - Added TTS S4 opt-in automatic speech once per final `agent_settled` response in the interactive TUI; it requires both `enable` and `autoSpeak`, speaks only the current normally completed response, remains silent for aborted, stale, non-idle, and noninteractive contexts, and reuses existing cancellation.
 - Added TTS S5 read-only `/ima:narrated-review` prompt and `narrated-review` skill for one visible walkthrough grounded in a verified completed review; operators explicitly invoke `/ima:speak` for its existing automatic segmented sequential playback.
 - Added TTS S6 automatic long-response segmentation into ordered, provider-safe 3,000-character speech requests with sequential playback, cancellation, and bounded first-failure behavior.
+- Added TTS S8 read-only `/ima:narrate` and `narrate` skill to reform the last completed response with an optional presentation-only instruction into one visible Markdown narration ending in an explicit `/ima:speak` handoff, without auto-speech or new analysis.
 
 ### Changed
 
