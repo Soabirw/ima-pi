@@ -4,6 +4,18 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ## [Unreleased]
 
+### Added
+
+- Added the `ima-preferences` skill for exact-preview, approval-gated maintenance of Pi's active global `AGENTS.md` without a custom preference store.
+
+### Changed
+
+- Cut routine user preference loading and updates over to Pi-native global `AGENTS.md` context files; `/ima:memorize` now uses built-in file tools, `/ima:vestige-bootstrap` is a non-reading compatibility pointer, and `/ima:new` runs Serena bootstrap only. Vestige data and the separate T7 migration remain untouched.
+
+### Fixed
+
+- Hardened `/ima:memorize` to stop without mutation when Pi context precedence selects `AGENTS.override.md` or an uppercase-only `AGENTS.MD`, and to persist a complete previewed document for a safe absent lower-case target.
+
 ## [1.16.0] - 2026-08-31
 
 ### Added

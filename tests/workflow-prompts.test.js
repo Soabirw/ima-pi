@@ -34,7 +34,7 @@ test("lifecycle prompts delegate optional evidence to matching specialists", asy
 test("decompose enforces two tiers, one PM destination, preview, and checklist-only work", async () => { const text = await prompt("decompose"); for (const value of ["Taskwarrior Project -> Task", "Jira Epic -> Story/Task", "checklist", "exactly one destination", "never dual-write", "exact persistence preview", "explicit approval", "lifecycle unit", "as `decision`", "stop"]) has(text, value); has(text, "technical files, functions, control flow"); });
 test("plan enforces one-unit Serena-first technical planning without implementation", async () => {
   const text = await prompt("plan");
-  for (const value of ["exactly one", "/ima:decompose", "ima_context", "Serena-first", "files, modules, symbols, APIs", "pure/effect boundaries", "verification commands", "rollback", "as `plan`", "stop", "ima-lifecycle-contract", "Vestige preferences", "ima-memory-workflow", "two or three", "I will not make code changes in this planning session.", "Problem, Prior Work", "readable-code", "functional-programmer", "ima-security-guardrails", "Standards Impact", "500-line file-size smell", "responsibility/cohesion", "cohesion-based justification"]) has(text, value);
+  for (const value of ["exactly one", "/ima:decompose", "ima_context", "Serena-first", "files, modules, symbols, APIs", "pure/effect boundaries", "verification commands", "rollback", "as `plan`", "stop", "ima-lifecycle-contract", "Pi global `AGENTS.md` preferences", "ima-memory-workflow", "two or three", "I will not make code changes in this planning session.", "Problem, Prior Work", "readable-code", "functional-programmer", "ima-security-guardrails", "Standards Impact", "500-line file-size smell", "responsibility/cohesion", "cohesion-based justification"]) has(text, value);
   assert.match(
     text,
     /^- Standards Impact:[^\n]*500-line file-size smell[^\n]*responsibility\/cohesion[^\n]*cohesion-based justification/mi,
@@ -115,7 +115,7 @@ test("manual lifecycle prompts normalize shared source identifiers before declar
   assert.ok(planning.indexOf("ima_context") < planning.indexOf("ima-memory-workflow"));
 });
 
-test("active two-tier documentation assigns lifecycle artifacts to Qdrant and preferences to Vestige", async () => {
+test("active documentation assigns lifecycle artifacts to Qdrant, current preferences to Pi global AGENTS, and Vestige to legacy boundaries", async () => {
   const [readme, guide, workflow, lifecycle, vestige, conventions, completion] = await Promise.all([
     readFile(join(root, "README.md"), "utf8"),
     readFile(join(root, "docs", "guide.md"), "utf8"),
@@ -128,12 +128,13 @@ test("active two-tier documentation assigns lifecycle artifacts to Qdrant and pr
   for (const text of [readme, guide, workflow, lifecycle]) {
     has(text, "Tier-1 Qdrant");
   }
+  for (const text of [readme, guide, workflow]) has(text, "global `AGENTS.md`");
   for (const text of [workflow, lifecycle, vestige]) {
     has(text, "Vestige");
-    assert.doesNotMatch(text, /Vestige MCP `smart_ingest`.*lifecycle|Vestige lifecycle fallback/i);
+    assert.doesNotMatch(text, /Vestige MCP `smart_ingest`.*lifecycle/i);
   }
-  has(vestige, "preferences");
-  has(conventions, "Vestige is preferences-only");
+  has(vestige, "explicitly cited legacy evidence");
+  has(conventions, "Pi global AGENTS.md");
   has(completion, "ima_lifecycle");
 });
 
@@ -333,57 +334,20 @@ test("FNR-3025 support prompts encode gateway, safety, and terminal contracts", 
   for (const value of ["description:", "argument-hint:", "direct Serena tools to activate", "instructions", "list memories", "core", "conventions", "tech_stack", "suggested_commands", "task_completion", "PASS, MISSING, or FAIL", "Do not pass a Taskwarrior project", "Stop after"]) has(serena, value);
   has(serena, "package MCP adapter");
   const vestige = await prompt("vestige-bootstrap");
-  assert.equal(
-    (vestige.match(/\$@/g) ?? []).length,
-    1,
-    "vestige bootstrap must interpolate its optional topic exactly once",
-  );
-  assert.match(
-    vestige,
-    /empty value or an unexpanded literal\s+placeholder as no topic and select one broad read-only `session_start`/i,
-  );
-  assert.match(
-    vestige,
-    /one focused `recall` and pass the exact non-empty topic only as recall query data/i,
-  );
-  assert.match(
-    vestige,
-    /Classify the final read or retrieval result before noting recovery\. Recovery annotates,\s+never replaces, that final disposition:/is,
-  );
-  assert.match(
-    vestige,
-    /PASS — recovered after one retry — the sole identical retry produced usable current-invocation evidence\./,
-  );
-  assert.match(
-    vestige,
-    /EMPTY — recovered after one retry — the sole identical retry succeeded but found no matching preference\./,
-  );
   for (const value of [
-    "session_start",
-    "recall",
-    "Discover Vestige",
-    "package MCP adapter",
-    'mcp({ connect: "vestige" })',
-    "-32000",
-    "Connection closed",
-    "timeout",
-    "same read operation",
-    "identical arguments",
-    "exactly once",
-    "Never retry `smart_ingest`",
-    "current-invocation",
-    "unrelated merged",
-    "PASS, EMPTY, FAIL, or SKIP",
-    "PASS — usable current-invocation evidence.",
-    "EMPTY — a successful read found no matching preference.",
-    "FAIL — discovery, reconnect, the sole retry, required full retrieval, or evidence validation failed; label any remaining excerpt partial or stale.",
-    "SKIP — the focused fallback or full retrieval was unnecessary.",
-    "Never ingest",
+    "deprecated Vestige preference-bootstrap compatibility path",
+    "global `AGENTS.md`",
+    "no MCP discovery and no Vestige read or write",
+    "/ima:memorize",
+    "/reload",
+    "explicitly cited legacy evidence",
+    "separate T7 migration",
+    "Do not call Vestige",
     "Stop after",
   ]) has(vestige, value);
-  assert.doesNotMatch(vestige, /direct Vestige may not expose dedicated preference helpers/i);
+  assert.doesNotMatch(vestige, /session_start|smart_ingest|mcp\(\{ connect: "vestige" \}\)/i);
   const memorize = await prompt("memorize");
-  for (const value of ["natural language", "parameter grammar", "Vestige preference", "Serena `core`", "`conventions`", "`tech_stack`", "`suggested_commands`", "`task_completion`", "`memory_maintenance`", "ima_lifecycle", "Qdrant", "secrets", "exact preview", "explicit approval", "vestige_smart_ingest", "serena_edit_memory", "mode\":\"literal", "allow_multiple_occurrences\":false", "serena_write_memory", "verify", "Stop after one"]) has(memorize, value);
+  for (const value of ["natural language", "parameter grammar", "PI_CODING_AGENT_DIR", "non-empty", "AGENTS.override.md", "AGENTS.MD", "unsupported-active-layout", "would-shadow-active-file", "one complete document", "Never create a heading-only initialization", "ima-preferences", "Serena `core`", "`conventions`", "`tech_stack`", "`suggested_commands`", "`task_completion`", "`memory_maintenance`", "ima_lifecycle", "Qdrant", "secrets", "exact preview", "explicit approval", "built-in native edit or write", "re-read and verify", "duplicate", "ambiguous conflict", "serena_edit_memory", "mode\":\"literal", "allow_multiple_occurrences\":false", "serena_write_memory", "verify", "Stop after one"]) has(memorize, value);
   assert.match(
     memorize,
     /serena_edit_memory[\s\S]{0,500}"mode":"literal"[\s\S]{0,250}"allow_multiple_occurrences":false[\s\S]{0,200}Reject zero-match or multiple-match ambiguity/i,
@@ -394,8 +358,19 @@ test("FNR-3025 support prompts encode gateway, safety, and terminal contracts", 
   );
   assert.match(
     memorize,
-    /vestige_smart_ingest[\s\S]{0,500}single mode[\s\S]{0,250}smart merge\/supersession[\s\S]{0,250}`forceCreate:true` only with explicit user approval[\s\S]{0,250}verify with focused `recall` or `session_start`/i,
+    /AGENTS\.override\.md[\s\S]{0,180}unsupported-active-layout[\s\S]{0,100}no mutation/i,
   );
+  assert.match(
+    memorize,
+    /Absent lower-case `AGENTS\.md` plus regular `AGENTS\.MD`[\s\S]{0,180}would-shadow-active-file[\s\S]{0,100}no mutation/i,
+  );
+  assert.match(
+    memorize,
+    /For an absent supported lower-case destination[\s\S]{0,300}# User Preferences[\s\S]{0,200}## <the meaningful heading shown in the preview>[\s\S]{0,200}- <the exact approved preference wording>[\s\S]{0,300}one native write[\s\S]{0,180}heading and exact preference/i,
+  );
+  assert.match(memorize, /Do not edit an override, uppercase AGENTS file, or `CLAUDE` variant/i);
+  assert.doesNotMatch(memorize, /preview creation of only `# User Preferences`/i);
+  assert.doesNotMatch(memorize, /vestige_smart_ingest/i);
   for (const value of ["ima-memory-workflow", "relevant standard memories", "Do not inspect repository files", "unless the user explicitly asks"]) has(memorize, value);
   const preflight = await prompt("preflight");
   for (const value of ["offline", "quick", "full", "compact `mcp` proxy", "advertised by discovery", "ima_corpus_status", "never discover or invoke Qdrant through `mcp`", "Offline skips live Qdrant/Ollama", "missing package-native corpus tool is FAIL", "PASS, WARN, FAIL, BLOCKED, SKIP, NOT_CONFIGURED", "0700", "bounded line/byte chunks", "redact", "cleanup", "retained", "ima_delegate", "IMA_PI_PREFLIGHT_CHILD_OK", "preflight-probe", "pi-preflight", "Goose subrecipe", "Stop after"]) has(preflight, value);
@@ -437,13 +412,13 @@ test("Vestige migration prompt separates dry-run readiness from actual migration
 test("Unit D scoped guidance uses direct package MCP instructions", async () => {
   const guidance = await Promise.all([
     [skill("mcp-serena"), "package MCP adapter"],
-    [skill("mcp-vestige"), "direct Vestige tools through mcp"],
+    [skill("mcp-vestige"), "explicitly cited `vestige:<UUID>`"],
     [skill("pi-preflight"), "Package MCP adapter"],
     [skill("ima-pi-guide"), "package MCP adapters"],
     [prompt("preflight"), "package MCP adapter"],
     [prompt("migrate"), "package MCP adapter"],
     [prompt("memorize"), "package MCP adapter"],
-    [prompt("vestige-bootstrap"), "package MCP adapter"],
+    [prompt("vestige-bootstrap"), "global `AGENTS.md`"],
   ].map(async ([content, directEvidence]) => [await content, directEvidence]));
 
   for (const [text, directEvidence] of guidance) {

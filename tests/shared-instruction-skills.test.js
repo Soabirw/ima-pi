@@ -4,7 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 
 const root = resolve(dirname(new URL(import.meta.url).pathname), "..");
-const skills = ["ima-memory-workflow", "ima-security-guardrails", "ima-vision-handoff", "ima-delegation-contract"];
+const skills = ["ima-memory-workflow", "ima-preferences", "ima-security-guardrails", "ima-vision-handoff", "ima-delegation-contract"];
 const read = (path) => readFile(join(root, path), "utf8");
 const mustContain = (content, markers, label) => markers.forEach((marker) => assert.match(content, marker, `${label} must retain ${marker}`));
 const localMarkdownTargets = (content) => [...content.matchAll(/\[[^\]]+\]\(([^)]+)\)/g)]
@@ -25,20 +25,18 @@ test("shared instruction skills have valid package metadata and local links", as
 });
 
 test("shared instruction skills retain their bounded contracts", async () => {
-  const [memory, security, vision, delegation] = await Promise.all(skills.map((name) => read(`skills/${name}/SKILL.md`)));
+  const [memory, preferences, security, vision, delegation] = await Promise.all(skills.map((name) => read(`skills/${name}/SKILL.md`)));
 
   mustContain(memory, [
     /ima_context/,
+    /Pi global `AGENTS\.md`/,
+    /current cross-project user preferences/i,
+    /ima-preferences/,
     /Vestige/,
     /Tier-1 Qdrant/,
-    /session_start.*recall/is,
-    /read-only.*-32000.*Connection closed.*adapter\s+timeout/is,
-    /mcp\(\{ connect: "vestige" \}\)/,
-    /identical read once/i,
-    /Never retry a mutation/i,
-    /explicit, topic-relevant preference/i,
-    /unrelated lifecycle\s+or log content/i,
-    /For a cited `vestige:<UUID>`, retrieve that cited preference memory/is,
+    /Do not call Vestige `session_start` or broad `recall`/,
+    /For a cited `vestige:<UUID>`, retrieve only that cited legacy memory/is,
+    /T7 alone owns any Vestige-to-Markdown migration work/i,
     /ima_corpus_recall/,
     /ima_corpus_get/,
     /manifest summaries only/i,
@@ -48,6 +46,18 @@ test("shared instruction skills retain their bounded contracts", async () => {
     /ima_lifecycle/,
     /lifecycle key/i,
   ], "memory workflow");
+  mustContain(preferences, [
+    /non-empty `PI_CODING_AGENT_DIR`/,
+    /AGENTS\.override\.md/,
+    /AGENTS\.MD/,
+    /unsupported-active-layout/,
+    /would-shadow-active-file/,
+    /one complete\s+document/i,
+    /Never create a heading-only initialization/i,
+    /explicit approval/i,
+    /one native edit or write/i,
+    /Never use Vestige/i,
+  ], "preferences");
   mustContain(security, [/wp_verify_nonce\(\)|check_ajax_referer\(\)/, /current_user_can\(\)/, /->prepare\(\)/, /sanitize_text_field\(\)/, /esc_html\(\)/, /declare\(strict_types=1\)/, /parameterized-query/i, /pipe\(\).*compose\(.*curry/is], "security guardrails");
   mustContain(vision, [/ima_delegate/, /vision-handoff/, /imagePaths/, /evidence-only/i, /smallest concrete replacement/i], "vision handoff");
   mustContain(delegation, [/ima_delegate/, /one to four/i, /self-contained/i, /writeScope/, /Retry at most once/i], "delegation contract");

@@ -10,7 +10,8 @@ This document is the wire pattern, not a runtime include and not a replacement f
 
 | Skill | Single responsibility | Current named wiring |
 | --- | --- | --- |
-| `ima-memory-workflow` | Route task context and preservation between Serena, Vestige, and Qdrant. | Planned for later prompt units. |
+| `ima-memory-workflow` | Route task context and preservation between Pi global `AGENTS.md`, Serena, cited Vestige evidence, and Qdrant. | Planned for later prompt units. |
+| `ima-preferences` | Classify and maintain current user preferences in Pi's active global `AGENTS.md`. | `/ima:memorize`. |
 | `ima-security-guardrails` | Apply WordPress/PHP, JavaScript/TypeScript, FP, and Bootstrap security boundaries. | Planned for later prompt units. |
 | `ima-vision-handoff` | Route visual evidence through `ima_delegate` to the evidence-only `vision-handoff` agent. | `agents/vision-handoff.md` declares it. |
 | `ima-delegation-contract` | Bound specialist delegation, self-contained briefs, ownership, and failure escalation. | Unit 3 `ima:review`, `ima:adversarial-review`, and `ima:test` reference it. |

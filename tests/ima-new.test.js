@@ -213,7 +213,7 @@ test("shares command-route result sanitization and keeps resolved bootstrap bodi
   }
   const failed = buildImaNewResult("high", { ok: false, error: "unexpected secret" });
   const mismatched = buildImaNewResult("xhigh", { ok: true, route: { role: "HIGH", provider: "p", model: "m" } });
-  const bodies = ["Serena bootstrap body", "Vestige bootstrap body"];
+  const bodies = ["Serena bootstrap body"];
   assert.deepEqual(failed, { selector: "high", ok: false, error: "route_apply_failed" });
   assert.deepEqual(mismatched, { selector: "xhigh", ok: false, error: "route_apply_failed" });
   assert.deepEqual(buildImaNewResult("unconfigured", null), ready("unconfigured", null));
@@ -221,20 +221,19 @@ test("shares command-route result sanitization and keeps resolved bootstrap bodi
   assert.deepEqual(buildImaNewBootstrapSequence(failed, bodies), []);
 });
 
-test("injects resolved Serena before Vestige bodies, waits between turns, and never writes the editor", async () => {
+test("injects the resolved Serena body, waits for its terminal result, and never writes the editor", async () => {
   const harness = createBootstrapHarness();
-  const bodies = ["Serena bootstrap body", "Vestige bootstrap body"];
+  const bodies = ["Serena bootstrap body"];
   await injectImaNewBootstrap(harness.context, ready(), bodies);
   assert.deepEqual(harness.calls, [
     ["send", bodies[0]],
-    ["wait"],
-    ["send", bodies[1]],
     ["wait"],
   ]);
   assert.equal(harness.calls.some(([type, value]) => type === "send" && typeof value === "string" && value.startsWith("/ima:")), false);
 });
 
 test("resolves planned prompt and skill resources through sourceInfo.path and strips frontmatter", async () => {
+  assert.deepEqual(IMA_NEW_BOOTSTRAP_COMMANDS, ["ima:serena-bootstrap"]);
   const directory = await mkdtemp(join(tmpdir(), "ima-new-bootstrap-"));
   const paths = IMA_NEW_BOOTSTRAP_COMMANDS.map((name) => join(directory, `${name}.md`));
   const skillPath = join(directory, "ima-lifecycle-contract.md");
@@ -242,7 +241,6 @@ test("resolves planned prompt and skill resources through sourceInfo.path and st
   const functionalProgrammerSkillPath = join(directory, "functional-programmer.md");
   const securityGuardrailsSkillPath = join(directory, "ima-security-guardrails.md");
   await writeFile(paths[0], "---\ndescription: Serena\n---\nSerena bootstrap body\n");
-  await writeFile(paths[1], "---\ndescription: Vestige\n---\nVestige bootstrap body\n");
   await writeFile(skillPath, "---\nname: ima-lifecycle-contract\ndescription: Lifecycle\n---\nLifecycle contract body\n");
   await writeFile(readableCodeSkillPath, "---\nname: readable-code\ndescription: Readability\n---\nReadable code body\n");
   await writeFile(functionalProgrammerSkillPath, "---\nname: functional-programmer\ndescription: Functional programming\n---\nFunctional programmer body\n");
@@ -269,13 +267,12 @@ test("resolves planned prompt and skill resources through sourceInfo.path and st
   for (const phase of IMA_PHASES.filter((phase) => phase !== "plan" && phase !== "implement")) assert.deepEqual(IMA_NEW_PHASE_SKILLS[phase], []);
   assert.deepEqual(
     await resolveImaNewBootstrapMessages({ getCommands: () => commands }),
-    ["Serena bootstrap body", "Vestige bootstrap body"],
+    ["Serena bootstrap body"],
   );
   assert.deepEqual(
     await resolveImaNewBootstrapMessages({ getCommands: () => commands }, "plan"),
     [
       "Serena bootstrap body",
-      "Vestige bootstrap body",
       "Lifecycle contract body",
       "Readable code body",
       "Functional programmer body",
@@ -284,7 +281,7 @@ test("resolves planned prompt and skill resources through sourceInfo.path and st
   );
   assert.deepEqual(
     await resolveImaNewBootstrapMessages({ getCommands: () => commands }, "implement"),
-    ["Serena bootstrap body", "Vestige bootstrap body", "Readable code body"],
+    ["Serena bootstrap body", "Readable code body"],
   );
 });
 
@@ -305,17 +302,16 @@ test("rejects missing, ambiguous, wrong-source, unreadable, and empty bootstrap 
   const directory = await mkdtemp(join(tmpdir(), "ima-new-bootstrap-invalid-"));
   const paths = IMA_NEW_BOOTSTRAP_COMMANDS.map((name) => join(directory, `${name}.md`));
   await writeFile(paths[0], "Serena bootstrap body");
-  await writeFile(paths[1], "Vestige bootstrap body");
   const validCommands = IMA_NEW_BOOTSTRAP_COMMANDS.map((name, index) => ({
     name,
     source: "prompt",
     sourceInfo: { path: paths[index] },
   }));
   const cases = [
-    validCommands.slice(0, 1),
+    [],
     [...validCommands, validCommands[0]],
-    [validCommands[0], { ...validCommands[1], source: "extension" }],
-    [validCommands[0], { ...validCommands[1], sourceInfo: { path: join(directory, "missing.md") } }],
+    [{ ...validCommands[0], source: "extension" }],
+    [{ ...validCommands[0], sourceInfo: { path: join(directory, "missing.md") } }],
   ];
 
   await assert.rejects(
@@ -323,7 +319,7 @@ test("rejects missing, ambiguous, wrong-source, unreadable, and empty bootstrap 
     /bootstrap_resource_unavailable/,
   );
 
-  await writeFile(paths[1], "");
+  await writeFile(paths[0], "");
   cases.push(validCommands);
 
   for (const commands of cases) {
@@ -427,28 +423,24 @@ test("does not replace or prefill a plan session when its lifecycle skill is una
   assert.equal(harness.notifications.at(-1)?.message, "Fresh session bootstrap resources were unavailable.");
 });
 
-test("stops after a partial bootstrap failure without writing the editor", async () => {
+test("stops after a failed Serena bootstrap send without writing the editor", async () => {
   const harness = createBootstrapHarness();
   harness.context.sendUserMessage = async (message) => {
     harness.calls.push(["send", message]);
-    if (message === "Vestige bootstrap body") throw new Error("send failed");
+    if (message === "Serena bootstrap body") throw new Error("send failed");
   };
   await assert.rejects(
-    () => injectImaNewBootstrap(harness.context, ready(), ["Serena bootstrap body", "Vestige bootstrap body"]),
+    () => injectImaNewBootstrap(harness.context, ready(), ["Serena bootstrap body"]),
   );
-  assert.deepEqual(harness.calls, [
-    ["send", "Serena bootstrap body"],
-    ["wait"],
-    ["send", "Vestige bootstrap body"],
-  ]);
+  assert.deepEqual(harness.calls, [["send", "Serena bootstrap body"]]);
   assert.equal(harness.calls.some(([type]) => type === "editor"), false);
 });
 
-test("rejects unsuccessful Serena terminal states before sending Vestige or writing the editor", async () => {
+test("rejects unsuccessful Serena terminal states without writing the editor", async () => {
   for (const stopReason of ["error", "aborted", "length", "pending", "toolUse", "unexpected", "missing"]) {
     const harness = createBootstrapHarness([stopReason, "stop"]);
     await assert.rejects(
-      () => injectImaNewBootstrap(harness.context, ready(), ["Serena bootstrap body", "Vestige bootstrap body"]),
+      () => injectImaNewBootstrap(harness.context, ready(), ["Serena bootstrap body"]),
       /bootstrap_turn_failed/,
     );
     assert.deepEqual(harness.calls, [["send", "Serena bootstrap body"], ["wait"]]);
@@ -461,39 +453,22 @@ test("does not accept a stale prior assistant stop for a new bootstrap turn", as
     { type: "message", id: "stale", message: { role: "assistant", stopReason: "stop" } },
   ]);
   await assert.rejects(
-    () => injectImaNewBootstrap(harness.context, ready(), ["Serena bootstrap body", "Vestige bootstrap body"]),
+    () => injectImaNewBootstrap(harness.context, ready(), ["Serena bootstrap body"]),
     /bootstrap_turn_failed/,
   );
   assert.deepEqual(harness.calls, [["send", "Serena bootstrap body"], ["wait"]]);
   assert.deepEqual(harness.editor, []);
 });
 
-test("stops after a failed Vestige terminal result without writing the editor", async () => {
-  const harness = createBootstrapHarness(["stop", "error"]);
-  await assert.rejects(
-    () => injectImaNewBootstrap(harness.context, ready(), ["Serena bootstrap body", "Vestige bootstrap body"]),
-    /bootstrap_turn_failed/,
-  );
-  assert.deepEqual(harness.calls, [
-    ["send", "Serena bootstrap body"],
-    ["wait"],
-    ["send", "Vestige bootstrap body"],
-    ["wait"],
-  ]);
-  assert.deepEqual(harness.editor, []);
-});
-
 test("stops after a failed plan-skill terminal result without writing the editor", async () => {
-  const harness = createBootstrapHarness(["stop", "stop", "error"]);
-  const messages = ["Serena bootstrap body", "Vestige bootstrap body", "Lifecycle contract body"];
+  const harness = createBootstrapHarness(["stop", "error"]);
+  const messages = ["Serena bootstrap body", "Lifecycle contract body"];
   await assert.rejects(
     () => injectImaNewBootstrap(harness.context, ready(), messages, [...IMA_NEW_BOOTSTRAP_COMMANDS, "skill:ima-lifecycle-contract"]),
     /bootstrap_turn_failed/,
   );
   assert.deepEqual(harness.calls, [
     ["send", "Serena bootstrap body"],
-    ["wait"],
-    ["send", "Vestige bootstrap body"],
     ["wait"],
     ["send", "Lifecycle contract body"],
     ["wait"],

@@ -4,9 +4,9 @@ Pi-native IMA agent harness, packaged through Pi's standard Git/npm package mode
 
 ## Features
 
-- **54 packaged skills and 32 `/ima:*` prompt templates** for engineering, web, WordPress, IMA, MCP, research, and operational workflows.
+- **55 packaged skills and 32 `/ima:*` prompt templates** for engineering, web, WordPress, IMA, MCP, research, and operational workflows.
 - **Pi-native package resources**—prompts, skills, agents, extensions, policies, and configuration guidance—distributed through Pi's normal Git/npm package model.
-- **Memory-aware project work:** Serena provides stable project context, Vestige preserves bounded user preferences, and package-native Tier-1 Qdrant/Ollama corpus tools store formal lifecycle artifacts and durable reference knowledge. None are bundled services.
+- **Memory-aware project work:** Pi's active global `AGENTS.md` carries current user preferences, Serena provides stable project context, Vestige retains only cited legacy evidence and T7 migration sources, and package-native Tier-1 Qdrant/Ollama corpus tools store formal lifecycle artifacts and durable reference knowledge. None are bundled services.
 - **A guided development lifecycle with bounded autonomy:** use the manual phases or the explicit, user-gated `/ima:cycle`; autonomous progression requires an approved bounded, conflict-free, low-risk plan and verified evidence, and it stops at `document`.
 - **Bounded specialist delegation** keeps work scoped while parent-owned lifecycle gates preserve accountability.
 
@@ -82,6 +82,7 @@ Pi discovers these package skills directly:
 /skill:architect
 /skill:functional-programmer
 /skill:readable-code
+/skill:ima-preferences
 /skill:js-fp
 /skill:php-fp
 /skill:py-fp
@@ -161,7 +162,7 @@ Pi discovers these package skills directly:
 /skill:mcp-sequential-thinking
 /skill:mcp-chrome-devtools
 
-Seven direct MCP servers use the package adapter. Qdrant is package-native through `/skill:ima-qdrant` and `ima_corpus_*` tools; Atlassian uses its packaged REST helper and Taskwarrior uses the native CLI. Lifecycle reads first return bounded Qdrant manifest summaries, then directly retrieve only selected full records. Schema-v2 lifecycle detail is losslessly reassembled from deterministic vectorless chunks; missing, duplicate, corrupt, or incomplete chunks fail closed. Lifecycle persistence stores chunks before the manifest commit marker and verifies direct reassembly without a Vestige fallback. Vestige remains an explicit read-only preference boundary. For team or global installation, run `pi install ssh://git@gitea.theflccc.org:2222/IMA/ima-pi.git`; this unpinned private-Gitea source was verified in an isolated Pi home on 2026-08-03. For local development only, run `pi install /home/eric/IMA/dev/ima-pi`. Updates are explicit with `pi update --extensions` or `pi update --all`. Synchronize shared Agent Skills with `npm run install:skills`. See [`docs/foundation/FNR-3032.md`](docs/foundation/FNR-3032.md) for prerequisites, source coverage, manual acceptance, limitations, and rollback.
+Seven direct MCP servers use the package adapter. Qdrant is package-native through `/skill:ima-qdrant` and `ima_corpus_*` tools; Atlassian uses its packaged REST helper and Taskwarrior uses the native CLI. Lifecycle reads first return bounded Qdrant manifest summaries, then directly retrieve only selected full records. Schema-v2 lifecycle detail is losslessly reassembled from deterministic vectorless chunks; missing, duplicate, corrupt, or incomplete chunks fail closed. Lifecycle persistence stores chunks before the manifest commit marker and verifies direct reassembly without a Vestige fallback. Vestige remains a read-only cited-legacy-evidence and T7-migration boundary; routine preferences use Pi's global `AGENTS.md`. For team or global installation, run `pi install ssh://git@gitea.theflccc.org:2222/IMA/ima-pi.git`; this unpinned private-Gitea source was verified in an isolated Pi home on 2026-08-03. For local development only, run `pi install /home/eric/IMA/dev/ima-pi`. Updates are explicit with `pi update --extensions` or `pi update --all`. Synchronize shared Agent Skills with `npm run install:skills`. See [`docs/foundation/FNR-3032.md`](docs/foundation/FNR-3032.md) for prerequisites, source coverage, manual acceptance, limitations, and rollback.
 
 ## Try the package
 
@@ -180,16 +181,16 @@ Then try:
 /ima:vision-probe <provider>/<model> <absolute-image-path>
 ```
 
-`/ima:delegate-probe`, `/ima:control-probe`, `/ima:gateway-probe`, and `/ima:vision-probe` are bounded technical-spike entry points, not production orchestration interfaces. The gateway probe keeps Serena and Vestige preference bootstrap read-only, then verifies one dedicated non-production Qdrant lifecycle record by logical store and direct get; it does not clean up that inert deterministic corpus record. Qdrant/Ollama status is separate package-native evidence through read-only `ima_corpus_status`. The control probe accepts `/ima:control-probe cancel <run-id> <a|b>` after startup; see its spike document for live acceptance steps and limitations.
+`/ima:delegate-probe`, `/ima:control-probe`, `/ima:gateway-probe`, and `/ima:vision-probe` are bounded technical-spike entry points, not production orchestration interfaces. The gateway probe keeps Serena bootstrap and retained Vestige evidence checks read-only, then verifies one dedicated non-production Qdrant lifecycle record by logical store and direct get; it does not clean up that inert deterministic corpus record. Qdrant/Ollama status is separate package-native evidence through read-only `ima_corpus_status`. The control probe accepts `/ima:control-probe cancel <run-id> <a|b>` after startup; see its spike document for live acceptance steps and limitations.
 
 ## Production support workflows
 
 - `/ima:serena-bootstrap [context]` loads Serena instructions and standard project memories through direct MCP, read-only.
-- `/ima:vestige-bootstrap [topic]` reads relevant user preferences through direct MCP without mutation.
+- `/ima:vestige-bootstrap [legacy reference]` is a deprecated compatibility pointer: routine preferences already come from Pi's global `AGENTS.md`, and the command makes no Vestige call.
 - `/ima:vestige-migrate [dry-run|cleanup <report-path> confirm]` supports a non-destructive
   readiness check, a separate migration, and later explicit, re-verified cleanup. Do not run these
   shared-artifact operations concurrently; see the [Vestige migration quick guide](#vestige-migration-quick-guide).
-- `/ima:memorize [what should be remembered]` lets users say what should be remembered; it infers project memory versus cross-project preference, asks only when scope is ambiguous, previews exact wording, and requires approval before one verified write.
+- `/ima:memorize [what should be remembered]` lets users say what should be remembered; it routes current cross-project preferences to Pi's global `AGENTS.md`, preserves Serena project-memory routing, previews exact wording, and requires approval before one verified native write.
 - `/ima:preflight [offline|quick|full or request]` reports bounded read-only Pi/IMA diagnostics. It can spool large raw gateway evidence into restrictive temporary files and optionally retain only a redacted final report.
 - `/ima:migrate [request]` classifies legacy configuration and, after an exact preview and approval, writes only supported Pi/IMA configuration atomically.
 
@@ -262,13 +263,13 @@ Each selected Story follows `plan -> implement -> test -> review -> resolution/r
 All implementation prompts require an approved implementation-grade plan, work in the current session with configured MID intent, may delegate bounded work, stop with evidence on material contradictions, and persist verified implementation lifecycle evidence. They run only immediate plan-authorized verification and never automatically enter formal testing or review. Before expansion, direct command `X` resolves `commands[X]`, then its explicit legacy phase fallback; `implement-js` and `implement-wp` both use `phases.implement` as that fallback, otherwise the session model remains unchanged. The `/ima:cycle` implementation phase dispatches `implement`, so it resolves `commands.implement` then `phases.implement`. See [`docs/foundation/FNR-3018.md`](docs/foundation/FNR-3018.md) for source disposition, routing, safeguards, and live acceptance limitations.
 
 - `/ima:test [implementation-source]` performs bounded test work without silently changing production behavior.
-- `/ima:review [implementation-and-test-source]` runs a fresh product-read-only review and fresh second opinions for Critical/Warning candidates.
+- `/ima:review [implementation-and-test-source]` runs a fresh product-read-only review and fresh second opinions for Critical/Warning candidates. When the source is a Gitea or GitHub pull request authored outside the IMA lifecycle, it runs an advisory peer review that derives acceptance intent from the PR and repository conventions instead of demanding plan/implementation/test lifecycle artifacts, and does not persist a lifecycle artifact.
 - `/ima:resolve-review [review-and-implementation-source]` resolves only confirmed review findings within the fixed review-loop cap.
 - `/ima:rereview [resolution-and-review-source]` independently verifies the resolution without editing.
 - `/ima:review-verify [finding-brief]` returns exactly one narrow finding verdict.
 - `/ima:document [completed-lifecycle-source]` updates only exact local documentation targets and prepares parent-owned external update manifests.
 - `/ima:profile [name]` lists or activates configured command, agent, phase, and model routes, then persists an explicit selection to the user default without changing ordinary prompt/model flexibility.
-- `/ima:new [low|mid|high|xhigh|<discovered-ima-command>]` creates a TUI-only fresh session. Bare `/ima:new` applies no explicit route; role selectors apply the effective configured `LOW`, `MID`, `HIGH`, or `XHIGH` role; command selectors use the same command lookup as direct prompts. An unconfigured command starts on the current model. A verified regular-file parent is linked; missing, unwritten, inaccessible, or non-file parents are omitted so native persisted/ephemeral session semantics are preserved. A successful replacement runs Serena then Vestige bootstrap bodies and any mapped package skill bodies (currently `plan` seeds `ima-lifecycle-contract`, `readable-code`, `functional-programmer`, and `ima-security-guardrails`; `implement`-family commands seed `readable-code`).
+- `/ima:new [low|mid|high|xhigh|<discovered-ima-command>]` creates a TUI-only fresh session. Bare `/ima:new` applies no explicit route; role selectors apply the effective configured `LOW`, `MID`, `HIGH`, or `XHIGH` role; command selectors use the same command lookup as direct prompts. An unconfigured command starts on the current model. A verified regular-file parent is linked; missing, unwritten, inaccessible, or non-file parents are omitted so native persisted/ephemeral session semantics are preserved. A successful replacement runs Serena bootstrap only; Pi natively loads the active global `AGENTS.md` context file. It then runs any mapped package skill bodies (currently `plan` seeds `ima-lifecycle-contract`, `readable-code`, `functional-programmer`, and `ima-security-guardrails`; `implement`-family commands seed `readable-code`).
 
 See [`docs/foundation/FNR-3019.md`](docs/foundation/FNR-3019.md) for authority, review verification fallback, knowledge routing, and limitations. See [`docs/foundation/phase-model-profiles.md`](docs/foundation/phase-model-profiles.md) for command routing and fail-closed behavior.
 

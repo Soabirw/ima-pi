@@ -1,48 +1,39 @@
 ---
 name: mcp-vestige
-description: Vestige preference retrieval through the Pi MCP adapter.
+description: Retrieve explicitly cited Vestige legacy evidence through the Pi MCP adapter without mutation.
 ---
+
 # Vestige MCP
 
-Use Vestige only for bounded user preferences and explicit preference decisions. Serena owns
-stable project instructions. Qdrant owns formal lifecycle artifacts and institutional detail.
-Do not use Vestige for lifecycle persistence, lifecycle recall, per-node lifecycle reads, or a
-fallback when corpus work fails.
+Pi's active global `AGENTS.md` owns current user preferences and decisions. Serena owns stable
+project instructions. Tier-1 Qdrant owns formal lifecycle artifacts and institutional detail.
+Vestige is retained only for explicitly cited legacy evidence and the separate T7 migration source.
 
-## Preference load and recovery
+Do not use Vestige for routine preference bootstrap, preference writes, lifecycle persistence,
+lifecycle recall, per-node lifecycle reads, or a fallback when corpus work fails.
 
-Use the package MCP adapter. Discover direct Vestige tools through mcp. One bounded
-`session_start` for broad context or one focused `recall` for a supplied preference topic is the
-preference load; do not seek a separate helper.
+## Cited-memory and migration retrieval
 
-For a focused topic, pass the exact non-empty topic only as `recall` query data with the bounded
-shape:
-
-```js
-{
-  query,
-  mode: "lookup",
-  retrieval_mode: "precise",
-  detail_level: "brief",
-  concrete: true,
-  limit: 10,
-  token_budget: 1000,
-}
-```
+Use the package MCP adapter, never generated SDK namespaces. Discover direct Vestige tools through
+`mcp` only when an explicitly cited `vestige:<UUID>` source or approved T7 migration work requires
+it. Retrieve only the cited memory with `vestige_memory` and `{ action: "get", id }`; do not use
+`session_start` or broad `recall` to load routine preferences.
 
 On a transient read-only transport failure (`-32000`, `Connection closed`, or adapter timeout),
 call `mcp({ connect: "vestige" })`. After a successful reconnect, repeat the same read with
 identical arguments exactly once. Never retry `smart_ingest` or any mutation.
 
-Accept evidence only when it is an explicit, topic-relevant preference or decision from the live
-current invocation. Reject unrelated merged lifecycle or log content and stale cached output.
-Retrieve one selected full memory only when the summary is insufficient for preference relevance or summarization; use `vestige_memory` with `{ action: "get", id }`. If that required read
-fails, report partial or failed evidence rather than guessing. Stop after an adequate summary of preferences.
+Accept evidence only when it is explicit, relevant to the cited source or approved migration, and
+from the live current invocation. Reject unrelated merged lifecycle or log content and stale cached
+output. Retrieve no additional memory unless the cited memory itself is insufficient to recover its
+explicit lifecycle identity; then use Tier-1 Qdrant, never a Vestige lifecycle fallback. Report
+partial or failed evidence rather than guessing.
 
 ## Mutation boundary
 
-Preference writes route through `/ima:memorize`, which owns preview, approval, and verification.
-Writes including `smart_ingest` require separate explicit authority and are never part of a
-preference bootstrap. Formal lifecycle persistence and verification remain owned by
-`ima_lifecycle`, which stores a Qdrant manifest plus verified detail chunks and has no Vestige
-fallback.
+This skill is read-only. Never ingest, suppress, delete, or otherwise mutate Vestige memory.
+`/ima:memorize` owns current preference updates through the global `AGENTS.md` and requires exact
+preview, explicit approval, one native file update, and read-back verification. T7 separately owns
+any approved migration; this skill does not authorize it. Formal lifecycle persistence and
+verification remain owned by `ima_lifecycle`, which stores a Qdrant manifest plus verified detail
+chunks and has no Vestige fallback.
