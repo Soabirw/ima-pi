@@ -4,17 +4,23 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ## [Unreleased]
 
+## [1.17.0] - 2026-09-01
+
 ### Added
 
 - Added the `ima-preferences` skill for exact-preview, approval-gated maintenance of Pi's active global `AGENTS.md` without a custom preference store.
+- Added the read-only `/ima:walkthrough` command and `code-walkthrough` skill for a fresh teammate-style presentation of one pull request, local change set, or explicit code subject.
 
 ### Changed
 
 - Cut routine user preference loading and updates over to Pi-native global `AGENTS.md` context files; `/ima:memorize` now uses built-in file tools, `/ima:vestige-bootstrap` is a non-reading compatibility pointer, and `/ima:new` runs Serena bootstrap only. Vestige data and the separate T7 migration remain untouched.
+- Updated `/ima:review` to classify external Gitea/GitHub pull requests before lifecycle work and produce an advisory, approval-gated peer-review report without lifecycle persistence.
+- Require review and walkthrough PR acquisition to preserve the supplied host, owner, repository, and number; generic local walkthroughs now include safe non-ignored untracked-file evidence.
 
 ### Fixed
 
 - Hardened `/ima:memorize` to stop without mutation when Pi context precedence selects `AGENTS.override.md` or an uppercase-only `AGENTS.MD`, and to persist a complete previewed document for a safe absent lower-case target.
+- Synchronized the README package inventory with focused resource enumeration coverage.
 
 ## [1.16.0] - 2026-08-31
 
