@@ -11,6 +11,7 @@ Review behavior and contracts, not style preferences. Prefer one well-supported 
 
 - Reviewers, verifiers, and adversaries never edit, push, install tooling, or post external comments.
 - The invoking phase owns source hydration, target/diff acquisition, configured non-mutating validators, and formal lifecycle persistence through `ima_lifecycle`.
+- External pull-request peer review is the exception to lifecycle persistence: an externally authored PR has no IMA lifecycle unit, plan, implementation, or test artifact, so it never requires Tier-1 lifecycle recall and produces an advisory report rather than a persisted lifecycle artifact. See [Peer review of an external pull request](#peer-review-of-an-external-pull-request).
 - Run only already-configured validators. Record commands and results; do not create tooling to make a review possible.
 - Do not broaden the target beyond a changed public symbol, caller, subscriber, hook, route, or external contract that needs inspection.
 - Route visual sources through [ima-vision-handoff](../ima-vision-handoff/SKILL.md). Do not claim visual findings from inaccessible evidence.
@@ -18,6 +19,25 @@ Review behavior and contracts, not style preferences. Prefer one well-supported 
 ## Supporting skills
 
 Use [mcp-serena](../mcp-serena/SKILL.md) for narrow symbol and reference discovery, [ima-security-guardrails](../ima-security-guardrails/SKILL.md) for applicable security checks, and [functional-programmer](../functional-programmer/SKILL.md) for pure/effect and mutation concerns. Use [ima-delegation-contract](../ima-delegation-contract/SKILL.md) for bounded independent verification or adversarial assignments. Use [readable-code](../readable-code/SKILL.md) as the canonical rule set when reviewing readability.
+
+## Peer review of an external pull request
+
+Use this mode for a final peer review of a Gitea or GitHub pull request authored outside the IMA lifecycle: another developer executed the story, and the only evidence is the PR plus the project space. Do not demand a plan, implementation, or test lifecycle artifact, and do not treat their absence as a missing prerequisite. Do not substitute a Tier-1 lifecycle recall, and never fabricate approved acceptance criteria.
+
+### Target identity and read-only acquisition
+
+Normalize the supplied PR as `{ host, owner, repo, number }` before acquiring evidence. Preserve every field in metadata and diff calls; never fall back to the current checkout's repository.
+
+- For GitHub, use [gh-cli](../gh-cli/SKILL.md) and preserve the original PR URL in both `gh pr view <pr-url> --json title,body,author,files` and `gh pr diff <pr-url>`. When using normalized fields instead, pass `-R owner/repo` to both commands with `<number>`.
+- For Gitea, use [tea-gitea](../tea-gitea/SKILL.md), map `host` to exactly one configured Tea login, and use `tea pr <n> --repo owner/repo --login <login> --fields index,title,state,author,body,diff`. If that mapping is absent or ambiguous, report the missing prerequisite and stop. Never rely on the current directory for target selection.
+- Activate the project through Serena for the surrounding codebase, conventions, and callers.
+- Follow the linked issue or tracker reference only for read-only intent, not as an approval.
+
+Derive acceptance intent, since no approved criteria exist: reconstruct the change's intended behavior from the PR title, description, linked issue, and repository conventions. State each inferred expectation as an explicit assumption and flag where intent is unverifiable. Judge the diff against that inferred contract and the repository's own conventions, not against a private preference.
+
+Apply the full four-pass methodology, independent verification, implementation-grade handoffs, and the request-changes gate unchanged. `REVIEW-NNN` IDs remain local to the advisory report because there is no lifecycle thread.
+
+Report as advisory. Do not persist an `ima_lifecycle` artifact for externally authored work. If the operator wants the verdict posted to the PR, follow [External comments](#external-comments): draft first, show the draft, obtain explicit approval, and never silently approve, reject, or comment.
 
 ## Four passes
 
