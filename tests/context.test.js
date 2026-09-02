@@ -47,6 +47,57 @@ test("parses canonical source identifiers and space-delimited aliases", () => {
   for (const identifier of ["taskwarrior:FNR-3007:689fa7ac-84b7-42d0-8912-b8ef76041370:extra", "jira:fnr-3016", "lifecycle:", "vestige:not-a-uuid", "unknown:source", "https://example.test/FNR-3016", "lifecycle:line\nbreak"]) assert.equal(parseContextSourceIdentifier(identifier), null);
 });
 
+test("validates and normalizes bounded Plane work-item sources", () => {
+  const plane = { type: "plane", workspace: "IMA", project: "ERIC", sequenceId: 1 };
+  const forms = ["plane:IMA:ERIC-1", "plane IMA ERIC-1"];
+  const nearBoundaryPlane = {
+    type: "plane",
+    workspace: "W".repeat(1_014),
+    project: "P",
+    sequenceId: 1,
+  };
+  const nearBoundaryReference = `plane:${nearBoundaryPlane.workspace}:P-1`;
+
+  assert.equal(validateContextRequest({ source: plane }).valid, true);
+  assert.deepEqual(prepareContextArguments({ source: plane }), { source: plane });
+  assert.equal(nearBoundaryReference.length, 1_024);
+  assert.equal(validateContextRequest({ source: nearBoundaryPlane }).valid, true);
+  assert.deepEqual(parseContextSourceIdentifier(nearBoundaryReference), nearBoundaryPlane);
+  for (const identifier of forms) {
+    assert.deepEqual(parseContextSourceIdentifier(identifier), plane);
+    assert.deepEqual(prepareContextArguments({ source: { type: "reference", value: identifier } }), { source: plane });
+  }
+
+  const normalized = normalizeSourcePayload({ source: plane, payload: { content: "Plane description" } });
+  assert.deepEqual(normalized, {
+    type: "plane",
+    key: "IMA:ERIC-1",
+    title: "Plane:IMA:ERIC-1",
+    content: "Plane description",
+    references: ["Plane:IMA:ERIC-1"],
+  });
+  assert.equal(normalizeSourceReference(plane), "Plane:IMA:ERIC-1");
+
+  for (const source of [
+    { type: "plane", workspace: "-IMA", project: "ERIC", sequenceId: 1 },
+    { type: "plane", workspace: "IMA", project: "eric", sequenceId: 1 },
+    { type: "plane", workspace: "IMA", project: "ERIC", sequenceId: 0 },
+    { type: "plane", workspace: "IMA", project: "ERIC", sequenceId: 1.5 },
+    { type: "plane", workspace: "IMA", project: "ERIC", sequenceId: Number.MAX_SAFE_INTEGER + 1 },
+    { type: "plane", workspace: "IMA", project: "ERIC", sequenceId: "1" },
+    { type: "plane", workspace: "W".repeat(1_025), project: "P", sequenceId: 1 },
+    { type: "plane", workspace: "W", project: "P".repeat(1_025), sequenceId: 1 },
+    { type: "plane", workspace: "W".repeat(1_014), project: "PP", sequenceId: 1 },
+  ]) assert.equal(validateContextRequest({ source }).valid, false);
+  for (const identifier of [
+    "plane:IMA:ERIC-0",
+    "plane:IMA:eric-1",
+    "plane:IMA:ERIC-1:extra",
+    "plane IMA ERIC-1 extra",
+    "plane:IMA:ERIC-9007199254740992",
+  ]) assert.equal(parseContextSourceIdentifier(identifier), null);
+});
+
 test("normalizes only verified direct corpus lifecycle records", () => {
   const lifecycleKey = "ima-pi:adhoc:lifecycle-source-identifiers:2026-08-04";
   const marker = `<!-- ima-lifecycle verification: lifecycle_key=${lifecycleKey}; nonce=01234567-89ab-cdef-0123-456789abcdef; phase=plan; jira_key=; taskwarrior_uuid=; outcome=completed -->`;

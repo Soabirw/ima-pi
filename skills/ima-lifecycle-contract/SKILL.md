@@ -24,16 +24,19 @@ Do not create a disconnected lifecycle thread when prior evidence exists.
 ## Manual source identifiers
 
 Manual phase handoffs use canonical colon identifiers, with space-delimited aliases accepted only
-as input: `taskwarrior:<project>:<uuid>` (`taskwarrior <project> <uuid>`), `jira:<KEY>`
+as input: `taskwarrior:<project>:<uuid>` (`taskwarrior <project> <uuid>`),
+`plane:<workspace>:<PROJECT>-<seq>` (`plane <workspace> <PROJECT>-<seq>`), `jira:<KEY>`
 (`jira <KEY>`), `lifecycle:<lifecycle-key>` (`lifecycle <lifecycle-key>`), and
 `vestige:<UUID>` (`vestige <UUID>`). Pass an identifier to `ima_context` as its closed `reference`
 source, then preserve the canonical colon form across handoffs instead of replacing it with a raw
 key.
 
 For a lifecycle source, recall the exact Qdrant lifecycle key and directly fetch selected detail
-before declaring prerequisites absent. For a Vestige source, retrieve only the cited memory, recover
-an explicitly present lifecycle identity, then recall related Qdrant evidence; never use Vestige as
-a lifecycle fallback or substitute a Taskwarrior/Jira probe for corpus evidence.
+before declaring prerequisites absent. For a Plane source, reuse a verified existing lifecycle key;
+if no evidence establishes one, use the documented `ima-pi:plane:<workspace>:<PROJECT>-<seq>`
+convention rather than treating it as automatic derivation. For a Vestige source, retrieve only the
+cited memory, recover an explicitly present lifecycle identity, then recall related Qdrant evidence;
+never use Vestige as a lifecycle fallback or substitute a Taskwarrior/Jira probe for corpus evidence.
 
 ## `ima_lifecycle` input
 
@@ -51,6 +54,8 @@ rather than invented values; pass phase separately as `type`.
     "taskwarriorTask": "",
     "taskwarriorUuid": "",
     "jiraKey": "",
+    "planeWorkspace": "",
+    "planeWorkItem": "",
     "sourceRefs": [],
     "priorArtifactIds": []
   },
@@ -59,7 +64,9 @@ rather than invented values; pass phase separately as `type`.
 }
 ```
 
-Do not pass a `lifecycle:` wrapper or snake_case keys as the tool identity. `summary` is explicit,
+Do not pass a `lifecycle:` wrapper or snake_case keys as the tool identity. `planeWorkspace` and
+`planeWorkItem` are optional as a pair: omit both, or send both empty, for a non-Plane identity; for
+a Plane identity, send both nonempty values. A partial pair is invalid. `summary` is explicit,
 non-empty, control-character-safe, and used for manifest-only semantic retrieval; do not extract it
 mechanically from the artifact.
 
@@ -80,6 +87,15 @@ lifecycle:
   phase: "plan|implementation|test|review|resolution|rereview|closeout"
   prior_artifact_ids: []
 ```
+
+For a complete Plane identity, the serialized metadata additionally contains both fields:
+
+```yaml
+  plane_workspace: "<workspace>"
+  plane_work_item: "<PROJECT>-<seq>"
+```
+
+Neither field is emitted for an omitted or empty pair.
 
 ## Persist and hand off
 

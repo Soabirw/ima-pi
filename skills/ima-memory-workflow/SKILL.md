@@ -25,7 +25,7 @@ Use each memory system for its own job. Do not treat them as interchangeable scr
    - prefer a selected summary's logical `recordKey` for `ima_corpus_get` when complete detail is required; a known manifest `artifactId` point UUID is also accepted through that compatible `recordKey` argument;
    - accept an artifact only after full direct retrieval verifies its lifecycle key, phase, nonce, source identity, completion marker, and the returned record's identity plus logical `recordKey`.
 
-   Derive `ima-pi:taskwarrior:<project>:<uuid>` for a Taskwarrior source and `ima-pi:jira:<KEY>` for a Jira source. For `lifecycle:<lifecycle-key>`, use the supplied key. For a cited `vestige:<UUID>`, retrieve only that cited legacy memory, recover a lifecycle identity only when it explicitly contains one, then recall related Qdrant lifecycle manifests. Do not substitute a Taskwarrior or Jira probe for unavailable lifecycle corpus evidence, and do not use Vestige as a lifecycle fallback.
+   Derive `ima-pi:taskwarrior:<project>:<uuid>` for a Taskwarrior source and `ima-pi:jira:<KEY>` for a Jira source. For a Plane source, reuse a recovered lifecycle key; if no artifact establishes one, use the documented `ima-pi:plane:<workspace>:<PROJECT>-<seq>` convention rather than treating it as automatic derivation. For `lifecycle:<lifecycle-key>`, use the supplied key. For a cited `vestige:<UUID>`, retrieve only that cited legacy memory, recover a lifecycle identity only when it explicitly contains one, then recall related Qdrant lifecycle manifests. Do not substitute a Taskwarrior or Jira probe for unavailable lifecycle corpus evidence, and do not use Vestige as a lifecycle fallback.
 4. Use `ima_corpus_find` only when bounded durable reference material would change the decision or implementation. Do not discover or invoke Qdrant through package MCP.
 5. Read the relevant Serena memories and navigate the smallest necessary repository surface.
 
@@ -42,10 +42,11 @@ Keep artifacts correlated with the existing lifecycle key. Do not create disconn
 ## Manual source identifiers
 
 Manual phases accept canonical colon identifiers with space-delimited aliases:
-`taskwarrior:<project>:<uuid>` (`taskwarrior <project> <uuid>`), `jira:<KEY>` (`jira <KEY>`),
-`lifecycle:<lifecycle-key>` (`lifecycle <lifecycle-key>`), and `vestige:<UUID>`
-(`vestige <UUID>`). Preserve the canonical colon form in handoffs; use `ima_context`'s closed
-`reference` source to normalize an incoming identifier.
+`taskwarrior:<project>:<uuid>` (`taskwarrior <project> <uuid>`),
+`plane:<workspace>:<PROJECT>-<seq>` (`plane <workspace> <PROJECT>-<seq>`),
+`jira:<KEY>` (`jira <KEY>`), `lifecycle:<lifecycle-key>` (`lifecycle <lifecycle-key>`), and
+`vestige:<UUID>` (`vestige <UUID>`). Preserve the canonical colon form in handoffs; use
+`ima_context`'s closed `reference` source to normalize an incoming identifier.
 
 ## Boundaries
 

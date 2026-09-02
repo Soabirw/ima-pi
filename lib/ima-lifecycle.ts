@@ -24,7 +24,7 @@ export const MAX_LIFECYCLE_REFERENCE_BYTES = 1_024;
 export const MAX_LIFECYCLE_REFERENCES = 64;
 
 export type LifecyclePhase = typeof LIFECYCLE_PHASES[number];
-export type LifecycleIdentity = {
+type BaseLifecycleIdentity = {
   project: string;
   lifecycleKey: string;
   lifecycleRootMemoryId: string;
@@ -35,6 +35,16 @@ export type LifecycleIdentity = {
   sourceRefs: string[];
   priorArtifactIds: string[];
 };
+
+type CompletePlaneLifecycleIdentity = {
+  planeWorkspace: string;
+  planeWorkItem: string;
+};
+
+export type LifecycleIdentity = BaseLifecycleIdentity & (
+  | { planeWorkspace?: never; planeWorkItem?: never }
+  | CompletePlaneLifecycleIdentity
+);
 
 export type ValidLifecycleRequest = {
   valid: true;
@@ -68,6 +78,8 @@ const IDENTITY_FIELDS = [
   "taskwarriorTask",
   "taskwarriorUuid",
   "jiraKey",
+  "planeWorkspace",
+  "planeWorkItem",
   "sourceRefs",
   "priorArtifactIds",
 ] as const;
@@ -156,6 +168,23 @@ export function normalizeLifecycleIdentity(value: unknown): LifecycleIdentity | 
   const taskwarriorTask = normalizeIdentityText(identity.taskwarriorTask, MAX_LIFECYCLE_TASK_BYTES);
   const taskwarriorUuid = normalizeIdentityText(identity.taskwarriorUuid, MAX_LIFECYCLE_EXTERNAL_ID_BYTES);
   const jiraKey = normalizeIdentityText(identity.jiraKey, MAX_LIFECYCLE_EXTERNAL_ID_BYTES);
+  const hasPlaneWorkspace = identity.planeWorkspace !== undefined;
+  const hasPlaneWorkItem = identity.planeWorkItem !== undefined;
+  const planeWorkspace = hasPlaneWorkspace
+    ? normalizeIdentityText(identity.planeWorkspace, MAX_LIFECYCLE_EXTERNAL_ID_BYTES)
+    : "";
+  const planeWorkItem = hasPlaneWorkItem
+    ? normalizeIdentityText(identity.planeWorkItem, MAX_LIFECYCLE_EXTERNAL_ID_BYTES)
+    : "";
+  const planeIdentity = hasPlaneWorkspace !== hasPlaneWorkItem
+    || planeWorkspace === null
+    || planeWorkItem === null
+    ? null
+    : !planeWorkspace && !planeWorkItem
+      ? {}
+      : planeWorkspace && planeWorkItem
+        ? { planeWorkspace, planeWorkItem }
+        : null;
   const sourceRefs = normalizeIdentityReferences(identity.sourceRefs);
   const priorArtifactIds = normalizeIdentityReferences(identity.priorArtifactIds);
 
@@ -166,6 +195,7 @@ export function normalizeLifecycleIdentity(value: unknown): LifecycleIdentity | 
     && taskwarriorTask !== null
     && taskwarriorUuid !== null
     && jiraKey !== null
+    && planeIdentity !== null
     && sourceRefs !== null
     && priorArtifactIds !== null
     ? {
@@ -176,6 +206,7 @@ export function normalizeLifecycleIdentity(value: unknown): LifecycleIdentity | 
       taskwarriorTask,
       taskwarriorUuid,
       jiraKey,
+      ...planeIdentity,
       sourceRefs: [...sourceRefs],
       priorArtifactIds: [...priorArtifactIds],
     }
@@ -241,7 +272,10 @@ export function buildLifecycleArtifactBody(input: {
   const references = (key: string, values: string[]) => values.length
     ? `${key}:\n${values.map((value) => `    - ${quoted(value)}`).join("\n")}`
     : `${key}: []`;
-  return `---\nlifecycle:\n  project: ${quoted(identity.project)}\n  lifecycle_key: ${quoted(identity.lifecycleKey)}\n  lifecycle_root_memory_id: ${quoted(identity.lifecycleRootMemoryId)}\n  taskwarrior_project: ${quoted(identity.taskwarriorProject)}\n  taskwarrior_task: ${quoted(identity.taskwarriorTask)}\n  taskwarrior_uuid: ${quoted(identity.taskwarriorUuid)}\n  jira_key: ${quoted(identity.jiraKey)}\n  ${references("source_refs", identity.sourceRefs)}\n  phase: ${quoted(input.type)}\n  ${references("prior_artifact_ids", identity.priorArtifactIds)}\n---\n\n${input.artifact}\n\n`;
+  const planeIdentity = identity.planeWorkspace && identity.planeWorkItem
+    ? `\n  plane_workspace: ${quoted(identity.planeWorkspace)}\n  plane_work_item: ${quoted(identity.planeWorkItem)}`
+    : "";
+  return `---\nlifecycle:\n  project: ${quoted(identity.project)}\n  lifecycle_key: ${quoted(identity.lifecycleKey)}\n  lifecycle_root_memory_id: ${quoted(identity.lifecycleRootMemoryId)}\n  taskwarrior_project: ${quoted(identity.taskwarriorProject)}\n  taskwarrior_task: ${quoted(identity.taskwarriorTask)}\n  taskwarrior_uuid: ${quoted(identity.taskwarriorUuid)}\n  jira_key: ${quoted(identity.jiraKey)}${planeIdentity}\n  ${references("source_refs", identity.sourceRefs)}\n  phase: ${quoted(input.type)}\n  ${references("prior_artifact_ids", identity.priorArtifactIds)}\n---\n\n${input.artifact}\n\n`;
 }
 
 const deterministicUuid = (value: string) => {

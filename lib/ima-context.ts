@@ -12,6 +12,7 @@ type MemoryName = typeof STANDARD_MEMORIES[number];
 export type ContextSource =
   | { type: "jira"; key: string }
   | { type: "taskwarrior"; project: string; uuid: string }
+  | { type: "plane"; workspace: string; project: string; sequenceId: number }
   | { type: "file"; path: string }
   | { type: "vestige"; id: string }
   | { type: "lifecycle"; key: string }
@@ -30,6 +31,10 @@ const QDRANT_RESULT_HEADER = /^## Result \d+ \(score: ([+-]?(?:\d+(?:\.\d*)?|\.\
 const MARKDOWN_FENCE = /^\s*(`{3,}|~{3,})(.*)$/;
 const JIRA_KEY_PATTERN = /^[A-Z][A-Z0-9]+-\d+$/;
 const TASKWARRIOR_PROJECT_PATTERN = /^[\w.-]+$/;
+// Keep these grammar rules aligned with skills/plane-api/scripts/plane-client.mjs.
+const PLANE_WORKSPACE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._~-]*$/;
+const PLANE_PROJECT_PATTERN = /^[A-Z][A-Z0-9_]*$/;
+const PLANE_WORK_ITEM_PATTERN = /^([A-Z][A-Z0-9_]*)-([1-9]\d*)$/;
 const UUID_FRAGMENT = "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
 const UUID_PATTERN = new RegExp(`^${UUID_FRAGMENT}$`);
 const LIFECYCLE_PHASE_PATTERN = LIFECYCLE_PHASES.join("|");
@@ -83,7 +88,7 @@ export function parseQdrantResults(formattedText: unknown): Array<{ summary: str
 }
 
 const clean = sanitizeContextText;
-const CONTEXT_REQUEST_HINT = "Use source fields jira:key, taskwarrior:project+uuid, file:path, vestige:id, lifecycle:key, text:title+content, or reference:value. Canonical references are taskwarrior:<project>:<uuid>, jira:<KEY>, lifecycle:<lifecycle-key>, and vestige:<UUID>. durableKnowledge requires query and optionally accepts collection and limit.";
+const CONTEXT_REQUEST_HINT = "Use source fields jira:key, taskwarrior:project+uuid, plane:workspace+project+sequenceId, file:path, vestige:id, lifecycle:key, text:title+content, or reference:value. Canonical references are taskwarrior:<project>:<uuid>, plane:<workspace>:PROJ-123, jira:<KEY>, lifecycle:<lifecycle-key>, and vestige:<UUID>. durableKnowledge requires query and optionally accepts collection and limit.";
 
 export function sanitizeContextError(code: string, _value: unknown): { code: string; message: string; hint?: string } {
   const error = { code, message: `Context integration failed: ${code}.` };
@@ -100,6 +105,34 @@ const lifecycleSource = (value: unknown): ContextSource | null => {
   return key ? { type: "lifecycle", key } : null;
 };
 
+const planeSource = (
+  workspaceValue: unknown,
+  projectValue: unknown,
+  sequenceId: unknown,
+): ContextSource | null => {
+  const workspace = string(workspaceValue);
+  const project = string(projectValue);
+  if (
+    !PLANE_WORKSPACE_PATTERN.test(workspace)
+    || !PLANE_PROJECT_PATTERN.test(project)
+    || typeof sequenceId !== "number"
+    || !Number.isSafeInteger(sequenceId)
+    || sequenceId < 1
+  ) return null;
+  const canonical = `plane:${workspace}:${project}-${sequenceId}`;
+  return canonical.length <= CONTEXT_IDENTIFIER_MAXIMUM
+    ? { type: "plane", workspace, project, sequenceId }
+    : null;
+};
+
+const planeSourceFromWorkItem = (
+  workspace: unknown,
+  workItem: unknown,
+): ContextSource | null => {
+  const match = PLANE_WORK_ITEM_PATTERN.exec(string(workItem));
+  return match ? planeSource(workspace, match[1], Number(match[2])) : null;
+};
+
 const contextSourceFromIdentifierParts = (
   prefix: string,
   values: string[],
@@ -109,6 +142,10 @@ const contextSourceFromIdentifierParts = (
     return TASKWARRIOR_PROJECT_PATTERN.test(project) && UUID_PATTERN.test(uuid)
       ? { type: "taskwarrior", project, uuid }
       : null;
+  }
+  if (prefix === "plane" && values.length === 2) {
+    const [workspace, workItem] = values;
+    return planeSourceFromWorkItem(workspace, workItem);
   }
   if (prefix === "jira" && values.length === 1) {
     const [key] = values.map(string);
@@ -147,6 +184,7 @@ const normalizeContextSource = (source: Record<string, unknown>): ContextSource 
   if (source.type === "reference" && onlyKeys(source, ["type", "value"]) && bounded(source.value, CONTEXT_IDENTIFIER_MAXIMUM)) return parseContextSourceIdentifier(source.value);
   if (source.type === "jira" && onlyKeys(source, ["type", "key"]) && JIRA_KEY_PATTERN.test(string(source.key))) return { type: "jira", key: string(source.key) };
   if (source.type === "taskwarrior" && onlyKeys(source, ["type", "project", "uuid"]) && TASKWARRIOR_PROJECT_PATTERN.test(string(source.project)) && UUID_PATTERN.test(string(source.uuid))) return { type: "taskwarrior", project: string(source.project), uuid: string(source.uuid) };
+  if (source.type === "plane" && onlyKeys(source, ["type", "workspace", "project", "sequenceId"])) return planeSource(source.workspace, source.project, source.sequenceId);
   if (source.type === "file" && onlyKeys(source, ["type", "path"]) && bounded(source.path, 1_024)) return { type: "file", path: string(source.path) };
   if (source.type === "vestige" && onlyKeys(source, ["type", "id"]) && UUID_PATTERN.test(string(source.id))) return { type: "vestige", id: string(source.id) };
   if (source.type === "lifecycle" && onlyKeys(source, ["type", "key"])) return lifecycleSource(source.key);
@@ -157,6 +195,7 @@ const normalizeContextSource = (source: Record<string, unknown>): ContextSource 
 export function normalizeSourceReference(source: ContextSource): string {
   if (source.type === "jira") return `Jira:${source.key}`;
   if (source.type === "taskwarrior") return `Taskwarrior:${source.project}:${source.uuid}`;
+  if (source.type === "plane") return `Plane:${source.workspace}:${source.project}-${source.sequenceId}`;
   if (source.type === "file") return `File:${clean(source.path, 1_024)}`;
   if (source.type === "vestige") return `Vestige:${source.id}`;
   if (source.type === "lifecycle") return `Lifecycle:${clean(source.key, LIFECYCLE_KEY_MAXIMUM)}`;
@@ -226,6 +265,7 @@ export function normalizeCorpusLifecycleRecord(input: { lifecycleKey: string; re
 
 const sourceKey = (source: ContextSource) => {
   if (source.type === "taskwarrior") return source.uuid;
+  if (source.type === "plane") return `${source.workspace}:${source.project}-${source.sequenceId}`;
   if (source.type === "jira" || source.type === "lifecycle") return source.key;
   if (source.type === "file") return source.path;
   if (source.type === "vestige") return source.id;

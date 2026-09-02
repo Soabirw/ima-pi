@@ -6,6 +6,7 @@ import {
   MAX_LIFECYCLE_RECORD_KEY_BYTES,
   MAX_LIFECYCLE_SUMMARY_BYTES,
   buildLifecycleArtifact,
+  buildLifecycleArtifactBody,
   buildLifecycleNonceMarker,
   buildLifecycleRecordKey,
   deriveLifecycleNonce,
@@ -121,6 +122,14 @@ test("rejects closed identity violations before serialization", () => {
     { ...identity, taskwarriorProject: "p".repeat(257) },
     { ...identity, lifecycleRootMemoryId: "r".repeat(513) },
     { ...identity, jiraKey: "J".repeat(129) },
+    { ...identity, planeWorkspace: "P".repeat(129) },
+    { ...identity, planeWorkItem: "line\nbreak" },
+    { ...identity, planeWorkspace: "IMA" },
+    { ...identity, planeWorkItem: "ERIC-1" },
+    { ...identity, planeWorkspace: "" },
+    { ...identity, planeWorkItem: "" },
+    { ...identity, planeWorkspace: "", planeWorkItem: "ERIC-1" },
+    { ...identity, planeWorkspace: "IMA", planeWorkItem: "" },
     { ...identity, sourceRefs: Array.from({ length: 65 }, () => "source") },
     { ...identity, priorArtifactIds: ["x".repeat(1_025)] },
   ];
@@ -196,6 +205,70 @@ test("rejects embedded persisted lifecycle artifacts but permits cycle outcomes"
     artifact: `${artifact}\n<!-- ima-cycle outcome: phase=implementation; outcome=COMPLETED -->`,
   });
   assert.equal(accepted.valid, true);
+});
+
+test("adds Plane identity only when set without changing existing serialization", () => {
+  const nonPlaneInput = { type: "implementation", identity, artifact };
+  const expectedNonPlaneBody = `---
+lifecycle:
+  project: 'ima-pi'
+  lifecycle_key: 'ima-pi:taskwarrior:FNR-3007:uuid'
+  lifecycle_root_memory_id: 'root'
+  taskwarrior_project: 'FNR-3007'
+  taskwarrior_task: 'uuid'
+  taskwarrior_uuid: 'task-uuid'
+  jira_key: 'FNR-3016'
+  source_refs:
+    - 'Taskwarrior:task-uuid'
+  phase: 'implementation'
+  prior_artifact_ids:
+    - 'plan'
+---
+
+# Source and approved outcome
+
+## Scope
+
+## Verification
+
+`;
+
+  assert.equal(buildLifecycleArtifactBody(nonPlaneInput), expectedNonPlaneBody);
+  assert.equal(deriveLifecycleNonce(nonPlaneInput), "46f91656-ff58-58bc-8735-97387144f678");
+  assert.deepEqual(
+    normalizeLifecycleIdentity({ ...identity, planeWorkspace: "", planeWorkItem: "" }),
+    identity,
+  );
+
+  const planeIdentity = {
+    ...standalone,
+    planeWorkspace: "IMA",
+    planeWorkItem: "ERIC-1",
+  };
+  const normalizedPlaneIdentity = normalizeLifecycleIdentity(planeIdentity);
+  assert.deepEqual(normalizedPlaneIdentity, planeIdentity);
+
+  const serialized = buildLifecycleArtifactBody({
+    type: "implementation",
+    identity: normalizedPlaneIdentity,
+    artifact,
+  });
+  assert.match(
+    serialized,
+    /plane_workspace: 'IMA'\n  plane_work_item: 'ERIC-1'\n  source_refs/,
+  );
+
+  const otherWorkspaceIdentity = { ...planeIdentity, planeWorkspace: "OTHER" };
+  const first = validateLifecycleRequest({ type: "implementation", identity: planeIdentity, summary, artifact });
+  const second = validateLifecycleRequest({ type: "implementation", identity: otherWorkspaceIdentity, summary, artifact });
+  assert.equal(first.valid, true);
+  assert.equal(second.valid, true);
+  const firstArtifact = prepareLifecycleArtifact(first);
+  const secondArtifact = prepareLifecycleArtifact(second);
+  assert.equal(firstArtifact.valid, true);
+  assert.equal(secondArtifact.valid, true);
+  assert.notEqual(firstArtifact.data.nonce, secondArtifact.data.nonce);
+  assert.notEqual(firstArtifact.data.recordKey, secondArtifact.data.recordKey);
 });
 
 test("serializes lifecycle metadata and derives a deterministic content-addressed manifest key", () => {

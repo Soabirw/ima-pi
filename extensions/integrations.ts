@@ -44,6 +44,10 @@ const sourceErrorCode = (error: unknown) => error instanceof Error && SOURCE_ERR
 const inside = (root: string, target: string) => { const path = relative(root, target); return path === "" || (!path.startsWith("..") && !isAbsolute(path)); };
 const object = (value: unknown): Record<string, unknown> | null => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 const text = (value: unknown) => typeof value === "string" ? value.trim() : "";
+const UUID_PATTERN = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+const normalizeUuid = (value: unknown) => typeof value === "string" && UUID_PATTERN.test(value)
+  ? value.toLowerCase()
+  : null;
 const envelope = (value: string) => { try { return JSON.parse(value); } catch { return null; } };
 const throwIfAborted = (signal?: AbortSignal) => {
   if (signal?.aborted) signal.throwIfAborted();
@@ -142,7 +146,7 @@ export const recallCorpusLifecycle = async (
 };
 
 export type IntegrationDependencies = {
-  run?: (program: string, args: string[]) => Promise<unknown>;
+  run?: (program: string, args: string[], signal?: AbortSignal) => Promise<unknown>;
   read?: (path: string) => Promise<string>;
   canonical?: (path: string) => Promise<string>;
   stat?: typeof lstat;
@@ -153,11 +157,17 @@ export type IntegrationDependencies = {
 };
 
 const productionDependencies: Required<IntegrationDependencies> = {
-  run: async (program, args) => {
+  run: async (program, args, signal) => {
+    throwIfAborted(signal);
     try {
-      const { stdout } = await execFile(program, args, { timeout: TIMEOUT, maxBuffer: MAX_BUFFER });
+      const { stdout } = await execFile(program, args, {
+        timeout: TIMEOUT,
+        maxBuffer: MAX_BUFFER,
+        signal,
+      });
       return envelope(stdout);
     } catch {
+      throwIfAborted(signal);
       return null;
     }
   },
@@ -346,6 +356,39 @@ async function loadDurableKnowledge(
   }
 }
 
+type PlaneSource = Extract<ContextSource, { type: "plane" }>;
+
+const normalizePlaneResponse = (source: PlaneSource, value: unknown) => {
+  const data = object(value);
+  if (!data) return null;
+
+  const canonical = `plane:${source.workspace}:${source.project}-${source.sequenceId}`;
+  const identifier = `${source.project}-${source.sequenceId}`;
+  const id = normalizeUuid(data.id);
+  const projectId = normalizeUuid(data.projectId);
+  const stateId = data.stateId === null ? null : normalizeUuid(data.stateId);
+  const name = text(data.name);
+  const description = data.description;
+  if (
+    !id
+    || !projectId
+    || data.reference !== canonical
+    || data.workspace !== source.workspace
+    || data.identifier !== identifier
+    || data.sequenceId !== source.sequenceId
+    || !name
+    || typeof description !== "string"
+    || (data.stateId !== null && stateId === null)
+  ) return null;
+
+  return {
+    key: canonical,
+    title: name,
+    content: JSON.stringify({ name, description, state: stateId, reference: canonical }),
+    references: [`Plane:${source.workspace}:${identifier}`],
+  };
+};
+
 async function sourcePayload(
   source: ContextSource,
   root: string,
@@ -358,7 +401,7 @@ async function sourcePayload(
   }
   if (source.type === "jira") {
     const helper = join(deps.home(), ".agents", "skills", "mcp-atlassian", "scripts", "atlassian-api.mjs");
-    const result = await deps.run("node", [helper, "jira:get", source.key]);
+    const result = await deps.run("node", [helper, "jira:get", source.key], signal);
     throwIfAborted(signal);
     const data = object(result);
     return data
@@ -371,7 +414,7 @@ async function sourcePayload(
       : null;
   }
   if (source.type === "taskwarrior") {
-    const result = await deps.run("task", ["rc.verbose=nothing", `project:${source.project}`, source.uuid, "export"]);
+    const result = await deps.run("task", ["rc.verbose=nothing", `project:${source.project}`, source.uuid, "export"], signal);
     throwIfAborted(signal);
     const resultObject = object(result);
     const tasks = Array.isArray(result) ? result : (Array.isArray(resultObject?.data) ? resultObject.data : []);
@@ -390,6 +433,21 @@ async function sourcePayload(
         }),
         references: [`Taskwarrior:${source.project}:${source.uuid}`],
       }
+      : null;
+  }
+  if (source.type === "plane") {
+    const canonical = `plane:${source.workspace}:${source.project}-${source.sequenceId}`;
+    const helper = join(
+      packageRoot,
+      "skills",
+      "plane-api",
+      "scripts",
+      "plane-api.mjs",
+    );
+    const response = object(await deps.run("node", [helper, "plane:get", canonical], signal));
+    throwIfAborted(signal);
+    return response?.success === true
+      ? normalizePlaneResponse(source, response.data)
       : null;
   }
   if (source.type === "lifecycle") {
@@ -637,13 +695,19 @@ const CONTEXT_SOURCE_PARAMETERS = Type.Object({}, {
   oneOf: [
     Type.Object({ type: StringEnum(["jira"] as const, { description: "Source kind. Supply only the fields required for the selected kind." }), key: Type.String({ pattern: "^[A-Z][A-Z0-9]+-\\d+$", description: "Required for jira; extract the uppercase issue key from a Jira URL." }) }, { additionalProperties: false }),
     Type.Object({ type: StringEnum(["taskwarrior"] as const, { description: "Source kind. Supply only the fields required for the selected kind." }), project: Type.String({ pattern: "^[\\w.-]+$", description: "Required for taskwarrior." }), uuid: Type.String({ pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", description: "Required for taskwarrior." }) }, { additionalProperties: false }),
+    Type.Object({
+      type: StringEnum(["plane"] as const, { description: "Source kind. Supply only the fields required for the selected kind." }),
+      workspace: Type.String({ maxLength: 1_024, pattern: "^[A-Za-z0-9][A-Za-z0-9._~-]*$", description: "Required Plane workspace identifier." }),
+      project: Type.String({ maxLength: 1_024, pattern: "^[A-Z][A-Z0-9_]*$", description: "Required uppercase Plane project identifier." }),
+      sequenceId: Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER, description: "Required positive Plane work-item sequence ID." }),
+    }, { additionalProperties: false }),
     Type.Object({ type: StringEnum(["file"] as const, { description: "Source kind. Supply only the fields required for the selected kind." }), path: Type.String({ minLength: 1, maxLength: 1_024, description: "Required for file; project-root-contained regular file path." }) }, { additionalProperties: false }),
     Type.Object({ type: StringEnum(["vestige"] as const, { description: "Source kind. Supply only the fields required for the selected kind." }), id: Type.String({ pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", description: "Required for vestige; memory UUID." }) }, { additionalProperties: false }),
     Type.Object({ type: StringEnum(["lifecycle"] as const, { description: "Source kind. Supply a validated lifecycle key." }), key: Type.String({ minLength: 1, maxLength: 512, pattern: "^[^\\r\\n]+$", description: "Required for lifecycle; a non-empty lifecycle key without line breaks." }) }, { additionalProperties: false }),
     Type.Object({ type: StringEnum(["reference"] as const, { description: "Source kind. Raw manual-phase source identifier, normalized before external access." }), value: Type.String({ minLength: 1, maxLength: 1_024, description: "Canonical colon identifier or accepted space-delimited alias." }) }, { additionalProperties: false }),
     Type.Object({ type: StringEnum(["text"] as const, { description: "Source kind. Supply only the fields required for the selected kind." }), title: Type.String({ minLength: 1, maxLength: 256, description: "Required for text." }), content: Type.String({ minLength: 1, maxLength: 64_000, description: "Required for text." }) }, { additionalProperties: false }),
   ],
-  description: "Exactly one source: jira uses key; taskwarrior uses project and uuid; file uses path; vestige uses id; lifecycle uses key; reference uses a canonical identifier or space alias; text uses title and content.",
+  description: "Exactly one source: jira uses key; taskwarrior uses project and uuid; plane uses workspace, project, and sequenceId; file uses path; vestige uses id; lifecycle uses key; reference uses a canonical identifier or space alias; text uses title and content.",
 });
 
 const CONTEXT_DURABLE_KNOWLEDGE_PARAMETERS = Type.Object({
@@ -666,6 +730,8 @@ const LIFECYCLE_IDENTITY_PARAMETERS = Type.Object({
   taskwarriorTask: Type.String({ maxLength: 256, pattern: CONTROL_SAFE_STRING_PATTERN }),
   taskwarriorUuid: Type.String({ maxLength: 128, pattern: CONTROL_SAFE_STRING_PATTERN }),
   jiraKey: Type.String({ maxLength: 128, pattern: CONTROL_SAFE_STRING_PATTERN }),
+  planeWorkspace: Type.Optional(Type.String({ maxLength: 128, pattern: CONTROL_SAFE_STRING_PATTERN, description: "Optional Plane workspace; supply only with planeWorkItem." })),
+  planeWorkItem: Type.Optional(Type.String({ maxLength: 128, pattern: CONTROL_SAFE_STRING_PATTERN, description: "Optional Plane work item; supply only with planeWorkspace." })),
   sourceRefs: Type.Array(Type.String({ minLength: 1, maxLength: 1_024, pattern: CONTROL_SAFE_STRING_PATTERN }), { maxItems: 64 }),
   priorArtifactIds: Type.Array(Type.String({ minLength: 1, maxLength: 1_024, pattern: CONTROL_SAFE_STRING_PATTERN }), { maxItems: 64 }),
 }, { additionalProperties: false });
@@ -678,6 +744,6 @@ const LIFECYCLE_TOOL_PARAMETERS = Type.Object({
 }, { additionalProperties: false });
 
 export default function integrations(pi: ExtensionAPI) {
-  pi.registerTool({ name: "ima_context", label: "IMA context", description: "Build Serena-first project context from one typed source: jira/key, taskwarrior/project+uuid, file/path, vestige/id, lifecycle/key, reference/value, or text/title+content. Reference accepts canonical taskwarrior:<project>:<uuid>, jira:<KEY>, lifecycle:<lifecycle-key>, and vestige:<UUID> forms plus space aliases. Optional durableKnowledge requires query and accepts the supported ima-knowledge collection and limit.", parameters: CONTEXT_TOOL_PARAMETERS, prepareArguments: prepareContextArguments, execute: async (_id, request, signal, _update, ctx) => ({ content: [{ type: "text", text: JSON.stringify(await coordinateContext(request, ctx.cwd, undefined, signal)) }], details: {} }) });
+  pi.registerTool({ name: "ima_context", label: "IMA context", description: "Build Serena-first project context from one typed source: jira/key, taskwarrior/project+uuid, plane/workspace+project+sequenceId, file/path, vestige/id, lifecycle/key, reference/value, or text/title+content. Reference accepts canonical taskwarrior:<project>:<uuid>, plane:<workspace>:PROJ-123, jira:<KEY>, lifecycle:<lifecycle-key>, and vestige:<UUID> forms plus space aliases. Optional durableKnowledge requires query and accepts the supported ima-knowledge collection and limit.", parameters: CONTEXT_TOOL_PARAMETERS, prepareArguments: prepareContextArguments, execute: async (_id, request, signal, _update, ctx) => ({ content: [{ type: "text", text: JSON.stringify(await coordinateContext(request, ctx.cwd, undefined, signal)) }], details: {} }) });
   pi.registerTool({ name: "ima_lifecycle", label: "IMA lifecycle", description: "Store and directly verify one lifecycle artifact in the Tier-1 Qdrant corpus. An explicit summary and closed bounded lifecycle identity are required for manifest-only semantic recall.", parameters: LIFECYCLE_TOOL_PARAMETERS, execute: async (_id, request, signal) => { const result = await coordinateLifecycle(request, undefined, signal); return { content: [{ type: "text", text: JSON.stringify(result) }], details: result }; } });
 }

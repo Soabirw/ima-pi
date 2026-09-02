@@ -7,6 +7,7 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 ### Added
 
 - Added the packaged `/skill:plane-api` direct REST helper for explicitly configured self-hosted Plane instances, supporting canonical work-item, state, and comment reads plus plain-text comment creation and state-only updates without Plane Cloud or external MCP fallback.
+- Added typed Plane `ima_context` hydration with canonical work-item references and aliases, paired workspace-aware lifecycle identity, deterministic boundary coverage, and manual-phase documentation.
 
 ### Fixed
 

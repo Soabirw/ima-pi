@@ -30,6 +30,28 @@ const identity = {
   sourceRefs: ["taskwarrior:ima-pi:a6264cf5-82a1-49c5-9ea1-8a39b3b1405a"],
   priorArtifactIds: ["docs/decisions/plan.md"],
 };
+const planeSource = { type: "plane", workspace: "IMA", project: "ERIC", sequenceId: 1 };
+const planeRequest = { source: planeSource };
+const planeHelperResult = (overrides = {}) => ({
+  success: true,
+  data: {
+    id: "11111111-1111-4111-8111-111111111111",
+    projectId: "22222222-2222-4222-8222-222222222222",
+    reference: "plane:IMA:ERIC-1",
+    workspace: "IMA",
+    identifier: "ERIC-1",
+    sequenceId: 1,
+    name: "Plane item",
+    description: "Hydrated description",
+    stateId: "33333333-3333-4333-8333-333333333333",
+    ...overrides,
+  },
+});
+const sourceBoundaryDiagnostic = {
+  code: "source_boundary_unavailable",
+  stage: "source",
+  message: "Source hydration did not return usable content.",
+};
 const vector = () => Array.from({ length: VECTOR_SIZE }, () => 0.25);
 
 const fullRecord = (record) => ({
@@ -150,9 +172,27 @@ test("registers strict lifecycle summary schema alongside Serena-first context",
 
   assert.ok(context);
   assert.ok(lifecycle);
+  assert.equal(Check(context.parameters, {
+    source: { type: "plane", workspace: "IMA", project: "ERIC", sequenceId: 1 },
+  }), true);
+  assert.equal(Check(context.parameters, {
+    source: { type: "plane", workspace: "IMA", project: "ERIC", sequenceId: 0 },
+  }), false);
+  assert.equal(Check(context.parameters, {
+    source: { type: "plane", workspace: "W".repeat(1_025), project: "ERIC", sequenceId: 1 },
+  }), false);
+  assert.equal(Check(context.parameters, {
+    source: { type: "plane", workspace: "IMA", project: "P".repeat(1_025), sequenceId: 1 },
+  }), false);
   assert.equal(Check(lifecycle.parameters, {
     type: "implementation",
     identity,
+    summary: "Completed implementation.",
+    artifact: "Detailed artifact",
+  }), true);
+  assert.equal(Check(lifecycle.parameters, {
+    type: "implementation",
+    identity: { ...identity, planeWorkspace: "IMA", planeWorkItem: "ERIC-1" },
     summary: "Completed implementation.",
     artifact: "Detailed artifact",
   }), true);
@@ -180,6 +220,222 @@ test("registers strict lifecycle summary schema alongside Serena-first context",
     summary: "Completed implementation.",
     artifact: "Detailed artifact",
   }), false);
+});
+
+test("lifecycle rejects partial Plane identity before corpus effects", async () => {
+  const partialIdentities = [
+    { ...identity, planeWorkspace: "IMA" },
+    { ...identity, planeWorkItem: "ERIC-1" },
+    { ...identity, planeWorkspace: "" },
+    { ...identity, planeWorkItem: "" },
+    { ...identity, planeWorkspace: "", planeWorkItem: "ERIC-1" },
+    { ...identity, planeWorkspace: "IMA", planeWorkItem: "" },
+  ];
+  let corpusAccesses = 0;
+  const corpus = new Proxy({}, {
+    get: () => {
+      corpusAccesses += 1;
+      return undefined;
+    },
+  });
+
+  for (const partialIdentity of partialIdentities) {
+    const result = await coordinateLifecycle({
+      type: "implementation",
+      identity: partialIdentity,
+      summary: "Partial Plane identity must not persist.",
+      artifact: "# Partial identity",
+    }, { corpus });
+    assert.equal(result.status, "failed");
+    assert.equal(result.error.code, "invalid_lifecycle_request");
+  }
+  assert.equal(corpusAccesses, 0);
+});
+
+test("context rejects oversized Plane sources before any boundary effect", async () => {
+  const calls = { canonical: 0, session: 0, run: 0 };
+  const result = await coordinateContext(
+    { source: { type: "plane", workspace: "W".repeat(1_025), project: "P", sequenceId: 1 } },
+    "/repo",
+    {
+      canonical: async (path) => {
+        calls.canonical += 1;
+        return path;
+      },
+      session: async () => {
+        calls.session += 1;
+        return null;
+      },
+      run: async () => {
+        calls.run += 1;
+        return null;
+      },
+    },
+  );
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.code, "invalid_context_request");
+  assert.deepEqual(calls, { canonical: 0, session: 0, run: 0 });
+  assert.doesNotMatch(JSON.stringify(result), /W{20}/);
+});
+
+test("context hydrates a complete normalized Plane helper result", async () => {
+  const apiKey = "plane-api-key-not-in-arguments";
+  const runCalls = [];
+  const result = await coordinateContext(
+    planeRequest,
+    "/repo",
+    {
+      canonical: async (path) => path,
+      session: serenaSession(),
+      run: async (program, args) => {
+        runCalls.push([program, args]);
+        return planeHelperResult({ ignored: "additive helper field" });
+      },
+    },
+  );
+
+  assert.equal(result.status, "ready");
+  assert.deepEqual(result.source, {
+    type: "plane",
+    key: "plane:IMA:ERIC-1",
+    title: "Plane item",
+    content: "{\"name\":\"Plane item\",\"description\":\"Hydrated description\",\"state\":\"33333333-3333-4333-8333-333333333333\",\"reference\":\"plane:IMA:ERIC-1\"}",
+    references: ["Plane:IMA:ERIC-1"],
+  });
+  assert.equal(runCalls.length, 1);
+  assert.equal(runCalls[0][0], "node");
+  assert.match(runCalls[0][1][0], /skills\/plane-api\/scripts\/plane-api\.mjs$/);
+  assert.deepEqual(runCalls[0][1].slice(1), ["plane:get", "plane:IMA:ERIC-1"]);
+  assert.doesNotMatch(JSON.stringify({ result, runCalls }), new RegExp(apiKey));
+});
+
+test("context safely rejects unavailable Plane helper results", async () => {
+  const result = await coordinateContext(
+    planeRequest,
+    "/repo",
+    {
+      canonical: async (path) => path,
+      session: serenaSession(),
+      run: async () => null,
+    },
+  );
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.source, null);
+  assert.deepEqual(result.diagnostics, [sourceBoundaryDiagnostic]);
+});
+
+test("context accepts normalized Plane results without a state", async () => {
+  const result = await coordinateContext(
+    planeRequest,
+    "/repo",
+    {
+      canonical: async (path) => path,
+      session: serenaSession(),
+      run: async () => planeHelperResult({ stateId: null }),
+    },
+  );
+
+  assert.equal(result.status, "ready");
+  assert.equal(JSON.parse(result.source.content).state, null);
+});
+
+test("context rejects malformed Plane helper results", async () => {
+  const invalidResults = [
+    ["missing data", { success: true, data: null }],
+    ["missing work-item ID", planeHelperResult({ id: undefined })],
+    ["malformed work-item ID", planeHelperResult({ id: "not-a-uuid" })],
+    ["missing project ID", planeHelperResult({ projectId: undefined })],
+    ["malformed project ID", planeHelperResult({ projectId: "not-a-uuid" })],
+    ["missing reference", planeHelperResult({ reference: undefined })],
+    ["mismatched reference", planeHelperResult({ reference: "plane:OTHER:ERIC-1" })],
+    ["missing workspace", planeHelperResult({ workspace: undefined })],
+    ["mismatched workspace", planeHelperResult({ workspace: "OTHER" })],
+    ["missing identifier", planeHelperResult({ identifier: undefined })],
+    ["mismatched identifier", planeHelperResult({ identifier: "ERIC-2" })],
+    ["missing sequence", planeHelperResult({ sequenceId: undefined })],
+    ["non-numeric sequence", planeHelperResult({ sequenceId: "1" })],
+    ["mismatched sequence", planeHelperResult({ sequenceId: 2 })],
+    ["blank name", planeHelperResult({ name: "  " })],
+    ["missing description", planeHelperResult({ description: undefined })],
+    ["non-string description", planeHelperResult({ description: { detail: "provider-text" } })],
+    ["missing state", planeHelperResult({ stateId: undefined })],
+    ["malformed state", planeHelperResult({ stateId: "not-a-uuid" })],
+  ];
+
+  for (const [label, helperResult] of invalidResults) {
+    const result = await coordinateContext(
+      planeRequest,
+      "/repo",
+      {
+        canonical: async (path) => path,
+        session: serenaSession(),
+        run: async () => helperResult,
+      },
+    );
+    assert.equal(result.status, "failed", label);
+    assert.equal(result.source, null, label);
+    assert.deepEqual(result.diagnostics, [sourceBoundaryDiagnostic], label);
+    assert.doesNotMatch(JSON.stringify(result), /provider-text/, label);
+  }
+});
+
+test("context skips Plane helper effects for pre-aborted requests", async () => {
+  const controller = new AbortController();
+  const reason = new Error("Plane helper request was cancelled before start.");
+  controller.abort(reason);
+  let runCalls = 0;
+
+  await assert.rejects(
+    coordinateContext(
+      planeRequest,
+      "/repo",
+      {
+        canonical: async (path) => path,
+        session: serenaSession(),
+        run: async () => {
+          runCalls += 1;
+          return planeHelperResult();
+        },
+      },
+      controller.signal,
+    ),
+    (error) => error === reason,
+  );
+  assert.equal(runCalls, 0);
+});
+
+test("context forwards mid-flight cancellation to the Plane helper runner", async () => {
+  const controller = new AbortController();
+  const reason = new Error("Plane helper request was cancelled in flight.");
+  let signalSeen;
+  let startRun;
+  const started = new Promise((resolve) => {
+    startRun = resolve;
+  });
+  const pending = coordinateContext(
+    planeRequest,
+    "/repo",
+    {
+      canonical: async (path) => path,
+      session: serenaSession(),
+      run: async (_program, _args, signal) => {
+        signalSeen = signal;
+        startRun();
+        if (!signal) throw new Error("Missing helper abort signal.");
+        return new Promise((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+      },
+    },
+    controller.signal,
+  );
+
+  await started;
+  controller.abort(reason);
+  await assert.rejects(pending, (error) => error === reason);
+  assert.equal(signalSeen, controller.signal);
 });
 
 test("context hydrates an exact lifecycle source through corpus summary recall and direct detail retrieval", async () => {
