@@ -4,6 +4,14 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ## [Unreleased]
 
+### Added
+
+- Added the packaged `/skill:plane-api` direct REST helper for explicitly configured self-hosted Plane instances, supporting canonical work-item, state, and comment reads plus plain-text comment creation and state-only updates without Plane Cloud or external MCP fallback.
+
+### Fixed
+
+- Hardened Plane work-item API pagination termination, rejected authenticated redirects, guarded inherited CLI command names, and documented rollback inventory.
+
 ## [1.17.0] - 2026-09-01
 
 ### Added

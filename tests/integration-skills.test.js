@@ -4,8 +4,26 @@ import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 
 const root = resolve(dirname(new URL(import.meta.url).pathname), "..");
-const skills = ["mcp-serena", "mcp-vestige", "ima-qdrant", "mcp-atlassian", "mcp-taskwarrior", "mcp-context7", "mcp-tavily", "mcp-fetch", "mcp-sequential-thinking", "mcp-chrome-devtools"];
-const assets = ["skills/mcp-serena/scripts/migrate-context-to-serena.py", "skills/mcp-atlassian/scripts/atlassian-api.mjs", "skills/mcp-taskwarrior/agents/openai.yaml"];
+const skills = [
+  "mcp-serena",
+  "mcp-vestige",
+  "ima-qdrant",
+  "mcp-atlassian",
+  "plane-api",
+  "mcp-taskwarrior",
+  "mcp-context7",
+  "mcp-tavily",
+  "mcp-fetch",
+  "mcp-sequential-thinking",
+  "mcp-chrome-devtools",
+];
+const assets = [
+  "skills/mcp-serena/scripts/migrate-context-to-serena.py",
+  "skills/mcp-atlassian/scripts/atlassian-api.mjs",
+  "skills/plane-api/scripts/plane-client.mjs",
+  "skills/plane-api/scripts/plane-api.mjs",
+  "skills/mcp-taskwarrior/agents/openai.yaml",
+];
 const read = (path) => readFile(join(root, path), "utf8");
 const localMarkdownTargets = (content) => [...content.matchAll(/\[[^\]]+\]\((?!https?:|mailto:|#)([^)#]+)(?:#[^)]*)?\)/g)].map((match) => match[1]);
 
@@ -48,6 +66,12 @@ test("integration skills retain Pi-native safety and workflow boundaries", async
   assert.match(qdrant, /never add.*qdrant-memory/is);
   assert.match(qdrant, /schema-v2.*vectorless detail chunks/is);
   assert.match(await read("skills/mcp-atlassian/SKILL.md"), /REST helper/i);
+  const plane = await read("skills/plane-api/SKILL.md");
+  assert.match(plane, /direct.*REST/i);
+  assert.match(plane, /PLANE_BASE_URL/);
+  assert.match(plane, /PLANE_API_KEY/);
+  assert.match(plane, /rereads.*before the POST/i);
+  assert.match(plane, /does not require.*external MCP server/i);
   assert.match(await read("skills/mcp-taskwarrior/SKILL.md"), /project plus UUID/i);
   assert.match(await read("skills/mcp-context7/SKILL.md"), /resolve.*library ID.*query/is);
   assert.match(await read("skills/mcp-tavily/SKILL.md"), /source attribution/i);

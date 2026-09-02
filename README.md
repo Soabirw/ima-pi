@@ -4,7 +4,7 @@ Pi-native IMA agent harness, packaged through Pi's standard Git/npm package mode
 
 ## Features
 
-- **56 packaged skills and 33 `/ima:*` prompt templates** for engineering, web, WordPress, IMA, MCP, research, and operational workflows.
+- **57 packaged skills and 33 `/ima:*` prompt templates** for engineering, web, WordPress, IMA, MCP, research, and operational workflows.
 - **Pi-native package resources**—prompts, skills, agents, extensions, policies, and configuration guidance—distributed through Pi's normal Git/npm package model.
 - **Memory-aware project work:** Pi's active global `AGENTS.md` carries current user preferences, Serena provides stable project context, Vestige retains only cited legacy evidence and T7 migration sources, and package-native Tier-1 Qdrant/Ollama corpus tools store formal lifecycle artifacts and durable reference knowledge. None are bundled services.
 - **A guided development lifecycle with bounded autonomy:** use the manual phases or the explicit, user-gated `/ima:cycle`; autonomous progression requires an approved bounded, conflict-free, low-risk plan and verified evidence, and it stops at `document`.
@@ -162,6 +162,7 @@ Pi discovers these package skills directly:
 /skill:mcp-vestige
 /skill:ima-qdrant
 /skill:mcp-atlassian
+/skill:plane-api
 /skill:mcp-taskwarrior
 /skill:mcp-context7
 /skill:mcp-tavily
@@ -169,7 +170,7 @@ Pi discovers these package skills directly:
 /skill:mcp-sequential-thinking
 /skill:mcp-chrome-devtools
 
-Seven direct MCP servers use the package adapter. Qdrant is package-native through `/skill:ima-qdrant` and `ima_corpus_*` tools; Atlassian uses its packaged REST helper and Taskwarrior uses the native CLI. Lifecycle reads first return bounded Qdrant manifest summaries, then directly retrieve only selected full records. Schema-v2 lifecycle detail is losslessly reassembled from deterministic vectorless chunks; missing, duplicate, corrupt, or incomplete chunks fail closed. Lifecycle persistence stores chunks before the manifest commit marker and verifies direct reassembly without a Vestige fallback. Vestige remains a read-only cited-legacy-evidence and T7-migration boundary; routine preferences use Pi's global `AGENTS.md`. For team or global installation, run `pi install ssh://git@gitea.theflccc.org:2222/IMA/ima-pi.git`; this unpinned private-Gitea source was verified in an isolated Pi home on 2026-08-03. For local development only, run `pi install /home/eric/IMA/dev/ima-pi`. Updates are explicit with `pi update --extensions` or `pi update --all`. Synchronize shared Agent Skills with `npm run install:skills`. See [`docs/foundation/FNR-3032.md`](docs/foundation/FNR-3032.md) for prerequisites, source coverage, manual acceptance, limitations, and rollback.
+Seven direct MCP servers use the package adapter. Qdrant is package-native through `/skill:ima-qdrant` and `ima_corpus_*` tools; Atlassian and Plane use packaged REST helpers, and Taskwarrior uses the native CLI. `/skill:plane-api` requires explicit self-hosted `PLANE_BASE_URL` and `PLANE_API_KEY` configuration, supports only approved work-item/state/comment reads plus comment or state-only writes, has no Plane Cloud fallback, and does not need an external MCP server. Lifecycle reads first return bounded Qdrant manifest summaries, then directly retrieve only selected full records. Schema-v2 lifecycle detail is losslessly reassembled from deterministic vectorless chunks; missing, duplicate, corrupt, or incomplete chunks fail closed. Lifecycle persistence stores chunks before the manifest commit marker and verifies direct reassembly without a Vestige fallback. Vestige remains a read-only cited-legacy-evidence and T7-migration boundary; routine preferences use Pi's global `AGENTS.md`. For team or global installation, run `pi install ssh://git@gitea.theflccc.org:2222/IMA/ima-pi.git`; this unpinned private-Gitea source was verified in an isolated Pi home on 2026-08-03. For local development only, run `pi install /home/eric/IMA/dev/ima-pi`. Updates are explicit with `pi update --extensions` or `pi update --all`. Synchronize shared Agent Skills with `npm run install:skills`. See [`docs/foundation/FNR-3032.md`](docs/foundation/FNR-3032.md) for prerequisites, source coverage, manual acceptance, limitations, and rollback.
 
 ## Try the package
 
