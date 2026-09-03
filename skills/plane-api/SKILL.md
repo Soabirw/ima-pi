@@ -64,6 +64,14 @@ node scripts/plane-taskwarrior-migrate.mjs reconcile .ima/plane-taskwarrior-migr
 
 The runner creates or reuses only the plan-approved work items and relations. It never automatically deletes created Plane items or rolls them back; any cleanup requires a separately approved destructive plan. The general `plane-api.mjs` commands remain limited to read, comment, and state operations.
 
+## Interactive zero-write preparation
+
+In a Pi TUI, `/ima:plane-migrate` prepares a migration without reading or editing the Markdown worksheet and without modifying Plane work items. It requires `PLANE_BASE_URL`, `PLANE_API_KEY`, and one explicit `PLANE_WORKSPACE` in the invoking environment.
+
+The command exports Taskwarrior with all `PLANE_*` variables stripped, discovers token-visible non-archived projects, inventories only `external_source=taskwarrior` work items, and permits destinations only from the compatible discovered list. It writes a schema-v2 `source.json`, the existing plan shape, a dry-run report, and bounded readiness evidence. A compatible empty destination is valid: state and identity-route discovery are recorded as `READY`, while work-item creation and relation checks remain `UNVERIFIED_WRITE` for the later apply phase.
+
+Escape or cancellation occurs before artifact creation and never mutates Plane. The legacy runner remains worksheet-based for its separate apply workflow.
+
 ## Verification
 
 Automated tests use injected fetch implementations and synthetic credentials only:

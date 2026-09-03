@@ -5,8 +5,10 @@ import {
   isRecord,
   normalizeComment,
   normalizeCreateWorkItemInput,
+  normalizeProject,
   normalizeProjectScope,
   normalizeProjectWorkItemLookup,
+  normalizeWorkspace,
   normalizeState,
   normalizeWorkItem,
   normalizeWorkItemRelation,
@@ -26,6 +28,7 @@ export {
   escapeHtml,
   normalizeComment,
   normalizeCreateWorkItemInput,
+  normalizeProject,
   normalizeState,
   normalizeWorkItem,
   normalizeWorkItemRelation,
@@ -83,6 +86,9 @@ const encodePathSegment = (value) => encodeURIComponent(value);
 
 const pathForHumanReference = (reference) =>
   `workspaces/${encodePathSegment(reference.workspace)}/work-items/${encodePathSegment(reference.workItemIdentifier)}/`;
+
+const pathForWorkspaceProjects = ({ workspace }) =>
+  `workspaces/${encodePathSegment(workspace)}/projects/`;
 
 const pathForProjectStates = ({ workspace, projectId }) =>
   `workspaces/${encodePathSegment(workspace)}/projects/${encodePathSegment(projectId)}/states/`;
@@ -175,6 +181,31 @@ const validateProjectWorkItemRouteProbe = ({ page, projectId }) => {
   if (workItems.some((workItem) => workItem.projectId !== projectId)) fail("RESPONSE_ERROR");
 };
 
+const workspaceRequest = (value) => {
+  if (!isRecord(value) || Object.keys(value).some((key) => key !== "workspace")) {
+    fail("PROJECT_ERROR");
+  }
+
+  return { workspace: normalizeWorkspace(value.workspace) };
+};
+
+const projectExternalSourceLookup = (value) => {
+  const allowedKeys = new Set(["workspace", "projectId", "externalSource"]);
+  if (!isRecord(value) || Object.keys(value).some((key) => !allowedKeys.has(key))) {
+    fail("PROJECT_ERROR");
+  }
+
+  const externalSource = value.externalSource;
+  if (typeof externalSource !== "string" || externalSource.trim() === "" || /[\r\n]/.test(externalSource)) {
+    fail("PROJECT_ERROR");
+  }
+
+  return {
+    ...normalizeProjectScope({ workspace: value.workspace, projectId: value.projectId }),
+    externalSource,
+  };
+};
+
 const projectWorkItemRequest = (value) => {
   if (!isRecord(value) || Object.keys(value).some((key) => !new Set(["workspace", "projectId", "input"]).has(key))) {
     fail("CREATE_ERROR");
@@ -263,6 +294,16 @@ export const createPlaneClient = ({
     };
   };
 
+  const listWorkspaceProjects = (scopeInput) => {
+    const scope = workspaceRequest(scopeInput);
+    return collectCursorPages({
+      fetchPage: (cursor) => requestJson({
+        path: paginatedPath(pathForWorkspaceProjects(scope), cursor),
+      }),
+      normalizeItem: normalizeProject,
+    });
+  };
+
   const listProjectStates = (scopeInput) => {
     const scope = normalizeProjectScope(scopeInput);
     return collectCursorPages({
@@ -270,6 +311,24 @@ export const createPlaneClient = ({
         path: paginatedPath(pathForProjectStates(scope), cursor),
       }),
       normalizeItem: normalizeState,
+    });
+  };
+
+  const listProjectItemsByExternalSource = (lookupInput) => {
+    const lookup = projectExternalSourceLookup(lookupInput);
+    return collectCursorPages({
+      fetchPage: (cursor) => requestJson({
+        path: paginatedPath(pathForProjectWorkItems(lookup), cursor, {
+          external_source: lookup.externalSource,
+        }),
+      }),
+      normalizeItem: (rawWorkItem) => {
+        const workItem = normalizeWorkItem(rawWorkItem);
+        if (workItem.projectId !== lookup.projectId || workItem.externalSource !== lookup.externalSource) {
+          fail("RESPONSE_ERROR");
+        }
+        return workItem;
+      },
     });
   };
 
@@ -308,8 +367,14 @@ export const createPlaneClient = ({
       }, normalizedApiKey);
     },
 
+    listWorkspaceProjects: async (scopeInput) =>
+      redactSecret(await listWorkspaceProjects(scopeInput), normalizedApiKey),
+
     listProjectStates: async (scopeInput) =>
       redactSecret(await listProjectStates(scopeInput), normalizedApiKey),
+
+    listProjectItemsByExternalSource: async (lookupInput) =>
+      redactSecret(await listProjectItemsByExternalSource(lookupInput), normalizedApiKey),
 
     listComments: async (referenceValue) => {
       const { reference, workItem } = await resolveWorkItem(referenceValue);

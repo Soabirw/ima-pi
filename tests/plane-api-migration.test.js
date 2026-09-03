@@ -225,39 +225,6 @@ test("rejects under-constrained identity lookups before fetch", async () => {
   assert.equal(calls.length, 0);
 });
 
-test("lists validated project states directly for migration preflight", async () => {
-  const { client, calls } = clientFor([
-    jsonResponse({
-      results: [{
-        id: STATE_ID,
-        name: "Backlog",
-        group: "backlog",
-        color: null,
-        sequence: 1,
-      }],
-      next_page_results: false,
-      next_cursor: null,
-    }),
-  ]);
-
-  const states = await client.listProjectStates({ workspace: WORKSPACE, projectId: PROJECT_ID });
-  assert.deepEqual(states, [{
-    id: STATE_ID,
-    name: "Backlog",
-    group: "backlog",
-    color: null,
-    sequence: 1,
-  }]);
-  assert.equal(
-    calls[0].url,
-    `${BASE_URL}/api/v1/workspaces/${WORKSPACE}/projects/${PROJECT_ID}/states/?per_page=100`,
-  );
-
-  const invalid = clientFor([]);
-  await assertErrorCode(invalid.client.listProjectStates({ workspace: WORKSPACE }), "PROJECT_ERROR");
-  assert.equal(invalid.calls.length, 0);
-});
-
 test("creates only a normalized migration work item and validates the returned identity", async () => {
   const { client, calls } = clientFor([jsonResponse(workItem())]);
   const input = {

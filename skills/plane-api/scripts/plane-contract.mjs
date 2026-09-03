@@ -84,7 +84,7 @@ const requireExactKeys = (value, allowedKeys, code) => {
   return record;
 };
 
-const normalizeWorkspace = (value, code = "PROJECT_ERROR") => {
+export const normalizeWorkspace = (value, code = "PROJECT_ERROR") => {
   if (typeof value !== "string" || !WORKSPACE_PATTERN.test(value)) fail(code);
   return value;
 };
@@ -204,6 +204,24 @@ export const normalizeWorkItem = (rawWorkItem, reference = null) => {
     externalSource: optionalText(workItem.external_source),
     createdAt: optionalText(workItem.created_at),
     updatedAt: optionalText(workItem.updated_at),
+  };
+};
+
+export const normalizeProject = (rawProject) => {
+  const project = requireRecord(rawProject);
+  if (!Object.hasOwn(project, "archived_at")) fail("RESPONSE_ERROR");
+
+  const identifier = requireText(project.identifier);
+  if (!PROJECT_IDENTIFIER_PATTERN.test(identifier)) fail("RESPONSE_ERROR");
+  const archivedAt = project.archived_at === null
+    ? null
+    : requireText(project.archived_at);
+
+  return {
+    id: normalizeUuid(project.id),
+    identifier,
+    name: requireText(project.name),
+    archivedAt,
   };
 };
 
