@@ -1,12 +1,43 @@
+import {
+  PlaneApiError,
+  commentHtmlFromText,
+  fail,
+  isRecord,
+  normalizeComment,
+  normalizeCreateWorkItemInput,
+  normalizeProjectScope,
+  normalizeProjectWorkItemLookup,
+  normalizeState,
+  normalizeWorkItem,
+  normalizeWorkItemRelation,
+  normalizeWorkItemRelations,
+  normalizeWorkItemRelationScope,
+  normalizeUuid,
+  parsePlaneBaseUrl,
+  parsePlaneReference,
+  readPlaneApiKey,
+  readPlaneConfig,
+  validateCreatedWorkItemRelation,
+} from "./plane-contract.mjs";
+
+export {
+  PlaneApiError,
+  commentHtmlFromText,
+  escapeHtml,
+  normalizeComment,
+  normalizeCreateWorkItemInput,
+  normalizeState,
+  normalizeWorkItem,
+  normalizeWorkItemRelation,
+  parsePlaneBaseUrl,
+  parsePlaneReference,
+  readPlaneConfig,
+} from "./plane-contract.mjs";
+
 const API_PATH = "/api/v1";
 const REQUEST_TIMEOUT_MS = 10_000;
 const PAGE_SIZE = 100;
 const MAX_PAGE_COUNT = 100;
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const WORKSPACE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._~-]*$/;
-const PROJECT_IDENTIFIER_PATTERN = /^[A-Z][A-Z0-9_]*$/;
-const REFERENCE_PATTERN = /^plane:([A-Za-z0-9][A-Za-z0-9._~-]*):([A-Z][A-Z0-9_]*)-([1-9]\d*)$/;
-const LOOPBACK_HTTP_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
 
 const publicMessages = Object.freeze({
   CONFIG_ERROR: "Plane configuration is missing or invalid.",
@@ -15,219 +46,11 @@ const publicMessages = Object.freeze({
   PAGINATION_ERROR: "Plane pagination could not be completed safely.",
   COMMENT_ERROR: "Plane comments must contain non-whitespace plain text.",
   STATE_ERROR: "Plane state must be one exact state UUID from the selected project.",
+  PROJECT_ERROR: "Plane project work-item input is invalid.",
+  CREATE_ERROR: "Plane work-item creation input is invalid.",
+  RELATION_ERROR: "Plane work-item relation input is invalid.",
   HTTP_ERROR: "Plane request could not be completed.",
 });
-
-export class PlaneApiError extends Error {
-  constructor(code, status = null) {
-    super(code);
-    this.name = "PlaneApiError";
-    this.code = code;
-    this.status = status;
-  }
-}
-
-const fail = (code) => {
-  throw new PlaneApiError(code);
-};
-
-const isRecord = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
-
-const requireRecord = (value) => {
-  if (!isRecord(value)) fail("RESPONSE_ERROR");
-  return value;
-};
-
-const normalizeUuid = (value, code = "RESPONSE_ERROR") => {
-  const candidate = typeof value === "string" ? value : isRecord(value) ? value.id : null;
-  if (typeof candidate !== "string" || !UUID_PATTERN.test(candidate)) fail(code);
-  return candidate.toLowerCase();
-};
-
-const optionalUuid = (value) => {
-  if (value === null || value === undefined) return null;
-  return normalizeUuid(value);
-};
-
-const requireText = (value, code = "RESPONSE_ERROR") => {
-  if (typeof value !== "string" || value.trim() === "") fail(code);
-  return value;
-};
-
-const optionalText = (value) => {
-  if (value === null || value === undefined) return null;
-  if (typeof value !== "string") fail("RESPONSE_ERROR");
-  return value;
-};
-
-const normalizeIdList = (value) => {
-  if (value === null || value === undefined) return [];
-  if (!Array.isArray(value)) fail("RESPONSE_ERROR");
-  return value.map((entry) => normalizeUuid(entry));
-};
-
-const normalizePositiveSequenceId = (value, code = "RESPONSE_ERROR") => {
-  const text = typeof value === "number" ? String(value) : value;
-  if (typeof text !== "string" || !/^[1-9]\d*$/.test(text)) fail(code);
-
-  const sequenceId = Number(text);
-  if (!Number.isSafeInteger(sequenceId)) fail(code);
-  return sequenceId;
-};
-
-const normalizeOptionalSequence = (value) => {
-  if (value === null || value === undefined) return null;
-  if (!Number.isSafeInteger(value)) fail("RESPONSE_ERROR");
-  return value;
-};
-
-const referenceFrom = (reference) => {
-  if (reference === null || reference === undefined) return null;
-  if (typeof reference === "string") return parsePlaneReference(reference);
-  if (!isRecord(reference) || typeof reference.canonical !== "string") fail("REFERENCE_ERROR");
-  return parsePlaneReference(reference.canonical);
-};
-
-export const parsePlaneReference = (reference) => {
-  if (typeof reference !== "string") fail("REFERENCE_ERROR");
-
-  const match = REFERENCE_PATTERN.exec(reference);
-  if (!match || !WORKSPACE_PATTERN.test(match[1]) || !PROJECT_IDENTIFIER_PATTERN.test(match[2])) {
-    fail("REFERENCE_ERROR");
-  }
-
-  const sequenceId = normalizePositiveSequenceId(match[3], "REFERENCE_ERROR");
-  const workspace = match[1];
-  const projectIdentifier = match[2];
-  const workItemIdentifier = `${projectIdentifier}-${sequenceId}`;
-
-  return {
-    canonical: `plane:${workspace}:${workItemIdentifier}`,
-    workspace,
-    projectIdentifier,
-    sequenceId,
-    workItemIdentifier,
-  };
-};
-
-export const parsePlaneBaseUrl = (baseUrl) => {
-  if (typeof baseUrl !== "string" || baseUrl.trim() === "" || /\s/.test(baseUrl)) {
-    fail("CONFIG_ERROR");
-  }
-
-  let url;
-  try {
-    url = new URL(baseUrl);
-  } catch {
-    fail("CONFIG_ERROR");
-  }
-
-  const hostname = url.hostname.toLowerCase().replace(/\.$/, "");
-  const allowsHttp = url.protocol === "http:" && LOOPBACK_HTTP_HOSTS.has(hostname);
-  if (url.protocol !== "https:" && !allowsHttp) fail("CONFIG_ERROR");
-  if (url.username || url.password || url.search || url.hash || hostname === "api.plane.so") {
-    fail("CONFIG_ERROR");
-  }
-
-  const path = url.pathname.replace(/\/+$/, "");
-  return `${url.origin}${path === "/" ? "" : path}`;
-};
-
-const readApiKey = (apiKey) => {
-  if (typeof apiKey !== "string" || apiKey.trim() === "" || /[\r\n]/.test(apiKey)) {
-    fail("CONFIG_ERROR");
-  }
-  return apiKey.trim();
-};
-
-export const readPlaneConfig = (env = process.env) => {
-  if (!isRecord(env)) fail("CONFIG_ERROR");
-
-  return {
-    baseUrl: parsePlaneBaseUrl(env.PLANE_BASE_URL),
-    apiKey: readApiKey(env.PLANE_API_KEY),
-  };
-};
-
-export const escapeHtml = (text) => {
-  if (typeof text !== "string") fail("COMMENT_ERROR");
-
-  return text.replace(/[&<>"']/g, (character) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    "\"": "&quot;",
-    "'": "&#39;",
-  })[character]);
-};
-
-export const commentHtmlFromText = (text) => {
-  if (typeof text !== "string" || text.trim() === "") fail("COMMENT_ERROR");
-  return `<p>${escapeHtml(text)}</p>`;
-};
-
-const descriptionFrom = (workItem) => {
-  const strippedDescription = optionalText(workItem.description_stripped);
-  if (strippedDescription !== null) return strippedDescription;
-  return optionalText(workItem.description) ?? "";
-};
-
-export const normalizeWorkItem = (rawWorkItem, reference = null) => {
-  const workItem = requireRecord(rawWorkItem);
-  const parsedReference = referenceFrom(reference);
-  const sequenceId = normalizePositiveSequenceId(workItem.sequence_id);
-
-  if (parsedReference && sequenceId !== parsedReference.sequenceId) fail("RESPONSE_ERROR");
-
-  return {
-    id: normalizeUuid(workItem.id),
-    projectId: normalizeUuid(workItem.project),
-    reference: parsedReference?.canonical ?? null,
-    workspace: parsedReference?.workspace ?? null,
-    identifier: parsedReference?.workItemIdentifier ?? null,
-    sequenceId,
-    name: requireText(workItem.name),
-    description: descriptionFrom(workItem),
-    stateId: optionalUuid(workItem.state),
-    priority: optionalText(workItem.priority),
-    assigneeIds: normalizeIdList(workItem.assignees),
-    labelIds: normalizeIdList(workItem.labels),
-    createdAt: optionalText(workItem.created_at),
-    updatedAt: optionalText(workItem.updated_at),
-  };
-};
-
-export const normalizeState = (rawState) => {
-  const state = requireRecord(rawState);
-
-  return {
-    id: normalizeUuid(state.id),
-    name: requireText(state.name),
-    group: optionalText(state.group),
-    color: optionalText(state.color),
-    sequence: normalizeOptionalSequence(state.sequence),
-  };
-};
-
-const commentContentFrom = (comment) => {
-  for (const value of [comment.comment_html, comment.comment, comment.body, comment.name]) {
-    if (value === null || value === undefined) continue;
-    return optionalText(value);
-  }
-  return null;
-};
-
-export const normalizeComment = (rawComment) => {
-  const comment = requireRecord(rawComment);
-
-  return {
-    id: normalizeUuid(comment.id),
-    content: commentContentFrom(comment),
-    authorId: optionalUuid(comment.created_by),
-    createdAt: optionalText(comment.created_at),
-    updatedAt: optionalText(comment.updated_at),
-  };
-};
 
 export const collectCursorPages = async ({ fetchPage, normalizeItem, maxPages = MAX_PAGE_COUNT }) => {
   if (typeof fetchPage !== "function" || typeof normalizeItem !== "function") fail("PAGINATION_ERROR");
@@ -238,13 +61,12 @@ export const collectCursorPages = async ({ fetchPage, normalizeItem, maxPages = 
   let cursor = null;
 
   for (let pageCount = 0; pageCount < maxPages; pageCount += 1) {
-    const page = requireRecord(await fetchPage(cursor));
-    if (!Array.isArray(page.results)) fail("RESPONSE_ERROR");
+    const page = await fetchPage(cursor);
+    if (!isRecord(page) || !Array.isArray(page.results)) fail("RESPONSE_ERROR");
 
     items.push(...page.results.map(normalizeItem));
 
     if (page.next_page_results === false) return items;
-
     if (page.next_page_results !== true || typeof page.next_cursor !== "string" || page.next_cursor.trim() === "") {
       fail("PAGINATION_ERROR");
     }
@@ -262,8 +84,8 @@ const encodePathSegment = (value) => encodeURIComponent(value);
 const pathForHumanReference = (reference) =>
   `workspaces/${encodePathSegment(reference.workspace)}/work-items/${encodePathSegment(reference.workItemIdentifier)}/`;
 
-const pathForProjectStates = (reference, projectId) =>
-  `workspaces/${encodePathSegment(reference.workspace)}/projects/${encodePathSegment(projectId)}/states/`;
+const pathForProjectStates = ({ workspace, projectId }) =>
+  `workspaces/${encodePathSegment(workspace)}/projects/${encodePathSegment(projectId)}/states/`;
 
 const pathForComments = (reference, projectId, workItemId) =>
   `workspaces/${encodePathSegment(reference.workspace)}/projects/${encodePathSegment(projectId)}/work-items/${encodePathSegment(workItemId)}/comments/`;
@@ -271,10 +93,19 @@ const pathForComments = (reference, projectId, workItemId) =>
 const pathForWorkItem = (reference, projectId, workItemId) =>
   `workspaces/${encodePathSegment(reference.workspace)}/projects/${encodePathSegment(projectId)}/work-items/${encodePathSegment(workItemId)}/`;
 
-const paginatedPath = (path, cursor) => {
-  const parameters = new URLSearchParams({ per_page: String(PAGE_SIZE) });
-  if (cursor !== null) parameters.set("cursor", cursor);
-  return `${path}?${parameters.toString()}`;
+const pathForProjectWorkItems = ({ workspace, projectId }) =>
+  `workspaces/${encodePathSegment(workspace)}/projects/${encodePathSegment(projectId)}/work-items/`;
+
+const pathForWorkItemRelations = ({ workspace, projectId, workItemId }) =>
+  `${pathForProjectWorkItems({ workspace, projectId })}${encodePathSegment(workItemId)}/relations/`;
+
+const paginatedPath = (path, cursor, parameters = {}, pageSize = PAGE_SIZE) => {
+  if (!Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > PAGE_SIZE) fail("PAGINATION_ERROR");
+
+  const query = new URLSearchParams({ per_page: String(pageSize) });
+  for (const [name, value] of Object.entries(parameters)) query.set(name, value);
+  if (cursor !== null) query.set("cursor", cursor);
+  return `${path}?${query.toString()}`;
 };
 
 const redactSecret = (value, apiKey) => {
@@ -305,12 +136,18 @@ const publicError = (error) => {
 export const toPublicPlaneError = publicError;
 
 const mutationIdentityFrom = (rawResponse, workItem) => {
-  const response = requireRecord(rawResponse);
-  const id = normalizeUuid(response.id);
-  const projectId = normalizeUuid(response.project);
+  if (!isRecord(rawResponse)) fail("RESPONSE_ERROR");
+  const id = normalizeUuid(rawResponse.id);
+  const projectId = normalizeUuid(rawResponse.project);
 
   if (id !== workItem.id || projectId !== workItem.projectId) fail("RESPONSE_ERROR");
-  return { id, projectId, stateId: optionalUuid(response.state) };
+  return {
+    id,
+    projectId,
+    stateId: rawResponse.state === null || rawResponse.state === undefined
+      ? null
+      : normalizeUuid(rawResponse.state),
+  };
 };
 
 const selectState = (states, stateId) => {
@@ -318,6 +155,48 @@ const selectState = (states, stateId) => {
   const matches = states.filter((state) => state.id === normalizedStateId);
   if (matches.length !== 1) fail("STATE_ERROR");
   return matches[0];
+};
+
+const isExactLookupNoMatch = (error) =>
+  error instanceof PlaneApiError && error.code === "HTTP_ERROR" && error.status === 404;
+
+const validateProjectWorkItemRouteProbe = ({ page, projectId }) => {
+  if (!isRecord(page) || !Array.isArray(page.results) || typeof page.next_page_results !== "boolean") {
+    fail("RESPONSE_ERROR");
+  }
+  if (
+    page.next_page_results
+    && (typeof page.next_cursor !== "string" || page.next_cursor.trim() === "")
+  ) {
+    fail("RESPONSE_ERROR");
+  }
+
+  const workItems = page.results.map((rawWorkItem) => normalizeWorkItem(rawWorkItem));
+  if (workItems.some((workItem) => workItem.projectId !== projectId)) fail("RESPONSE_ERROR");
+};
+
+const projectWorkItemRequest = (value) => {
+  if (!isRecord(value) || Object.keys(value).some((key) => !new Set(["workspace", "projectId", "input"]).has(key))) {
+    fail("CREATE_ERROR");
+  }
+  return {
+    ...normalizeProjectScope({ workspace: value.workspace, projectId: value.projectId }),
+    input: normalizeCreateWorkItemInput(value.input),
+  };
+};
+
+const relationMutationRequest = (value) => {
+  if (!isRecord(value) || Object.keys(value).some((key) => !new Set(["workspace", "projectId", "workItemId", "relation"]).has(key))) {
+    fail("RELATION_ERROR");
+  }
+  return {
+    ...normalizeWorkItemRelationScope({
+      workspace: value.workspace,
+      projectId: value.projectId,
+      workItemId: value.workItemId,
+    }),
+    relation: normalizeWorkItemRelation(value.relation),
+  };
 };
 
 export const createPlaneClient = ({
@@ -330,7 +209,7 @@ export const createPlaneClient = ({
   clearTimeoutImpl = clearTimeout,
 } = {}) => {
   const normalizedBaseUrl = parsePlaneBaseUrl(baseUrl);
-  const normalizedApiKey = readApiKey(apiKey);
+  const normalizedApiKey = readPlaneApiKey(apiKey);
   if (typeof fetchImpl !== "function" || typeof createAbortController !== "function") fail("CONFIG_ERROR");
   if (typeof setTimeoutImpl !== "function" || typeof clearTimeoutImpl !== "function") fail("CONFIG_ERROR");
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) fail("CONFIG_ERROR");
@@ -384,13 +263,22 @@ export const createPlaneClient = ({
     };
   };
 
-  const listProjectStates = (reference, projectId) =>
-    collectCursorPages({
+  const listProjectStates = (scopeInput) => {
+    const scope = normalizeProjectScope(scopeInput);
+    return collectCursorPages({
       fetchPage: (cursor) => requestJson({
-        path: paginatedPath(pathForProjectStates(reference, projectId), cursor),
+        path: paginatedPath(pathForProjectStates(scope), cursor),
       }),
       normalizeItem: normalizeState,
     });
+  };
+
+  const proveProjectWorkItemListRoute = async (lookup) => {
+    const page = await requestJson({
+      path: paginatedPath(pathForProjectWorkItems(lookup), null, {}, 1),
+    });
+    validateProjectWorkItemRouteProbe({ page, projectId: lookup.projectId });
+  };
 
   const listWorkItemComments = (reference, projectId, workItemId) =>
     collectCursorPages({
@@ -408,7 +296,10 @@ export const createPlaneClient = ({
 
     listStates: async (referenceValue) => {
       const { reference, workItem } = await resolveWorkItem(referenceValue);
-      const states = await listProjectStates(reference, workItem.projectId);
+      const states = await listProjectStates({
+        workspace: reference.workspace,
+        projectId: workItem.projectId,
+      });
 
       return redactSecret({
         reference: reference.canonical,
@@ -416,6 +307,9 @@ export const createPlaneClient = ({
         states,
       }, normalizedApiKey);
     },
+
+    listProjectStates: async (scopeInput) =>
+      redactSecret(await listProjectStates(scopeInput), normalizedApiKey),
 
     listComments: async (referenceValue) => {
       const { reference, workItem } = await resolveWorkItem(referenceValue);
@@ -447,7 +341,10 @@ export const createPlaneClient = ({
 
     setState: async (referenceValue, stateId) => {
       const { reference, workItem } = await resolveWorkItem(referenceValue);
-      const states = await listProjectStates(reference, workItem.projectId);
+      const states = await listProjectStates({
+        workspace: reference.workspace,
+        projectId: workItem.projectId,
+      });
       const state = selectState(states, stateId);
       const rawResponse = await requestJson({
         path: pathForWorkItem(reference, workItem.projectId, workItem.id),
@@ -464,6 +361,85 @@ export const createPlaneClient = ({
         reference: reference.canonical,
         workItemId: workItem.id,
         stateId: state.id,
+      }, normalizedApiKey);
+    },
+
+    listProjectWorkItems: async (lookupInput) => {
+      const lookup = normalizeProjectWorkItemLookup(lookupInput);
+      const workItems = await collectCursorPages({
+        fetchPage: async (cursor) => {
+          try {
+            return await requestJson({
+              path: paginatedPath(pathForProjectWorkItems(lookup), cursor, {
+                external_id: lookup.externalId,
+                external_source: lookup.externalSource,
+              }),
+            });
+          } catch (error) {
+            if (cursor !== null || !isExactLookupNoMatch(error)) throw error;
+
+            await proveProjectWorkItemListRoute(lookup);
+            return { results: [], next_page_results: false };
+          }
+        },
+        normalizeItem: (rawWorkItem) => {
+          const workItem = normalizeWorkItem(rawWorkItem);
+          if (workItem.projectId !== lookup.projectId) fail("RESPONSE_ERROR");
+          return workItem;
+        },
+      });
+
+      return redactSecret(workItems, normalizedApiKey);
+    },
+
+    createProjectWorkItem: async (requestInput) => {
+      const request = projectWorkItemRequest(requestInput);
+      const rawWorkItem = await requestJson({
+        path: pathForProjectWorkItems(request),
+        method: "POST",
+        body: {
+          name: request.input.name,
+          description_stripped: request.input.descriptionStripped,
+          priority: request.input.priority,
+          state: request.input.stateId,
+          external_id: request.input.externalId,
+          external_source: request.input.externalSource,
+        },
+      });
+      const workItem = normalizeWorkItem(rawWorkItem);
+      if (
+        workItem.projectId !== request.projectId
+        || workItem.externalId !== request.input.externalId
+        || workItem.externalSource !== request.input.externalSource
+      ) {
+        fail("RESPONSE_ERROR");
+      }
+
+      return redactSecret(workItem, normalizedApiKey);
+    },
+
+    listWorkItemRelations: async (scopeInput) => {
+      const scope = normalizeWorkItemRelationScope(scopeInput);
+      const rawRelations = await requestJson({ path: pathForWorkItemRelations(scope) });
+      return redactSecret(normalizeWorkItemRelations(rawRelations), normalizedApiKey);
+    },
+
+    createWorkItemRelation: async (requestInput) => {
+      const request = relationMutationRequest(requestInput);
+      const rawResponse = await requestJson({
+        path: pathForWorkItemRelations(request),
+        method: "POST",
+        body: {
+          relation_type: request.relation.relationType,
+          issues: request.relation.issueIds,
+        },
+      });
+      validateCreatedWorkItemRelation(rawResponse, request.relation);
+
+      return redactSecret({
+        workItemId: request.workItemId,
+        relationType: request.relation.relationType,
+        issueIds: request.relation.issueIds,
       }, normalizedApiKey);
     },
   });
