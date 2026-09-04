@@ -85,6 +85,7 @@ const migrationProgressMessage = (event) => {
     "reconciliation-invalidated": "Cleared prior reconciliation evidence.",
     "applying-items": `Applying work items${count}${outcome}.`,
     "applying-relations": `Applying work-item relations${count}${outcome}.`,
+    "applying-backfills": `Backfilling work-item descriptions${count}${outcome}.`,
     "application-checkpoints-complete": "All migration checkpoints are saved.",
     "reconciliation-checkpoint-loaded": "Loading the reconciliation checkpoint.",
     "reconciling-items": `Reconciling migrated work items${count}.`,
@@ -137,9 +138,9 @@ const preparedRunInput = ({ ctx, relativeRunPath, dependencies }) => ({
   onProgress: migrationProgress(ctx),
 });
 
-const applyReview = ({ run, plan }) => [
+const applyReview = ({ run, plan, backfillPlan }) => [
   `Run: ${run.relativeRunPath}`,
-  `Creates: ${plan.summary.creates}; relations: ${plan.summary.eligibleRelations}.`,
+  `Creates: ${plan.summary.creates}; description backfills: ${backfillPlan?.updates?.length ?? 0}; relations: ${plan.summary.eligibleRelations}.`,
   `Skipped deleted tasks: ${plan.summary.taskSkips}.`,
   `Plan SHA-256: ${plan.planSha256}`,
   "Plane writes begin only after a literal confirm and locked revalidation.",

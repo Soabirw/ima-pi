@@ -6,6 +6,7 @@ import { link, lstat, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "n
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { buildMigrationBackfillPlan } from "../lib/plane-taskwarrior-description-backfill.ts";
 import { pathToFileURL } from "node:url";
 import {
   buildDryRunReport,
@@ -640,7 +641,7 @@ const preparedMigrationPlan = async ({ root, fixture, taskEnvironments = [] }) =
   };
 };
 
-const writeSchemaV2StaticRun = async ({ root }) => {
+const writeInteractiveStaticRun = async ({ root, sourceSchemaVersion }) => {
   const fixture = migrationFixture();
   const tasks = fixture.tasks.map(({ priority, ...task }) =>
     priority === undefined ? task : { ...task, priority });
@@ -679,12 +680,16 @@ const writeSchemaV2StaticRun = async ({ root }) => {
       items: [],
     };
   });
-  const source = buildPreparationSource({
+  const currentSource = buildPreparationSource({
     workspace: "ima",
     decisions,
     discovered,
     tasks,
   });
+  const { backfillPlanRequired: _backfillPlanRequired, ...legacySource } = currentSource;
+  const source = sourceSchemaVersion === 2
+    ? { ...legacySource, schemaVersion: 2 }
+    : currentSource;
   const inputs = decisionsToPlanInputs({ decisions, tasks });
   const plan = buildMigrationPlan({
     worksheet: inputs.projectMappings,
@@ -694,36 +699,54 @@ const writeSchemaV2StaticRun = async ({ root }) => {
   const run = await createMigrationRun({ cwd: root, timestamp: "2026-09-07T00-00-00-000Z" });
   await writeRunArtifact({ run, name: MIGRATION_ARTIFACTS.source, value: source });
   await writeRunArtifact({ run, name: MIGRATION_ARTIFACTS.plan, value: plan });
+  if (sourceSchemaVersion === 3) {
+    await writeRunArtifact({
+      run,
+      name: MIGRATION_ARTIFACTS.backfillPlan,
+      value: buildMigrationBackfillPlan({
+        planSha256: plan.planSha256,
+        workspace: "ima",
+        backfillByTaskUuid: {},
+        tasks,
+      }),
+    });
+  }
   return { run, plan };
 };
 
-test("keeps schema-v2 prepared runs out of legacy direct apply and reconcile", async (t) => {
-  const root = await temporaryProject(t);
-  const prepared = await writeSchemaV2StaticRun({ root });
-  let configCalls = 0;
-  let clientCalls = 0;
-  const guardedInput = {
-    cwd: root,
-    env: {},
-    createClient: () => { clientCalls += 1; return {}; },
-    readConfig: () => { configCalls += 1; return {}; },
-  };
+test("keeps schema-v2 and schema-v3 prepared runs out of legacy direct apply and reconcile", async (t) => {
+  for (const sourceSchemaVersion of [2, 3]) {
+    const root = await temporaryProject(t);
+    const prepared = await writeInteractiveStaticRun({ root, sourceSchemaVersion });
+    let configCalls = 0;
+    let clientCalls = 0;
+    const guardedInput = {
+      cwd: root,
+      env: {},
+      createClient: () => { clientCalls += 1; return {}; },
+      readConfig: () => { configCalls += 1; return {}; },
+    };
 
-  const apply = await runCommand({
-    argv: ["apply", prepared.run.relativeRunPath, prepared.plan.planSha256, "confirm"],
-    ...guardedInput,
-  });
-  const reconcile = await runCommand({
-    argv: ["reconcile", prepared.run.relativeRunPath],
-    ...guardedInput,
-  });
+    const apply = await runCommand({
+      argv: ["apply", prepared.run.relativeRunPath, prepared.plan.planSha256, "confirm"],
+      ...guardedInput,
+    });
+    const reconcile = await runCommand({
+      argv: ["reconcile", prepared.run.relativeRunPath],
+      ...guardedInput,
+    });
 
-  for (const result of [apply, reconcile]) {
-    assert.equal(result.exitCode, 1);
-    assert.equal(JSON.parse(result.stderr).error.code, "PREPARED_RUN_INTERACTIVE_ONLY");
+    for (const result of [apply, reconcile]) {
+      assert.equal(result.exitCode, 1, `schema ${sourceSchemaVersion}`);
+      assert.equal(
+        JSON.parse(result.stderr).error.code,
+        "PREPARED_RUN_INTERACTIVE_ONLY",
+        `schema ${sourceSchemaVersion}`,
+      );
+    }
+    assert.equal(configCalls, 0, `schema ${sourceSchemaVersion}`);
+    assert.equal(clientCalls, 0, `schema ${sourceSchemaVersion}`);
   }
-  assert.equal(configCalls, 0);
-  assert.equal(clientCalls, 0);
 });
 
 test("runs and persists a read-only migration preflight without Plane writes", async (t) => {

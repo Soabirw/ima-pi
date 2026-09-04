@@ -123,6 +123,8 @@ const runTaskwarriorExport = async ({ execFile, env }) => {
   }
 };
 
+const INTERACTIVE_SOURCE_SCHEMA_VERSIONS = new Set([2, 3]);
+
 const sourceSnapshot = ({ worksheet, tasks }) => ({ schemaVersion: 1, worksheet, tasks });
 
 const assertLegacyRunSource = async ({ artifactApi, run }) => {
@@ -130,7 +132,7 @@ const assertLegacyRunSource = async ({ artifactApi, run }) => {
     run,
     name: artifactApi.MIGRATION_ARTIFACTS.source,
   });
-  if (isRecord(source) && source.schemaVersion === 2) {
+  if (isRecord(source) && INTERACTIVE_SOURCE_SCHEMA_VERSIONS.has(source.schemaVersion)) {
     cliFail("PREPARED_RUN_INTERACTIVE_ONLY");
   }
   if (

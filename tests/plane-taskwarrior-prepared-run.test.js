@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import { unlink } from "node:fs/promises";
+import { join } from "node:path";
 import test from "node:test";
 import * as artifactApi from "../lib/plane-taskwarrior-migration-artifacts.ts";
+import { MigrationExecutionError } from "../lib/plane-taskwarrior-migration-execution.ts";
 import { migrationPlanSha256 } from "../lib/plane-taskwarrior-migration.ts";
 import {
   PreparedMigrationError,
@@ -10,10 +13,15 @@ import {
 } from "../lib/plane-taskwarrior-prepared-run.ts";
 import {
   applyInput,
+  BACKFILL_ITEM_ID,
+  BACKFILL_TASK,
+  backfillOnlyPreparedData,
+  backfillPreparedData,
   historicalPreparedData,
   migrationClient,
   preparedData,
   preparedRun,
+  PROJECT_ID,
   TASK_A,
 } from "./plane-taskwarrior-prepared-run-fixtures.js";
 
@@ -51,6 +59,15 @@ test("reads prepared status from local artifacts without Plane configuration", a
 test("preserves a historical schema-v2 plan and payload during status, apply, and reconcile", async (t) => {
   const historical = historicalPreparedData();
   const prepared = await preparedRun(t, historical);
+  assert.equal(historical.source.schemaVersion, 2);
+  assert.equal(Object.hasOwn(historical.source, "backfillPlanRequired"), false);
+  await assert.rejects(
+    artifactApi.readRunArtifact({
+      run: prepared.run,
+      name: artifactApi.MIGRATION_ARTIFACTS.backfillPlan,
+    }),
+    /ENOENT/,
+  );
   const historicalDescriptions = historical.plan.items
     .filter((item) => item.disposition === "create")
     .map((item) => item.workItem.descriptionStripped);
@@ -124,6 +141,149 @@ test("classifies an existing incomplete checkpoint as partially applied", async 
   assert.equal(status.state, "partially-applied");
 });
 
+test("backfills only live blank descriptions and converges without repeat PATCHes", async (t) => {
+  const prepared = await preparedRun(t, backfillPreparedData());
+  const fake = migrationClient({
+    initialWorkItems: [{
+      id: BACKFILL_ITEM_ID,
+      projectId: PROJECT_ID,
+      name: "Previously migrated task",
+      description: "",
+      priority: "medium",
+      stateId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      externalId: BACKFILL_TASK,
+      externalSource: "taskwarrior",
+    }],
+  });
+
+  const first = await applyPreparedMigration(applyInput({ prepared, client: fake.client }));
+  assert.equal(first.state, "applied");
+  assert.equal(first.updatedItems, 1);
+  assert.equal(first.skippedBackfills, 0);
+  assert.equal(fake.descriptionUpdateCount(), 1);
+  assert.deepEqual((await artifactApi.readCheckpoint({ run: prepared.run })).backfillOutcomesByTaskUuid, {
+    [BACKFILL_TASK]: "updated",
+  });
+
+  const second = await applyPreparedMigration(applyInput({ prepared, client: fake.client }));
+  assert.equal(second.state, "applied");
+  assert.equal(second.updatedItems, 0);
+  assert.equal(second.skippedBackfills, 1);
+  assert.equal(fake.descriptionUpdateCount(), 1);
+});
+
+test("applies a backfill-only prepared run with an unchanged empty create plan", async (t) => {
+  const prepared = await preparedRun(t, backfillOnlyPreparedData());
+  const fake = migrationClient({
+    initialWorkItems: [{
+      id: BACKFILL_ITEM_ID,
+      projectId: PROJECT_ID,
+      name: "Previously migrated task",
+      description: "",
+      priority: "medium",
+      stateId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      externalId: BACKFILL_TASK,
+      externalSource: "taskwarrior",
+    }],
+  });
+
+  const status = await readPreparedMigrationStatus({
+    cwd: prepared.root,
+    relativeRunPath: prepared.run.relativeRunPath,
+    artifactApi,
+  });
+  assert.equal(status.state, "prepared");
+  assert.deepEqual(prepared.plan.items, []);
+
+  const result = await applyPreparedMigration(applyInput({ prepared, client: fake.client }));
+  assert.equal(result.state, "applied");
+  assert.equal(result.updatedItems, 1);
+  assert.equal(fake.descriptionUpdateCount(), 1);
+});
+
+test("does not overwrite a description filled after backfill preparation", async (t) => {
+  const prepared = await preparedRun(t, backfillPreparedData());
+  const fake = migrationClient({
+    initialWorkItems: [{
+      id: BACKFILL_ITEM_ID,
+      projectId: PROJECT_ID,
+      name: "Previously migrated task",
+      description: "Human-authored description",
+      priority: "medium",
+      stateId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      externalId: BACKFILL_TASK,
+      externalSource: "taskwarrior",
+    }],
+  });
+
+  const result = await applyPreparedMigration(applyInput({ prepared, client: fake.client }));
+  assert.equal(result.state, "applied");
+  assert.equal(result.updatedItems, 0);
+  assert.equal(result.skippedBackfills, 1);
+  assert.equal(fake.descriptionUpdateCount(), 0);
+});
+
+test("fails fast without a checkpoint when a live backfill target is missing", async (t) => {
+  const prepared = await preparedRun(t, backfillOnlyPreparedData());
+  const fake = migrationClient();
+
+  await assert.rejects(
+    applyPreparedMigration(applyInput({ prepared, client: fake.client })),
+    (error) => error instanceof MigrationExecutionError && error.code === "BACKFILL_ITEM_MISSING",
+  );
+  assert.equal(fake.descriptionUpdateCount(), 0);
+  assert.equal(await artifactApi.readCheckpoint({ run: prepared.run }), null);
+});
+
+test("rejects a backfill workspace tampered after preparation before Plane access", async (t) => {
+  const prepared = await preparedRun(t, backfillOnlyPreparedData());
+  const tamperedBackfillPlan = structuredClone(prepared.backfillPlan);
+  tamperedBackfillPlan.updates[0].workspace = "other-workspace";
+  await artifactApi.replaceRunArtifact({
+    run: prepared.run,
+    name: artifactApi.MIGRATION_ARTIFACTS.backfillPlan,
+    value: tamperedBackfillPlan,
+  });
+
+  let configCalls = 0;
+  let clientCalls = 0;
+  await assert.rejects(
+    applyPreparedMigration({
+      ...applyInput({ prepared, client: {} }),
+      createClient: () => { clientCalls += 1; return {}; },
+      readConfig: () => { configCalls += 1; return {}; },
+    }),
+    (error) => error instanceof PreparedMigrationError && error.code === "PREPARED_BACKFILL_PLAN_INVALID",
+  );
+  assert.equal(configCalls, 0);
+  assert.equal(clientCalls, 0);
+});
+
+test("rejects missing current backfill artifacts before configuration or client access", async (t) => {
+  const cases = [
+    ["empty", preparedData()],
+    ["nonempty", backfillOnlyPreparedData()],
+  ];
+
+  for (const [_name, data] of cases) {
+    const prepared = await preparedRun(t, data);
+    await unlink(join(prepared.run.directory, artifactApi.MIGRATION_ARTIFACTS.backfillPlan));
+    let configCalls = 0;
+    let clientCalls = 0;
+
+    await assert.rejects(
+      applyPreparedMigration({
+        ...applyInput({ prepared, client: {} }),
+        createClient: () => { clientCalls += 1; return {}; },
+        readConfig: () => { configCalls += 1; return {}; },
+      }),
+      (error) => error instanceof PreparedMigrationError && error.code === "PREPARED_BACKFILL_PLAN_INVALID",
+    );
+    assert.equal(configCalls, 0);
+    assert.equal(clientCalls, 0);
+  }
+});
+
 test("rejects source-plan tampering before configuration or Plane access", async (t) => {
   const tampering = [
     {
@@ -138,6 +298,11 @@ test("rejects source-plan tampering before configuration or Plane access", async
           name: artifactApi.MIGRATION_ARTIFACTS.plan,
           value: changedPlan,
         });
+        await artifactApi.replaceRunArtifact({
+          run: prepared.run,
+          name: artifactApi.MIGRATION_ARTIFACTS.backfillPlan,
+          value: { ...prepared.backfillPlan, planSha256: changedPlan.planSha256 },
+        });
       },
     },
     {
@@ -151,6 +316,11 @@ test("rejects source-plan tampering before configuration or Plane access", async
           run: prepared.run,
           name: artifactApi.MIGRATION_ARTIFACTS.plan,
           value: changedPlan,
+        });
+        await artifactApi.replaceRunArtifact({
+          run: prepared.run,
+          name: artifactApi.MIGRATION_ARTIFACTS.backfillPlan,
+          value: { ...prepared.backfillPlan, planSha256: changedPlan.planSha256 },
         });
       },
     },
@@ -215,6 +385,11 @@ test("revalidates the reviewed hash under the migration lock before configuratio
         run,
         name: artifactApi.MIGRATION_ARTIFACTS.plan,
         value: replacement.plan,
+      });
+      await artifactApi.replaceRunArtifact({
+        run,
+        name: artifactApi.MIGRATION_ARTIFACTS.backfillPlan,
+        value: replacement.backfillPlan,
       });
       return artifactApi.withMigrationLock({ run, operation });
     },

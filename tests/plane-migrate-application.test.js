@@ -14,6 +14,7 @@ const inspectedRun = {
     planSha256: PLAN_HASH,
     summary: { creates: 2, eligibleRelations: 1, taskSkips: 0 },
   },
+  backfillPlan: { updates: [{}] },
 };
 
 const context = ({
@@ -148,6 +149,7 @@ test("reviews the full hash and passes it only after literal confirmation", asyn
   assert.equal(result.state, "applied");
   assert.equal(inputCalls, 1);
   assert.equal(reviewText.includes(PLAN_HASH), true);
+  assert.equal(reviewText.includes("description backfills: 1"), true);
   assert.equal(applicationInput.reviewedPlanSha256, PLAN_HASH);
   assert.equal(applicationInput.relativeRunPath, relativeRunPath);
 });
@@ -274,6 +276,7 @@ test("turns durable prepared-run progress into live migration activity", async (
         });
         input.onProgress({ phase: "checking-readiness", completed: 1, total: 1 });
         input.onProgress({ phase: "applying-items", completed: 1, total: 2, outcome: "created" });
+        input.onProgress({ phase: "applying-backfills", completed: 1, total: 1, outcome: "updated" });
         input.onProgress({ phase: "application-checkpoints-complete" });
         return { state: "applied", relativeRunPath };
       },
@@ -299,6 +302,8 @@ test("turns durable prepared-run progress into live migration activity", async (
     text === "Checking live destination readiness (1/1)."), true);
   assert.equal(applicationContext.statusUpdates.some(({ text }) =>
     text === "Applying work items (1/2); created."), true);
+  assert.equal(applicationContext.statusUpdates.some(({ text }) =>
+    text === "Backfilling work-item descriptions (1/1); updated."), true);
   assert.equal(applicationContext.statusUpdates.some(({ text }) =>
     text === "All migration checkpoints are saved."), true);
   assert.deepEqual(applicationContext.statusUpdates.at(-1), {

@@ -69,7 +69,7 @@ test("requires a checkpoint before reconciliation can create a Plane client", as
 });
 
 test("reports detailed readiness progress around each destination read", async () => {
-  const { source, plan } = preparedData();
+  const { source, plan, backfillPlan } = preparedData();
   const steps = [];
   const client = {
     listProjectStates: async () => {
@@ -89,6 +89,7 @@ test("reports detailed readiness progress around each destination read", async (
     client,
     source,
     plan,
+    backfillPlan,
     onProgress: (event) => {
       if (!event.readinessStep) return;
       steps.push({

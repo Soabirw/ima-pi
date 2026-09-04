@@ -4,6 +4,7 @@ import {
   PlaneApiError,
   createPlaneClient,
   normalizeCreateWorkItemInput,
+  normalizeUpdateWorkItemDescriptionInput,
   normalizeWorkItemRelation,
 } from "../skills/plane-api/scripts/plane-client.mjs";
 import { runPlaneApi } from "../skills/plane-api/scripts/plane-api.mjs";
@@ -319,6 +320,60 @@ test("creates only a normalized migration work item and validates the returned i
     workspace: WORKSPACE,
     projectId: PROJECT_ID,
     input,
+  }), "RESPONSE_ERROR");
+});
+
+test("updates only a normalized plain-text description and validates the returned identity", async () => {
+  const descriptionStripped = "Backfill <safe>\nSecond line\n\nFinal paragraph";
+  const { client, calls } = clientFor([
+    jsonResponse(workItem({ description_stripped: descriptionStripped })),
+  ]);
+
+  const result = await client.updateProjectWorkItemDescription({
+    workspace: WORKSPACE,
+    projectId: PROJECT_ID,
+    workItemId: WORK_ITEM_ID,
+    descriptionStripped,
+  });
+
+  assert.deepEqual(result, { workItemId: WORK_ITEM_ID, projectId: PROJECT_ID });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].options.method, "PATCH");
+  assert.equal(calls[0].options.redirect, "error");
+  assert.equal(
+    calls[0].url,
+    `${BASE_URL}/api/v1/workspaces/${WORKSPACE}/projects/${PROJECT_ID}/work-items/${WORK_ITEM_ID}/`,
+  );
+  assert.deepEqual(JSON.parse(calls[0].options.body), {
+    description_html: "<p>Backfill &lt;safe&gt;<br>Second line</p><p>Final paragraph</p>",
+    description_stripped: descriptionStripped,
+  });
+
+  const invalid = clientFor([]);
+  await assertErrorCode(invalid.client.updateProjectWorkItemDescription({
+    workspace: WORKSPACE,
+    projectId: PROJECT_ID,
+    workItemId: WORK_ITEM_ID,
+    descriptionStripped,
+    descriptionHtml: "<p>caller supplied HTML</p>",
+  }), "CREATE_ERROR");
+  assert.equal(invalid.calls.length, 0);
+
+  assert.throws(
+    () => normalizeUpdateWorkItemDescriptionInput({
+      workItemId: WORK_ITEM_ID,
+      descriptionStripped,
+      descriptionHtml: "<p>caller supplied HTML</p>",
+    }),
+    (error) => error.code === "CREATE_ERROR",
+  );
+
+  const mismatched = clientFor([jsonResponse(workItem({ project: FOREIGN_PROJECT_ID }))]);
+  await assertErrorCode(mismatched.client.updateProjectWorkItemDescription({
+    workspace: WORKSPACE,
+    projectId: PROJECT_ID,
+    workItemId: WORK_ITEM_ID,
+    descriptionStripped,
   }), "RESPONSE_ERROR");
 });
 

@@ -112,19 +112,32 @@ test("analyzes Taskwarrior inventory while excluding and counting deleted tasks"
   ]);
 });
 
-test("indexes exact existing identities and blocks ambiguous observations", () => {
+test("classifies blank identities for backfill and blocks ambiguous observations", () => {
   const observed = [{
     project: project(PLANE_PROJECT_A, "DEST"),
-    items: [{
-      id: PLANE_ITEM_A,
-      projectId: PLANE_PROJECT_A,
-      externalId: TASK_A_PENDING,
-      externalSource: "taskwarrior",
-    }],
+    items: [
+      {
+        id: PLANE_ITEM_A,
+        projectId: PLANE_PROJECT_A,
+        externalId: TASK_A_PENDING,
+        externalSource: "taskwarrior",
+        description: " \n ",
+      },
+      {
+        id: PLANE_ITEM_B,
+        projectId: PLANE_PROJECT_A,
+        externalId: TASK_A_COMPLETED,
+        externalSource: "taskwarrior",
+        description: "Human-authored description",
+      },
+    ],
   }];
 
   assert.deepEqual(indexExistingIdentities(observed), {
     existingByTaskUuid: {
+      [TASK_A_COMPLETED]: { projectId: PLANE_PROJECT_A, itemId: PLANE_ITEM_B },
+    },
+    backfillByTaskUuid: {
       [TASK_A_PENDING]: { projectId: PLANE_PROJECT_A, itemId: PLANE_ITEM_A },
     },
     ambiguous: [],
@@ -139,11 +152,15 @@ test("indexes exact existing identities and blocks ambiguous observations", () =
         projectId: PLANE_PROJECT_B,
         externalId: TASK_A_PENDING,
         externalSource: "taskwarrior",
+        description: "",
       }],
     },
   ]);
 
-  assert.deepEqual(ambiguous.existingByTaskUuid, {});
+  assert.deepEqual(ambiguous.existingByTaskUuid, {
+    [TASK_A_COMPLETED]: { projectId: PLANE_PROJECT_A, itemId: PLANE_ITEM_B },
+  });
+  assert.deepEqual(ambiguous.backfillByTaskUuid, {});
   assert.deepEqual(ambiguous.ambiguous, [{
     taskUuid: TASK_A_PENDING,
     projectIds: [PLANE_PROJECT_A, PLANE_PROJECT_B],
@@ -151,7 +168,7 @@ test("indexes exact existing identities and blocks ambiguous observations", () =
   }]);
 });
 
-test("hides fully migrated projects and resurfaces a project with new eligible work", () => {
+test("separates prompted inserts from automatic in-place backfills", () => {
   const inventory = analyzeTaskwarriorInventory(sourceTasks());
   const fullyMigrated = {
     [TASK_A_PENDING]: {},
@@ -161,6 +178,7 @@ test("hides fully migrated projects and resurfaces a project with new eligible w
   const initial = projectsNeedingDecisions({
     inventory,
     existingByTaskUuid: fullyMigrated,
+    backfillByTaskUuid: {},
     historyPolicyDefault: HISTORY_POLICIES.pendingAndCompleted,
   });
   assert.deepEqual(initial.map((entry) => entry.taskwarriorProject), ["beta"]);
@@ -168,10 +186,14 @@ test("hides fully migrated projects and resurfaces a project with new eligible w
   const reappeared = projectsNeedingDecisions({
     inventory,
     existingByTaskUuid: { [TASK_A_PENDING]: {} },
+    backfillByTaskUuid: { [TASK_A_COMPLETED]: {} },
     historyPolicyDefault: HISTORY_POLICIES.pendingAndCompleted,
   });
   assert.deepEqual(reappeared.map((entry) => entry.taskwarriorProject), ["alpha", "beta"]);
-  assert.deepEqual(reappeared[0].unmigratedTaskUuids, [TASK_A_COMPLETED]);
+  assert.deepEqual(reappeared[0].insertTaskUuids, []);
+  assert.deepEqual(reappeared[0].updateTaskUuids, [TASK_A_COMPLETED]);
+  assert.equal(reappeared[0].updateCompleted, 1);
+  assert.deepEqual(reappeared[1].insertTaskUuids, [TASK_B_PENDING]);
 });
 
 test("requires deterministic backlog and completed destination states", () => {
@@ -353,7 +375,7 @@ test("blocks readiness when destination states are incompatible or identity disc
   });
 });
 
-test("canonicalizes schema-v2 source artifacts independently of discovery and raw object order", () => {
+test("canonicalizes schema-v3 source artifacts independently of discovery and raw object order", () => {
   const sourceDecisions = [
     migrateDecision(),
     {
@@ -446,7 +468,8 @@ test("canonicalizes schema-v2 source artifacts independently of discovery and ra
   });
 
   assert.equal(JSON.stringify(first), JSON.stringify(second));
-  assert.equal(first.schemaVersion, 2);
+  assert.equal(first.schemaVersion, 3);
+  assert.equal(first.backfillPlanRequired, true);
   assert.equal(first.tasks.some((entry) => entry.uuid === TASK_A_DELETED), true);
   assert.deepEqual(
     first.tasks.find((entry) => entry.uuid === TASK_A_DELETED).customAudit,

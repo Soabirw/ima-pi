@@ -10,11 +10,14 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 - Added a dedicated Taskwarrior-to-Plane migration runner with a read-only preflight report.
 - Added TUI-only `/ima:plane-migrate` preparation with token-scoped destination discovery, exact Taskwarrior identity filtering, deterministic schema-v2 artifacts, and bounded readiness for compatible empty destinations without Plane work-item writes.
 - Added guarded interactive `/ima:plane-migrate` status, apply, and reconcile operations with source-reproduced dynamic destination authorization, reviewed hash plus literal confirmation, locked revalidation, checkpoint recovery, and read-only reconciliation before verified completion.
+- Added reviewed blank-only Taskwarrior description backfills for already-migrated Plane items: preparation separates prompted inserts from in-place updates, persists a distinct backfill artifact without changing the create-plan hash, and apply uses a live blank re-check before its description-only PATCH.
 - Added typed Plane `ima_context` hydration with canonical work-item references and aliases, paired workspace-aware lifecycle identity, deterministic boundary coverage, and manual-phase documentation.
 
 ### Fixed
 
-- Enriched newly created Taskwarrior-to-Plane descriptions with escaped annotation briefs, approved task metadata, provenance, and both Plane description fields; reused items remain unchanged.
+- Rejected schema-v2 and schema-v3 interactive prepared runs from legacy direct apply/reconcile paths with `PREPARED_RUN_INTERACTIVE_ONLY` before plan loading, configuration, client construction, or Plane access.
+- Bound current schema-v3 backfill artifacts to their authoritative source workspace and fail closed when a required artifact is missing, while retaining exact historical schema-v2 no-backfill compatibility.
+- Enriched newly created Taskwarrior-to-Plane descriptions with escaped annotation briefs, approved task metadata, provenance, and both Plane description fields; ordinary reused items remain unchanged outside the reviewed blank-only backfill path.
 - Preserved exact historical schema-v2 prepared-plan payloads and hashes while making equal-timestamp annotation ordering independent of the host locale.
 - Hardened Plane work-item API pagination termination, rejected authenticated redirects, guarded inherited CLI command names, and documented rollback inventory.
 - Narrowed exact two-filter external-identity first-page 404 handling to no-match only after proof from the same-project unfiltered route, and re-ran preflight before Plane writes to block applies with blocked, incomplete, or unpersistable results.

@@ -21,6 +21,7 @@ const FORBIDDEN_ARTIFACT_KEY = /api.?key|authorization|headers?|base.?url|respon
 export const MIGRATION_ARTIFACTS = Object.freeze({
   source: "source.json",
   plan: "plan.json",
+  backfillPlan: "backfill-plan.json",
   dryRunReport: "dry-run-report.json",
   preflightReport: "preflight-report.json",
   checkpoint: "checkpoint.json",

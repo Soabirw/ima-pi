@@ -6,6 +6,7 @@ import {
   isRecord,
   normalizeComment,
   normalizeCreateWorkItemInput,
+  normalizeUpdateWorkItemDescriptionInput,
   normalizeProject,
   normalizeProjectScope,
   normalizeProjectWorkItemLookup,
@@ -38,6 +39,7 @@ export {
   escapeHtml,
   normalizeComment,
   normalizeCreateWorkItemInput,
+  normalizeUpdateWorkItemDescriptionInput,
   normalizeProject,
   normalizeState,
   normalizeWorkItem,
@@ -49,6 +51,12 @@ export {
 
 const API_PATH = "/api/v1";
 const PAGE_SIZE = 100;
+const UPDATE_PROJECT_WORK_ITEM_DESCRIPTION_REQUEST_KEYS = new Set([
+  "workspace",
+  "projectId",
+  "workItemId",
+  "descriptionStripped",
+]);
 
 const publicMessages = Object.freeze({
   CONFIG_ERROR: "Plane configuration is missing or invalid.",
@@ -211,6 +219,21 @@ const projectWorkItemRequest = (value) => {
   return {
     ...normalizeProjectScope({ workspace: value.workspace, projectId: value.projectId }),
     input: normalizeCreateWorkItemInput(value.input),
+  };
+};
+
+const updateProjectWorkItemDescriptionRequest = (value) => {
+  if (!isRecord(value) || Object.keys(value).some((key) =>
+    !UPDATE_PROJECT_WORK_ITEM_DESCRIPTION_REQUEST_KEYS.has(key))) {
+    fail("CREATE_ERROR");
+  }
+
+  return {
+    ...normalizeProjectScope({ workspace: value.workspace, projectId: value.projectId }),
+    input: normalizeUpdateWorkItemDescriptionInput({
+      workItemId: value.workItemId,
+      descriptionStripped: value.descriptionStripped,
+    }),
   };
 };
 
@@ -463,6 +486,27 @@ export const createPlaneClient = ({
       }
 
       return redactSecret(workItem, normalizedApiKey);
+    },
+
+    updateProjectWorkItemDescription: async (requestInput) => {
+      const request = updateProjectWorkItemDescriptionRequest(requestInput);
+      const rawResponse = await requestJson({
+        path: pathForWorkItem(request, request.projectId, request.input.workItemId),
+        method: "PATCH",
+        body: {
+          description_html: descriptionHtmlFromText(request.input.descriptionStripped),
+          description_stripped: request.input.descriptionStripped,
+        },
+      });
+      const responseIdentity = mutationIdentityFrom(rawResponse, {
+        id: request.input.workItemId,
+        projectId: request.projectId,
+      });
+
+      return redactSecret({
+        workItemId: responseIdentity.id,
+        projectId: responseIdentity.projectId,
+      }, normalizedApiKey);
     },
 
     listWorkItemRelations: async (scopeInput) => {

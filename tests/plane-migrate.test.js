@@ -220,6 +220,7 @@ test("writes canonical preparation artifacts after the reviewed confirmation", a
   const artifactNames = {
     source: "source.json",
     plan: "plan.json",
+    backfillPlan: "backfill-plan.json",
     dryRunReport: "dry-run-report.json",
     preflightReport: "preflight-report.json",
   };
@@ -264,6 +265,7 @@ test("writes canonical preparation artifacts after the reviewed confirmation", a
 
   const source = writes.get(artifactNames.source);
   const plan = writes.get(artifactNames.plan);
+  const backfillPlan = writes.get(artifactNames.backfillPlan);
   const dryRunReport = writes.get(artifactNames.dryRunReport);
   const readiness = writes.get(artifactNames.preflightReport);
   assert.equal(result.status, "prepared");
@@ -272,18 +274,110 @@ test("writes canonical preparation artifacts after the reviewed confirmation", a
     "create",
     artifactNames.source,
     artifactNames.plan,
+    artifactNames.backfillPlan,
     artifactNames.dryRunReport,
     artifactNames.preflightReport,
   ]);
-  assert.equal(source.schemaVersion, 2);
+  assert.equal(source.schemaVersion, 3);
+  assert.equal(source.backfillPlanRequired, true);
   assert.deepEqual(source.tasks.map((entry) => entry.uuid), [
     TASK_A_PENDING,
     TASK_A_COMPLETED,
     TASK_A_DELETED,
     TASK_B_PENDING,
   ]);
+  assert.equal(plan.planSha256, backfillPlan.planSha256);
+  assert.deepEqual(backfillPlan.updates, []);
+  assert.deepEqual(dryRunReport.plannedDescriptionBackfills, []);
   assert.equal(plan.planSha256, dryRunReport.planSha256);
   assert.equal(plan.planSha256, readiness.planSha256);
+});
+
+test("prepares blank-only description backfills in place without insert prompts", async () => {
+  const writes = new Map();
+  let selectCalls = 0;
+  let reviewText = "";
+  const artifactNames = {
+    source: "source.json",
+    plan: "plan.json",
+    backfillPlan: "backfill-plan.json",
+    dryRunReport: "dry-run-report.json",
+    preflightReport: "preflight-report.json",
+  };
+  const client = {
+    listWorkspaceProjects: async () => [project(PLANE_PROJECT_A, "DEST")],
+    listProjectStates: async () => [
+      { id: BACKLOG_STATE, group: "backlog", sequence: 1 },
+      { id: COMPLETED_STATE, group: "completed", sequence: 2 },
+    ],
+    listProjectItemsByExternalSource: async () => [{
+      id: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+      projectId: PLANE_PROJECT_A,
+      externalId: TASK_A_PENDING,
+      externalSource: "taskwarrior",
+      description: " \n ",
+    }],
+  };
+
+  const result = await runPlaneMigrationPreparation({
+    ctx: {
+      mode: "tui",
+      cwd: "/synthetic",
+      hasUI: true,
+      ui: {
+        select: async () => {
+          selectCalls += 1;
+          throw new Error("blank-only backfills must not prompt for insert decisions");
+        },
+        confirm: async (_title, detail) => {
+          reviewText = detail;
+          return true;
+        },
+        notify: () => {},
+      },
+    },
+    dependencies: {
+      env: {
+        PLANE_BASE_URL: "https://plane.internal.example",
+        PLANE_API_KEY: "synthetic-plane-api-key",
+        PLANE_WORKSPACE: "ima",
+      },
+      readConfig: () => ({}),
+      createClient: () => client,
+      execFile: async () => ({ stdout: JSON.stringify([
+        task({ uuid: TASK_A_PENDING, project: "alpha", status: "pending" }),
+      ]) }),
+      artifactApi: {
+        MIGRATION_ARTIFACTS: artifactNames,
+        createMigrationRun: async () => ({ relativeRunPath: ".ima/plane-taskwarrior-migrate/synthetic" }),
+        writeRunArtifact: async ({ name, value }) => writes.set(name, value),
+      },
+      clock: () => new Date("2026-09-04T00:00:00.000Z"),
+    },
+  });
+
+  const plan = writes.get(artifactNames.plan);
+  const backfillPlan = writes.get(artifactNames.backfillPlan);
+  assert.equal(result.status, "prepared");
+  assert.equal(selectCalls, 0);
+  assert.equal(reviewText, "backfill 1 descriptions in DEST");
+  assert.deepEqual(plan.items, []);
+  assert.equal(backfillPlan.planSha256, plan.planSha256);
+  assert.deepEqual(backfillPlan.updates.map((update) => ({
+    taskUuid: update.taskUuid,
+    projectId: update.projectId,
+    itemId: update.itemId,
+  })), [{
+    taskUuid: TASK_A_PENDING,
+    projectId: PLANE_PROJECT_A,
+    itemId: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+  }]);
+  assert.equal(result.summary.backfills, 1);
+  assert.deepEqual(writes.get(artifactNames.dryRunReport).plannedDescriptionBackfills, [{
+    taskUuid: TASK_A_PENDING,
+    projectId: PLANE_PROJECT_A,
+    itemId: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+  }]);
 });
 
 test("disqualifies projects denied during destination discovery", async () => {

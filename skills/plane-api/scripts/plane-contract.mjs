@@ -13,6 +13,7 @@ const CREATE_WORK_ITEM_KEYS = new Set([
   "externalId",
   "externalSource",
 ]);
+const UPDATE_WORK_ITEM_DESCRIPTION_KEYS = new Set(["workItemId", "descriptionStripped"]);
 const RELATION_KEYS = new Set(["relationType", "issueIds"]);
 const RELATION_TARGET_KEYS = new Set(["issue_id", "project_id"]);
 
@@ -307,6 +308,16 @@ export const normalizeCreateWorkItemInput = (value) => {
     stateId: normalizeUuid(input.stateId, "CREATE_ERROR"),
     externalId: normalizeUuid(input.externalId, "CREATE_ERROR"),
     externalSource,
+  };
+};
+
+export const normalizeUpdateWorkItemDescriptionInput = (value) => {
+  const input = requireExactKeys(value, UPDATE_WORK_ITEM_DESCRIPTION_KEYS, "CREATE_ERROR");
+  if (typeof input.descriptionStripped !== "string") fail("CREATE_ERROR");
+
+  return {
+    workItemId: normalizeUuid(input.workItemId, "CREATE_ERROR"),
+    descriptionStripped: input.descriptionStripped,
   };
 };
 

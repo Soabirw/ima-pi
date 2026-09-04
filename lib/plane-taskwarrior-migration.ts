@@ -229,7 +229,7 @@ export const parseTaskwarriorProjectMap = (markdown) => {
 
 const normalizeProjectMappings = (value) => {
   if (typeof value === "string") return parseTaskwarriorProjectMap(value);
-  if (!Array.isArray(value) || value.length === 0) migrationFailure("worksheet_invalid");
+  if (!Array.isArray(value)) migrationFailure("worksheet_invalid");
 
   return value.map((mapping) => {
     const record = requireRecord(mapping, "worksheet_row_invalid");
@@ -456,7 +456,7 @@ const buildMigrationPlanWithDescriptionRenderer = ({
   descriptionRenderer,
 }) => {
   const projectMappings = normalizeProjectMappings(worksheet);
-  if (!Array.isArray(tasks) || tasks.length === 0) migrationFailure("tasks_invalid");
+  if (!Array.isArray(tasks)) migrationFailure("tasks_invalid");
 
   const normalizedTasks = sortBy(tasks.map(normalizeTaskwarriorTask), (task) => task.uuid);
   if (new Set(normalizedTasks.map((task) => task.uuid)).size !== normalizedTasks.length) {

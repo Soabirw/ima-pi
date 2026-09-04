@@ -1,6 +1,7 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import * as artifactApi from "../lib/plane-taskwarrior-migration-artifacts.ts";
+import { buildMigrationBackfillPlan } from "../lib/plane-taskwarrior-description-backfill.ts";
 import {
   TASKWARRIOR_EXTERNAL_SOURCE,
   buildDryRunReport,
@@ -139,6 +140,8 @@ const choicesFor = async ({ ctx, decisionProjects, discovered }) => {
   const compatibleDestinations = destinationOptionsFor(discovered);
 
   for (const project of decisionProjects) {
+    if (project.insertTaskUuids.length === 0) continue;
+
     const sourceLabel = sourceProjectLabel(project.taskwarriorProject);
     const action = await ctx.ui.select(
       `Migration for ${sourceLabel}`,
@@ -153,7 +156,7 @@ const choicesFor = async ({ ctx, decisionProjects, discovered }) => {
       decisions.push({
         taskwarriorProject: project.taskwarriorProject,
         action: "skip",
-        taskUuids: project.unmigratedTaskUuids,
+        taskUuids: project.insertTaskUuids,
       });
       continue;
     }
@@ -182,7 +185,7 @@ const choicesFor = async ({ ctx, decisionProjects, discovered }) => {
     decisions.push({
       taskwarriorProject: project.taskwarriorProject,
       action: "migrate",
-      taskUuids: project.unmigratedTaskUuids,
+      taskUuids: project.insertTaskUuids,
       historyPolicy: historyPolicyFor(historyChoice),
       destination: {
         workspace: selectedDestination.entry.project.workspace ?? undefined,
@@ -203,26 +206,44 @@ const withWorkspace = (decisions, workspace) => decisions.map((decision) =>
     ? { ...decision, destination: { ...decision.destination, workspace } }
     : decision);
 
-const decisionReview = ({ decisions, decisionProjects }) => {
+const backfillReviewLines = ({ backfillPlan, discovered }) => {
+  const projectKeysById = new Map(discovered.map(({ project }) => [project.id, project.identifier]));
+  const countsByProjectId = backfillPlan.updates.reduce((counts, update) => {
+    counts.set(update.projectId, (counts.get(update.projectId) ?? 0) + 1);
+    return counts;
+  }, new Map());
+
+  return [...countsByProjectId.entries()]
+    .map(([projectId, count]) => {
+      const projectKey = projectKeysById.get(projectId);
+      if (typeof projectKey !== "string") preparationFailure("BACKFILL_PROJECT_INVALID");
+      return { projectKey, count };
+    })
+    .sort((left, right) => left.projectKey.localeCompare(right.projectKey))
+    .map(({ projectKey, count }) => `backfill ${count} descriptions in ${projectKey}`);
+};
+
+const decisionReview = ({ decisions, decisionProjects, backfillPlan, discovered }) => {
   const projectsBySource = new Map(decisionProjects.map((project) => [
     sourceProjectLabel(project.taskwarriorProject),
     project,
   ]));
-
-  return decisions.map((decision) => {
+  const insertReviewLines = decisions.map((decision) => {
     const sourceLabel = sourceProjectLabel(decision.taskwarriorProject);
     const project = projectsBySource.get(sourceLabel);
-    const pendingCount = project?.unmigratedPending ?? 0;
+    const pendingCount = project?.insertPending ?? 0;
     const completedCount = decision.historyPolicy === HISTORY_POLICIES.pendingOnly
       ? 0
-      : project?.unmigratedCompleted ?? 0;
+      : project?.insertCompleted ?? 0;
     const counts = `${pendingCount} pending, ${completedCount} completed`;
     if (decision.action === "skip") return `${sourceLabel}: skip (${counts})`;
     const history = decision.historyPolicy === HISTORY_POLICIES.pendingOnly
       ? "pending only"
       : "pending and completed";
     return `${sourceLabel}: migrate ${counts} to ${decision.destination.projectKey} (${history})`;
-  }).join("\n");
+  });
+
+  return [...insertReviewLines, ...backfillReviewLines({ backfillPlan, discovered })].join("\n");
 };
 
 const codeFrom = (error) => error !== null
@@ -291,6 +312,7 @@ export const runPlaneMigrationPreparation = async ({ ctx, dependencies = depende
     const decisionProjects = projectsNeedingDecisions({
       inventory,
       existingByTaskUuid: identities.existingByTaskUuid,
+      backfillByTaskUuid: identities.backfillByTaskUuid,
       historyPolicyDefault: HISTORY_POLICIES.pendingAndCompleted,
     });
     if (decisionProjects.length === 0) {
@@ -309,33 +331,46 @@ export const runPlaneMigrationPreparation = async ({ ctx, dependencies = depende
     }
 
     const decisions = withWorkspace(selected.decisions, workspace);
-    if (!decisions.some((decision) => decision.action === "migrate")) {
-      notify(ctx, "No projects were selected for migration preparation.", "info");
-      return { status: "completed", code: "NO_PROJECTS_SELECTED" };
-    }
-
-    const confirmed = await ctx.ui.confirm(
-      "Review migration preparation",
-      decisionReview({ decisions, decisionProjects }),
-    );
-    if (!confirmed) {
-      notify(ctx, "Plane migration preparation cancelled.", "info");
-      return { status: "cancelled" };
-    }
-
     const planInputs = decisionsToPlanInputs({ decisions, tasks });
     const plan = buildMigrationPlan({
       worksheet: planInputs.projectMappings,
       destinations: planInputs.destinations,
       tasks: planInputs.tasks,
     });
+    const backfillPlan = buildMigrationBackfillPlan({
+      planSha256: plan.planSha256,
+      workspace,
+      backfillByTaskUuid: identities.backfillByTaskUuid,
+      tasks,
+    });
+    if (!decisions.some((decision) => decision.action === "migrate") && backfillPlan.updates.length === 0) {
+      notify(ctx, "No projects were selected for migration preparation.", "info");
+      return { status: "completed", code: "NO_PROJECTS_SELECTED" };
+    }
+
+    const confirmed = await ctx.ui.confirm(
+      "Review migration preparation",
+      decisionReview({ decisions, decisionProjects, backfillPlan, discovered }),
+    );
+    if (!confirmed) {
+      notify(ctx, "Plane migration preparation cancelled.", "info");
+      return { status: "cancelled" };
+    }
+
     const source = buildPreparationSource({ workspace, decisions, discovered, tasks });
     const readiness = buildPreparationReadinessReport({
       planSha256: plan.planSha256,
       decisions: source.decisions,
       discovered: source.discovered,
     });
-    const dryRunReport = buildDryRunReport(plan);
+    const dryRunReport = {
+      ...buildDryRunReport(plan),
+      plannedDescriptionBackfills: backfillPlan.updates.map(({ taskUuid, projectId, itemId }) => ({
+        taskUuid,
+        projectId,
+        itemId,
+      })),
+    };
     const run = await dependencies.artifactApi.createMigrationRun({
       cwd: ctx.cwd,
       timestamp: timestampFrom(dependencies.clock),
@@ -353,6 +388,11 @@ export const runPlaneMigrationPreparation = async ({ ctx, dependencies = depende
     });
     await dependencies.artifactApi.writeRunArtifact({
       run,
+      name: dependencies.artifactApi.MIGRATION_ARTIFACTS.backfillPlan,
+      value: backfillPlan,
+    });
+    await dependencies.artifactApi.writeRunArtifact({
+      run,
       name: dependencies.artifactApi.MIGRATION_ARTIFACTS.dryRunReport,
       value: dryRunReport,
     });
@@ -365,6 +405,7 @@ export const runPlaneMigrationPreparation = async ({ ctx, dependencies = depende
     const preparedMessage = [
       `Prepared ${run.relativeRunPath}.`,
       `Plan ${plan.planSha256}.`,
+      `${backfillPlan.updates.length} description backfill(s) prepared.`,
       `${inventory.deletedCount} deleted task(s) excluded.`,
       `Readiness ${readiness.outcome}.`,
     ].join(" ");
@@ -373,7 +414,7 @@ export const runPlaneMigrationPreparation = async ({ ctx, dependencies = depende
       status: "prepared",
       relativeRunPath: run.relativeRunPath,
       planSha256: plan.planSha256,
-      summary: plan.summary,
+      summary: { ...plan.summary, backfills: backfillPlan.updates.length },
       deletedCount: inventory.deletedCount,
       readiness: readiness.outcome,
     };

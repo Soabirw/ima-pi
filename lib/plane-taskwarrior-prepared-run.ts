@@ -1,3 +1,4 @@
+import { validateMigrationBackfillPlan } from "./plane-taskwarrior-description-backfill.ts";
 import {
   buildHistoricalMigrationPlan,
   buildMigrationPlan,
@@ -22,7 +23,8 @@ import {
   decisionsToPlanInputs,
 } from "./plane-taskwarrior-planning.ts";
 
-const PREPARATION_SOURCE_SCHEMA_VERSION = 2;
+const LEGACY_PREPARATION_SOURCE_SCHEMA_VERSION = 2;
+const PREPARATION_SOURCE_SCHEMA_VERSION = 3;
 const LIVE_READINESS_SCHEMA_VERSION = 2;
 const PLAN_HASH_PATTERN = /^[a-f0-9]{64}$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -78,14 +80,26 @@ const sourceDestinationsMatchDiscovery = (source) => {
   }
 };
 
+const legacySourceProjection = (currentSource) => {
+  const { backfillPlanRequired: _backfillPlanRequired, ...legacySource } = currentSource;
+  return {
+    ...legacySource,
+    schemaVersion: LEGACY_PREPARATION_SOURCE_SCHEMA_VERSION,
+  };
+};
+
 const canonicalSource = (source) => {
-  if (!isRecord(source) || source.schemaVersion !== PREPARATION_SOURCE_SCHEMA_VERSION) {
+  if (
+    !isRecord(source)
+    || (source.schemaVersion !== LEGACY_PREPARATION_SOURCE_SCHEMA_VERSION
+      && source.schemaVersion !== PREPARATION_SOURCE_SCHEMA_VERSION)
+  ) {
     preparedFailure("PREPARED_SOURCE_INVALID");
   }
 
-  let canonical;
+  let currentSource;
   try {
-    canonical = buildPreparationSource({
+    currentSource = buildPreparationSource({
       workspace: source.workspace,
       decisions: source.decisions,
       discovered: source.discovered,
@@ -94,12 +108,15 @@ const canonicalSource = (source) => {
   } catch {
     preparedFailure("PREPARED_SOURCE_INVALID");
   }
+  const canonical = source.schemaVersion === LEGACY_PREPARATION_SOURCE_SCHEMA_VERSION
+    ? legacySourceProjection(currentSource)
+    : currentSource;
   if (!sameValue(source, canonical)) preparedFailure("PREPARED_SOURCE_INVALID");
   sourceDestinationsMatchDiscovery(canonical);
   return canonical;
 };
 
-export const validatePreparedMigrationRun = ({ source, plan }) => {
+export const validatePreparedMigrationRun = ({ source, plan, backfillPlan = null }) => {
   const preparedSource = canonicalSource(source);
   let migrationPlan;
   try {
@@ -123,7 +140,28 @@ export const validatePreparedMigrationRun = ({ source, plan }) => {
   } catch {
     preparedFailure("PREPARED_PLAN_SOURCE_MISMATCH");
   }
-  if (sameValue(migrationPlan, enrichedPlan)) return { source: preparedSource, plan: migrationPlan };
+  let validatedBackfillPlan = null;
+  if (backfillPlan === null || backfillPlan === undefined) {
+    if (preparedSource.backfillPlanRequired === true) {
+      preparedFailure("PREPARED_BACKFILL_PLAN_INVALID");
+    }
+  } else {
+    try {
+      validatedBackfillPlan = validateMigrationBackfillPlan({
+        backfillPlan,
+        plan: migrationPlan,
+        sourceTasks: preparedSource.tasks,
+        discovered: preparedSource.discovered,
+        expectedWorkspace: preparedSource.workspace,
+      });
+    } catch {
+      preparedFailure("PREPARED_BACKFILL_PLAN_INVALID");
+    }
+  }
+
+  if (sameValue(migrationPlan, enrichedPlan)) {
+    return { source: preparedSource, plan: migrationPlan, backfillPlan: validatedBackfillPlan };
+  }
 
   let historicalPlan;
   try {
@@ -137,7 +175,7 @@ export const validatePreparedMigrationRun = ({ source, plan }) => {
   }
   if (!sameValue(migrationPlan, historicalPlan)) preparedFailure("PREPARED_PLAN_SOURCE_MISMATCH");
 
-  return { source: preparedSource, plan: migrationPlan };
+  return { source: preparedSource, plan: migrationPlan, backfillPlan: validatedBackfillPlan };
 };
 
 const artifactName = (artifactApi, key) => {
@@ -147,11 +185,12 @@ const artifactName = (artifactApi, key) => {
 };
 
 const readPreparedArtifacts = async ({ artifactApi, run }) => {
-  const [source, plan] = await Promise.all([
+  const [source, plan, backfillPlan] = await Promise.all([
     artifactApi.readRunArtifact({ run, name: artifactName(artifactApi, "source") }),
     artifactApi.readRunArtifact({ run, name: artifactName(artifactApi, "plan") }),
+    optionalRunArtifact({ artifactApi, run, name: artifactName(artifactApi, "backfillPlan") }),
   ]);
-  return validatePreparedMigrationRun({ source, plan });
+  return validatePreparedMigrationRun({ source, plan, backfillPlan });
 };
 
 export const inspectPreparedMigration = async ({ cwd, relativeRunPath, artifactApi }) => {
@@ -214,11 +253,7 @@ const readinessCapabilitiesAreValid = (capabilities) => {
 
 const readinessDestinationsAreValid = ({ destinations, plan }) => {
   const expectedProjectKeys = plannedDestinationKeys(plan);
-  if (
-    expectedProjectKeys.size === 0
-    || !Array.isArray(destinations)
-    || destinations.length !== expectedProjectKeys.size
-  ) {
+  if (!Array.isArray(destinations) || destinations.length !== expectedProjectKeys.size) {
     return false;
   }
 
@@ -287,6 +322,7 @@ const reconciliationMatchesPlan = ({ report, plan }) => {
 
 export const classifyPreparedMigrationStatus = ({
   plan,
+  backfillPlan = null,
   checkpoint,
   readinessReport,
   reconciliationReport,
@@ -299,14 +335,21 @@ export const classifyPreparedMigrationStatus = ({
   if (reconciliationReport !== null && checkpoint === null) {
     preparedFailure("RECONCILIATION_REPORT_INVALID");
   }
-  if (reconciliationReport !== null && reconciliationMatchesPlan({ report: reconciliationReport, plan: migrationPlan })) {
+  const checkpointComplete = checkpoint !== null && isMigrationCheckpointComplete({
+    plan: migrationPlan,
+    backfillPlan,
+    checkpoint,
+  });
+  if (
+    reconciliationReport !== null
+    && checkpointComplete
+    && reconciliationMatchesPlan({ report: reconciliationReport, plan: migrationPlan })
+  ) {
     return { state: "reconciled", readiness };
   }
   if (checkpoint !== null) {
     return {
-      state: isMigrationCheckpointComplete({ plan: migrationPlan, checkpoint })
-        ? "applied"
-        : "partially-applied",
+      state: checkpointComplete ? "applied" : "partially-applied",
       readiness,
     };
   }
@@ -314,7 +357,7 @@ export const classifyPreparedMigrationStatus = ({
 };
 
 export const readPreparedMigrationStatus = async ({ cwd, relativeRunPath, artifactApi }) => {
-  const { run, source, plan } = await inspectPreparedMigration({ cwd, relativeRunPath, artifactApi });
+  const { run, source, plan, backfillPlan } = await inspectPreparedMigration({ cwd, relativeRunPath, artifactApi });
   const [checkpoint, readinessReport, reconciliationReport] = await Promise.all([
     artifactApi.readCheckpoint({ run }),
     optionalRunArtifact({ artifactApi, run, name: artifactName(artifactApi, "preflightReport") }),
@@ -322,6 +365,7 @@ export const readPreparedMigrationStatus = async ({ cwd, relativeRunPath, artifa
   ]);
   const status = classifyPreparedMigrationStatus({
     plan,
+    backfillPlan,
     checkpoint,
     readinessReport,
     reconciliationReport,
@@ -471,13 +515,20 @@ const blockedReadinessReport = ({ source, plan, reason }) => ({
   })),
 });
 
-export const runPreparedMigrationReadiness = async ({ client, source, plan, onProgress }: {
+export const runPreparedMigrationReadiness = async ({
+  client,
+  source,
+  plan,
+  backfillPlan = null,
+  onProgress,
+}: {
   client: unknown;
   source: unknown;
   plan: unknown;
+  backfillPlan?: unknown;
   onProgress?: MigrationProgress;
 }) => {
-  const prepared = validatePreparedMigrationRun({ source, plan });
+  const prepared = validatePreparedMigrationRun({ source, plan, backfillPlan });
   const destinations = preparedDestinationsFor(prepared);
   const reports = [];
   reportMigrationProgress(onProgress, {
@@ -529,11 +580,25 @@ const invalidateReconciliationReport = async ({ artifactApi, run }) => {
   }
 };
 
-const readinessWithClient = async ({ env, createClient, readConfig, source, plan, onProgress }) => {
+const readinessWithClient = async ({
+  env,
+  createClient,
+  readConfig,
+  source,
+  plan,
+  backfillPlan,
+  onProgress,
+}) => {
   reportMigrationProgress(onProgress, { phase: "checking-readiness" });
   try {
     const client = createClient(readConfig(env));
-    const report = await runPreparedMigrationReadiness({ client, source, plan, onProgress });
+    const report = await runPreparedMigrationReadiness({
+      client,
+      source,
+      plan,
+      backfillPlan,
+      onProgress,
+    });
     return { client, report };
   } catch {
     return {
@@ -587,6 +652,7 @@ export const applyPreparedMigration = async ({
         readConfig,
         source: locked.source,
         plan: locked.plan,
+        backfillPlan: locked.backfillPlan,
         onProgress,
       });
       await persistReadinessReport({ artifactApi, run: initial.run, report: readiness.report });
@@ -601,6 +667,7 @@ export const applyPreparedMigration = async ({
       const checkpoint = normalizeMigrationCheckpoint(
         await artifactApi.readCheckpoint({ run: initial.run }),
         locked.plan,
+        locked.backfillPlan,
       );
       reportMigrationProgress(onProgress, { phase: "checkpoint-loaded" });
       await invalidateReconciliationReport({ artifactApi, run: initial.run });
@@ -608,6 +675,7 @@ export const applyPreparedMigration = async ({
       const appliedCheckpoint = await applyMigrationPlan({
         client: readiness.client,
         plan: locked.plan,
+        backfillPlan: locked.backfillPlan,
         checkpoint,
         artifactApi,
         run: initial.run,
@@ -617,20 +685,28 @@ export const applyPreparedMigration = async ({
       return {
         relativeRunPath: initial.run.relativeRunPath,
         planSha256: locked.plan.planSha256,
-        state: isMigrationCheckpointComplete({ plan: locked.plan, checkpoint: appliedCheckpoint })
+        state: isMigrationCheckpointComplete({
+          plan: locked.plan,
+          backfillPlan: locked.backfillPlan,
+          checkpoint: appliedCheckpoint,
+        })
           ? "applied"
           : "partially-applied",
         readiness: READY,
-        ...migrationCheckpointSummary({ plan: locked.plan, checkpoint: appliedCheckpoint }),
+        ...migrationCheckpointSummary({
+          plan: locked.plan,
+          backfillPlan: locked.backfillPlan,
+          checkpoint: appliedCheckpoint,
+        }),
       };
     },
   });
 };
 
-const checkpointForReconciliation = async ({ artifactApi, run, plan }) => {
+const checkpointForReconciliation = async ({ artifactApi, run, plan, backfillPlan = null }) => {
   const checkpoint = await artifactApi.readCheckpoint({ run });
   if (checkpoint === null) preparedFailure("CHECKPOINT_REQUIRED");
-  return normalizeMigrationCheckpoint(checkpoint, plan);
+  return normalizeMigrationCheckpoint(checkpoint, plan, backfillPlan);
 };
 
 export const reconcilePreparedMigration = async ({
@@ -651,7 +727,12 @@ export const reconcilePreparedMigration = async ({
   onProgress?: MigrationProgress;
 }) => {
   const initial = await inspectPreparedMigration({ cwd, relativeRunPath, artifactApi });
-  await checkpointForReconciliation({ artifactApi, run: initial.run, plan: initial.plan });
+  await checkpointForReconciliation({
+    artifactApi,
+    run: initial.run,
+    plan: initial.plan,
+    backfillPlan: initial.backfillPlan,
+  });
 
   reportMigrationProgress(onProgress, { phase: "waiting-for-lock" });
   return artifactApi.withMigrationLock({
@@ -663,6 +744,7 @@ export const reconcilePreparedMigration = async ({
         artifactApi,
         run: initial.run,
         plan: locked.plan,
+        backfillPlan: locked.backfillPlan,
       });
       reportMigrationProgress(onProgress, { phase: "reconciliation-checkpoint-loaded" });
       let client;
@@ -707,8 +789,17 @@ export const reconcilePreparedMigration = async ({
         relativeRunPath: initial.run.relativeRunPath,
         planSha256: locked.plan.planSha256,
         state: reconciliationMatchesPlan({ report, plan: locked.plan })
+          && isMigrationCheckpointComplete({
+            plan: locked.plan,
+            backfillPlan: locked.backfillPlan,
+            checkpoint,
+          })
           ? "reconciled"
-          : isMigrationCheckpointComplete({ plan: locked.plan, checkpoint })
+          : isMigrationCheckpointComplete({
+            plan: locked.plan,
+            backfillPlan: locked.backfillPlan,
+            checkpoint,
+          })
             ? "applied"
             : "partially-applied",
         summary: report.summary,

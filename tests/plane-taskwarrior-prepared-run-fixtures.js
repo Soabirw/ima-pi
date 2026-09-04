@@ -2,6 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as artifactApi from "../lib/plane-taskwarrior-migration-artifacts.ts";
+import { buildMigrationBackfillPlan } from "../lib/plane-taskwarrior-description-backfill.ts";
 import {
   buildMigrationPlan,
   migrationPlanSha256,
@@ -15,6 +16,8 @@ import {
 
 export const TASK_A = "11111111-1111-4111-8111-111111111111";
 export const TASK_B = "22222222-2222-4222-8222-222222222222";
+export const BACKFILL_TASK = "33333333-3333-4333-8333-333333333333";
+export const BACKFILL_ITEM_ID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 export const PROJECT_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 export const BACKLOG_STATE_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 export const DONE_STATE_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
@@ -88,8 +91,92 @@ export const preparedData = ({ taskDescription } = {}) => {
     destinations: inputs.destinations,
     tasks: inputs.tasks,
   });
+  const backfillPlan = buildMigrationBackfillPlan({
+    planSha256: plan.planSha256,
+    workspace: "ima",
+    backfillByTaskUuid: {},
+    tasks,
+  });
 
-  return { source, plan };
+  return { source, plan, backfillPlan, tasks, decisions, discovered };
+};
+
+export const backfillPreparedData = () => {
+  const data = preparedData();
+  const tasks = [...data.tasks, task({ uuid: BACKFILL_TASK, description: "Backfill me" })];
+  const discovered = data.discovered.map((entry) => ({
+    ...entry,
+    items: [{
+      id: BACKFILL_ITEM_ID,
+      projectId: PROJECT_ID,
+      externalId: BACKFILL_TASK,
+      externalSource: "taskwarrior",
+      description: "",
+    }],
+  }));
+  const source = buildPreparationSource({
+    workspace: "ima",
+    decisions: data.decisions,
+    discovered,
+    tasks,
+  });
+  const backfillPlan = buildMigrationBackfillPlan({
+    planSha256: data.plan.planSha256,
+    workspace: "ima",
+    backfillByTaskUuid: {
+      [BACKFILL_TASK]: { projectId: PROJECT_ID, itemId: BACKFILL_ITEM_ID },
+    },
+    tasks,
+  });
+
+  return { ...data, source, tasks, discovered, backfillPlan };
+};
+
+export const backfillOnlyPreparedData = () => {
+  const tasks = [task({ uuid: BACKFILL_TASK, description: "Backfill me" })];
+  const decisions = [];
+  const discovered = [{
+    project: {
+      id: PROJECT_ID,
+      identifier: "DEST",
+      name: "Destination",
+      archivedAt: null,
+    },
+    compatibility: {
+      compatible: true,
+      backlogStateId: BACKLOG_STATE_ID,
+      doneStateId: DONE_STATE_ID,
+    },
+    identityLookup: { status: "ready", itemCount: 1 },
+    states: [
+      { id: BACKLOG_STATE_ID, group: "backlog", sequence: 1 },
+      { id: DONE_STATE_ID, group: "completed", sequence: 2 },
+    ],
+    items: [{
+      id: BACKFILL_ITEM_ID,
+      projectId: PROJECT_ID,
+      externalId: BACKFILL_TASK,
+      externalSource: "taskwarrior",
+      description: "",
+    }],
+  }];
+  const source = buildPreparationSource({ workspace: "ima", decisions, discovered, tasks });
+  const inputs = decisionsToPlanInputs({ decisions, tasks });
+  const plan = buildMigrationPlan({
+    worksheet: inputs.projectMappings,
+    destinations: inputs.destinations,
+    tasks: inputs.tasks,
+  });
+  const backfillPlan = buildMigrationBackfillPlan({
+    planSha256: plan.planSha256,
+    workspace: "ima",
+    backfillByTaskUuid: {
+      [BACKFILL_TASK]: { projectId: PROJECT_ID, itemId: BACKFILL_ITEM_ID },
+    },
+    tasks,
+  });
+
+  return { source, plan, backfillPlan, tasks, decisions, discovered };
 };
 
 export const historicalPreparedData = (options = {}) => {
@@ -113,8 +200,10 @@ export const historicalPreparedData = (options = {}) => {
     ...planWithoutHash,
     planSha256: migrationPlanSha256(planWithoutHash),
   };
+  const { backfillPlanRequired: _backfillPlanRequired, ...legacySource } = data.source;
+  const source = { ...legacySource, schemaVersion: 2 };
 
-  return { ...data, plan };
+  return { ...data, source, plan, backfillPlan: undefined };
 };
 
 export const preparedRun = async (t, data = preparedData()) => {
@@ -139,6 +228,13 @@ export const preparedRun = async (t, data = preparedData()) => {
     name: artifactApi.MIGRATION_ARTIFACTS.plan,
     value: data.plan,
   });
+  if (data.backfillPlan !== undefined) {
+    await artifactApi.writeRunArtifact({
+      run,
+      name: artifactApi.MIGRATION_ARTIFACTS.backfillPlan,
+      value: data.backfillPlan,
+    });
+  }
   await artifactApi.writeRunArtifact({
     run,
     name: artifactApi.MIGRATION_ARTIFACTS.preflightReport,
@@ -147,8 +243,14 @@ export const preparedRun = async (t, data = preparedData()) => {
   return { root, run, ...data };
 };
 
-export const migrationClient = ({ stateGroup = "backlog" } = {}) => {
+export const migrationClient = ({ stateGroup = "backlog", initialWorkItems = [] } = {}) => {
   const itemsByExternalId = new Map();
+  const itemsById = new Map();
+  const addWorkItem = (item) => {
+    itemsByExternalId.set(item.externalId, item);
+    itemsById.set(item.id, item);
+  };
+  initialWorkItems.forEach((item) => addWorkItem(structuredClone(item)));
   const blockedByIds = new Map();
   let createdItems = 0;
   let createdRelations = 0;
@@ -156,6 +258,7 @@ export const migrationClient = ({ stateGroup = "backlog" } = {}) => {
   let stateReads = 0;
   let identityReads = 0;
   let failingRelationLookups = 0;
+  let descriptionUpdates = 0;
 
   const client = {
     listProjectStates: async () => {
@@ -183,8 +286,15 @@ export const migrationClient = ({ stateGroup = "backlog" } = {}) => {
         externalId: input.externalId,
         externalSource: input.externalSource,
       };
-      itemsByExternalId.set(input.externalId, item);
+      addWorkItem(item);
       return item;
+    },
+    updateProjectWorkItemDescription: async ({ projectId, workItemId, descriptionStripped }) => {
+      const item = itemsById.get(workItemId);
+      if (!item || item.projectId !== projectId) throw new Error("synthetic backfill target missing");
+      item.description = descriptionStripped;
+      descriptionUpdates += 1;
+      return { workItemId, projectId };
     },
     listWorkItemRelations: async ({ workItemId }) => {
       if (failingRelationLookups > 0) {
@@ -206,6 +316,7 @@ export const migrationClient = ({ stateGroup = "backlog" } = {}) => {
     client,
     stats: () => ({ createdItems, createdRelations, stateReads, identityReads }),
     createdWorkItemInputs: () => structuredClone(createdWorkItemInputs),
+    descriptionUpdateCount: () => descriptionUpdates,
     failNextRelationLookup: () => { failingRelationLookups += 1; },
   };
 };

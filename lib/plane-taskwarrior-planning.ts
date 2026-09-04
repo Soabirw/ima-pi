@@ -2,12 +2,13 @@ import {
   TASKWARRIOR_EXTERNAL_SOURCE,
   normalizeTaskwarriorTask,
 } from "./plane-taskwarrior-migration.ts";
+import { isBlankDescription } from "./plane-taskwarrior-description-backfill.ts";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const PLAN_HASH_PATTERN = /^[a-f0-9]{64}$/;
 const WORKSPACE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._~-]*$/;
 const PREPARATION_READINESS_SCHEMA_VERSION = 1;
-const PREPARATION_SOURCE_SCHEMA_VERSION = 2;
+const PREPARATION_SOURCE_SCHEMA_VERSION = 3;
 const WRITE_ONLY_REASON = "WRITE_ONLY";
 const DEFERRED_RELATIONS_REASON = "DEFERRED_TO_TASK_B";
 
@@ -226,21 +227,33 @@ export const indexExistingIdentities = (observedItemsByProject) => {
       if (!isRecord(item)) planningFailure("observed_item_invalid");
       const taskUuid = requireUuid(item.externalId, "observed_item_invalid");
       const itemId = requireUuid(item.id, "observed_item_invalid");
-      if (item.externalSource !== TASKWARRIOR_EXTERNAL_SOURCE) planningFailure("observed_item_invalid");
+      if (typeof item.description !== "string" || item.externalSource !== TASKWARRIOR_EXTERNAL_SOURCE) {
+        planningFailure("observed_item_invalid");
+      }
       if (item.projectId !== undefined && requireUuid(item.projectId, "observed_item_invalid") !== projectId) {
         planningFailure("observed_item_invalid");
       }
 
       const occurrences = occurrencesByTaskUuid.get(taskUuid) ?? [];
-      occurrencesByTaskUuid.set(taskUuid, [...occurrences, { projectId, itemId }]);
+      occurrencesByTaskUuid.set(taskUuid, [...occurrences, {
+        projectId,
+        itemId,
+        description: item.description,
+      }]);
     }
   }
 
   const existingByTaskUuid = {};
+  const backfillByTaskUuid = {};
   const ambiguous = [];
   for (const [taskUuid, occurrences] of sortBy([...occurrencesByTaskUuid.entries()], ([uuid]) => uuid)) {
     if (occurrences.length === 1) {
-      existingByTaskUuid[taskUuid] = occurrences[0];
+      const [{ projectId, itemId, description }] = occurrences;
+      if (isBlankDescription(description)) {
+        backfillByTaskUuid[taskUuid] = { projectId, itemId };
+      } else {
+        existingByTaskUuid[taskUuid] = { projectId, itemId };
+      }
       continue;
     }
 
@@ -251,21 +264,31 @@ export const indexExistingIdentities = (observedItemsByProject) => {
     });
   }
 
-  return { existingByTaskUuid, ambiguous };
+  return { existingByTaskUuid, backfillByTaskUuid, ambiguous };
 };
 
-export const projectsNeedingDecisions = ({ inventory, existingByTaskUuid, historyPolicyDefault }) => {
+export const projectsNeedingDecisions = ({
+  inventory,
+  existingByTaskUuid,
+  backfillByTaskUuid = {},
+  historyPolicyDefault,
+}) => {
   if (!isRecord(inventory) || !Array.isArray(inventory.projects) || !Array.isArray(inventory.eligibleTasks)) {
     planningFailure("inventory_invalid");
   }
-  if (!isRecord(existingByTaskUuid)) planningFailure("identity_index_invalid");
+  if (!isRecord(existingByTaskUuid) || !isRecord(backfillByTaskUuid)) {
+    planningFailure("identity_index_invalid");
+  }
   const defaultHistoryPolicy = historyPolicyFor(historyPolicyDefault);
 
   return inventory.projects.flatMap((project) => {
     const taskwarriorProject = taskwarriorProjectFor(project.taskwarriorProject);
-    const unmigratedTasks = inventory.eligibleTasks.filter((task) =>
-      sameProject(task.project, taskwarriorProject) && !Object.hasOwn(existingByTaskUuid, task.uuid));
-    if (unmigratedTasks.length === 0) return [];
+    const projectTasks = inventory.eligibleTasks.filter((task) =>
+      sameProject(task.project, taskwarriorProject));
+    const insertTasks = projectTasks.filter((task) =>
+      !Object.hasOwn(existingByTaskUuid, task.uuid) && !Object.hasOwn(backfillByTaskUuid, task.uuid));
+    const updateTasks = projectTasks.filter((task) => Object.hasOwn(backfillByTaskUuid, task.uuid));
+    if (insertTasks.length === 0 && updateTasks.length === 0) return [];
 
     return [{
       taskwarriorProject,
@@ -275,9 +298,12 @@ export const projectsNeedingDecisions = ({ inventory, existingByTaskUuid, histor
         completed: project.completed,
         deleted: project.deleted,
       },
-      unmigratedTaskUuids: unmigratedTasks.map((task) => task.uuid),
-      unmigratedPending: unmigratedTasks.filter((task) => task.status === "pending").length,
-      unmigratedCompleted: unmigratedTasks.filter((task) => task.status === "completed").length,
+      insertTaskUuids: insertTasks.map((task) => task.uuid),
+      updateTaskUuids: updateTasks.map((task) => task.uuid),
+      insertPending: insertTasks.filter((task) => task.status === "pending").length,
+      insertCompleted: insertTasks.filter((task) => task.status === "completed").length,
+      updatePending: updateTasks.filter((task) => task.status === "pending").length,
+      updateCompleted: updateTasks.filter((task) => task.status === "completed").length,
       historyPolicyDefault: defaultHistoryPolicy,
     }];
   });
@@ -380,8 +406,6 @@ export const decisionsToPlanInputs = ({ decisions, tasks }) => {
     }));
     selectedTasks.push(...policyTasks);
   }
-
-  if (selectedTasks.length === 0) planningFailure("tasks_empty");
 
   const includedTaskUuids = new Set(selectedTasks.map((task) => task.uuid));
   const tasksWithSelectedDependencies = selectedTasks.map((task) => ({
@@ -530,6 +554,7 @@ export const buildPreparationSource = ({ workspace, decisions, discovered, tasks
 
   return canonicalValue({
     schemaVersion: PREPARATION_SOURCE_SCHEMA_VERSION,
+    backfillPlanRequired: true,
     workspace: normalizedWorkspace,
     decisions: sortBy(
       decisions.map(canonicalDecisionFor),
@@ -552,8 +577,6 @@ export const buildPreparationReadinessReport = ({ decisions, discovered, planSha
     if (decision.action !== "migrate") continue;
     destinations.set(decision.destination.projectId, decision.destination);
   }
-  if (destinations.size === 0) planningFailure("destinations_empty");
-
   const reports = sortBy([...destinations.values()], (destination) => destination.projectKey).map((destination) => {
     const discovery = readinessDiscoveryFor(discovered, destination.projectId);
     const capabilities = [

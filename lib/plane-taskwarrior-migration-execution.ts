@@ -2,10 +2,13 @@ import {
   isMigrationPreflightError,
   oneIdentityMatch,
 } from "./plane-taskwarrior-migration-preflight.ts";
+import { isBlankDescription } from "./plane-taskwarrior-description-backfill.ts";
+import { TASKWARRIOR_EXTERNAL_SOURCE } from "./plane-taskwarrior-migration.ts";
 
-const CHECKPOINT_SCHEMA_VERSION = 1;
+const CHECKPOINT_SCHEMA_VERSION = 2;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ITEM_OUTCOMES = new Set(["created", "reused"]);
+const BACKFILL_OUTCOMES = new Set(["updated", "skipped"]);
 const RELATION_OUTCOMES = new Set(["created", "reused", "unresolved"]);
 
 export type MigrationProgressEvent = {
@@ -18,6 +21,7 @@ export type MigrationProgressEvent = {
     | "reconciliation-invalidated"
     | "applying-items"
     | "applying-relations"
+    | "applying-backfills"
     | "application-checkpoints-complete"
     | "reconciliation-checkpoint-loaded"
     | "reconciling-items"
@@ -30,7 +34,7 @@ export type MigrationProgressEvent = {
   readinessStep?: "project-states" | "external-identities";
   readinessCompleted?: number;
   readinessTotal?: number;
-  outcome?: "READY" | "BLOCKED" | "created" | "reused" | "unresolved";
+  outcome?: "READY" | "BLOCKED" | "created" | "reused" | "updated" | "skipped" | "unresolved";
 };
 
 export type MigrationProgress = (event: MigrationProgressEvent) => void | Promise<void>;
@@ -74,52 +78,97 @@ const eligibleRelationsFor = (plan) => {
   return plan.eligibleRelations;
 };
 
+const backfillUpdatesFor = (plan, backfillPlan) => {
+  if (backfillPlan === null || backfillPlan === undefined) return [];
+  if (
+    !isRecord(backfillPlan)
+    || backfillPlan.schemaVersion !== 1
+    || backfillPlan.planSha256 !== plan.planSha256
+    || !Array.isArray(backfillPlan.updates)
+  ) {
+    executionFailure("BACKFILL_PLAN_INVALID");
+  }
+
+  const taskUuids = new Set();
+  return backfillPlan.updates.map((update) => {
+    if (
+      !isRecord(update)
+      || !isUuid(update.taskUuid)
+      || typeof update.workspace !== "string"
+      || update.workspace.trim() === ""
+      || /[\r\n]/.test(update.workspace)
+      || !isUuid(update.projectId)
+      || !isUuid(update.itemId)
+      || isBlankDescription(update.descriptionStripped)
+      || taskUuids.has(update.taskUuid)
+    ) {
+      executionFailure("BACKFILL_PLAN_INVALID");
+    }
+    taskUuids.add(update.taskUuid);
+    return update;
+  });
+};
+
 export const initialMigrationCheckpoint = (plan) => ({
   schemaVersion: CHECKPOINT_SCHEMA_VERSION,
   planSha256: plan.planSha256,
   planeItemIdsByTaskUuid: {},
   itemOutcomesByTaskUuid: {},
+  backfillOutcomesByTaskUuid: {},
   relationOutcomesByKey: {},
   unresolvedRelationAttempts: [],
 });
 
-export const normalizeMigrationCheckpoint = (value, plan) => {
+export const normalizeMigrationCheckpoint = (value, plan, backfillPlan = null) => {
   if (value === null || value === undefined) return initialMigrationCheckpoint(plan);
   if (
     !isRecord(value)
-    || value.schemaVersion !== CHECKPOINT_SCHEMA_VERSION
+    || (value.schemaVersion !== 1 && value.schemaVersion !== CHECKPOINT_SCHEMA_VERSION)
     || value.planSha256 !== plan.planSha256
   ) {
     executionFailure("CHECKPOINT_INVALID");
   }
 
+  const checkpoint = value.schemaVersion === 1
+    ? { ...value, schemaVersion: CHECKPOINT_SCHEMA_VERSION, backfillOutcomesByTaskUuid: {} }
+    : value;
   const requiredObjects = [
-    value.planeItemIdsByTaskUuid,
-    value.itemOutcomesByTaskUuid,
-    value.relationOutcomesByKey,
+    checkpoint.planeItemIdsByTaskUuid,
+    checkpoint.itemOutcomesByTaskUuid,
+    checkpoint.backfillOutcomesByTaskUuid,
+    checkpoint.relationOutcomesByKey,
   ];
-  if (!requiredObjects.every(isRecord) || !Array.isArray(value.unresolvedRelationAttempts)) {
+  if (!requiredObjects.every(isRecord) || !Array.isArray(checkpoint.unresolvedRelationAttempts)) {
     executionFailure("CHECKPOINT_INVALID");
   }
 
   const plannedItemIds = new Set(createItemsFor(plan).map((item) => item.taskUuid));
+  const plannedBackfillTaskUuids = new Set(backfillUpdatesFor(plan, backfillPlan).map((update) => update.taskUuid));
   const plannedRelationKeys = new Set(eligibleRelationsFor(plan).map(relationKeyFor));
-  const validItemIds = Object.entries(value.planeItemIdsByTaskUuid).every(([taskUuid, planeItemId]) =>
+  const validItemIds = Object.entries(checkpoint.planeItemIdsByTaskUuid).every(([taskUuid, planeItemId]) =>
     plannedItemIds.has(taskUuid) && isUuid(planeItemId));
-  const validItemOutcomes = Object.entries(value.itemOutcomesByTaskUuid).every(([taskUuid, outcome]) =>
+  const validItemOutcomes = Object.entries(checkpoint.itemOutcomesByTaskUuid).every(([taskUuid, outcome]) =>
     plannedItemIds.has(taskUuid) && ITEM_OUTCOMES.has(outcome));
-  const validRelationOutcomes = Object.entries(value.relationOutcomesByKey).every(([key, outcome]) =>
+  const validBackfillOutcomes = Object.entries(checkpoint.backfillOutcomesByTaskUuid).every(([taskUuid, outcome]) =>
+    plannedBackfillTaskUuids.has(taskUuid) && BACKFILL_OUTCOMES.has(outcome));
+  const validRelationOutcomes = Object.entries(checkpoint.relationOutcomesByKey).every(([key, outcome]) =>
     plannedRelationKeys.has(key) && RELATION_OUTCOMES.has(outcome));
-  const validUnresolvedAttempts = value.unresolvedRelationAttempts.every((attempt) =>
+  const validUnresolvedAttempts = checkpoint.unresolvedRelationAttempts.every((attempt) =>
     isRecord(attempt)
     && plannedRelationKeys.has(`${attempt.sourceTaskUuid}:${attempt.targetTaskUuid}`)
     && typeof attempt.reason === "string"
     && /^[A-Z0-9_:-]+$/.test(attempt.reason));
-  if (!validItemIds || !validItemOutcomes || !validRelationOutcomes || !validUnresolvedAttempts) {
+  if (
+    !validItemIds
+    || !validItemOutcomes
+    || !validBackfillOutcomes
+    || !validRelationOutcomes
+    || !validUnresolvedAttempts
+  ) {
     executionFailure("CHECKPOINT_INVALID");
   }
 
-  return value;
+  return checkpoint;
 };
 
 export const checkpointWithMigrationItem = ({ checkpoint, taskUuid, planeItemId, outcome }) => ({
@@ -130,6 +179,14 @@ export const checkpointWithMigrationItem = ({ checkpoint, taskUuid, planeItemId,
   },
   itemOutcomesByTaskUuid: {
     ...checkpoint.itemOutcomesByTaskUuid,
+    [taskUuid]: outcome,
+  },
+});
+
+export const checkpointWithMigrationBackfill = ({ checkpoint, taskUuid, outcome }) => ({
+  ...checkpoint,
+  backfillOutcomesByTaskUuid: {
+    ...checkpoint.backfillOutcomesByTaskUuid,
     [taskUuid]: outcome,
   },
 });
@@ -154,24 +211,29 @@ export const checkpointWithMigrationRelation = ({ checkpoint, relation, outcome,
   };
 };
 
-export const isMigrationCheckpointComplete = ({ plan, checkpoint }) => {
-  const normalized = normalizeMigrationCheckpoint(checkpoint, plan);
+export const isMigrationCheckpointComplete = ({ plan, backfillPlan = null, checkpoint }) => {
+  const normalized = normalizeMigrationCheckpoint(checkpoint, plan, backfillPlan);
   const itemsComplete = createItemsFor(plan).every((item) =>
     isUuid(normalized.planeItemIdsByTaskUuid[item.taskUuid])
     && ITEM_OUTCOMES.has(normalized.itemOutcomesByTaskUuid[item.taskUuid]));
+  const backfillsComplete = backfillUpdatesFor(plan, backfillPlan).every((update) =>
+    BACKFILL_OUTCOMES.has(normalized.backfillOutcomesByTaskUuid[update.taskUuid]));
   const relationsComplete = eligibleRelationsFor(plan).every((relation) =>
     ITEM_OUTCOMES.has(normalized.relationOutcomesByKey[relationKeyFor(relation)]));
-  return itemsComplete && relationsComplete;
+  return itemsComplete && backfillsComplete && relationsComplete;
 };
 
-export const migrationCheckpointSummary = ({ checkpoint, plan }) => {
-  const normalized = normalizeMigrationCheckpoint(checkpoint, plan);
+export const migrationCheckpointSummary = ({ checkpoint, plan, backfillPlan = null }) => {
+  const normalized = normalizeMigrationCheckpoint(checkpoint, plan, backfillPlan);
   const itemOutcomes = Object.values(normalized.itemOutcomesByTaskUuid);
+  const backfillOutcomes = Object.values(normalized.backfillOutcomesByTaskUuid);
   const relationOutcomes = Object.values(normalized.relationOutcomesByKey);
 
   return {
     createdItems: itemOutcomes.filter((outcome) => outcome === "created").length,
     reusedItems: itemOutcomes.filter((outcome) => outcome === "reused").length,
+    updatedItems: backfillOutcomes.filter((outcome) => outcome === "updated").length,
+    skippedBackfills: backfillOutcomes.filter((outcome) => outcome === "skipped").length,
     createdRelations: relationOutcomes.filter((outcome) => outcome === "created").length,
     reusedRelations: relationOutcomes.filter((outcome) => outcome === "reused").length,
     unresolvedRelations: relationOutcomes.filter((outcome) => outcome === "unresolved").length,
@@ -321,9 +383,93 @@ const applyMigrationRelations = async ({ client, plan, checkpoint, artifactApi, 
   return currentCheckpoint;
 };
 
+export const applyMigrationBackfills = async ({
+  client,
+  plan,
+  backfillPlan = null,
+  checkpoint,
+  artifactApi,
+  run,
+  toErrorCode,
+  onProgress,
+}) => {
+  const updates = backfillUpdatesFor(plan, backfillPlan);
+  if (updates.length === 0) return checkpoint;
+  if (!isRecord(client) || typeof client.listProjectWorkItems !== "function"
+    || typeof client.updateProjectWorkItemDescription !== "function") {
+    executionFailure("CLIENT_UNAVAILABLE");
+  }
+
+  reportMigrationProgress(onProgress, {
+    phase: "applying-backfills",
+    completed: 0,
+    total: updates.length,
+  });
+
+  let currentCheckpoint = checkpoint;
+  for (const [index, update] of updates.entries()) {
+    let outcome;
+    try {
+      const workItems = await client.listProjectWorkItems({
+        workspace: update.workspace,
+        projectId: update.projectId,
+        externalId: update.taskUuid,
+        externalSource: TASKWARRIOR_EXTERNAL_SOURCE,
+      });
+      const existing = oneIdentityMatch({
+        workItems,
+        item: {
+          workItem: {
+            externalId: update.taskUuid,
+            externalSource: TASKWARRIOR_EXTERNAL_SOURCE,
+          },
+        },
+      });
+      if (
+        !existing
+        || existing.id !== update.itemId
+        || existing.projectId !== update.projectId
+        || typeof existing.description !== "string"
+      ) {
+        executionFailure("BACKFILL_ITEM_MISSING");
+      }
+
+      if (isBlankDescription(existing.description)) {
+        await client.updateProjectWorkItemDescription({
+          workspace: update.workspace,
+          projectId: update.projectId,
+          workItemId: update.itemId,
+          descriptionStripped: update.descriptionStripped,
+        });
+        outcome = "updated";
+      } else {
+        outcome = "skipped";
+      }
+    } catch (error) {
+      if (isMigrationExecutionError(error) || isMigrationPreflightError(error)) throw error;
+      executionFailure(`BACKFILL_${errorCodeFor(error, toErrorCode)}`);
+    }
+
+    currentCheckpoint = checkpointWithMigrationBackfill({
+      checkpoint: currentCheckpoint,
+      taskUuid: update.taskUuid,
+      outcome,
+    });
+    await artifactApi.writeCheckpoint({ run, value: currentCheckpoint });
+    reportMigrationProgress(onProgress, {
+      phase: "applying-backfills",
+      completed: index + 1,
+      total: updates.length,
+      outcome,
+    });
+  }
+  return currentCheckpoint;
+};
+
 export const applyMigrationPlan = async ({
   client,
   plan,
+  backfillPlan = null,
   checkpoint,
   artifactApi,
   run,
@@ -348,8 +494,18 @@ export const applyMigrationPlan = async ({
     toErrorCode,
     onProgress,
   });
+  const backfillCheckpoint = await applyMigrationBackfills({
+    client,
+    plan,
+    backfillPlan,
+    checkpoint: relationCheckpoint,
+    artifactApi,
+    run,
+    toErrorCode,
+    onProgress,
+  });
   reportMigrationProgress(onProgress, { phase: "application-checkpoints-complete" });
-  return relationCheckpoint;
+  return backfillCheckpoint;
 };
 
 export const observeMigrationPlan = async ({ client, plan, onProgress }) => {
