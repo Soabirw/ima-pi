@@ -12,6 +12,7 @@ const PROJECT_ID = "22222222-2222-4222-8222-222222222222";
 const SECOND_PROJECT_ID = "99999999-9999-4999-8999-999999999999";
 const WORK_ITEM_ID = "11111111-1111-4111-8111-111111111111";
 const TARGET_ITEM_ID = "33333333-3333-4333-8333-333333333333";
+const OTHER_WORK_ITEM_ID = "66666666-6666-4666-8666-666666666666";
 const STATE_ID = "44444444-4444-4444-8444-444444444444";
 const EXTERNAL_ID = "55555555-5555-4555-8555-555555555555";
 
@@ -62,7 +63,12 @@ const clientFor = (responses) => {
   const queue = queuedFetch(responses);
   return {
     calls: queue.calls,
-    client: createPlaneClient({ baseUrl: BASE_URL, apiKey: API_KEY, fetchImpl: queue.fetchImpl }),
+    client: createPlaneClient({
+      baseUrl: BASE_URL,
+      apiKey: API_KEY,
+      fetchImpl: queue.fetchImpl,
+      requestIntervalMs: 0,
+    }),
   };
 };
 
@@ -206,6 +212,67 @@ test("lists source-filtered project items with pagination and validates their pr
     next_cursor: null,
   })]);
   await assertErrorCode(mismatched.client.listProjectItemsByExternalSource({
+    workspace: WORKSPACE,
+    projectId: PROJECT_ID,
+    externalSource: "taskwarrior",
+  }), "RESPONSE_ERROR");
+});
+
+test("filters source items when a Plane server ignores the source query", async () => {
+  const { client, calls } = clientFor([
+    jsonResponse({
+      results: [
+        workItem({
+          id: TARGET_ITEM_ID,
+          external_id: null,
+          external_source: null,
+        }),
+        workItem({
+          id: OTHER_WORK_ITEM_ID,
+          external_id: null,
+          external_source: "other-source",
+        }),
+      ],
+      next_page_results: true,
+      next_cursor: "next-unfiltered-items",
+    }),
+    jsonResponse({
+      results: [workItem()],
+      next_page_results: false,
+      next_cursor: null,
+    }),
+  ]);
+
+  const items = await client.listProjectItemsByExternalSource({
+    workspace: WORKSPACE,
+    projectId: PROJECT_ID,
+    externalSource: "taskwarrior",
+  });
+
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].url.endsWith("&external_source=taskwarrior"), true);
+  assert.equal(
+    calls[1].url,
+    `${BASE_URL}/api/v1/workspaces/${WORKSPACE}/projects/${PROJECT_ID}`
+      + "/work-items/?per_page=100&external_source=taskwarrior&cursor=next-unfiltered-items",
+  );
+  assert.deepEqual(items.map(({ id, externalSource }) => ({ id, externalSource })), [{
+    id: WORK_ITEM_ID,
+    externalSource: "taskwarrior",
+  }]);
+});
+
+test("validates project identity before filtering ignored source responses", async () => {
+  const { client } = clientFor([jsonResponse({
+    results: [workItem({
+      project: SECOND_PROJECT_ID,
+      external_source: "other-source",
+    })],
+    next_page_results: false,
+    next_cursor: null,
+  })]);
+
+  await assertErrorCode(client.listProjectItemsByExternalSource({
     workspace: WORKSPACE,
     projectId: PROJECT_ID,
     externalSource: "taskwarrior",

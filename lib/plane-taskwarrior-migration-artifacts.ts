@@ -274,6 +274,21 @@ export const replaceRunArtifact = async ({ run, name, value }) => {
   return path;
 };
 
+export const clearReconciliationReport = async ({ run }) => {
+  await checkedRunDirectory(run);
+  const path = artifactPath(run, MIGRATION_ARTIFACTS.reconciliationReport);
+  const existing = await lstat(path).catch((error) => isErrorCode(error, "ENOENT") ? null : Promise.reject(error));
+  if (existing === null) return false;
+  if (!existing.isFile() || existing.isSymbolicLink()) artifactFailure("file_invalid");
+  try {
+    await unlink(path);
+  } catch (error) {
+    if (isErrorCode(error, "ENOENT")) return false;
+    throw error;
+  }
+  return true;
+};
+
 export const readRunArtifact = async ({ run, name }) => {
   await checkedRunDirectory(run);
   const path = artifactPath(run, name);

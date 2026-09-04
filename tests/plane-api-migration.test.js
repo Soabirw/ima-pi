@@ -7,6 +7,7 @@ import {
   normalizeWorkItemRelation,
 } from "../skills/plane-api/scripts/plane-client.mjs";
 import { runPlaneApi } from "../skills/plane-api/scripts/plane-api.mjs";
+import { normalizeWorkItemRelations } from "../skills/plane-api/scripts/plane-contract.mjs";
 
 const API_KEY = "synthetic-plane-migration-key";
 const BASE_URL = "https://plane.internal.example";
@@ -16,6 +17,7 @@ const WORK_ITEM_ID = "11111111-1111-4111-8111-111111111111";
 const TARGET_ITEM_ID = "33333333-3333-4333-8333-333333333333";
 const STATE_ID = "44444444-4444-4444-8444-444444444444";
 const EXTERNAL_ID = "55555555-5555-4555-8555-555555555555";
+const FOREIGN_PROJECT_ID = "66666666-6666-4666-8666-666666666666";
 
 const workItem = (overrides = {}) => ({
   id: WORK_ITEM_ID,
@@ -56,7 +58,12 @@ const clientFor = (responses) => {
   const queue = queuedFetch(responses);
   return {
     calls: queue.calls,
-    client: createPlaneClient({ baseUrl: BASE_URL, apiKey: API_KEY, fetchImpl: queue.fetchImpl }),
+    client: createPlaneClient({
+      baseUrl: BASE_URL,
+      apiKey: API_KEY,
+      fetchImpl: queue.fetchImpl,
+      requestIntervalMs: 0,
+    }),
   };
 };
 
@@ -96,6 +103,38 @@ test("lists idempotency candidates with bounded pagination and redacts configure
   assert.equal(calls[0].options.headers["X-API-Key"], API_KEY);
   assert.equal(result[0].name, "Migrated [REDACTED]");
   assert.equal(JSON.stringify(result).includes(API_KEY), false);
+});
+
+test("accepts a validated singleton exact-identity work item response", async () => {
+  const { client, calls } = clientFor([jsonResponse(workItem())]);
+  const result = await client.listProjectWorkItems({
+    workspace: WORKSPACE,
+    projectId: PROJECT_ID,
+    externalId: EXTERNAL_ID,
+    externalSource: "taskwarrior",
+  });
+
+  assert.deepEqual(result.map((item) => item.id), [WORK_ITEM_ID]);
+  assert.equal(calls.length, 1);
+});
+
+test("fails closed for mismatched or malformed singleton identity responses", async () => {
+  const responses = [
+    workItem({ project: FOREIGN_PROJECT_ID }),
+    workItem({ external_id: TARGET_ITEM_ID }),
+    workItem({ external_source: "other" }),
+    { id: WORK_ITEM_ID, project: PROJECT_ID },
+  ];
+
+  for (const response of responses) {
+    const { client } = clientFor([jsonResponse(response)]);
+    await assertErrorCode(client.listProjectWorkItems({
+      workspace: WORKSPACE,
+      projectId: PROJECT_ID,
+      externalId: EXTERNAL_ID,
+      externalSource: "taskwarrior",
+    }), "RESPONSE_ERROR");
+  }
 });
 
 test("treats a first-page exact-identity 404 as no match only after route proof", async () => {
@@ -189,6 +228,19 @@ test("keeps route, cursor, and unrelated 404 failures blocking", async () => {
         jsonResponse({}, { ok: false, status: 404 }),
       ],
       expectedCode: "HTTP_ERROR",
+      expectedCalls: 2,
+    },
+    {
+      name: "cursor-page singleton response",
+      responses: [
+        jsonResponse({
+          results: [workItem()],
+          next_page_results: true,
+          next_cursor: "next-page",
+        }),
+        jsonResponse(workItem()),
+      ],
+      expectedCode: "RESPONSE_ERROR",
       expectedCalls: 2,
     },
   ];
@@ -307,6 +359,49 @@ test("lists and creates only blocked_by relations with UUID endpoints", async ()
   assert.throws(
     () => normalizeCreateWorkItemInput({ name: "Task" }),
     (error) => error.code === "CREATE_ERROR",
+  );
+});
+
+test("accepts only project-bound issue_id relation entries", async () => {
+  const { client } = clientFor([jsonResponse({
+    blocking: [{ issue_id: WORK_ITEM_ID, project_id: PROJECT_ID }],
+    blocked_by: [{ issue_id: TARGET_ITEM_ID, project_id: PROJECT_ID }],
+  })]);
+  const listed = await client.listWorkItemRelations({
+    workspace: WORKSPACE,
+    projectId: PROJECT_ID,
+    workItemId: WORK_ITEM_ID,
+  });
+
+  assert.deepEqual(listed.blockingIds, [WORK_ITEM_ID]);
+  assert.deepEqual(listed.blockedByIds, [TARGET_ITEM_ID]);
+
+  const malformedEntries = [
+    { issue_id: TARGET_ITEM_ID, project_id: FOREIGN_PROJECT_ID },
+    { issue_id: TARGET_ITEM_ID },
+    { issue_id: TARGET_ITEM_ID, project_id: PROJECT_ID, unexpected: true },
+    { issue_id: "not-a-uuid", project_id: PROJECT_ID },
+    { id: TARGET_ITEM_ID },
+    { id: TARGET_ITEM_ID, project_id: FOREIGN_PROJECT_ID },
+  ];
+  for (const entry of malformedEntries) {
+    const invalid = clientFor([jsonResponse({ blocked_by: [entry] })]);
+    await assertErrorCode(invalid.client.listWorkItemRelations({
+      workspace: WORKSPACE,
+      projectId: PROJECT_ID,
+      workItemId: WORK_ITEM_ID,
+    }), "RESPONSE_ERROR");
+  }
+
+  assert.deepEqual(
+    normalizeWorkItemRelations({ blocked_by: [{ id: TARGET_ITEM_ID }] }).blockedByIds,
+    [TARGET_ITEM_ID],
+  );
+  assert.throws(
+    () => normalizeWorkItemRelations({
+      blocked_by: [{ issue_id: TARGET_ITEM_ID, project_id: PROJECT_ID }],
+    }),
+    (error) => error.code === "RESPONSE_ERROR",
   );
 });
 

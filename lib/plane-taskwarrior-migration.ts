@@ -841,15 +841,219 @@ export const buildDryRunReport = (plan) => {
   };
 };
 
-const normalizeUnresolvedRelation = (value) => {
-  const relation = requireRecord(value, "unresolved_relation_invalid");
-  const reason = requireText(relation.reason, "unresolved_relation_invalid");
-  if (!/^[A-Z0-9_:-]+$/.test(reason)) migrationFailure("unresolved_relation_invalid");
+const RECONCILIATION_REPORT_KEYS = new Set([
+  "schemaVersion",
+  "planSha256",
+  "summary",
+  "items",
+  "relations",
+  "unresolvedRelationAttempts",
+]);
+const RECONCILIATION_SUMMARY_KEYS = new Set(["task", "relation"]);
+const TASK_RECONCILIATION_SUMMARY_KEYS = new Set(["matched", "different", "missing", "skipped"]);
+const RELATION_RECONCILIATION_SUMMARY_KEYS = new Set([
+  "matched",
+  "missing",
+  "unresolved",
+  "skipped",
+  "applyUnresolved",
+]);
+const MATCHED_ITEM_KEYS = new Set(["taskUuid", "planeItemId", "status", "differentFields"]);
+const MISSING_ITEM_KEYS = new Set(["taskUuid", "status"]);
+const SKIPPED_ITEM_RESULT_KEYS = new Set(["taskUuid", "status", "reason"]);
+const ELIGIBLE_RELATION_RESULT_KEYS = new Set([
+  "sourceTaskUuid",
+  "targetTaskUuid",
+  "workspace",
+  "projectId",
+  "relationType",
+  "status",
+]);
+const UNRESOLVED_RELATION_RESULT_KEYS = new Set([...ELIGIBLE_RELATION_RESULT_KEYS, "reason"]);
+const SKIPPED_RELATION_RESULT_KEYS = new Set(["sourceTaskUuid", "targetTaskUuid", "reason", "status"]);
+const UNRESOLVED_RELATION_KEYS = new Set(["sourceTaskUuid", "targetTaskUuid", "reason"]);
+const OBSERVED_ITEM_FIELDS = new Set([
+  "name",
+  "description",
+  "priority",
+  "stateId",
+  "externalId",
+  "externalSource",
+]);
+
+const normalizedUnresolvedRelation = (value, code = "unresolved_relation_invalid") => {
+  const relation = requireExactKeys(value, UNRESOLVED_RELATION_KEYS, code);
+  const reason = requireText(relation.reason, code);
+  if (!/^[A-Z0-9_:-]+$/.test(reason)) migrationFailure(code);
 
   return {
-    sourceTaskUuid: normalizeUuid(relation.sourceTaskUuid, "unresolved_relation_invalid"),
-    targetTaskUuid: normalizeUuid(relation.targetTaskUuid, "unresolved_relation_invalid"),
+    sourceTaskUuid: requirePlanUuid(relation.sourceTaskUuid, code),
+    targetTaskUuid: requirePlanUuid(relation.targetTaskUuid, code),
     reason,
+  };
+};
+
+const differentFieldsFor = (value, status) => {
+  if (!Array.isArray(value) || value.some((field) => typeof field !== "string" || !OBSERVED_ITEM_FIELDS.has(field))) {
+    migrationFailure("reconciliation_report_invalid");
+  }
+  if (new Set(value).size !== value.length || (status === "matched" && value.length !== 0)
+    || (status === "different" && value.length === 0)) {
+    migrationFailure("reconciliation_report_invalid");
+  }
+  return value;
+};
+
+const reconciliationItemFor = ({ value, itemsByTaskUuid }) => {
+  const entry = requireRecord(value, "reconciliation_report_invalid");
+  const taskUuid = requirePlanUuid(entry.taskUuid, "reconciliation_report_invalid");
+  const item = itemsByTaskUuid.get(taskUuid);
+  if (!item) migrationFailure("reconciliation_report_invalid");
+
+  if (item.disposition === "skip") {
+    const skipped = requireExactKeys(entry, SKIPPED_ITEM_RESULT_KEYS, "reconciliation_report_invalid");
+    if (skipped.status !== "skipped" || skipped.reason !== item.reason) {
+      migrationFailure("reconciliation_report_invalid");
+    }
+    return { taskUuid, status: "skipped", reason: item.reason };
+  }
+
+  const status = requireText(entry.status, "reconciliation_report_invalid");
+  if (status === "missing") {
+    requireExactKeys(entry, MISSING_ITEM_KEYS, "reconciliation_report_invalid");
+    return { taskUuid, status };
+  }
+  if (status !== "matched" && status !== "different") migrationFailure("reconciliation_report_invalid");
+
+  const observed = requireExactKeys(entry, MATCHED_ITEM_KEYS, "reconciliation_report_invalid");
+  return {
+    taskUuid,
+    planeItemId: requirePlanUuid(observed.planeItemId, "reconciliation_report_invalid"),
+    status,
+    differentFields: differentFieldsFor(observed.differentFields, status),
+  };
+};
+
+const sameEligibleRelation = (entry, relation) =>
+  entry.workspace === relation.workspace
+  && entry.projectId === relation.projectId
+  && entry.relationType === relation.relationType;
+
+const reconciliationRelationFor = ({ value, relationsByKey }) => {
+  const entry = requireRecord(value, "reconciliation_report_invalid");
+  const sourceTaskUuid = requirePlanUuid(entry.sourceTaskUuid, "reconciliation_report_invalid");
+  const targetTaskUuid = requirePlanUuid(entry.targetTaskUuid, "reconciliation_report_invalid");
+  const key = relationKeyFor({ sourceTaskUuid, targetTaskUuid });
+  const planned = relationsByKey.get(key);
+  if (!planned) migrationFailure("reconciliation_report_invalid");
+
+  if (planned.kind === "skipped") {
+    const skipped = requireExactKeys(entry, SKIPPED_RELATION_RESULT_KEYS, "reconciliation_report_invalid");
+    if (skipped.status !== "skipped" || skipped.reason !== planned.relation.reason) {
+      migrationFailure("reconciliation_report_invalid");
+    }
+    return { ...planned.relation, status: "skipped" };
+  }
+
+  const status = requireText(entry.status, "reconciliation_report_invalid");
+  const expectedKeys = status === "unresolved"
+    ? UNRESOLVED_RELATION_RESULT_KEYS
+    : ELIGIBLE_RELATION_RESULT_KEYS;
+  const eligible = requireExactKeys(entry, expectedKeys, "reconciliation_report_invalid");
+  if (!sameEligibleRelation(eligible, planned.relation)) migrationFailure("reconciliation_report_invalid");
+  if (status === "unresolved") {
+    if (eligible.reason !== "missing_plane_endpoint") migrationFailure("reconciliation_report_invalid");
+  } else if (status !== "matched" && status !== "missing") {
+    migrationFailure("reconciliation_report_invalid");
+  }
+
+  return {
+    ...planned.relation,
+    status,
+    ...(status === "unresolved" ? { reason: "missing_plane_endpoint" } : {}),
+  };
+};
+
+const countStatuses = (values, names) => Object.fromEntries(names.map((name) => [
+  name,
+  values.filter((value) => value.status === name).length,
+]));
+
+const requireSummaryCounts = ({ value, keys, expected }) => {
+  const summary = requireExactKeys(value, keys, "reconciliation_report_invalid");
+  for (const [key, count] of Object.entries(expected)) {
+    if (!Number.isSafeInteger(summary[key]) || summary[key] < 0 || summary[key] !== count) {
+      migrationFailure("reconciliation_report_invalid");
+    }
+  }
+  return expected;
+};
+
+const reconciliationSummaryFor = ({ items, relations, unresolvedRelationAttempts }) => ({
+  task: countStatuses(items, ["matched", "different", "missing", "skipped"]),
+  relation: {
+    ...countStatuses(relations, ["matched", "missing", "unresolved", "skipped"]),
+    applyUnresolved: unresolvedRelationAttempts.length,
+  },
+});
+
+export const validateReconciliationReport = ({ plan, report }) => {
+  const migrationPlan = validateMigrationPlan(plan);
+  const candidate = requireExactKeys(report, RECONCILIATION_REPORT_KEYS, "reconciliation_report_invalid");
+  if (candidate.schemaVersion !== PLAN_SCHEMA_VERSION || candidate.planSha256 !== migrationPlan.planSha256
+    || !Array.isArray(candidate.items) || !Array.isArray(candidate.relations)
+    || !Array.isArray(candidate.unresolvedRelationAttempts)) {
+    migrationFailure("reconciliation_report_invalid");
+  }
+
+  const itemsByTaskUuid = new Map(migrationPlan.items.map((item) => [item.taskUuid, item]));
+  const items = candidate.items.map((item) => reconciliationItemFor({ value: item, itemsByTaskUuid }));
+  if (new Set(items.map((item) => item.taskUuid)).size !== items.length || items.length !== itemsByTaskUuid.size) {
+    migrationFailure("reconciliation_report_invalid");
+  }
+
+  const relationsByKey = new Map([
+    ...migrationPlan.eligibleRelations.map((relation) => [
+      relationKeyFor(relation),
+      { kind: "eligible", relation },
+    ]),
+    ...migrationPlan.skippedRelations.map((relation) => [
+      relationKeyFor(relation),
+      { kind: "skipped", relation },
+    ]),
+  ]);
+  const relations = candidate.relations.map((relation) =>
+    reconciliationRelationFor({ value: relation, relationsByKey }));
+  if (new Set(relations.map(relationKeyFor)).size !== relations.length || relations.length !== relationsByKey.size) {
+    migrationFailure("reconciliation_report_invalid");
+  }
+
+  const eligibleRelationKeys = new Set(migrationPlan.eligibleRelations.map(relationKeyFor));
+  const unresolvedRelationAttempts = candidate.unresolvedRelationAttempts.map((attempt) => {
+    const normalized = normalizedUnresolvedRelation(attempt, "reconciliation_report_invalid");
+    if (!eligibleRelationKeys.has(relationKeyFor(normalized))) migrationFailure("reconciliation_report_invalid");
+    return normalized;
+  });
+  const expectedSummary = reconciliationSummaryFor({ items, relations, unresolvedRelationAttempts });
+  const summary = requireExactKeys(candidate.summary, RECONCILIATION_SUMMARY_KEYS, "reconciliation_report_invalid");
+  requireSummaryCounts({
+    value: summary.task,
+    keys: TASK_RECONCILIATION_SUMMARY_KEYS,
+    expected: expectedSummary.task,
+  });
+  requireSummaryCounts({
+    value: summary.relation,
+    keys: RELATION_RECONCILIATION_SUMMARY_KEYS,
+    expected: expectedSummary.relation,
+  });
+
+  return {
+    schemaVersion: PLAN_SCHEMA_VERSION,
+    planSha256: migrationPlan.planSha256,
+    summary: expectedSummary,
+    items,
+    relations,
+    unresolvedRelationAttempts,
   };
 };
 
@@ -870,18 +1074,21 @@ export const buildReconciliationReport = ({
   }
   if (!Array.isArray(unresolvedRelationAttempts)) migrationFailure("unresolved_relation_invalid");
 
-  return {
-    schemaVersion: PLAN_SCHEMA_VERSION,
-    planSha256: migrationPlan.planSha256,
-    summary: {
-      task: itemResult.summary,
-      relation: {
-        ...relationResult.summary,
-        applyUnresolved: unresolvedRelationAttempts.length,
+  return validateReconciliationReport({
+    plan: migrationPlan,
+    report: {
+      schemaVersion: PLAN_SCHEMA_VERSION,
+      planSha256: migrationPlan.planSha256,
+      summary: {
+        task: itemResult.summary,
+        relation: {
+          ...relationResult.summary,
+          applyUnresolved: unresolvedRelationAttempts.length,
+        },
       },
+      items: itemResult.items,
+      relations: relationResult.relations,
+      unresolvedRelationAttempts: unresolvedRelationAttempts.map(normalizedUnresolvedRelation),
     },
-    items: itemResult.items,
-    relations: relationResult.relations,
-    unresolvedRelationAttempts: unresolvedRelationAttempts.map(normalizeUnresolvedRelation),
-  };
+  });
 };

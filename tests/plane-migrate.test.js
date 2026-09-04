@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { runPlaneMigrationPreparation } from "../extensions/plane-migrate.ts";
+import {
+  parsePlaneMigrationCommand,
+  runPlaneMigrationPreparation,
+} from "../extensions/plane-migrate.ts";
+import { PlaneApiError } from "../skills/plane-api/scripts/plane-client.mjs";
 
 const TASK_A_PENDING = "11111111-1111-4111-8111-111111111111";
 const TASK_A_COMPLETED = "22222222-2222-4222-8222-222222222222";
@@ -9,6 +13,24 @@ const TASK_B_PENDING = "44444444-4444-4444-8444-444444444444";
 const PLANE_PROJECT_A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const BACKLOG_STATE = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 const COMPLETED_STATE = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+
+test("parses only the supported interactive migration command forms", () => {
+  assert.deepEqual(parsePlaneMigrationCommand(""), { verb: "prepare" });
+  assert.deepEqual(parsePlaneMigrationCommand("status .ima/plane-taskwarrior-migrate/run"), {
+    verb: "status",
+    relativeRunPath: ".ima/plane-taskwarrior-migrate/run",
+  });
+  assert.deepEqual(parsePlaneMigrationCommand("apply selected-run"), {
+    verb: "apply",
+    relativeRunPath: "selected-run",
+  });
+  assert.deepEqual(parsePlaneMigrationCommand("reconcile selected-run"), {
+    verb: "reconcile",
+    relativeRunPath: "selected-run",
+  });
+  assert.equal(parsePlaneMigrationCommand("apply selected-run extra"), null);
+  assert.equal(parsePlaneMigrationCommand("dry-run selected-run"), null);
+});
 
 const task = ({ uuid, project, status, depends = [] }) => ({
   uuid,
@@ -262,4 +284,130 @@ test("writes canonical preparation artifacts after the reviewed confirmation", a
   ]);
   assert.equal(plan.planSha256, dryRunReport.planSha256);
   assert.equal(plan.planSha256, readiness.planSha256);
+});
+
+test("disqualifies projects denied during destination discovery", async () => {
+  const allowedProject = project(PLANE_PROJECT_A, "DEST");
+  const forbiddenProject = project("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "FORBIDDEN");
+  const states = [
+    { id: BACKLOG_STATE, group: "backlog", sequence: 1 },
+    { id: COMPLETED_STATE, group: "completed", sequence: 2 },
+  ];
+
+  for (const deniedOperation of ["states", "items"]) {
+    const destinationOptionSets = [];
+    const artifactCalls = [];
+    const client = {
+      listWorkspaceProjects: async () => [allowedProject, forbiddenProject],
+      listProjectStates: async ({ projectId }) => {
+        if (projectId === forbiddenProject.id && deniedOperation === "states") {
+          throw new PlaneApiError("HTTP_ERROR", 403);
+        }
+        return states;
+      },
+      listProjectItemsByExternalSource: async ({ projectId }) => {
+        if (projectId === forbiddenProject.id && deniedOperation === "items") {
+          throw new PlaneApiError("HTTP_ERROR", 403);
+        }
+        return [];
+      },
+    };
+
+    const result = await runPlaneMigrationPreparation({
+      ctx: {
+        mode: "tui",
+        cwd: "/synthetic",
+        hasUI: true,
+        ui: {
+          select: async (label, options) => {
+            if (label.startsWith("Destination")) destinationOptionSets.push(options);
+            return options[0];
+          },
+          confirm: async () => false,
+          notify: () => {},
+        },
+      },
+      dependencies: {
+        env: {
+          PLANE_BASE_URL: "https://plane.internal.example",
+          PLANE_API_KEY: "synthetic-plane-api-key",
+          PLANE_WORKSPACE: "ima",
+        },
+        readConfig: () => ({}),
+        createClient: () => client,
+        execFile: async () => ({ stdout: JSON.stringify(sourceTasks()) }),
+        artifactApi: {
+          createMigrationRun: async () => artifactCalls.push("create"),
+          writeRunArtifact: async () => artifactCalls.push("write"),
+        },
+      },
+    });
+
+    assert.deepEqual(result, { status: "cancelled" });
+    assert.deepEqual(destinationOptionSets, [
+      [`DEST — DEST (${PLANE_PROJECT_A})`],
+      [`DEST — DEST (${PLANE_PROJECT_A})`],
+    ]);
+    assert.deepEqual(artifactCalls, []);
+  }
+});
+
+test("fails closed for non-403 destination discovery failures", async () => {
+  const destination = project(PLANE_PROJECT_A, "DEST");
+  const states = [
+    { id: BACKLOG_STATE, group: "backlog", sequence: 1 },
+    { id: COMPLETED_STATE, group: "completed", sequence: 2 },
+  ];
+  const failureCases = [
+    { operation: "states", code: "HTTP_ERROR", status: 500 },
+    { operation: "items", code: "HTTP_ERROR", status: 401 },
+    { operation: "states", code: "RESPONSE_ERROR", status: null },
+    { operation: "items", code: "RESPONSE_ERROR", status: null },
+  ];
+
+  for (const failure of failureCases) {
+    const selectionCalls = [];
+    const notifications = [];
+    const client = {
+      listWorkspaceProjects: async () => [destination],
+      listProjectStates: async () => {
+        if (failure.operation === "states") {
+          throw new PlaneApiError(failure.code, failure.status);
+        }
+        return states;
+      },
+      listProjectItemsByExternalSource: async () => {
+        if (failure.operation === "items") {
+          throw new PlaneApiError(failure.code, failure.status);
+        }
+        return [];
+      },
+    };
+
+    const result = await runPlaneMigrationPreparation({
+      ctx: {
+        mode: "tui",
+        cwd: "/synthetic",
+        hasUI: true,
+        ui: {
+          select: async (...args) => selectionCalls.push(args),
+          notify: (...args) => notifications.push(args),
+        },
+      },
+      dependencies: {
+        env: {
+          PLANE_BASE_URL: "https://plane.internal.example",
+          PLANE_API_KEY: "synthetic-plane-api-key",
+          PLANE_WORKSPACE: "ima",
+        },
+        readConfig: () => ({}),
+        createClient: () => client,
+        execFile: async () => ({ stdout: "[]" }),
+      },
+    });
+
+    assert.deepEqual(result, { status: "blocked", code: "PREPARATION_FAILED" });
+    assert.deepEqual(selectionCalls, []);
+    assert.equal(notifications.length, 1);
+  }
 });

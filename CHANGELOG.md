@@ -9,6 +9,7 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 - Added the packaged `/skill:plane-api` direct REST helper for explicitly configured self-hosted Plane instances, supporting canonical work-item, state, and comment reads plus plain-text comment creation and state-only updates without Plane Cloud or external MCP fallback.
 - Added a dedicated Taskwarrior-to-Plane migration runner with a read-only preflight report.
 - Added TUI-only `/ima:plane-migrate` preparation with token-scoped destination discovery, exact Taskwarrior identity filtering, deterministic schema-v2 artifacts, and bounded readiness for compatible empty destinations without Plane work-item writes.
+- Added guarded interactive `/ima:plane-migrate` status, apply, and reconcile operations with source-reproduced dynamic destination authorization, reviewed hash plus literal confirmation, locked revalidation, checkpoint recovery, and read-only reconciliation before verified completion.
 - Added typed Plane `ima_context` hydration with canonical work-item references and aliases, paired workspace-aware lifecycle identity, deterministic boundary coverage, and manual-phase documentation.
 
 ### Fixed
@@ -16,6 +17,8 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 - Hardened Plane work-item API pagination termination, rejected authenticated redirects, guarded inherited CLI command names, and documented rollback inventory.
 - Narrowed exact two-filter external-identity first-page 404 handling to no-match only after proof from the same-project unfiltered route, and re-ran preflight before Plane writes to block applies with blocked, incomplete, or unpersistable results.
 - Preserved dependencies across selected source projects for one Plane destination while failing closed on mixed destinations, rejected absent or invalid archive metadata without offering or querying archived projects, and canonicalized schema-v2 preparation source artifacts before run creation or artifact writes.
+- Made interactive Plane migration status, application, and reconciliation visibly announce activity and durable checkpoint progress; unsupported print or JSON invocations now report a concise no-work diagnostic.
+- Hardened prepared-run readiness validation with capability-specific status domains so malformed local evidence fails closed while valid schema-1 and schema-2 readiness reports remain compatible.
 
 ## [1.17.0] - 2026-09-01
 

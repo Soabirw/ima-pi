@@ -6,31 +6,24 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import * as artifacts from "../lib/plane-taskwarrior-migration-artifacts.ts";
 import {
-  incompletePreflightReport,
-  isMigrationPreflightError,
-  oneIdentityMatch,
-  runMigrationPreflight,
+  MigrationExecutionError, applyMigrationPlan, migrationCheckpointSummary,
+  normalizeMigrationCheckpoint, observeMigrationPlan,
+} from "../lib/plane-taskwarrior-migration-execution.ts";
+import {
+  incompletePreflightReport, isMigrationPreflightError, runMigrationPreflight,
 } from "../lib/plane-taskwarrior-migration-preflight.ts";
 import {
-  buildDryRunReport,
-  buildMigrationPlan,
-  buildReconciliationReport,
-  reconcilePlannedItems,
-  reconcilePlannedRelations,
+  buildDryRunReport, buildMigrationPlan, buildReconciliationReport,
+  reconcilePlannedItems, reconcilePlannedRelations,
 } from "../lib/plane-taskwarrior-migration.ts";
 import {
-  createPlaneClient,
-  readPlaneConfig,
-  toPublicPlaneError,
+  createPlaneClient, readPlaneConfig, toPublicPlaneError,
 } from "../skills/plane-api/scripts/plane-client.mjs";
 
 const executeFile = promisify(execFileCallback);
 const TASK_EXPORT_MAX_BUFFER = 32 * 1024 * 1024;
 const HASH_PATTERN = /^[a-f0-9]{64}$/;
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const WORKSHEET_PATH = "docs/plane-taskwarrior-project-map.md";
-const CHECKPOINT_SCHEMA_VERSION = 1;
-
 export const MIGRATION_DESTINATIONS = Object.freeze({
   WEB: Object.freeze({
     workspace: "ima",
@@ -47,7 +40,6 @@ export const MIGRATION_DESTINATIONS = Object.freeze({
     representativeReference: "plane:ima:SKYNET-1",
   }),
 });
-
 export const usage = `Usage:
   plane-taskwarrior-migrate.mjs prepare
   plane-taskwarrior-migrate.mjs dry-run <relative-run-path>
@@ -55,7 +47,6 @@ export const usage = `Usage:
   plane-taskwarrior-migrate.mjs apply <relative-run-path> <plan-sha256> confirm
   plane-taskwarrior-migrate.mjs reconcile <relative-run-path>
 `;
-
 class MigrationCliError extends Error {
   constructor(code, details) {
     super(code);
@@ -82,12 +73,8 @@ const parseCommand = (argv) => {
   if (!Array.isArray(argv) || argv.some((argument) => typeof argument !== "string")) return null;
   const [command, ...arguments_] = argv;
   if (command === "prepare" && arguments_.length === 0) return { command };
-  if (command === "dry-run" && arguments_.length === 1) {
-    return { command, relativeRunPath: arguments_[0] };
-  }
-  if (command === "preflight" && arguments_.length === 1) {
-    return { command, relativeRunPath: arguments_[0] };
-  }
+  if (command === "dry-run" && arguments_.length === 1) return { command, relativeRunPath: arguments_[0] };
+  if (command === "preflight" && arguments_.length === 1) return { command, relativeRunPath: arguments_[0] };
   if (
     command === "apply"
     && arguments_.length === 3
@@ -96,12 +83,9 @@ const parseCommand = (argv) => {
   ) {
     return { command, relativeRunPath: arguments_[0], planSha256: arguments_[1] };
   }
-  if (command === "reconcile" && arguments_.length === 1) {
-    return { command, relativeRunPath: arguments_[0] };
-  }
+  if (command === "reconcile" && arguments_.length === 1) return { command, relativeRunPath: arguments_[0] };
   return null;
 };
-
 export const stripPlaneEnvironment = (env) => Object.fromEntries(
   Object.entries(env).filter(([name]) => !name.startsWith("PLANE_")),
 );
@@ -139,100 +123,38 @@ const runTaskwarriorExport = async ({ execFile, env }) => {
   }
 };
 
-const sourceSnapshot = ({ worksheet, tasks }) => ({
-  schemaVersion: 1,
-  worksheet,
-  tasks,
-});
+const sourceSnapshot = ({ worksheet, tasks }) => ({ schemaVersion: 1, worksheet, tasks });
 
-const initialCheckpoint = (plan) => ({
-  schemaVersion: CHECKPOINT_SCHEMA_VERSION,
-  planSha256: plan.planSha256,
-  planeItemIdsByTaskUuid: {},
-  itemOutcomesByTaskUuid: {},
-  relationOutcomesByKey: {},
-  unresolvedRelationAttempts: [],
-});
-
-const normalizeCheckpoint = (value, plan) => {
-  if (value === null || value === undefined) return initialCheckpoint(plan);
-  if (!isRecord(value) || value.schemaVersion !== CHECKPOINT_SCHEMA_VERSION || value.planSha256 !== plan.planSha256) {
-    cliFail("CHECKPOINT_INVALID");
+const assertLegacyRunSource = async ({ artifactApi, run }) => {
+  const source = await artifactApi.readRunArtifact({
+    run,
+    name: artifactApi.MIGRATION_ARTIFACTS.source,
+  });
+  if (isRecord(source) && source.schemaVersion === 2) {
+    cliFail("PREPARED_RUN_INTERACTIVE_ONLY");
   }
-  const requiredObjects = [
-    value.planeItemIdsByTaskUuid,
-    value.itemOutcomesByTaskUuid,
-    value.relationOutcomesByKey,
-  ];
-  if (!requiredObjects.every(isRecord) || !Array.isArray(value.unresolvedRelationAttempts)) {
-    cliFail("CHECKPOINT_INVALID");
+  if (
+    !isRecord(source)
+    || source.schemaVersion !== 1
+    || typeof source.worksheet !== "string"
+    || !Array.isArray(source.tasks)
+  ) {
+    cliFail("LEGACY_SOURCE_INVALID");
   }
-
-  const plannedItemIds = new Set(plan.items
-    .filter((item) => item.disposition === "create")
-    .map((item) => item.taskUuid));
-  const plannedRelationKeys = new Set(plan.eligibleRelations.map(relationKeyFor));
-  const validItemOutcomes = new Set(["created", "reused"]);
-  const validRelationOutcomes = new Set(["created", "reused", "unresolved"]);
-  const validItemIds = Object.entries(value.planeItemIdsByTaskUuid).every(([taskUuid, planeItemId]) =>
-    plannedItemIds.has(taskUuid) && typeof planeItemId === "string" && UUID_PATTERN.test(planeItemId));
-  const validItemOutcomesByTask = Object.entries(value.itemOutcomesByTaskUuid).every(([taskUuid, outcome]) =>
-    plannedItemIds.has(taskUuid) && validItemOutcomes.has(outcome));
-  const validRelationOutcomesByKey = Object.entries(value.relationOutcomesByKey).every(([key, outcome]) =>
-    plannedRelationKeys.has(key) && validRelationOutcomes.has(outcome));
-  const validUnresolvedAttempts = value.unresolvedRelationAttempts.every((attempt) =>
-    isRecord(attempt)
-    && plannedRelationKeys.has(`${attempt.sourceTaskUuid}:${attempt.targetTaskUuid}`)
-    && typeof attempt.reason === "string"
-    && /^[A-Z0-9_:-]+$/.test(attempt.reason));
-  if (!validItemIds || !validItemOutcomesByTask || !validRelationOutcomesByKey || !validUnresolvedAttempts) {
-    cliFail("CHECKPOINT_INVALID");
-  }
-  return value;
-};
-
-const relationKeyFor = (relation) => `${relation.sourceTaskUuid}:${relation.targetTaskUuid}`;
-
-const checkpointWithItem = ({ checkpoint, taskUuid, planeItemId, outcome }) => ({
-  ...checkpoint,
-  planeItemIdsByTaskUuid: {
-    ...checkpoint.planeItemIdsByTaskUuid,
-    [taskUuid]: planeItemId,
-  },
-  itemOutcomesByTaskUuid: {
-    ...checkpoint.itemOutcomesByTaskUuid,
-    [taskUuid]: outcome,
-  },
-});
-
-const checkpointWithRelation = ({ checkpoint, relation, outcome, reason = null }) => {
-  const relationKey = relationKeyFor(relation);
-  const unresolvedRelationAttempts = reason === null
-    ? checkpoint.unresolvedRelationAttempts
-    : [...checkpoint.unresolvedRelationAttempts, {
-      sourceTaskUuid: relation.sourceTaskUuid,
-      targetTaskUuid: relation.targetTaskUuid,
-      reason,
-    }];
-  return {
-    ...checkpoint,
-    relationOutcomesByKey: {
-      ...checkpoint.relationOutcomesByKey,
-      [relationKey]: outcome,
-    },
-    unresolvedRelationAttempts,
-  };
 };
 
 const planeErrorCode = (error) => {
-  if (error instanceof MigrationCliError || isMigrationPreflightError(error)) return error.code;
+  if (
+    error instanceof MigrationCliError
+    || isMigrationPreflightError(error)
+    || error instanceof MigrationExecutionError
+  ) {
+    return error.code;
+  }
   return toPublicPlaneError(error).code;
 };
 
-const clientFor = ({ env, createClient, readConfig }) => {
-  const config = readConfig(env);
-  return createClient(config);
-};
+const clientFor = ({ env, createClient, readConfig }) => createClient(readConfig(env));
 
 const persistPreflightReport = async ({ artifactApi, run, report }) => {
   try {
@@ -264,10 +186,7 @@ const preflightClientForPlan = async ({
       destinations: MIGRATION_DESTINATIONS,
     });
   } catch {
-    report = incompletePreflightReport({
-      plan,
-      destinations: MIGRATION_DESTINATIONS,
-    });
+    report = incompletePreflightReport({ plan, destinations: MIGRATION_DESTINATIONS });
   }
 
   await persistPreflightReport({ artifactApi, run, report });
@@ -300,9 +219,7 @@ const assertApprovedPlanDestinations = (plan) => {
   for (const item of plan.items) {
     if (item.disposition !== "create") continue;
     assertApprovedDestination(item.destination);
-    if (item.workItem.stateId !== item.destination.stateId) {
-      cliFail("PLAN_DESTINATION_UNAPPROVED");
-    }
+    if (item.workItem.stateId !== item.destination.stateId) cliFail("PLAN_DESTINATION_UNAPPROVED");
     createItemsByTaskUuid.set(item.taskUuid, item);
   }
 
@@ -333,23 +250,12 @@ const loadPlan = async ({ artifactApi, run }) => {
   return plan;
 };
 
-const prepareMigration = async ({
-  cwd,
-  env,
-  clock,
-  execFile,
-  readWorksheet,
-  artifactApi,
-}) => {
+const prepareMigration = async ({ cwd, env, clock, execFile, readWorksheet, artifactApi }) => {
   const [tasks, worksheet] = await Promise.all([
     runTaskwarriorExport({ execFile, env }),
     readWorksheet({ cwd, relativePath: WORKSHEET_PATH }),
   ]);
-  const plan = buildMigrationPlan({
-    worksheet,
-    tasks,
-    destinations: MIGRATION_DESTINATIONS,
-  });
+  const plan = buildMigrationPlan({ worksheet, tasks, destinations: MIGRATION_DESTINATIONS });
   const run = await artifactApi.createMigrationRun({ cwd, timestamp: timestampFrom(clock) });
   await artifactApi.writeRunArtifact({
     run,
@@ -361,7 +267,6 @@ const prepareMigration = async ({
     name: artifactApi.MIGRATION_ARTIFACTS.plan,
     value: plan,
   });
-
   return {
     relativeRunPath: run.relativeRunPath,
     planSha256: plan.planSha256,
@@ -378,96 +283,7 @@ const dryRunMigration = async ({ cwd, relativeRunPath, artifactApi }) => {
     name: artifactApi.MIGRATION_ARTIFACTS.dryRunReport,
     value: report,
   });
-
   return { relativeRunPath: run.relativeRunPath, planSha256: plan.planSha256, summary: report.summary };
-};
-
-const resolvePlaneItem = async ({ client, item, checkpoint }) => {
-  const workItems = await client.listProjectWorkItems({
-    workspace: item.destination.workspace,
-    projectId: item.destination.projectId,
-    externalId: item.workItem.externalId,
-    externalSource: item.workItem.externalSource,
-  });
-  const existing = oneIdentityMatch({ workItems, item });
-  const checkpointId = checkpoint.planeItemIdsByTaskUuid[item.taskUuid];
-
-  if (checkpointId && (!existing || existing.id !== checkpointId)) cliFail("CHECKPOINT_MISMATCH");
-  if (existing) return { planeItemId: existing.id, outcome: "reused" };
-  if (checkpointId) cliFail("CHECKPOINT_MISSING");
-
-  const created = await client.createProjectWorkItem({
-    workspace: item.destination.workspace,
-    projectId: item.destination.projectId,
-    input: item.workItem,
-  });
-  return { planeItemId: created.id, outcome: "created" };
-};
-
-const applyItems = async ({ client, plan, checkpoint, artifactApi, run }) => {
-  let currentCheckpoint = checkpoint;
-  for (const item of plan.items.filter((entry) => entry.disposition === "create")) {
-    let resolved;
-    try {
-      resolved = await resolvePlaneItem({ client, item, checkpoint: currentCheckpoint });
-    } catch (error) {
-      if (error instanceof MigrationCliError || isMigrationPreflightError(error)) throw error;
-      cliFail(`ITEM_CREATE_${planeErrorCode(error)}`);
-    }
-    currentCheckpoint = checkpointWithItem({
-      checkpoint: currentCheckpoint,
-      taskUuid: item.taskUuid,
-      planeItemId: resolved.planeItemId,
-      outcome: resolved.outcome,
-    });
-    await artifactApi.writeCheckpoint({ run, value: currentCheckpoint });
-  }
-  return currentCheckpoint;
-};
-
-const applyRelations = async ({ client, plan, checkpoint, artifactApi, run }) => {
-  let currentCheckpoint = checkpoint;
-  for (const relation of plan.eligibleRelations) {
-    const sourcePlaneItemId = currentCheckpoint.planeItemIdsByTaskUuid[relation.sourceTaskUuid];
-    const targetPlaneItemId = currentCheckpoint.planeItemIdsByTaskUuid[relation.targetTaskUuid];
-    if (!sourcePlaneItemId || !targetPlaneItemId) {
-      currentCheckpoint = checkpointWithRelation({
-        checkpoint: currentCheckpoint,
-        relation,
-        outcome: "unresolved",
-        reason: "MISSING_PLANE_ENDPOINT",
-      });
-      await artifactApi.writeCheckpoint({ run, value: currentCheckpoint });
-      continue;
-    }
-
-    try {
-      const existing = await client.listWorkItemRelations({
-        workspace: relation.workspace,
-        projectId: relation.projectId,
-        workItemId: sourcePlaneItemId,
-      });
-      const outcome = existing.blockedByIds.includes(targetPlaneItemId) ? "reused" : "created";
-      if (outcome === "created") {
-        await client.createWorkItemRelation({
-          workspace: relation.workspace,
-          projectId: relation.projectId,
-          workItemId: sourcePlaneItemId,
-          relation: { relationType: relation.relationType, issueIds: [targetPlaneItemId] },
-        });
-      }
-      currentCheckpoint = checkpointWithRelation({ checkpoint: currentCheckpoint, relation, outcome });
-    } catch (error) {
-      currentCheckpoint = checkpointWithRelation({
-        checkpoint: currentCheckpoint,
-        relation,
-        outcome: "unresolved",
-        reason: planeErrorCode(error),
-      });
-    }
-    await artifactApi.writeCheckpoint({ run, value: currentCheckpoint });
-  }
-  return currentCheckpoint;
 };
 
 const preflightMigration = async ({
@@ -480,7 +296,6 @@ const preflightMigration = async ({
 }) => {
   const run = await artifactApi.loadMigrationRun({ cwd, relativeRunPath });
   const plan = await loadPlan({ artifactApi, run });
-
   return artifactApi.withMigrationLock({
     run,
     operation: async () => {
@@ -492,11 +307,7 @@ const preflightMigration = async ({
         plan,
         run,
       });
-      return {
-        relativeRunPath: run.relativeRunPath,
-        planSha256: plan.planSha256,
-        preflight: report,
-      };
+      return { relativeRunPath: run.relativeRunPath, planSha256: plan.planSha256, preflight: report };
     },
   });
 };
@@ -511,6 +322,7 @@ const applyMigration = async ({
   readConfig,
 }) => {
   const run = await artifactApi.loadMigrationRun({ cwd, relativeRunPath });
+  await assertLegacyRunSource({ artifactApi, run });
   const plan = await loadPlan({ artifactApi, run });
   if (plan.planSha256 !== planSha256) cliFail("PLAN_HASH_MISMATCH");
 
@@ -525,62 +337,25 @@ const applyMigration = async ({
         plan,
         run,
       });
-      const currentCheckpoint = normalizeCheckpoint(await artifactApi.readCheckpoint({ run }), plan);
-      const itemCheckpoint = await applyItems({
+      const currentCheckpoint = normalizeMigrationCheckpoint(
+        await artifactApi.readCheckpoint({ run }),
+        plan,
+      );
+      return applyMigrationPlan({
         client,
         plan,
         checkpoint: currentCheckpoint,
         artifactApi,
         run,
+        toErrorCode: planeErrorCode,
       });
-      return applyRelations({ client, plan, checkpoint: itemCheckpoint, artifactApi, run });
     },
   });
-
-  const outcomes = Object.values(checkpoint.itemOutcomesByTaskUuid);
-  const relationOutcomes = Object.values(checkpoint.relationOutcomesByKey);
   return {
     relativeRunPath: run.relativeRunPath,
     planSha256: plan.planSha256,
-    createdItems: outcomes.filter((outcome) => outcome === "created").length,
-    reusedItems: outcomes.filter((outcome) => outcome === "reused").length,
-    createdRelations: relationOutcomes.filter((outcome) => outcome === "created").length,
-    reusedRelations: relationOutcomes.filter((outcome) => outcome === "reused").length,
-    unresolvedRelations: relationOutcomes.filter((outcome) => outcome === "unresolved").length,
-    skippedRelations: plan.skippedRelations.length,
+    ...migrationCheckpointSummary({ plan, checkpoint }),
   };
-};
-
-const reconciledItems = async ({ client, plan }) => {
-  const observedItemsByTaskUuid = {};
-  const planeItemIdsByTaskUuid = {};
-  for (const item of plan.items.filter((entry) => entry.disposition === "create")) {
-    const workItems = await client.listProjectWorkItems({
-      workspace: item.destination.workspace,
-      projectId: item.destination.projectId,
-      externalId: item.workItem.externalId,
-      externalSource: item.workItem.externalSource,
-    });
-    const match = oneIdentityMatch({ workItems, item });
-    if (!match) continue;
-    observedItemsByTaskUuid[item.taskUuid] = match;
-    planeItemIdsByTaskUuid[item.taskUuid] = match.id;
-  }
-  return { observedItemsByTaskUuid, planeItemIdsByTaskUuid };
-};
-
-const reconciledRelations = async ({ client, plan, planeItemIdsByTaskUuid }) => {
-  const observedRelationsByTaskUuid = {};
-  for (const relation of plan.eligibleRelations) {
-    const sourcePlaneItemId = planeItemIdsByTaskUuid[relation.sourceTaskUuid];
-    if (!sourcePlaneItemId || Object.hasOwn(observedRelationsByTaskUuid, relation.sourceTaskUuid)) continue;
-    observedRelationsByTaskUuid[relation.sourceTaskUuid] = await client.listWorkItemRelations({
-      workspace: relation.workspace,
-      projectId: relation.projectId,
-      workItemId: sourcePlaneItemId,
-    });
-  }
-  return observedRelationsByTaskUuid;
 };
 
 const reconcileMigration = async ({
@@ -592,22 +367,21 @@ const reconcileMigration = async ({
   readConfig,
 }) => {
   const run = await artifactApi.loadMigrationRun({ cwd, relativeRunPath });
+  await assertLegacyRunSource({ artifactApi, run });
   const plan = await loadPlan({ artifactApi, run });
   const client = clientFor({ env, createClient, readConfig });
-  const { observedItemsByTaskUuid, planeItemIdsByTaskUuid } = await reconciledItems({ client, plan });
-  const observedRelationsByTaskUuid = await reconciledRelations({
-    client,
-    plan,
-    planeItemIdsByTaskUuid,
-  });
-  const checkpoint = normalizeCheckpoint(await artifactApi.readCheckpoint({ run }), plan);
+  const observed = await observeMigrationPlan({ client, plan });
+  const checkpoint = normalizeMigrationCheckpoint(await artifactApi.readCheckpoint({ run }), plan);
   const report = buildReconciliationReport({
     plan,
-    itemReconciliation: reconcilePlannedItems({ plan, observedItemsByTaskUuid }),
+    itemReconciliation: reconcilePlannedItems({
+      plan,
+      observedItemsByTaskUuid: observed.observedItemsByTaskUuid,
+    }),
     relationReconciliation: reconcilePlannedRelations({
       plan,
-      planeItemIdsByTaskUuid,
-      observedRelationsByTaskUuid,
+      planeItemIdsByTaskUuid: observed.planeItemIdsByTaskUuid,
+      observedRelationsByTaskUuid: observed.observedRelationsByTaskUuid,
     }),
     unresolvedRelationAttempts: checkpoint.unresolvedRelationAttempts,
   });
@@ -616,12 +390,22 @@ const reconcileMigration = async ({
     name: artifactApi.MIGRATION_ARTIFACTS.reconciliationReport,
     value: report,
   });
-
   return { relativeRunPath: run.relativeRunPath, planSha256: plan.planSha256, summary: report.summary };
 };
 
+export {
+  applyPreparedMigrationRun,
+  inspectPreparedMigrationRun,
+  readPreparedMigrationRunStatus,
+  reconcilePreparedMigrationRun,
+} from "../lib/plane-taskwarrior-prepared-run-operations.ts";
+
 const publicError = (error) => {
-  if (error instanceof MigrationCliError || isMigrationPreflightError(error)) {
+  if (
+    error instanceof MigrationCliError
+    || isMigrationPreflightError(error)
+    || error instanceof MigrationExecutionError
+  ) {
     return {
       code: error.code,
       message: "Plane migration could not be completed safely.",
@@ -634,7 +418,6 @@ const publicError = (error) => {
   }
   return { code: "MIGRATION_ERROR", message: "Plane migration could not be completed safely." };
 };
-
 export const runPlaneTaskwarriorMigration = async ({
   argv = process.argv.slice(2),
   cwd = process.cwd(),

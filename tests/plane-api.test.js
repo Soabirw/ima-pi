@@ -85,6 +85,7 @@ const clientFor = (responses, options = {}) => {
       baseUrl: BASE_URL,
       apiKey: API_KEY,
       fetchImpl: queue.fetchImpl,
+      requestIntervalMs: 0,
       ...options,
     }),
   };
@@ -325,87 +326,6 @@ test("rejects unknown states and malformed responses before a dependent write", 
   const malformedItem = clientFor([jsonResponse(workItem({ id: "not-a-uuid" }))]);
   await assertErrorCode(malformedItem.client.listComments(REFERENCE), "RESPONSE_ERROR");
   assert.equal(malformedItem.calls.length, 1);
-});
-
-test("rejects authenticated redirects without a second request or secret output", async () => {
-  const redirectedClient = clientFor([
-    (_url, options) => {
-      assert.equal(options.redirect, "error");
-      throw new Error(`redirected ${API_KEY}`);
-    },
-  ]);
-  await assertErrorCode(redirectedClient.client.getWorkItem(REFERENCE), "HTTP_ERROR");
-  assert.equal(redirectedClient.calls.length, 1);
-
-  const stdout = outputWriter();
-  const stderr = outputWriter();
-  let requestCount = 0;
-  const exitCode = await runPlaneApi({
-    argv: ["plane:get", REFERENCE],
-    env: { PLANE_BASE_URL: BASE_URL, PLANE_API_KEY: API_KEY },
-    stdout: stdout.writer,
-    stderr: stderr.writer,
-    fetchImpl: async (_url, options) => {
-      requestCount += 1;
-      assert.equal(options.redirect, "error");
-      throw new Error(`redirected ${API_KEY}`);
-    },
-  });
-
-  assert.equal(exitCode, 1);
-  assert.equal(requestCount, 1);
-  assert.deepEqual(JSON.parse(stderr.output()), {
-    success: false,
-    error: { code: "HTTP_ERROR", message: "Plane request could not be completed." },
-  });
-  assert.equal(stderr.output().includes(API_KEY), false);
-  assert.equal(stdout.output(), "");
-});
-
-test("maps HTTP, network, timeout, and invalid JSON failures without exposing secrets", async () => {
-  for (const response of [
-    jsonResponse({}, { ok: false, status: 404 }),
-    jsonResponse({}, { ok: false, status: 500 }),
-    new Error(API_KEY),
-    { ok: true, status: 200, json: async () => { throw new Error(API_KEY); } },
-  ]) {
-    const { client } = clientFor([response]);
-    await assertErrorCode(client.getWorkItem(REFERENCE), response.ok === true ? "RESPONSE_ERROR" : "HTTP_ERROR");
-  }
-
-  let triggerTimeout;
-  const timeoutClient = createPlaneClient({
-    baseUrl: BASE_URL,
-    apiKey: API_KEY,
-    setTimeoutImpl: (callback) => {
-      triggerTimeout = callback;
-      return 1;
-    },
-    clearTimeoutImpl: () => {},
-    fetchImpl: async (_url, { signal }) => new Promise((_resolve, reject) => {
-      signal.addEventListener("abort", () => reject(new Error(API_KEY)));
-      triggerTimeout();
-    }),
-  });
-  await assertErrorCode(timeoutClient.getWorkItem(REFERENCE), "HTTP_ERROR");
-
-  const stdout = outputWriter();
-  const stderr = outputWriter();
-  const exitCode = await runPlaneApi({
-    argv: ["plane:get", REFERENCE],
-    env: { PLANE_BASE_URL: BASE_URL, PLANE_API_KEY: API_KEY },
-    stdout: stdout.writer,
-    stderr: stderr.writer,
-    fetchImpl: async () => { throw new Error(API_KEY); },
-  });
-
-  assert.equal(exitCode, 1);
-  assert.deepEqual(JSON.parse(stderr.output()), {
-    success: false,
-    error: { code: "HTTP_ERROR", message: "Plane request could not be completed." },
-  });
-  assert.equal(stderr.output().includes(API_KEY), false);
-  assert.equal(stdout.output(), "");
 });
 
 test("CLI emits stable envelopes without a write-level confirmation flag", async () => {

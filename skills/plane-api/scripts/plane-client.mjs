@@ -21,6 +21,14 @@ import {
   readPlaneConfig,
   validateCreatedWorkItemRelation,
 } from "./plane-contract.mjs";
+import {
+  DEFAULT_REQUEST_INTERVAL_MS,
+  REQUEST_TIMEOUT_MS,
+  collectCursorPages,
+  createPlaneTransport,
+  monotonicNow,
+  waitForDuration,
+} from "./plane-transport.mjs";
 
 export {
   PlaneApiError,
@@ -38,9 +46,7 @@ export {
 } from "./plane-contract.mjs";
 
 const API_PATH = "/api/v1";
-const REQUEST_TIMEOUT_MS = 10_000;
 const PAGE_SIZE = 100;
-const MAX_PAGE_COUNT = 100;
 
 const publicMessages = Object.freeze({
   CONFIG_ERROR: "Plane configuration is missing or invalid.",
@@ -55,32 +61,7 @@ const publicMessages = Object.freeze({
   HTTP_ERROR: "Plane request could not be completed.",
 });
 
-export const collectCursorPages = async ({ fetchPage, normalizeItem, maxPages = MAX_PAGE_COUNT }) => {
-  if (typeof fetchPage !== "function" || typeof normalizeItem !== "function") fail("PAGINATION_ERROR");
-  if (!Number.isSafeInteger(maxPages) || maxPages < 1) fail("PAGINATION_ERROR");
-
-  const items = [];
-  const seenCursors = new Set();
-  let cursor = null;
-
-  for (let pageCount = 0; pageCount < maxPages; pageCount += 1) {
-    const page = await fetchPage(cursor);
-    if (!isRecord(page) || !Array.isArray(page.results)) fail("RESPONSE_ERROR");
-
-    items.push(...page.results.map(normalizeItem));
-
-    if (page.next_page_results === false) return items;
-    if (page.next_page_results !== true || typeof page.next_cursor !== "string" || page.next_cursor.trim() === "") {
-      fail("PAGINATION_ERROR");
-    }
-    if (seenCursors.has(page.next_cursor)) fail("PAGINATION_ERROR");
-
-    seenCursors.add(page.next_cursor);
-    cursor = page.next_cursor;
-  }
-
-  fail("PAGINATION_ERROR");
-};
+export { collectCursorPages };
 
 const encodePathSegment = (value) => encodeURIComponent(value);
 
@@ -181,6 +162,21 @@ const validateProjectWorkItemRouteProbe = ({ page, projectId }) => {
   if (workItems.some((workItem) => workItem.projectId !== projectId)) fail("RESPONSE_ERROR");
 };
 
+const firstPageForExactLookup = ({ page, cursor, lookup }) => {
+  if (cursor !== null || !isRecord(page) || Object.hasOwn(page, "results")) return page;
+
+  const workItem = normalizeWorkItem(page);
+  if (
+    workItem.projectId !== lookup.projectId
+    || workItem.externalId !== lookup.externalId
+    || workItem.externalSource !== lookup.externalSource
+  ) {
+    fail("RESPONSE_ERROR");
+  }
+
+  return { results: [page], next_page_results: false };
+};
+
 const workspaceRequest = (value) => {
   if (!isRecord(value) || Object.keys(value).some((key) => key !== "workspace")) {
     fail("PROJECT_ERROR");
@@ -235,6 +231,9 @@ export const createPlaneClient = ({
   apiKey,
   fetchImpl = globalThis.fetch,
   timeoutMs = REQUEST_TIMEOUT_MS,
+  requestIntervalMs = DEFAULT_REQUEST_INTERVAL_MS,
+  now = monotonicNow,
+  waitFor = waitForDuration,
   createAbortController = () => new AbortController(),
   setTimeoutImpl = setTimeout,
   clearTimeoutImpl = clearTimeout,
@@ -242,47 +241,24 @@ export const createPlaneClient = ({
   const normalizedBaseUrl = parsePlaneBaseUrl(baseUrl);
   const normalizedApiKey = readPlaneApiKey(apiKey);
   if (typeof fetchImpl !== "function" || typeof createAbortController !== "function") fail("CONFIG_ERROR");
+  if (typeof now !== "function" || typeof waitFor !== "function") fail("CONFIG_ERROR");
   if (typeof setTimeoutImpl !== "function" || typeof clearTimeoutImpl !== "function") fail("CONFIG_ERROR");
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) fail("CONFIG_ERROR");
+  if (!Number.isSafeInteger(requestIntervalMs) || requestIntervalMs < 0) fail("CONFIG_ERROR");
 
   const apiBaseUrl = `${normalizedBaseUrl}${API_PATH}/`;
-
-  const requestJson = async ({ path, method = "GET", body }) => {
-    const abortController = createAbortController();
-    if (!abortController?.signal || typeof abortController.abort !== "function") fail("CONFIG_ERROR");
-
-    const timeout = setTimeoutImpl(() => abortController.abort(), timeoutMs);
-    try {
-      let response;
-      try {
-        response = await fetchImpl(new URL(path, apiBaseUrl), {
-          method,
-          headers: {
-            Accept: "application/json",
-            "X-API-Key": normalizedApiKey,
-            ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-          },
-          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-          redirect: "error",
-          signal: abortController.signal,
-        });
-      } catch {
-        fail("HTTP_ERROR");
-      }
-
-      if (!isRecord(response) || typeof response.ok !== "boolean") fail("RESPONSE_ERROR");
-      if (!response.ok) throw new PlaneApiError("HTTP_ERROR", response.status);
-      if (typeof response.json !== "function") fail("RESPONSE_ERROR");
-
-      try {
-        return await response.json();
-      } catch {
-        fail("RESPONSE_ERROR");
-      }
-    } finally {
-      clearTimeoutImpl(timeout);
-    }
-  };
+  const requestJson = createPlaneTransport({
+    apiBaseUrl,
+    apiKey: normalizedApiKey,
+    fetchImpl,
+    timeoutMs,
+    requestIntervalMs,
+    now,
+    waitFor,
+    createAbortController,
+    setTimeoutImpl,
+    clearTimeoutImpl,
+  });
 
   const resolveWorkItem = async (referenceValue) => {
     const reference = parsePlaneReference(referenceValue);
@@ -314,9 +290,9 @@ export const createPlaneClient = ({
     });
   };
 
-  const listProjectItemsByExternalSource = (lookupInput) => {
+  const listProjectItemsByExternalSource = async (lookupInput) => {
     const lookup = projectExternalSourceLookup(lookupInput);
-    return collectCursorPages({
+    const workItems = await collectCursorPages({
       fetchPage: (cursor) => requestJson({
         path: paginatedPath(pathForProjectWorkItems(lookup), cursor, {
           external_source: lookup.externalSource,
@@ -324,12 +300,13 @@ export const createPlaneClient = ({
       }),
       normalizeItem: (rawWorkItem) => {
         const workItem = normalizeWorkItem(rawWorkItem);
-        if (workItem.projectId !== lookup.projectId || workItem.externalSource !== lookup.externalSource) {
-          fail("RESPONSE_ERROR");
-        }
+        if (workItem.projectId !== lookup.projectId) fail("RESPONSE_ERROR");
         return workItem;
       },
     });
+
+    // Some self-hosted Plane deployments ignore the external_source query parameter.
+    return workItems.filter((workItem) => workItem.externalSource === lookup.externalSource);
   };
 
   const proveProjectWorkItemListRoute = async (lookup) => {
@@ -434,12 +411,13 @@ export const createPlaneClient = ({
       const workItems = await collectCursorPages({
         fetchPage: async (cursor) => {
           try {
-            return await requestJson({
+            const page = await requestJson({
               path: paginatedPath(pathForProjectWorkItems(lookup), cursor, {
                 external_id: lookup.externalId,
                 external_source: lookup.externalSource,
               }),
             });
+            return firstPageForExactLookup({ page, cursor, lookup });
           } catch (error) {
             if (cursor !== null || !isExactLookupNoMatch(error)) throw error;
 
@@ -486,7 +464,7 @@ export const createPlaneClient = ({
     listWorkItemRelations: async (scopeInput) => {
       const scope = normalizeWorkItemRelationScope(scopeInput);
       const rawRelations = await requestJson({ path: pathForWorkItemRelations(scope) });
-      return redactSecret(normalizeWorkItemRelations(rawRelations), normalizedApiKey);
+      return redactSecret(normalizeWorkItemRelations(rawRelations, scope.projectId), normalizedApiKey);
     },
 
     createWorkItemRelation: async (requestInput) => {

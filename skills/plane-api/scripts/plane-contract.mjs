@@ -14,6 +14,7 @@ const CREATE_WORK_ITEM_KEYS = new Set([
   "externalSource",
 ]);
 const RELATION_KEYS = new Set(["relationType", "issueIds"]);
+const RELATION_TARGET_KEYS = new Set(["issue_id", "project_id"]);
 
 export class PlaneApiError extends Error {
   constructor(code, status = null) {
@@ -325,27 +326,42 @@ export const normalizeWorkItemRelation = (value) => {
   };
 };
 
-const optionalRelationIds = (relations, key) => {
-  if (!Object.hasOwn(relations, key)) return [];
-  if (!Array.isArray(relations[key])) fail("RESPONSE_ERROR");
-  return normalizeIdList(relations[key]);
+const normalizeRelationTargetId = (value, projectId) => {
+  if (projectId === undefined || !isRecord(value)) return normalizeUuid(value);
+
+  const target = requireExactKeys(value, RELATION_TARGET_KEYS, "RESPONSE_ERROR");
+  const targetProjectId = normalizeUuid(target.project_id);
+  if (targetProjectId !== projectId) fail("RESPONSE_ERROR");
+  return normalizeUuid(target.issue_id);
 };
 
-export const normalizeWorkItemRelations = (rawRelations) => {
+const normalizeRelationTargetIds = (value, projectId) => {
+  if (value === null || value === undefined) return [];
+  if (!Array.isArray(value)) fail("RESPONSE_ERROR");
+  return value.map((entry) => normalizeRelationTargetId(entry, projectId));
+};
+
+const optionalRelationIds = (relations, key, projectId) => {
+  if (!Object.hasOwn(relations, key)) return [];
+  return normalizeRelationTargetIds(relations[key], projectId);
+};
+
+export const normalizeWorkItemRelations = (rawRelations, projectId = undefined) => {
   const relations = requireRecord(rawRelations);
   if (!Object.hasOwn(relations, "blocked_by") || !Array.isArray(relations.blocked_by)) {
     fail("RESPONSE_ERROR");
   }
+  const normalizedProjectId = projectId === undefined ? undefined : normalizeUuid(projectId);
 
   return {
-    blockingIds: optionalRelationIds(relations, "blocking"),
-    blockedByIds: normalizeIdList(relations.blocked_by),
-    duplicateIds: optionalRelationIds(relations, "duplicate"),
-    relatesToIds: optionalRelationIds(relations, "relates_to"),
-    startAfterIds: optionalRelationIds(relations, "start_after"),
-    startBeforeIds: optionalRelationIds(relations, "start_before"),
-    finishAfterIds: optionalRelationIds(relations, "finish_after"),
-    finishBeforeIds: optionalRelationIds(relations, "finish_before"),
+    blockingIds: optionalRelationIds(relations, "blocking", normalizedProjectId),
+    blockedByIds: normalizeRelationTargetIds(relations.blocked_by, normalizedProjectId),
+    duplicateIds: optionalRelationIds(relations, "duplicate", normalizedProjectId),
+    relatesToIds: optionalRelationIds(relations, "relates_to", normalizedProjectId),
+    startAfterIds: optionalRelationIds(relations, "start_after", normalizedProjectId),
+    startBeforeIds: optionalRelationIds(relations, "start_before", normalizedProjectId),
+    finishAfterIds: optionalRelationIds(relations, "finish_after", normalizedProjectId),
+    finishBeforeIds: optionalRelationIds(relations, "finish_before", normalizedProjectId),
   };
 };
 

@@ -23,7 +23,13 @@ import {
   workItemInputForTask,
 } from "../lib/plane-taskwarrior-migration.ts";
 import {
+  HISTORY_POLICIES,
+  buildPreparationSource,
+  decisionsToPlanInputs,
+} from "../lib/plane-taskwarrior-planning.ts";
+import {
   MIGRATION_ARTIFACTS,
+  clearReconciliationReport,
   createMigrationRun,
   loadMigrationRun,
   readCheckpoint,
@@ -427,6 +433,24 @@ test("stores migration artifacts with restrictive modes, safe paths, atomic chec
   await assert.rejects(loadMigrationRun({ cwd: root, relativeRunPath: "/tmp/outside" }), /run_path_invalid/);
 });
 
+test("clears only a regular reconciliation report from a checked run", async (t) => {
+  const root = await temporaryProject(t);
+  const run = await createMigrationRun({ cwd: root, timestamp: "2026-09-04T01-00-00-000Z" });
+  const reportPath = join(run.directory, MIGRATION_ARTIFACTS.reconciliationReport);
+
+  assert.equal(await clearReconciliationReport({ run }), false);
+  await writeRunArtifact({
+    run,
+    name: MIGRATION_ARTIFACTS.reconciliationReport,
+    value: { schemaVersion: 1 },
+  });
+  assert.equal(await clearReconciliationReport({ run }), true);
+  await assert.rejects(lstat(reportPath), /ENOENT/);
+
+  await symlink("missing-reconciliation-report", reportPath);
+  await assert.rejects(clearReconciliationReport({ run }), /file_invalid/);
+});
+
 test("rejects a symlinked artifact root", async (t) => {
   const root = await temporaryProject(t);
   const outside = await mkdtemp(join(tmpdir(), "ima-pi-plane-migration-outside-"));
@@ -560,6 +584,92 @@ const preparedMigrationPlan = async ({ root, fixture, taskEnvironments = [] }) =
     plan: await readRunArtifact({ run, name: MIGRATION_ARTIFACTS.plan }),
   };
 };
+
+const writeSchemaV2StaticRun = async ({ root }) => {
+  const fixture = migrationFixture();
+  const tasks = fixture.tasks.map(({ priority, ...task }) =>
+    priority === undefined ? task : { ...task, priority });
+  const sourceProjects = [
+    ["web-project", "WEB", "Web"],
+    ["skynet-project", "SKYNET", "Skynet"],
+  ];
+  const decisions = sourceProjects.map(([taskwarriorProject, projectKey, projectName]) => ({
+    taskwarriorProject,
+    action: "migrate",
+    taskUuids: tasks
+      .filter((task) => task.project === taskwarriorProject)
+      .map((task) => task.uuid),
+    historyPolicy: HISTORY_POLICIES.pendingAndCompleted,
+    destination: { ...DESTINATIONS[projectKey], projectKey, projectName },
+  }));
+  const discovered = sourceProjects.map(([_taskwarriorProject, projectKey, projectName]) => {
+    const destination = DESTINATIONS[projectKey];
+    return {
+      project: {
+        id: destination.projectId,
+        identifier: projectKey,
+        name: projectName,
+        archivedAt: null,
+      },
+      compatibility: {
+        compatible: true,
+        backlogStateId: destination.backlogStateId,
+        doneStateId: destination.doneStateId,
+      },
+      identityLookup: { status: "ready", itemCount: 0 },
+      states: [
+        { id: destination.backlogStateId, group: "backlog", sequence: 1 },
+        { id: destination.doneStateId, group: "completed", sequence: 2 },
+      ],
+      items: [],
+    };
+  });
+  const source = buildPreparationSource({
+    workspace: "ima",
+    decisions,
+    discovered,
+    tasks,
+  });
+  const inputs = decisionsToPlanInputs({ decisions, tasks });
+  const plan = buildMigrationPlan({
+    worksheet: inputs.projectMappings,
+    destinations: inputs.destinations,
+    tasks: inputs.tasks,
+  });
+  const run = await createMigrationRun({ cwd: root, timestamp: "2026-09-07T00-00-00-000Z" });
+  await writeRunArtifact({ run, name: MIGRATION_ARTIFACTS.source, value: source });
+  await writeRunArtifact({ run, name: MIGRATION_ARTIFACTS.plan, value: plan });
+  return { run, plan };
+};
+
+test("keeps schema-v2 prepared runs out of legacy direct apply and reconcile", async (t) => {
+  const root = await temporaryProject(t);
+  const prepared = await writeSchemaV2StaticRun({ root });
+  let configCalls = 0;
+  let clientCalls = 0;
+  const guardedInput = {
+    cwd: root,
+    env: {},
+    createClient: () => { clientCalls += 1; return {}; },
+    readConfig: () => { configCalls += 1; return {}; },
+  };
+
+  const apply = await runCommand({
+    argv: ["apply", prepared.run.relativeRunPath, prepared.plan.planSha256, "confirm"],
+    ...guardedInput,
+  });
+  const reconcile = await runCommand({
+    argv: ["reconcile", prepared.run.relativeRunPath],
+    ...guardedInput,
+  });
+
+  for (const result of [apply, reconcile]) {
+    assert.equal(result.exitCode, 1);
+    assert.equal(JSON.parse(result.stderr).error.code, "PREPARED_RUN_INTERACTIVE_ONLY");
+  }
+  assert.equal(configCalls, 0);
+  assert.equal(clientCalls, 0);
+});
 
 test("runs and persists a read-only migration preflight without Plane writes", async (t) => {
   const root = await temporaryProject(t);

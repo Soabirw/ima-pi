@@ -72,6 +72,31 @@ The command exports Taskwarrior with all `PLANE_*` variables stripped, discovers
 
 Escape or cancellation occurs before artifact creation and never mutates Plane. The legacy runner remains worksheet-based for its separate apply workflow.
 
+## Interactive prepared-run status, application, and reconciliation
+
+After a schema-v2 interactive preparation, use the same Pi command to operate on one explicit run:
+
+```text
+/ima:plane-migrate
+/ima:plane-migrate status .ima/plane-taskwarrior-migrate/<timestamp>
+/ima:plane-migrate apply .ima/plane-taskwarrior-migrate/<timestamp>
+/ima:plane-migrate reconcile .ima/plane-taskwarrior-migrate/<timestamp>
+```
+
+`status` reads only local run artifacts; it does not read or mutate Plane, Taskwarrior, or Jira. It reports `prepared`, `blocked`, `partially-applied`, `applied`, or `reconciled`. A completed application is not verified completion.
+
+These prepared-run operations are TUI-only. A print or JSON invocation stops before inspecting artifacts or creating a Plane client; print mode emits a concise diagnostic on standard error.
+
+The TUI immediately shows a notification plus a temporary status/widget line. During apply and reconciliation, that line advances through lock wait and revalidation, live readiness, durable item/relation checkpoint counts, and report persistence. Live readiness identifies the destination and shows state or exact-identity check counts, so large read-only checks remain visibly active. Item or relation progress advances only after its local checkpoint is saved; the messages contain no Plane responses, exception details, or credentials. The temporary line clears when the operation settles.
+
+The interactive path authorizes destinations only from the canonical schema-v2 `source.json` selected during preparation. It reproduces `plan.json` from those reviewed decisions and validates the SHA-256 before configuration or Plane access. This dynamic authorization does not change the legacy worksheet runner's static `WEB`/`SKYNET` allowlist.
+
+`apply` is TUI-only. Pi shows the selected run, summary, and full validated hash, requires native review confirmation, then requires the exact case-sensitive literal `confirm`; operators never paste a hash. Under the migration lock, artifacts are reloaded and must still match the reviewed hash. The runner then performs and persists live read-only state and exact-identity readiness checks before its first create. A blocked or unpersistable readiness report produces zero Plane creates.
+
+Application reuses exact Taskwarrior identities, checkpoints every item and relation result, and safely resumes a selected unchanged run without creating duplicates. Relation failures remain recorded as recoverable unresolved outcomes. There is no automatic cleanup, rollback, deletion, or reverse migration.
+
+`reconcile` requires a valid source-bound plan and an existing checkpoint. It runs under the migration lock, reads work items and relations only, atomically replaces the local reconciliation report, and reports `reconciled` only when all observed items and eligible relations match. It never modifies Plane work items.
+
 ## Verification
 
 Automated tests use injected fetch implementations and synthetic credentials only:
