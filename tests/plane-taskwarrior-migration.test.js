@@ -144,6 +144,61 @@ test("normalizes Taskwarrior timestamps and rejects malformed data", () => {
   );
 });
 
+test("retains annotation detail in generated migration descriptions", () => {
+  const fixture = migrationFixture();
+  const sourceTask = fixture.tasks.find((task) => task.status === "pending");
+  const annotationText = "Lifecycle unit: description detail\nBusiness outcome: Plane retains the brief";
+  const annotatedTask = {
+    ...sourceTask,
+    wait: "20260905T010203Z",
+    annotations: [{ entry: "20260901T184804Z", description: annotationText }],
+  };
+  const tasks = fixture.tasks.map((task) => (
+    task.uuid === annotatedTask.uuid ? annotatedTask : task
+  ));
+  const normalizedTask = normalizeTaskwarriorTask(annotatedTask);
+  const plan = buildMigrationPlan({ ...fixture, tasks });
+  const plannedItem = plan.items.find((item) => item.taskUuid === annotatedTask.uuid);
+  const description = plannedItem.workItem.descriptionStripped;
+
+  assert.deepEqual(normalizedTask.annotations, [{
+    entry: "2026-09-01T18:48:04.000Z",
+    description: annotationText,
+  }]);
+  assert.equal(description.includes(annotationText), true);
+  assert.equal(description.includes("entry: 2026-09-01T18:48:04.000Z"), true);
+  assert.equal(description.includes(`project: ${normalizedTask.project}`), true);
+  assert.equal(description.includes(`status: ${normalizedTask.status}`), true);
+  assert.equal(description.includes(`priority: ${normalizedTask.priority}`), true);
+  assert.equal(description.includes(`wait: ${normalizedTask.wait}`), true);
+  assert.equal(description.includes(`depends: ${normalizedTask.depends.join(", ")}`), true);
+  assert.equal(description.includes(`Taskwarrior UUID: ${normalizedTask.uuid}`), true);
+});
+
+test("derives one plan hash from equal-timestamp annotation permutations", () => {
+  const fixture = migrationFixture();
+  const sourceTask = fixture.tasks.find((task) => task.status === "pending");
+  const planWithAnnotations = (annotations) => buildMigrationPlan({
+    ...fixture,
+    tasks: fixture.tasks.map((task) => (
+      task.uuid === sourceTask.uuid ? { ...sourceTask, annotations } : task
+    )),
+  });
+  const firstPlan = planWithAnnotations([
+    { entry: "20260901T000000Z", description: "ä" },
+    { entry: "20260901T000000Z", description: "z" },
+  ]);
+  const secondPlan = planWithAnnotations([
+    { entry: "20260901T000000Z", description: "z" },
+    { entry: "20260901T000000Z", description: "ä" },
+  ]);
+  const firstItem = firstPlan.items.find((item) => item.taskUuid === sourceTask.uuid);
+  const secondItem = secondPlan.items.find((item) => item.taskUuid === sourceTask.uuid);
+
+  assert.equal(firstPlan.planSha256, secondPlan.planSha256);
+  assert.equal(firstItem.workItem.descriptionStripped, secondItem.workItem.descriptionStripped);
+});
+
 test("rejects duplicate dependencies before producing a migration plan", () => {
   const fixture = migrationFixture();
   const source = fixture.tasks.find((task) => task.depends?.length > 0);

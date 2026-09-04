@@ -2,7 +2,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as artifactApi from "../lib/plane-taskwarrior-migration-artifacts.ts";
-import { buildMigrationPlan } from "../lib/plane-taskwarrior-migration.ts";
+import {
+  buildMigrationPlan,
+  migrationPlanSha256,
+} from "../lib/plane-taskwarrior-migration.ts";
 import {
   HISTORY_POLICIES,
   buildPreparationReadinessReport,
@@ -16,6 +19,9 @@ export const PROJECT_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 export const BACKLOG_STATE_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 export const DONE_STATE_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 
+const HISTORICAL_ENTRY = "2026-09-01T00:00:00.000Z";
+const HISTORICAL_MODIFIED = "2026-09-02T00:00:00.000Z";
+
 const task = ({ uuid, depends = [], description = `Task ${uuid}` }) => ({
   uuid,
   project: "alpha",
@@ -26,6 +32,16 @@ const task = ({ uuid, depends = [], description = `Task ${uuid}` }) => ({
   modified: "20260902T000000Z",
   ...(depends.length === 0 ? {} : { depends }),
 });
+
+const historicalDescriptionForTask = (sourceTask) => [
+  sourceTask.description,
+  "",
+  "--- Taskwarrior provenance ---",
+  `Taskwarrior UUID: ${sourceTask.uuid}`,
+  `entry: ${HISTORICAL_ENTRY}`,
+  `modified: ${HISTORICAL_MODIFIED}`,
+  "end: none",
+].join("\n");
 
 export const preparedData = ({ taskDescription } = {}) => {
   const tasks = [
@@ -76,6 +92,31 @@ export const preparedData = ({ taskDescription } = {}) => {
   return { source, plan };
 };
 
+export const historicalPreparedData = (options = {}) => {
+  const data = preparedData(options);
+  const tasksByUuid = new Map(data.source.tasks.map((sourceTask) => [sourceTask.uuid, sourceTask]));
+  const planWithoutHash = {
+    ...data.plan,
+    items: data.plan.items.map((item) => {
+      if (item.disposition !== "create") return item;
+
+      return {
+        ...item,
+        workItem: {
+          ...item.workItem,
+          descriptionStripped: historicalDescriptionForTask(tasksByUuid.get(item.taskUuid)),
+        },
+      };
+    }),
+  };
+  const plan = {
+    ...planWithoutHash,
+    planSha256: migrationPlanSha256(planWithoutHash),
+  };
+
+  return { ...data, plan };
+};
+
 export const preparedRun = async (t, data = preparedData()) => {
   const root = await mkdtemp(join(tmpdir(), "ima-pi-prepared-run-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -111,6 +152,7 @@ export const migrationClient = ({ stateGroup = "backlog" } = {}) => {
   const blockedByIds = new Map();
   let createdItems = 0;
   let createdRelations = 0;
+  const createdWorkItemInputs = [];
   let stateReads = 0;
   let identityReads = 0;
   let failingRelationLookups = 0;
@@ -130,6 +172,7 @@ export const migrationClient = ({ stateGroup = "backlog" } = {}) => {
     },
     createProjectWorkItem: async ({ projectId, input }) => {
       createdItems += 1;
+      createdWorkItemInputs.push(structuredClone(input));
       const item = {
         id: input.externalId,
         projectId,
@@ -162,6 +205,7 @@ export const migrationClient = ({ stateGroup = "backlog" } = {}) => {
   return {
     client,
     stats: () => ({ createdItems, createdRelations, stateReads, identityReads }),
+    createdWorkItemInputs: () => structuredClone(createdWorkItemInputs),
     failNextRelationLookup: () => { failingRelationLookups += 1; },
   };
 };

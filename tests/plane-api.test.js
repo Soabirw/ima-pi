@@ -5,6 +5,7 @@ import {
   collectCursorPages,
   commentHtmlFromText,
   createPlaneClient,
+  descriptionHtmlFromText,
   normalizeComment,
   normalizeState,
   parsePlaneBaseUrl,
@@ -265,6 +266,15 @@ test("normalizes stable external fields and converts plain text to escaped comme
   });
   assert.equal(commentHtmlFromText(`<tag>&"'`), "<p>&lt;tag&gt;&amp;&quot;&#39;</p>");
   assert.throws(() => commentHtmlFromText(" \n "), (error) => error.code === "COMMENT_ERROR");
+});
+
+test("converts a plain-text work-item description to escaped multiline HTML", () => {
+  const html = descriptionHtmlFromText(`<tag>&"'\nSecond line\n\nFinal paragraph`);
+
+  assert.equal(html, "<p>&lt;tag&gt;&amp;&quot;&#39;<br>Second line</p><p>Final paragraph</p>");
+  assert.equal(html.includes("<tag>"), false);
+  assert.equal(descriptionHtmlFromText(""), "");
+  assert.throws(() => descriptionHtmlFromText(null), (error) => error.code === "CREATE_ERROR");
 });
 
 test("creates a comment only after rereading the selected work item", async () => {

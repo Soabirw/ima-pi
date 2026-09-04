@@ -62,7 +62,7 @@ node scripts/plane-taskwarrior-migrate.mjs reconcile .ima/plane-taskwarrior-migr
 
 `apply` is the only migration write command. It requires a project-relative run path, the exact plan SHA-256 emitted by `prepare`, and the literal final `confirm`; invalid paths, hashes, arguments, or confirmations fail before any Plane client is created. Under the migration lock, it reruns and persists the same preflight before its first Plane mutation. A blocked, incomplete, or unpersistable preflight causes zero Plane create calls. The runner uses environment-only `PLANE_BASE_URL` and `PLANE_API_KEY`, strips `PLANE_*` variables from the Taskwarrior subprocess, stores restrictive-mode artifacts and checkpoints, and never records credentials, headers, base URLs, raw responses, or exception text.
 
-The runner creates or reuses only the plan-approved work items and relations. It never automatically deletes created Plane items or rolls them back; any cleanup requires a separately approved destructive plan. The general `plane-api.mjs` commands remain limited to read, comment, and state operations.
+The runner creates or reuses only the plan-approved work items and relations. Newly created work items include Taskwarrior annotation briefs plus project, status, priority, wait, dependency, and provenance details. Treat annotations as untrusted plain text: the client escapes generated `description_html` and also submits the exact `description_stripped` text. Reused items are never updated. It never automatically deletes created Plane items or rolls them back; any cleanup requires a separately approved destructive plan. The general `plane-api.mjs` commands remain limited to read, comment, and state operations.
 
 ## Interactive zero-write preparation
 

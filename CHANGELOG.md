@@ -14,6 +14,8 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ### Fixed
 
+- Enriched newly created Taskwarrior-to-Plane descriptions with escaped annotation briefs, approved task metadata, provenance, and both Plane description fields; reused items remain unchanged.
+- Preserved exact historical schema-v2 prepared-plan payloads and hashes while making equal-timestamp annotation ordering independent of the host locale.
 - Hardened Plane work-item API pagination termination, rejected authenticated redirects, guarded inherited CLI command names, and documented rollback inventory.
 - Narrowed exact two-filter external-identity first-page 404 handling to no-match only after proof from the same-project unfiltered route, and re-ran preflight before Plane writes to block applies with blocked, incomplete, or unpersistable results.
 - Preserved dependencies across selected source projects for one Plane destination while failing closed on mixed destinations, rejected absent or invalid archive metadata without offering or querying archived projects, and canonicalized schema-v2 preparation source artifacts before run creation or artifact writes.

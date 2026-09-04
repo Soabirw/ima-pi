@@ -1,4 +1,9 @@
 import { createHash } from "node:crypto";
+import {
+  buildHistoricalTaskwarriorWorkItemDescription,
+  buildTaskwarriorWorkItemDescription,
+  normalizeTaskwarriorAnnotations,
+} from "./plane-taskwarrior-description.ts";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const TASKWARRIOR_TIMESTAMP_PATTERN = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/;
@@ -102,6 +107,10 @@ export const normalizeTaskwarriorTask = (rawTask) => {
     end: normalizeTaskwarriorTimestamp(task.end),
     wait: normalizeTaskwarriorTimestamp(task.wait),
     depends: normalizeDependencies(task.depends),
+    annotations: normalizeTaskwarriorAnnotations({
+      annotations: task.annotations,
+      normalizeTimestamp: normalizeTaskwarriorTimestamp,
+    }),
   };
 
   if (!normalized.entry || !normalized.modified) migrationFailure("task_timestamp_missing");
@@ -279,30 +288,32 @@ export const destinationForTask = ({ task, projectMappings, destinations }) => {
   };
 };
 
-const provenanceDescription = (task) => [
-  task.description,
-  "",
-  "--- Taskwarrior provenance ---",
-  `Taskwarrior UUID: ${task.uuid}`,
-  `entry: ${task.entry}`,
-  `modified: ${task.modified}`,
-  `end: ${task.end ?? "none"}`,
-].join("\n");
-
-export const workItemInputForTask = ({ task, destination }) => {
+const workItemInputForTaskWithDescription = ({
+  task,
+  destination,
+  descriptionRenderer,
+}) => {
   const normalizedTask = normalizeTaskwarriorTask(task);
   const normalizedDestination = requireRecord(destination, "destination_invalid");
   if (normalizedDestination.disposition !== "create") migrationFailure("destination_unapproved");
 
   return {
     name: normalizedTask.description,
-    descriptionStripped: provenanceDescription(normalizedTask),
+    descriptionStripped: descriptionRenderer(normalizedTask),
     priority: normalizedTask.priority,
     stateId: normalizeUuid(normalizedDestination.stateId, "destination_invalid"),
     externalId: normalizedTask.uuid,
     externalSource: TASKWARRIOR_EXTERNAL_SOURCE,
   };
 };
+
+export const workItemInputForTask = ({ task, destination }) => (
+  workItemInputForTaskWithDescription({
+    task,
+    destination,
+    descriptionRenderer: buildTaskwarriorWorkItemDescription,
+  })
+);
 
 const taskCounts = (tasks) => tasks.reduce((counts, task) => ({
   total: counts.total + 1,
@@ -337,7 +348,12 @@ const validateWorksheetCounts = ({ tasks, projectMappings }) => {
   }
 };
 
-const migrationItemForTask = ({ task, projectMappings, destinations }) => {
+const migrationItemForTask = ({
+  task,
+  projectMappings,
+  destinations,
+  descriptionRenderer,
+}) => {
   const destination = destinationForTask({ task, projectMappings, destinations });
   if (destination.disposition === "skip") {
     return {
@@ -361,7 +377,11 @@ const migrationItemForTask = ({ task, projectMappings, destinations }) => {
       stateId: destination.stateId,
       stateKind: destination.stateKind,
     },
-    workItem: workItemInputForTask({ task, destination }),
+    workItem: workItemInputForTaskWithDescription({
+      task,
+      destination,
+      descriptionRenderer,
+    }),
   };
 };
 
@@ -429,7 +449,12 @@ const withoutPlanHash = (plan) => {
 
 export const migrationPlanSha256 = (plan) => hashValue(withoutPlanHash(plan));
 
-export const buildMigrationPlan = ({ worksheet, tasks, destinations }) => {
+const buildMigrationPlanWithDescriptionRenderer = ({
+  worksheet,
+  tasks,
+  destinations,
+  descriptionRenderer,
+}) => {
   const projectMappings = normalizeProjectMappings(worksheet);
   if (!Array.isArray(tasks) || tasks.length === 0) migrationFailure("tasks_invalid");
 
@@ -443,6 +468,7 @@ export const buildMigrationPlan = ({ worksheet, tasks, destinations }) => {
     task,
     projectMappings,
     destinations,
+    descriptionRenderer,
   }));
   const relations = dependencyEdgesForTasks({ tasks: normalizedTasks, items });
   const createdItems = items.filter((item) => item.disposition === "create");
@@ -468,6 +494,20 @@ export const buildMigrationPlan = ({ worksheet, tasks, destinations }) => {
 
   return { ...plan, planSha256: hashValue(plan) };
 };
+
+export const buildMigrationPlan = (input) => (
+  buildMigrationPlanWithDescriptionRenderer({
+    ...input,
+    descriptionRenderer: buildTaskwarriorWorkItemDescription,
+  })
+);
+
+export const buildHistoricalMigrationPlan = (input) => (
+  buildMigrationPlanWithDescriptionRenderer({
+    ...input,
+    descriptionRenderer: buildHistoricalTaskwarriorWorkItemDescription,
+  })
+);
 
 const PLAN_ROOT_KEYS = new Set([
   "schemaVersion",

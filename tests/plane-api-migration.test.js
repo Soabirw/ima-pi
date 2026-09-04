@@ -281,7 +281,7 @@ test("creates only a normalized migration work item and validates the returned i
   const { client, calls } = clientFor([jsonResponse(workItem())]);
   const input = {
     name: "Migrated task",
-    descriptionStripped: "Taskwarrior provenance",
+    descriptionStripped: "Taskwarrior <provenance>\nLine two\n\nSecond paragraph",
     priority: "high",
     stateId: STATE_ID,
     externalId: EXTERNAL_ID,
@@ -298,7 +298,8 @@ test("creates only a normalized migration work item and validates the returned i
   assert.equal(calls[0].options.redirect, "error");
   assert.deepEqual(JSON.parse(calls[0].options.body), {
     name: "Migrated task",
-    description_stripped: "Taskwarrior provenance",
+    description_html: "<p>Taskwarrior &lt;provenance&gt;<br>Line two</p><p>Second paragraph</p>",
+    description_stripped: "Taskwarrior <provenance>\nLine two\n\nSecond paragraph",
     priority: "high",
     state: STATE_ID,
     external_id: EXTERNAL_ID,
@@ -309,7 +310,7 @@ test("creates only a normalized migration work item and validates the returned i
   await assertErrorCode(invalid.client.createProjectWorkItem({
     workspace: WORKSPACE,
     projectId: PROJECT_ID,
-    input: { ...input, completedAt: "2026-09-01T00:00:00Z" },
+    input: { ...input, descriptionHtml: "<p>unsafe caller HTML</p>" },
   }), "CREATE_ERROR");
   assert.equal(invalid.calls.length, 0);
 

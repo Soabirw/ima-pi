@@ -1,6 +1,7 @@
 import {
   PlaneApiError,
   commentHtmlFromText,
+  descriptionHtmlFromText,
   fail,
   isRecord,
   normalizeComment,
@@ -33,6 +34,7 @@ import {
 export {
   PlaneApiError,
   commentHtmlFromText,
+  descriptionHtmlFromText,
   escapeHtml,
   normalizeComment,
   normalizeCreateWorkItemInput,
@@ -437,11 +439,13 @@ export const createPlaneClient = ({
 
     createProjectWorkItem: async (requestInput) => {
       const request = projectWorkItemRequest(requestInput);
+      const descriptionHtml = descriptionHtmlFromText(request.input.descriptionStripped);
       const rawWorkItem = await requestJson({
         path: pathForProjectWorkItems(request),
         method: "POST",
         body: {
           name: request.input.name,
+          description_html: descriptionHtml,
           description_stripped: request.input.descriptionStripped,
           priority: request.input.priority,
           state: request.input.stateId,

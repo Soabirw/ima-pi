@@ -175,6 +175,16 @@ export const commentHtmlFromText = (text) => {
   return `<p>${escapeHtml(text)}</p>`;
 };
 
+export const descriptionHtmlFromText = (text) => {
+  if (typeof text !== "string") fail("CREATE_ERROR");
+  if (text === "") return "";
+
+  return text
+    .split(/\r?\n(?:[ \t]*\r?\n)+/)
+    .map((paragraph) => `<p>${escapeHtml(paragraph).replace(/\r?\n/g, "<br>")}</p>`)
+    .join("");
+};
+
 const descriptionFrom = (workItem) => {
   const strippedDescription = optionalText(workItem.description_stripped);
   if (strippedDescription !== null) return strippedDescription;

@@ -10,9 +10,11 @@ import {
 } from "../lib/plane-taskwarrior-prepared-run.ts";
 import {
   applyInput,
+  historicalPreparedData,
   migrationClient,
   preparedData,
   preparedRun,
+  TASK_A,
 } from "./plane-taskwarrior-prepared-run-fixtures.js";
 
 const assertReadinessReportInvalid = async (prepared) => {
@@ -46,6 +48,60 @@ test("reads prepared status from local artifacts without Plane configuration", a
   assert.equal(status.planSha256, prepared.plan.planSha256);
 });
 
+test("preserves a historical schema-v2 plan and payload during status, apply, and reconcile", async (t) => {
+  const historical = historicalPreparedData();
+  const prepared = await preparedRun(t, historical);
+  const historicalDescriptions = historical.plan.items
+    .filter((item) => item.disposition === "create")
+    .map((item) => item.workItem.descriptionStripped);
+  const expectedFirstDescription = [
+    `Task ${TASK_A}`,
+    "",
+    "--- Taskwarrior provenance ---",
+    `Taskwarrior UUID: ${TASK_A}`,
+    "entry: 2026-09-01T00:00:00.000Z",
+    "modified: 2026-09-02T00:00:00.000Z",
+    "end: none",
+  ].join("\n");
+
+  const status = await readPreparedMigrationStatus({
+    cwd: prepared.root,
+    relativeRunPath: prepared.run.relativeRunPath,
+    artifactApi,
+  });
+  assert.equal(status.planSha256, historical.plan.planSha256);
+  assert.equal(historicalDescriptions[0], expectedFirstDescription);
+
+  const fake = migrationClient();
+  const applied = await applyPreparedMigration(applyInput({ prepared, client: fake.client }));
+  assert.equal(applied.state, "applied");
+  assert.deepEqual(
+    fake.createdWorkItemInputs().map((input) => input.descriptionStripped),
+    historicalDescriptions,
+  );
+
+  const reconciled = await reconcilePreparedMigration({
+    cwd: prepared.root,
+    relativeRunPath: prepared.run.relativeRunPath,
+    env: {},
+    artifactApi,
+    createClient: () => fake.client,
+    readConfig: () => ({}),
+  });
+  assert.equal(reconciled.state, "reconciled");
+
+  const persistedPlan = await artifactApi.readRunArtifact({
+    run: prepared.run,
+    name: artifactApi.MIGRATION_ARTIFACTS.plan,
+  });
+  assert.deepEqual(
+    persistedPlan.items
+      .filter((item) => item.disposition === "create")
+      .map((item) => item.workItem.descriptionStripped),
+    historicalDescriptions,
+  );
+});
+
 test("classifies an existing incomplete checkpoint as partially applied", async (t) => {
   const prepared = await preparedRun(t);
   await artifactApi.writeCheckpoint({
@@ -68,29 +124,79 @@ test("classifies an existing incomplete checkpoint as partially applied", async 
   assert.equal(status.state, "partially-applied");
 });
 
-test("rejects a self-hashed source-plan mismatch before configuration or Plane access", async (t) => {
-  const prepared = await preparedRun(t);
-  const changedPlan = JSON.parse(JSON.stringify(prepared.plan));
-  changedPlan.items[0].workItem.name = "Changed after preparation";
-  changedPlan.planSha256 = migrationPlanSha256(changedPlan);
-  await artifactApi.replaceRunArtifact({
-    run: prepared.run,
-    name: artifactApi.MIGRATION_ARTIFACTS.plan,
-    value: changedPlan,
-  });
-  let configCalls = 0;
-  let clientCalls = 0;
+test("rejects source-plan tampering before configuration or Plane access", async (t) => {
+  const tampering = [
+    {
+      name: "name",
+      expectedCode: "PREPARED_PLAN_SOURCE_MISMATCH",
+      apply: async (prepared) => {
+        const changedPlan = structuredClone(prepared.plan);
+        changedPlan.items[0].workItem.name = "Changed after preparation";
+        changedPlan.planSha256 = migrationPlanSha256(changedPlan);
+        await artifactApi.replaceRunArtifact({
+          run: prepared.run,
+          name: artifactApi.MIGRATION_ARTIFACTS.plan,
+          value: changedPlan,
+        });
+      },
+    },
+    {
+      name: "description",
+      expectedCode: "PREPARED_PLAN_SOURCE_MISMATCH",
+      apply: async (prepared) => {
+        const changedPlan = structuredClone(prepared.plan);
+        changedPlan.items[0].workItem.descriptionStripped = "Changed description";
+        changedPlan.planSha256 = migrationPlanSha256(changedPlan);
+        await artifactApi.replaceRunArtifact({
+          run: prepared.run,
+          name: artifactApi.MIGRATION_ARTIFACTS.plan,
+          value: changedPlan,
+        });
+      },
+    },
+    {
+      name: "source task",
+      expectedCode: "PREPARED_PLAN_SOURCE_MISMATCH",
+      apply: async (prepared) => artifactApi.replaceRunArtifact({
+        run: prepared.run,
+        name: artifactApi.MIGRATION_ARTIFACTS.source,
+        value: preparedData({ taskDescription: "Changed source task" }).source,
+      }),
+    },
+    {
+      name: "hash",
+      expectedCode: "PREPARED_PLAN_INVALID",
+      apply: async (prepared) => {
+        const changedPlan = structuredClone(prepared.plan);
+        const replacementCharacter = changedPlan.planSha256[0] === "0" ? "1" : "0";
+        changedPlan.planSha256 = `${replacementCharacter}${changedPlan.planSha256.slice(1)}`;
+        await artifactApi.replaceRunArtifact({
+          run: prepared.run,
+          name: artifactApi.MIGRATION_ARTIFACTS.plan,
+          value: changedPlan,
+        });
+      },
+    },
+  ];
 
-  await assert.rejects(
-    applyPreparedMigration({
-      ...applyInput({ prepared, client: {} }),
-      createClient: () => { clientCalls += 1; return {}; },
-      readConfig: () => { configCalls += 1; return {}; },
-    }),
-    (error) => error instanceof PreparedMigrationError && error.code === "PREPARED_PLAN_SOURCE_MISMATCH",
-  );
-  assert.equal(configCalls, 0);
-  assert.equal(clientCalls, 0);
+  for (const tamper of tampering) {
+    const prepared = await preparedRun(t);
+    await tamper.apply(prepared);
+    let configCalls = 0;
+    let clientCalls = 0;
+
+    await assert.rejects(
+      applyPreparedMigration({
+        ...applyInput({ prepared, client: {} }),
+        createClient: () => { clientCalls += 1; return {}; },
+        readConfig: () => { configCalls += 1; return {}; },
+      }),
+      (error) => error instanceof PreparedMigrationError && error.code === tamper.expectedCode,
+      tamper.name,
+    );
+    assert.equal(configCalls, 0, tamper.name);
+    assert.equal(clientCalls, 0, tamper.name);
+  }
 });
 
 test("revalidates the reviewed hash under the migration lock before configuration", async (t) => {

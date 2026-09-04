@@ -1,4 +1,5 @@
 import {
+  buildHistoricalMigrationPlan,
   buildMigrationPlan,
   buildReconciliationReport,
   reconcilePlannedItems,
@@ -107,13 +108,14 @@ export const validatePreparedMigrationRun = ({ source, plan }) => {
     preparedFailure("PREPARED_PLAN_INVALID");
   }
 
-  let reproducedPlan;
+  let inputs;
+  let enrichedPlan;
   try {
-    const inputs = decisionsToPlanInputs({
+    inputs = decisionsToPlanInputs({
       decisions: preparedSource.decisions,
       tasks: preparedSource.tasks,
     });
-    reproducedPlan = buildMigrationPlan({
+    enrichedPlan = buildMigrationPlan({
       worksheet: inputs.projectMappings,
       destinations: inputs.destinations,
       tasks: inputs.tasks,
@@ -121,7 +123,19 @@ export const validatePreparedMigrationRun = ({ source, plan }) => {
   } catch {
     preparedFailure("PREPARED_PLAN_SOURCE_MISMATCH");
   }
-  if (!sameValue(migrationPlan, reproducedPlan)) preparedFailure("PREPARED_PLAN_SOURCE_MISMATCH");
+  if (sameValue(migrationPlan, enrichedPlan)) return { source: preparedSource, plan: migrationPlan };
+
+  let historicalPlan;
+  try {
+    historicalPlan = buildHistoricalMigrationPlan({
+      worksheet: inputs.projectMappings,
+      destinations: inputs.destinations,
+      tasks: inputs.tasks,
+    });
+  } catch {
+    preparedFailure("PREPARED_PLAN_SOURCE_MISMATCH");
+  }
+  if (!sameValue(migrationPlan, historicalPlan)) preparedFailure("PREPARED_PLAN_SOURCE_MISMATCH");
 
   return { source: preparedSource, plan: migrationPlan };
 };
