@@ -12,9 +12,15 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 - Added guarded interactive `/ima:plane-migrate` status, apply, and reconcile operations with source-reproduced dynamic destination authorization, reviewed hash plus literal confirmation, locked revalidation, checkpoint recovery, and read-only reconciliation before verified completion.
 - Added reviewed blank-only Taskwarrior description backfills for already-migrated Plane items: preparation separates prompted inserts from in-place updates, persists a distinct backfill artifact without changing the create-plan hash, and apply uses a live blank re-check before its description-only PATCH.
 - Added typed Plane `ima_context` hydration with canonical work-item references and aliases, paired workspace-aware lifecycle identity, deterministic boundary coverage, and manual-phase documentation.
+- Added focused security references for durable webhook idempotency, constrained Python subprocess execution, and PHPUnit WordPress negative testing.
+
+### Changed
+
+- Hardened development, testing, review, and workflow skills around a shared fail-closed security boundary, source-to-sink review evidence, and marker-based regression coverage.
 
 ### Fixed
 
+- Corrected recommended Node API response/error handling, IMA Forms field projection, webhook idempotency, Python subprocess argument boundaries, and Playwright auth-state handling.
 - Rejected schema-v2 and schema-v3 interactive prepared runs from legacy direct apply/reconcile paths with `PREPARED_RUN_INTERACTIVE_ONLY` before plan loading, configuration, client construction, or Plane access.
 - Bound current schema-v3 backfill artifacts to their authoritative source workspace and fail closed when a required artifact is missing, while retaining exact historical schema-v2 no-backfill compatibility.
 - Enriched newly created Taskwarrior-to-Plane descriptions with escaped annotation briefs, approved task metadata, provenance, and both Plane description fields; ordinary reused items remain unchanged outside the reviewed blank-only backfill path.
