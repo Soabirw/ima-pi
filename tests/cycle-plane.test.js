@@ -24,6 +24,7 @@ import {
 
 const at = "2026-09-05T02:00:00.000Z";
 const plane = normalizeCycleSource("plane:ima:SKYNET-61");
+const browseUrl = "https://plane.example/ima/browse/SKYNET-61";
 const workItemId = "11111111-1111-4111-8111-111111111111";
 const projectId = "22222222-2222-4222-8222-222222222222";
 const startedStateId = "33333333-3333-4333-8333-333333333333";
@@ -99,18 +100,29 @@ const persistedRecord = (state, phase, outcome, overrides = {}) => ({
   content: `---\nlifecycle: {}\n---\n\n${buildCycleOutcomeMarker({ phase, outcome })}\n\n${lifecycleMarker(state, phase, overrides)}`,
 });
 
-test("parses strict canonical and alias Plane cycle sources with flags", () => {
+test("parses strict canonical, browse-URL, and alias Plane cycle sources with flags", () => {
   const canonical = parseCycleCommand(
     "/ima:cycle start --review-cap 3 plane:ima:SKYNET-61 --mode guided",
+  );
+  const browseUrlCommand = parseCycleCommand(
+    `/ima:cycle start --implementation js ${browseUrl} --review-cap=1 --mode guided`,
   );
   const alias = parseCycleCommand(
     "/ima:cycle start --implementation js plane ima SKYNET-61 --review-cap=1",
   );
+  const browseSource = normalizeCycleSource(browseUrl);
 
   assert.deepEqual(canonical, {
     command: "start",
     source: plane,
     reviewCap: 3,
+    mode: "guided",
+  });
+  assert.deepEqual(browseUrlCommand, {
+    command: "start",
+    source: plane,
+    implementationMode: "js",
+    reviewCap: 1,
     mode: "guided",
   });
   assert.deepEqual(alias, {
@@ -119,18 +131,47 @@ test("parses strict canonical and alias Plane cycle sources with flags", () => {
     implementationMode: "js",
     reviewCap: 1,
   });
+  assert.deepEqual(browseSource, plane);
+  assert.equal(cycleSourceReference(browseSource), "plane:ima:SKYNET-61");
+  assert.equal(cycleLifecycleKey(browseSource), "ima-pi:plane:ima:SKYNET-61");
 
   for (const invalid of [
     "plane:ima:skynet-61",
     "plane:ima:SKYNET-0",
     "plane:ima:SKYNET-61;node",
     "plane:ima:SKYNET-61 extra",
+    "http://plane.example/ima/browse/SKYNET-61",
+    "https://operator:secret@plane.example/ima/browse/SKYNET-61",
+    "https://plane.example/ima/browse/SKYNET-61?query=value",
+    "https://plane.example/ima/browse/SKYNET-61?",
+    "https://plane.example/ima/browse/SKYNET-61#fragment",
+    "https://plane.example/ima/browse/SKYNET-61#",
+    "https://plane.example/ima/browse/SKYNET-61/",
+    "https://plane.example/ima/browse/SKYNET-61/extra",
+    "https://plane.example/browse/SKYNET-61",
     "https://plane.example/ima/SKYNET-61",
+    "https://plane.example/ima/browse/skynet-61",
+    "https://plane.example/ima/browse/SKYNET-0",
+    "https://plane.example/ima/browse/SKYNET-9007199254740992",
+    "https://plane.example/ima/browse/SKYNET-61;node",
+    "https://plane.example/ima/browse/SKYNET-61%20extra",
+    "https://plane.example/ima/browse/SKYNET%2D61",
+    "https://plane.example/ima/./browse/SKYNET-61",
+    "https://plane.example/ignored/../ima/browse/SKYNET-61",
+    "https://plane.example/ima/%2e/browse/SKYNET-61",
+    "https://plane.example/ima/%2e%2e/ima/browse/SKYNET-61",
+    String.raw`https://plane.example\ima\browse\SKYNET-61`,
+    "https:////plane.example/ima/browse/SKYNET-61",
+    "https://@plane.example/ima/browse/SKYNET-61",
     { type: "plane", workspace: "ima", project: "SKYNET", sequenceId: 0 },
     { type: "plane", workspace: "ima", project: "SKYNET", sequenceId: 61, extra: true },
   ]) {
     assert.equal(normalizeCycleSource(invalid), null, JSON.stringify(invalid));
+    if (typeof invalid === "string") {
+      assert.equal(parseCycleCommand(`start ${invalid}`), null, JSON.stringify(invalid));
+    }
   }
+  assert.equal(parseCycleCommand(`/ima:cycle start ${browseUrl} extra`), null);
 });
 
 test("derives Plane lifecycle state and emits a canonical resume packet", () => {
@@ -146,11 +187,11 @@ test("derives Plane lifecycle state and emits a canonical resume packet", () => 
   assert.match(packet, /^planeWorkItem: SKYNET-61$/m);
 });
 
-test("starts a Plane cycle through the typed context boundary", async () => {
+test("starts a Plane browse URL through the canonical typed context boundary", async () => {
   const contextRequests = [];
   const states = [];
   const started = await coordinateCycleStart({
-    source: plane,
+    source: browseUrl,
     cwd: "/repo",
     context: async (request) => {
       contextRequests.push(request);
@@ -165,7 +206,40 @@ test("starts a Plane cycle through the typed context boundary", async () => {
   assert.equal(started.ok, true);
   assert.deepEqual(contextRequests, [{ source: plane }]);
   assert.deepEqual(started.state.source, plane);
-  assert.equal(states.length, 2);
+  assert.equal(started.state.lifecycleKey, "ima-pi:plane:ima:SKYNET-61");
+  assert.deepEqual(states.map((state) => state.source), [plane, plane]);
+  assert.doesNotMatch(JSON.stringify({ contextRequests, states }), /plane\.example/);
+});
+
+test("rejects malformed Plane browse URLs before cycle effects", async () => {
+  const calls = [];
+  const result = await coordinateCycleStart({
+    source: "https://plane.example/ignored/../ima/browse/SKYNET-61",
+    cwd: "/repo",
+    context: async () => {
+      calls.push("context");
+      return { status: "ready" };
+    },
+    applyRoute: async () => {
+      calls.push("route");
+      return { ok: true };
+    },
+    appendState: async () => {
+      calls.push("append");
+    },
+    expandPrompt: async () => {
+      calls.push("expand");
+      return "unexpected";
+    },
+    sendUserMessage: async () => {
+      calls.push("send");
+      return null;
+    },
+    timestamp: at,
+  });
+
+  assert.equal(result.ok, false);
+  assert.deepEqual(calls, []);
 });
 
 test("accepts persisted lifecycle evidence only for the exact Plane identity", async () => {

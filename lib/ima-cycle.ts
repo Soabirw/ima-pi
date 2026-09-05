@@ -170,6 +170,28 @@ const planeCycleSourceFromWorkItem = (workspace: unknown, workItem: unknown) => 
   const match = PLANE_WORK_ITEM.exec(text(workItem));
   return match ? planeCycleSource(workspace, match[1], Number(match[2])) : null;
 };
+const planeCycleSourceFromBrowseUrl = (value: unknown) => {
+  const raw = text(value);
+  const match = /^https:\/\/[^\s/\\?#@]+\/([^/\s\\?#]+)\/browse\/([^/\s\\?#]+)$/.exec(raw);
+  if (!match) return null;
+
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (
+    url.protocol !== "https:"
+    || !url.hostname
+    || url.username
+    || url.password
+    || url.search
+    || url.hash
+  ) return null;
+
+  return planeCycleSourceFromWorkItem(match[1], match[2]);
+};
 const validPlaneLifecycleIdentity = (workspace: unknown, workItem: unknown) => {
   const normalizedWorkspace = text(workspace);
   const normalizedWorkItem = text(workItem);
@@ -198,7 +220,8 @@ export function cycleLifecycleKey(source: CycleSource): string {
 export function normalizeCycleSource(value: unknown): CycleSource | null {
   if (typeof value === "string") {
     const raw = value.trim();
-    const planeSource = planeCycleSourceFromReference(raw);
+    const planeSource = planeCycleSourceFromReference(raw)
+      ?? planeCycleSourceFromBrowseUrl(raw);
     if (planeSource) return planeSource;
     const urlMatch = raw.match(JIRA_URL);
     const key = urlMatch?.[1] ?? (JIRA_KEY.test(raw) ? raw : "");

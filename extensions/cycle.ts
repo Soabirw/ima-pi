@@ -992,7 +992,7 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
     description: "Start, inspect, stop, resume, or explicitly close one IMA lifecycle Story.",
     handler: async (args, ctx) => {
       const parsed = parseCycleCommand(args);
-      if (!parsed) { notify(ctx, "Usage: /ima:cycle start [--review-cap 0-10] [--implementation generic|js|wp] [--mode guided|autonomous] <Jira key|browse URL|taskwarrior project uuid|plane:workspace:PROJECT-sequence|plane workspace PROJECT-sequence> | status | stop [--ack] | resume [--autonomous|--guided] | close [--commit-prep].", "warning"); return; }
+      if (!parsed) { notify(ctx, "Usage: /ima:cycle start [--review-cap 0-10] [--implementation generic|js|wp] [--mode guided|autonomous] <Jira key|Jira browse URL|taskwarrior project uuid|plane:workspace:PROJECT-sequence|plane workspace PROJECT-sequence|Plane browse URL> | status | stop [--ack] | resume [--autonomous|--guided] | close [--commit-prep].", "warning"); return; }
       if (parsed.command === "status") { await reconcile(ctx); notifyState(ctx); return; }
       if (parsed.command === "start") {
         const result = await coordinateCycleStart({ source: parsed.source, reviewCap: parsed.reviewCap, implementationMode: parsed.implementationMode, mode: parsed.mode, cwd: ctx.cwd, activeState: state, context: (request, cwd) => coordinateContext(request, cwd) as Promise<CycleContextResult>, applyRoute: (phase) => dependencies.applyRoute(pi, ctx, phase), appendState: appendFor(pi, ctx, dependencies.persistDurableState), sendUserMessage: sendCycleUserMessage, expandPrompt: (message) => dependencies.expandPrompt(message, ctx.cwd), branchId: ctx.sessionManager.getLeafId() ?? undefined });

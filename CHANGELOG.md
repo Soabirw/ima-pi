@@ -4,6 +4,8 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ## [Unreleased]
 
+## [1.18.0] - 2026-09-05
+
 ### Added
 
 - Added the packaged `/skill:plane-api` direct REST helper for explicitly configured self-hosted Plane instances, supporting canonical work-item, state, and comment reads plus plain-text comment creation and state-only updates without Plane Cloud or external MCP fallback.
@@ -13,6 +15,7 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 - Added reviewed blank-only Taskwarrior description backfills for already-migrated Plane items: preparation separates prompted inserts from in-place updates, persists a distinct backfill artifact without changing the create-plan hash, and apply uses a live blank re-check before its description-only PATCH.
 - Added typed Plane `ima_context` hydration with canonical work-item references and aliases, paired workspace-aware lifecycle identity, deterministic boundary coverage, and manual-phase documentation.
 - Added first-class Plane `/ima:cycle` sources with canonical and space-delimited syntax, source-bound Tier-1 lifecycle verification/reconciliation, and a human-confirmed close that requires exactly one completed-group state and an exact provider state receipt.
+- Added strict raw HTTPS Plane browse-URL input for `/ima:cycle start`, canonicalizing supported URLs to existing Plane identities without using the pasted origin as an API destination.
 - Added focused security references for durable webhook idempotency, constrained Python subprocess execution, and PHPUnit WordPress negative testing.
 
 ### Changed
@@ -21,6 +24,7 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ### Fixed
 
+- Hardened Plane browse-URL parsing against WHATWG-normalized dot paths, backslashes, excess slashes, and empty userinfo before cycle effects.
 - Hardened Plane lifecycle markers, lifecycle-key hydration, and state-update receipts to reject malformed or ambiguous identity and unconfirmed provider state before dependent effects.
 - Corrected recommended Node API response/error handling, IMA Forms field projection, webhook idempotency, Python subprocess argument boundaries, and Playwright auth-state handling.
 - Rejected schema-v2 and schema-v3 interactive prepared runs from legacy direct apply/reconcile paths with `PREPARED_RUN_INTERACTIVE_ONLY` before plan loading, configuration, client construction, or Plane access.
