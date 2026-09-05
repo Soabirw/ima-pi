@@ -14,9 +14,9 @@ description: >-
 
 # jQuery - FP-Aligned Patterns
 
-**"jQuery IS native in WordPress. Reach for it first."**
+**"When declared as a WordPress dependency, jQuery is native. Reach for it first in that context."**
 
-Agents default to verbose vanilla JS even when jQuery is loaded. In WordPress, jQuery is always available (core dependency, 0 additional bytes). `$('.foo').on('click', ...)` beats `document.querySelectorAll('.foo').forEach(el => el.addEventListener('click', ...))`.
+Agents default to verbose vanilla JS even when jQuery is loaded. When a WordPress script declares jQuery as a dependency, it is already loaded with no additional bundle cost. `$('.foo').on('click', ...)` beats `document.querySelectorAll('.foo').forEach(el => el.addEventListener('click', ...))` in that declared context.
 
 ## Decision Tree
 
@@ -157,6 +157,18 @@ $el.remove() / $el.empty() / $el.clone()
 $el.css('color', 'red') / $el.css({ color: 'red', fontSize: '14px' })
 $el.show() / $el.hide() / $el.toggle()
 ```
+
+### Untrusted content and URL sinks
+
+`.text()` is the default for untrusted text because it escapes HTML. `.html()` and `.append()` with
+an HTML string parse markup and are XSS sinks; use them only for static or deliberately trusted HTML
+that has passed a reviewed sanitizer appropriate to the feature. Constructing a jQuery element and
+appending that element is not permission to interpolate untrusted strings into its HTML.
+
+Before setting `href`, `src`, form actions, or navigation targets from data, validate the URL scheme
+and destination against the feature's allowlist. Server-side authorization remains authoritative for
+protected actions. See [ima-security-guardrails](../ima-security-guardrails/SKILL.md) for the shared
+boundary rules.
 
 ### Events
 

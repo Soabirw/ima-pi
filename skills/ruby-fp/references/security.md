@@ -1,5 +1,7 @@
 # Ruby Boundary Security
 
+This reference operationalizes the shared [IMA security guardrails](../../ima-security-guardrails/SKILL.md) for Ruby. Keep its SQL, shell, path, parsing, secret, and output guidance aligned with that baseline.
+
 Treat validation and effects as a boundary: normalize and validate untrusted input in the imperative shell, pass validated values to the pure core, encode for the output context, and exclude secrets from errors and logs. Validation does not replace parameterization, escaping, authorization, or capability checks.
 
 ## SQL and shell execution

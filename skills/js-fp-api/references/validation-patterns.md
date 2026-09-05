@@ -108,6 +108,17 @@ const validateUserInput = (data) => {
 }
 ```
 
+## Validation is one boundary control
+
+Validation establishes expected shape, type, range, and allowlisted values. It does not sanitize
+rich text, authorize a resource operation, protect a browser request from CSRF, parameterize a
+query, or encode an output sink. Keep those controls at their relevant boundaries and fail closed
+when a validator cannot establish a required invariant.
+
+A route may normalize a validated value for its domain, but it must still authorize the caller
+server-side and use sink-specific controls for SQL, HTML, URLs, commands, paths, logs, and network
+requests. See [ima-security-guardrails](../../ima-security-guardrails/SKILL.md) for the baseline.
+
 ## Anti-Pattern: Inline Validation
 
 ```javascript

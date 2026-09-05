@@ -317,6 +317,17 @@ $this->assertLessThan(0.1, microtime(true) - $start);
 
 ---
 
+## Negative security gates
+
+Keep pure validation and calculation cases in unit tests. Exercise nonce verification, denied
+capabilities, `$wpdb->prepare()` behavior, output sinks, uploads, and other WordPress wrappers in
+the narrowest supported integration environment; do not simulate a whole authorization boundary in
+an isolated pure-function test. Include malformed or hostile input and assert an explicit
+fail-closed result.
+
+See [references/security-testing.md](references/security-testing.md) for bounded examples and
+[ima-security-guardrails](../ima-security-guardrails/SKILL.md) for the control definitions.
+
 ## Quality Gates
 
 - [ ] `composer test` produces visible output

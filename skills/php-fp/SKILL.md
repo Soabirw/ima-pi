@@ -236,6 +236,32 @@ $results = array_map($processor, $records);  // linear execution
 
 Real result: ima-espo email validation — 2-5x speedup, 130 tests, 236 assertions, <30ms total.
 
+## Security boundaries
+
+Use [ima-security-guardrails](../ima-security-guardrails/SKILL.md) when PHP receives or emits
+request data, database values, files, URLs, commands, credentials, or external responses. Validation,
+sanitization, authentication, authorization, parameterization, and contextual output encoding are
+distinct controls; keep pure rules free of the I/O that enforces them.
+
+### Database and output
+
+Use PDO prepared statements (or the installed driver's equivalent) for every dynamic value. Bind
+values separately; allowlist dynamic identifiers and sort direction because placeholders do not bind
+SQL structure. Encode output for its final HTML, attribute, URL, JavaScript, JSON, or other context;
+a value validated for storage is not automatically safe to render.
+
+### Commands, paths, and secrets
+
+Use command APIs that accept an argument array and avoid a shell when possible. Allowlist the
+executable and constrained arguments; never interpolate external input into a command string.
+Canonicalize or otherwise constrain sensitive paths under an approved base and account for traversal
+and symlinks. Obtain secrets from an injected or deployment-controlled source, fail closed when one
+is absent, and exclude secrets, raw queries, command text, and sensitive records from errors and
+logs.
+
+The effectful boundary authorizes the affected resource before it persists, sends, redirects, or
+renders data. Do not create a generic security wrapper or custom FP utility for these checks.
+
 ## Quality Gates
 
 1. Pure? — business logic separated from side effects

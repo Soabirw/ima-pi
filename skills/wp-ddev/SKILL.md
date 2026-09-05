@@ -154,6 +154,23 @@ Use `ddev npm`/`ddev composer` — never bare host commands. Container isolation
 
 **Exception**: `npm run deploy` stays on host — needs SSH for WP Engine push.
 
+## Secrets and destructive operations
+
+Treat `ddev describe`, environment output, database dumps, shell history, and copied terminal logs as
+sensitive. Do not paste credentials, tokens, connection strings, or customer data into commands,
+issue descriptions, screenshots, or shell history. Prefer an approved environment file or prompt
+mechanism over inline secret arguments, and verify that redaction is enabled before sharing output.
+
+`db import`, `db query`, `search-replace --all-tables`, `post delete --force`, plugin activation,
+and option updates can irreversibly change the local database. Confirm the DDEV project with
+`ddev describe`, take a named backup or snapshot, inspect the input, use `--dry-run` where available,
+and obtain explicit scope approval before a destructive command. Never point a local DDEV command at
+a production database.
+
+Container isolation reduces host exposure but does not authorize a dependency, database operation,
+or deployment. Review dependency source and lockfile changes; use the shared
+[ima-security-guardrails](../ima-security-guardrails/SKILL.md) baseline for related boundary work.
+
 ## Global Flags
 
 | Flag | Description |

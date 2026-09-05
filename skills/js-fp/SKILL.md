@@ -154,6 +154,22 @@ const updateItem = (items, id, updates) =>
   items.map(item => item.id === id ? { ...item, ...updates } : item)
 ```
 
+## Security boundaries
+
+Use [ima-security-guardrails](../ima-security-guardrails/SKILL.md) whenever JavaScript or
+TypeScript crosses a request, credential, authorization, DOM, URL, storage, database, filesystem,
+or external-response boundary. All boundary data is untrusted until the receiving boundary checks
+it.
+
+Validation, sanitization, authorization, CSRF protection, parameterization, and contextual encoding
+are distinct controls. Keep pure transformations separate from the effectful handler that performs
+those checks. Prefer native safe APIs: parameterized values, text DOM sinks, constrained argument
+arrays, and allowlisted structural choices. Missing, malformed, ambiguous, unauthorized, or
+unverifiable input fails closed where practical.
+
+Do not add a custom security wrapper, `pipe`, `compose`, `curry`, or monad abstraction. Use direct,
+readable control flow and the framework's documented boundary APIs.
+
 ## Testing (Enabled by Purity)
 
 Pure functions enable systematic edge case coverage.

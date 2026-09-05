@@ -348,6 +348,13 @@ def add_item(item, items=None):
 3. Is this complexity justified? — evidence-based decisions only
 4. Are type hints used? — all public function signatures
 
+## Security boundary reference
+
+For database, subprocess, paths, deserialization, secrets, and output boundaries, apply
+[ima-security-guardrails](../ima-security-guardrails/SKILL.md) and load
+[references/security.md](references/security.md). Keep this skill focused on FP patterns: security
+controls remain explicit at the effectful boundary and fail closed when required evidence is absent.
+
 ## References
 
 | Resource | Load when |

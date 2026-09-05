@@ -9,6 +9,15 @@ Patterns for `authorizenet/authorizenet` PHP SDK (^2.0). PHP-only.
 
 **Companion skills**: `php-fp`, `php-fp-wordpress`
 
+The existing API reference covers raw-body HMAC, constant-time comparison, and card-data boundaries,
+but its transient deduplication snippet is legacy/non-production: a `get_transient()` then
+`set_transient()` sequence is neither durable nor atomic idempotency. Use
+[webhook-security.md](references/webhook-security.md) for the production webhook boundary: verified
+payloads, durable atomic `notificationId` claims, retry-safe effects, and downstream idempotency.
+Apply the shared [ima-security-guardrails](../ima-security-guardrails/SKILL.md) baseline without
+duplicating or weakening those controls. The large API reference remains unedited here because this
+phase does not extend an already over-cap reference file.
+
 ## Architecture: Three-Layer FP Pattern
 
 ```
@@ -238,5 +247,6 @@ function extract_profile_id_from_error(string $error_text): string|false {
 
 | File | Load when |
 |------|-----------|
-| `references/api-reference.md` | Complete SDK class/method listings; CIM profiles; ARB subscriptions; webhooks + HMAC-SHA512; reporting API; response codes; refunds/voids/auth-only |
+| [webhook-security.md](references/webhook-security.md) | Verified webhooks, durable atomic `notificationId` claims, replay/retry behavior, downstream idempotency |
+| `references/api-reference.md` | Complete SDK class/method listings; CIM profiles; ARB subscriptions; legacy webhook HMAC/transient example; reporting API; response codes; refunds/voids/auth-only |
 | `references/sandbox-testing.md` | Sandbox setup; test card numbers; sandbox vs production differences; CIM→ARB propagation delay; PHPUnit patterns |

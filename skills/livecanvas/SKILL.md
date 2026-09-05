@@ -156,6 +156,19 @@ Tags inside attributes — use `{}` instead of `<>`:
 </tangible>
 ```
 
+## Dynamic output security
+
+Treat every Tangible field, shortcode value, ACF value, query parameter, and URL as boundary data.
+Verify the documented escaping behavior of the exact Tangible/LiveCanvas output tag before relying on
+it; do not infer that text output is safe in an HTML attribute, `href`, `src`, inline script, or rich
+HTML context.
+
+Validate and allowlist data before it reaches a dynamic query, URL, redirect, or template decision.
+Use sink-appropriate WordPress escaping or an approved rich-HTML policy at the rendering boundary,
+and keep authorization on the server for any protected action. Bootstrap classes and editor controls
+are not security controls. See [ima-security-guardrails](../ima-security-guardrails/SKILL.md) for the
+baseline.
+
 ## Reusable Sections
 
 Save section to library. Recall elsewhere: `[lc_html_section id="123"]` — edits propagate everywhere.

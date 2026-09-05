@@ -111,6 +111,10 @@ is permitted.
 A complete artifact includes the approved outcome, scope and non-goals, phase result,
 changed/reviewed/tested files, decisions, verification commands and results, blockers, residual
 risk, both references for every relevant prior artifact, and the recommended next phase.
+
+Unresolved security findings are not style-only debt: record them as blockers or route them through
+resolution and rereview before closeout. A closeout cannot claim completion while a Critical or
+Warning security finding remains unresolved.
 `priorArtifactIds` remains point-ID-only; handoffs list logical keys separately as
 `priorArtifactRecordKeys`. Equivalent organization is accepted; the artifact must remain bounded
 and lossless.

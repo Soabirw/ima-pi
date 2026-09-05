@@ -26,6 +26,50 @@ await page.click('#product-123 > .btn-primary')
 await page.waitForTimeout(2000)  // never do this
 ```
 
+## Security scenarios
+
+Use browser tests for high-value boundary behavior that a unit or integration test cannot observe.
+Do not turn E2E into fuzz testing: choose a small set of authentication, authorization, malformed
+input, escaped-output, and failure-state scenarios proportional to the feature's exposure.
+
+```typescript
+// Unauthenticated users cannot reach a protected page.
+test('redirects an unauthenticated visitor from billing', async ({ page }) => {
+  await page.goto('/billing')
+  await expect(page).toHaveURL(/\/login/)
+})
+
+// A signed-in user cannot operate on another user's resource.
+test('shows a bounded denial for an unauthorized record', async ({ page }) => {
+  await page.goto('/records/other-users-record')
+  await expect(page.getByRole('alert')).toHaveText(/forbidden|not found/i)
+})
+
+// An injected-looking value is rendered as text, not interpreted markup.
+test('renders a returned label as escaped text', async ({ page }) => {
+  await page.route('**/api/records/42', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ label: '<script>window.pwned = true</script>' }),
+  }))
+  await page.goto('/records/42')
+  const label = page.getByTestId('record-label')
+  await expect(label).toHaveText('<script>window.pwned = true</script>')
+  await expect(label.locator('script')).toHaveCount(0)
+})
+
+// An upstream failure has a bounded visible state and does not leak internals.
+test('handles an unavailable API without exposing diagnostics', async ({ page }) => {
+  await page.route('**/api/records/42', route => route.fulfill({ status: 503, body: 'unavailable' }))
+  await page.goto('/records/42')
+  await expect(page.getByRole('alert')).toHaveText(/try again later/i)
+})
+```
+
+The server remains authoritative for authorization; a hidden button or client route guard is not a
+permission test by itself. Use accessible, stable locators and verify the observable fail-closed
+state. See [ima-security-guardrails](../ima-security-guardrails/SKILL.md) for the distinct controls.
+
 ## Locator Strategy
 
 | Priority | Locator | Example |
@@ -128,6 +172,17 @@ test('successful login redirects to dashboard', async ({ loginPage, dashboardPag
 
 ### Auth State (Global Setup)
 
+Authentication storage state can contain reusable cookies and local storage. Treat it as secret
+material. Before setup writes it, the consumer project's `.gitignore` must include the auth directory:
+
+```gitignore
+playwright/.auth/
+```
+
+Do not include storage-state files in reports or CI test artifacts. Use dedicated least-privileged
+test accounts, never a production account. In shared CI, rotate or revoke credentials and clean up
+test-account data according to the environment's retention policy.
+
 ```typescript
 // global-setup.ts
 import { chromium, type FullConfig } from '@playwright/test'
@@ -140,13 +195,15 @@ export default async function globalSetup(config: FullConfig) {
   await page.getByLabel('Password').fill(process.env.TEST_PASSWORD!)
   await page.getByRole('button', { name: 'Sign in' }).click()
   await page.waitForURL('/dashboard')
-  await page.context().storageState({ path: 'auth/user.json' })
+  await page.context().storageState({ path: 'playwright/.auth/user.json' })
   await browser.close()
 }
 
 // fixture usage
 authenticatedPage: async ({ browser }, use) => {
-  const context = await browser.newContext({ storageState: 'auth/user.json' })
+  const context = await browser.newContext({
+    storageState: 'playwright/.auth/user.json',
+  })
   const page = await context.newPage()
   await use(page)
   await context.close()

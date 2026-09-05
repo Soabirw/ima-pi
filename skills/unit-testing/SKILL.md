@@ -87,6 +87,26 @@ Is the dependency hard to test?
 | Fake | Working simplified impl | Complex interfaces (in-memory DB) |
 | Full mock | Strict call expectations | Almost never |
 
+## Security-negative test selection
+
+For a changed trust boundary, add risk-appropriate negative evidence instead of relying only on a
+happy path. Test the enforcement point and observable failure state: a pure validator test alone
+does not prove that a query, output sink, authorization decision, file operation, or browser route
+is protected.
+
+| Boundary | Negative case |
+| --- | --- |
+| Protected operation | Denied authorization for the affected resource |
+| Browser state change | Missing or invalid CSRF/nonce check where applicable |
+| Input and parser | Missing, malformed, overlong, or injection-shaped data |
+| Interpreter / output sink | Parameterized or encoded behavior at the actual SQL, command, HTML, URL, or path sink |
+| External dependency | Failed, ambiguous, or disallowed response fails closed without leaking secrets |
+
+Keep pure-rule cases in unit tests and put framework wrappers, auth, persistence, and real output
+sinks in the smallest applicable integration or E2E test. See
+[ima-security-guardrails](../ima-security-guardrails/SKILL.md) for distinct controls and the domain
+skill for framework-specific fixtures.
+
 ## Quality Checklist
 
 - [ ] Tests verify behavior, not implementation

@@ -110,7 +110,8 @@ function ima_forms_text_field_register(array $args): void {
 
 ```php
 // 1. Include template → field functions register specs + validators
-ima_forms_validate_form('templates/forms/my-form', $_POST, 'my-form');
+// The handler has already removed nonce/action transport metadata from $form_input.
+ima_forms_validate_form('templates/forms/my-form', $form_input, 'my-form');
 
 // Inside ima_forms_validate_form():
 // a) Clear registry (clean state)
@@ -295,6 +296,30 @@ $sanitized_locations = ima_forms_sanitize_repeater(
 ```
 
 ---
+
+## Security boundary contract
+
+The registry is an allowlist for expected field names and types, not a complete security boundary.
+`ima_forms_sanitize_against_specs()` produces `$sanitized`, the registered-field business-data
+projection. Downstream rules and effects consume that projection only; unregistered values are
+omitted and never recovered from raw `$_POST`.
+
+The handler processes nonce/action and other known transport metadata separately before it passes
+business input to `ima_forms_validate_form()`. Required registered fields must be present and valid.
+Optional registered fields may be absent. Missing or malformed specs, invalid required fields, and a
+malformed validation result fail closed rather than triggering a raw-input fallback.
+
+PHP's normal `$_POST` parsing does not preserve duplicate scalar values. Do not promise generic
+duplicate rejection from this API. When a use case must detect duplicates, an upstream parser must
+preserve and reject them before the normal `$_POST` boundary; otherwise follow the registered
+array/repeater shape and its validators.
+
+Validation does not replace capability authorization for a protected action, nonce/CSRF checks for a
+state-changing browser request, parameterized persistence, URL/destination validation, or
+contextual output encoding. `wp_kses_post()` is a narrow rich-HTML policy, not a general safety
+label. The handler owns these effects and fails closed when the form result is not valid.
+
+See [ima-security-guardrails](../../ima-security-guardrails/SKILL.md) for the shared controls.
 
 ## Debug Helpers
 
