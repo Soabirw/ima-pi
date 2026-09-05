@@ -4,6 +4,21 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ## [Unreleased]
 
+## [1.19.0] - 2026-09-05
+
+### Added
+
+- Added default-on, generic desktop readiness notifications for valid interactive Pi TUI settlement and documented extension-dialog waiting events on Linux and macOS, with one attempt per event and silent native-delivery failures.
+- Added validated bundled and user notification configuration, a user opt-out, focused behavior/configuration/discovery/fixture coverage, and operator-facing notification documentation with a manual desktop-acceptance procedure.
+
+### Changed
+
+- Raised the repository development baseline for `@earendil-works/pi-coding-agent` and `@earendil-works/pi-ai` to 0.84.4 while supporting coding-agent peers `^0.84.4 || ^0.85.0`.
+
+### Fixed
+
+- Made observed broken or unsafe notification configuration entries fail closed and aligned the manual notification fixture with configured native confirm/cancel actions and mounted nested-dialog ordering.
+
 ## [1.18.0] - 2026-09-05
 
 ### Added

@@ -67,6 +67,21 @@ IMA_TTS_IT=1 OPENAI_API_KEY=<configured-secret> node --test tests/tts-speech-liv
 The live test uses the configured default player (`ffplay`) or
 `IMA_TTS_PLAYER_COMMAND`; it is skipped unless explicitly enabled and never prints the key.
 
+## Desktop notifications (SKYNET-185)
+
+Desktop notifications are enabled by default for valid waiting events in an interactive
+TUI: final agent settlement and documented extension dialogs. They use the Pi 0.84.4
+development baseline, while the package peer range supports `^0.84.4 || ^0.85.0`.
+Print, JSON, and RPC modes remain silent. Opt out with:
+
+```json
+{"enable": false}
+```
+
+in `~/.pi/agent/ima/notifications.json` (or its `PI_CODING_AGENT_DIR` equivalent).
+Malformed or unsafe notification configuration fails closed for that extension instance.
+See [desktop notification behavior and manual acceptance](docs/notifications.md).
+
 Start with the [package guide](docs/guide.md). For the memory and lifecycle contracts, see [FNR-3016](docs/foundation/FNR-3016.md) and [FNR-3036](docs/foundation/FNR-3036.md).
 
 ## Install and get started

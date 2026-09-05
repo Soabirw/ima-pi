@@ -8,6 +8,15 @@
 
 Use Node.js 24+ and an installed Pi version. The normal package path also needs access to the approved private Gitea repository. Optional integrations have their own credentials and executables; they are not installation prerequisites.
 
+## Desktop notifications
+
+The default-on desktop notification extension uses the repository's Pi 0.84.4
+development baseline and supports peer runtimes `^0.84.4 || ^0.85.0`. It runs only in
+interactive TUI sessions and can be disabled with `{"enable":false}` in
+`~/.pi/agent/ima/notifications.json` (or the equivalent `PI_CODING_AGENT_DIR` path).
+See [desktop notifications](notifications.md) for its configuration, fixed platform
+commands, limitations, and manual acceptance procedure.
+
 ## Team/global Git installation
 
 Install with Pi's standard package command:

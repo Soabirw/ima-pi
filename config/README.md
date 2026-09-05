@@ -31,3 +31,18 @@ A delegated agent resolves `agents[agent.name]`, then its explicit phase route, 
 `/ima:new` is TUI-only and accepts no selector, role selectors `low`, `mid`, `high`, and `xhigh`, or a discovered bare IMA command name. Role selectors apply the configured role; command selectors use the same command resolver; a command without a route starts unchanged. A verified regular-file parent is linked; missing, unwritten, inaccessible, or non-file parents are omitted. A successful replacement injects Serena before Vestige and any phase-mapped package skill; an explicitly selected configured route that is unavailable, unauthenticated, unsupported, or rolled back fails closed.
 
 The built-in `openai-codex-56-max` experiment keeps its explicit legacy phase mappings. Credentials, provider registration, and model catalogs stay Pi-owned. No dependency or package-manifest change is required to add a valid profile.
+
+## Desktop notifications
+
+`notifications.json` is separate from IMA model configuration. The bundled package
+configuration enables notifications by default. To opt out, create
+`~/.pi/agent/ima/notifications.json` (or the matching `PI_CODING_AGENT_DIR` path):
+
+```json
+{"enable": false}
+```
+
+Only the boolean `enable` key is accepted. An empty user object inherits the bundled
+default; malformed, unknown, oversized, nonregular, or unsafe files disable
+notifications until `/reload` or restart. See [`../docs/notifications.md`](../docs/notifications.md)
+for behavior, platform prerequisites, and manual acceptance.
