@@ -325,6 +325,26 @@ test("updates only a validated state after reading the item and project states",
   assert.deepEqual(JSON.parse(calls[2].options.body), { state: NEXT_STATE_ID });
 });
 
+test("requires the PATCH response to confirm the selected state", async () => {
+  const { state: omittedState, ...withoutState } = workItem();
+  for (const [label, patchResponse] of [
+    ["missing", withoutState],
+    ["null", workItem({ state: null })],
+    ["malformed", workItem({ state: "not-a-uuid" })],
+    ["mismatched", workItem({ state: CURRENT_STATE_ID })],
+  ]) {
+    const { client, calls } = clientFor([
+      jsonResponse(workItem()),
+      jsonResponse({ results: [state()], next_page_results: false, next_cursor: null }),
+      jsonResponse(patchResponse),
+    ]);
+
+    await assertErrorCode(client.setState(REFERENCE, NEXT_STATE_ID), "RESPONSE_ERROR");
+    assert.equal(calls.length, 3, label);
+  }
+  assert.equal(omittedState, CURRENT_STATE_ID);
+});
+
 test("rejects unknown states and malformed responses before a dependent write", async () => {
   const unknownState = clientFor([
     jsonResponse(workItem()),

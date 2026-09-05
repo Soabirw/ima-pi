@@ -130,6 +130,37 @@ test("normalizes only verified direct corpus lifecycle records", () => {
   assert.equal(normalizeCorpusLifecycleRecord({ lifecycleKey, record: { ...record, detail: content.replace("outcome=completed", "outcome=blocked") } }), null);
 });
 
+test("accepts only canonical complete Plane lifecycle markers", () => {
+  const lifecycleKey = "ima-pi:plane:ima:SKYNET-61";
+  const marker = `<!-- ima-lifecycle verification: lifecycle_key=${lifecycleKey}; nonce=01234567-89ab-cdef-0123-456789abcdef; phase=implementation; jira_key=; taskwarrior_uuid=; plane_workspace=ima; plane_work_item=SKYNET-61; outcome=completed -->`;
+  const content = `# Implementation\n${marker}\n`;
+  const record = {
+    id: "plane-implementation",
+    recordKey: `${lifecycleKey}:implementation:artifact`,
+    lifecycleKey,
+    detail: content,
+  };
+
+  assert.deepEqual(normalizeCorpusLifecycleRecord({ lifecycleKey, record }), {
+    id: record.id,
+    recordKey: record.recordKey,
+    content,
+  });
+  for (const detail of [
+    content.replace("; plane_work_item=SKYNET-61", ""),
+    content.replace("plane_work_item=SKYNET-61", "plane_work_item=skynet-61"),
+    content.replace("plane_work_item=SKYNET-61", "plane_work_item=SKYNET-0"),
+    content.replace("plane_work_item=SKYNET-61", "plane_work_item=SKYNET-9007199254740992"),
+    content.replace("; plane_work_item=SKYNET-61", "; plane_workspace=other; plane_work_item=SKYNET-61"),
+    content.replace("; outcome=completed", "; unexpected=value; outcome=completed"),
+    content.replace("01234567-89ab-cdef-0123-456789abcdef", "not-a-uuid"),
+    content.replace(lifecycleKey, "ima-pi:plane:ima:SKYNET-62"),
+    `${content}unrelated`,
+  ]) {
+    assert.equal(normalizeCorpusLifecycleRecord({ lifecycleKey, record: { ...record, detail } }), null);
+  }
+});
+
 test("validates durable knowledge boundaries", () => {
   assert.equal(validateContextRequest({ source: sources[0], durableKnowledge: { query: "x", collection: "c", limit: 1 } }).valid, true);
   assert.equal(validateContextRequest({ source: sources[0], durableKnowledge: { query: "x".repeat(2_000), collection: "c".repeat(256), limit: 20 } }).valid, true);

@@ -20,6 +20,9 @@ import {
   parseCycleCommand,
   parseJiraTracker,
   parseLifecycleSearchRecords,
+  parsePlaneCurrentWorkItem,
+  parsePlaneStateMutation,
+  parsePlaneWorkflowStates,
   parseTaskwarriorTracker,
   prepareCycleResume,
   reconcileCycleFromLifecycle,
@@ -44,6 +47,8 @@ import {
 
 export const CYCLE_STATUS_KEY = "ima-cycle";
 const JIRA_HELPER = join(homedir(), ".agents", "skills", "mcp-atlassian", "scripts", "atlassian-api.mjs");
+const PLANE_HELPER = fileURLToPath(new URL("../skills/plane-api/scripts/plane-api.mjs", import.meta.url));
+const MAX_PLANE_HELPER_OUTPUT_BYTES = 128 * 1024;
 const WRITE_CAPABLE_PHASES = new Set<CyclePhase>(["implementation", "test", "resolution", "document"]);
 const text = (value: unknown) => typeof value === "string" ? value.trim() : "";
 const object = (value: unknown): Record<string, unknown> | null => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
@@ -324,7 +329,16 @@ const sameLifecycleIdentity = (state: CycleState, identityValue: unknown): boole
   const identity = object(identityValue);
   if (!identity || text(identity.project) !== IMA_PROJECT || text(identity.lifecycleKey) !== state.lifecycleKey) return false;
   if (state.source.type === "jira") return text(identity.jiraKey) === state.source.key;
-  return text(identity.taskwarriorProject) === state.source.project && text(identity.taskwarriorUuid) === state.source.uuid;
+  if (state.source.type === "taskwarrior") {
+    return text(identity.taskwarriorProject) === state.source.project
+      && text(identity.taskwarriorUuid) === state.source.uuid;
+  }
+  return text(identity.jiraKey) === ""
+    && text(identity.taskwarriorProject) === ""
+    && text(identity.taskwarriorTask) === ""
+    && text(identity.taskwarriorUuid) === ""
+    && text(identity.planeWorkspace) === state.source.workspace
+    && text(identity.planeWorkItem) === `${state.source.project}-${state.source.sequenceId}`;
 };
 
 export type CycleObservationInput = {
@@ -385,6 +399,20 @@ const execPayload = (value: unknown): unknown => {
   return value;
 };
 
+const planePayload = (value: unknown): unknown | null => {
+  const result = object(value);
+  if (
+    !result
+    || typeof result.stdout !== "string"
+    || Buffer.byteLength(result.stdout, "utf8") > MAX_PLANE_HELPER_OUTPUT_BYTES
+  ) return null;
+  try {
+    return JSON.parse(result.stdout);
+  } catch {
+    return null;
+  }
+};
+
 const execSucceeded = (value: unknown) => {
   const result = object(value);
   if (!result) return false;
@@ -426,6 +454,10 @@ export async function coordinateCycleReconcile(input: CycleReconcileInput): Prom
     phase: state.phase,
     jiraKey: state.source.type === "jira" ? state.source.key : "",
     taskwarriorUuid: state.source.type === "taskwarrior" ? state.source.uuid : "",
+    planeWorkspace: state.source.type === "plane" ? state.source.workspace : "",
+    planeWorkItem: state.source.type === "plane"
+      ? `${state.source.project}-${state.source.sequenceId}`
+      : "",
   });
   if (!parsed.valid) return { ...safeError("cycle_reconcile_read_failed"), state };
   const reconciled = reconcileCycleFromLifecycle(state, parsed.records, { timestamp: input.timestamp });
@@ -474,9 +506,29 @@ export async function coordinateCycleRecovery(input: CycleReconcileInput): Promi
   return { ok: false, state, error: sanitizeCycleError("cycle_recovery_limit_reached") };
 }
 
-const identityForSource = (state: CycleState): LifecycleIdentity => state.source.type === "jira"
-  ? { project: IMA_PROJECT, lifecycleKey: state.lifecycleKey, lifecycleRootMemoryId: "", taskwarriorProject: "", taskwarriorTask: "", taskwarriorUuid: "", jiraKey: state.source.key, sourceRefs: [`Jira:${state.source.key}`], priorArtifactIds: state.evidence.flatMap((item) => item.artifactId ? [item.artifactId] : []) }
-  : { project: IMA_PROJECT, lifecycleKey: state.lifecycleKey, lifecycleRootMemoryId: "", taskwarriorProject: state.source.project, taskwarriorTask: state.source.uuid, taskwarriorUuid: state.source.uuid, jiraKey: "", sourceRefs: [`Taskwarrior:${state.source.project}:${state.source.uuid}`], priorArtifactIds: state.evidence.flatMap((item) => item.artifactId ? [item.artifactId] : []) };
+const identityForSource = (state: CycleState): LifecycleIdentity => {
+  const priorArtifactIds = state.evidence.flatMap((item) => item.artifactId ? [item.artifactId] : []);
+  if (state.source.type === "jira") {
+    return { project: IMA_PROJECT, lifecycleKey: state.lifecycleKey, lifecycleRootMemoryId: "", taskwarriorProject: "", taskwarriorTask: "", taskwarriorUuid: "", jiraKey: state.source.key, sourceRefs: [`Jira:${state.source.key}`], priorArtifactIds };
+  }
+  if (state.source.type === "taskwarrior") {
+    return { project: IMA_PROJECT, lifecycleKey: state.lifecycleKey, lifecycleRootMemoryId: "", taskwarriorProject: state.source.project, taskwarriorTask: state.source.uuid, taskwarriorUuid: state.source.uuid, jiraKey: "", sourceRefs: [`Taskwarrior:${state.source.project}:${state.source.uuid}`], priorArtifactIds };
+  }
+  const planeWorkItem = `${state.source.project}-${state.source.sequenceId}`;
+  return {
+    project: IMA_PROJECT,
+    lifecycleKey: state.lifecycleKey,
+    lifecycleRootMemoryId: "",
+    taskwarriorProject: "",
+    taskwarriorTask: "",
+    taskwarriorUuid: "",
+    jiraKey: "",
+    planeWorkspace: state.source.workspace,
+    planeWorkItem,
+    sourceRefs: [cycleSourceReference(state.source)],
+    priorArtifactIds,
+  };
+};
 
 export type CycleCloseInput = {
   state: CycleState;
@@ -488,6 +540,61 @@ export type CycleCloseInput = {
   identity?: LifecycleIdentity;
   appendState: CycleAppend;
   timestamp?: string;
+};
+
+const closePlaneTracker = async (
+  source: Extract<CycleSource, { type: "plane" }>,
+  run: CycleCloseInput["run"],
+): Promise<{ ok: true } | { ok: false; code: string }> => {
+  const reference = cycleSourceReference(source);
+  let currentResult: unknown;
+  try {
+    currentResult = await run("node", [PLANE_HELPER, "plane:get", reference]);
+  } catch {
+    return { ok: false, code: "tracker_read_failed" };
+  }
+  if (!execSucceeded(currentResult)) return { ok: false, code: "tracker_read_failed" };
+
+  const current = parsePlaneCurrentWorkItem(planePayload(currentResult), source);
+  if (!current.valid) return { ok: false, code: current.error.code };
+
+  let statesResult: unknown;
+  try {
+    statesResult = await run("node", [PLANE_HELPER, "plane:states", reference]);
+  } catch {
+    return { ok: false, code: "tracker_read_failed" };
+  }
+  if (!execSucceeded(statesResult)) return { ok: false, code: "tracker_read_failed" };
+
+  const workflow = parsePlaneWorkflowStates(
+    planePayload(statesResult),
+    source,
+    current.workItem,
+  );
+  if (!workflow.valid) return { ok: false, code: workflow.error.code };
+
+  let mutationResult: unknown;
+  try {
+    mutationResult = await run("node", [
+      PLANE_HELPER,
+      "plane:set-state",
+      reference,
+      workflow.completedState.id,
+    ]);
+  } catch {
+    return { ok: false, code: "tracker_close_failed" };
+  }
+  if (!execSucceeded(mutationResult)) return { ok: false, code: "tracker_close_failed" };
+
+  const mutation = parsePlaneStateMutation(
+    planePayload(mutationResult),
+    source,
+    current.workItem,
+    workflow.completedState.id,
+  );
+  return mutation.valid
+    ? { ok: true }
+    : { ok: false, code: mutation.error.code };
 };
 
 export async function coordinateCycleClose(input: CycleCloseInput): Promise<{ ok: true; state?: CycleState; commitPrep?: { status: string; diffCheck: string; gitStatus: string }; message: string } | { ok: false; error: ReturnType<typeof sanitizeCycleError>; state?: CycleState }> {
@@ -509,35 +616,43 @@ export async function coordinateCycleClose(input: CycleCloseInput): Promise<{ ok
   if (!evidence.valid) return { ...safeError("closeout_evidence_missing"), state: input.state };
   if (input.confirmed !== true) return { ...safeError("close_confirmation_required"), state: input.state };
   const state = input.state;
-  let tracker: unknown;
-  try {
-    const trackerResult = state.source.type === "jira"
-      ? await input.run("node", [JIRA_HELPER, "jira:transitions", state.source.key])
-      : await input.run("task", ["rc.verbose=nothing", `project:${state.source.project}`, state.source.uuid, "export"]);
-    if (object(trackerResult) && !execSucceeded(trackerResult)) return { ...safeError("tracker_read_failed"), state };
-    tracker = execPayload(trackerResult);
-  } catch {
-    return { ...safeError("tracker_read_failed"), state };
-  }
-  let transitionId = "";
-  if (state.source.type === "jira") {
-    const parsed = parseJiraTracker(tracker);
-    if (!parsed.valid || (parsed.key && parsed.key !== state.source.key) || parsed.doneTransitions.length !== 1) return { ...safeError(parsed.valid ? "jira_done_transition_ambiguous" : parsed.error.code), state };
-    transitionId = parsed.doneTransitions[0].id;
-  } else {
-    const parsed = parseTaskwarriorTracker(tracker, state.source);
-    if (!parsed.valid) return { ...safeError(parsed.error.code), state };
-  }
-  let mutation: unknown;
-  try {
-    mutation = state.source.type === "jira"
-      ? await input.run("node", [JIRA_HELPER, "jira:transition", state.source.key, transitionId])
-      : await input.run("task", ["rc.verbose=nothing", `project:${state.source.project}`, state.source.uuid, "done"]);
-  } catch {
-    return { ...safeError("tracker_close_failed"), state };
-  }
-  if (!execSucceeded(mutation)) return { ...safeError("tracker_close_failed"), state };
   const identity = input.identity ?? identityForSource(state);
+  if (!sameLifecycleIdentity(state, identity)) {
+    return { ...safeError("lifecycle_identity_mismatch"), state };
+  }
+  if (state.source.type === "plane") {
+    const closed = await closePlaneTracker(state.source, input.run);
+    if (!closed.ok) return { ...safeError(closed.code), state };
+  } else {
+    let tracker: unknown;
+    try {
+      const trackerResult = state.source.type === "jira"
+        ? await input.run("node", [JIRA_HELPER, "jira:transitions", state.source.key])
+        : await input.run("task", ["rc.verbose=nothing", `project:${state.source.project}`, state.source.uuid, "export"]);
+      if (object(trackerResult) && !execSucceeded(trackerResult)) return { ...safeError("tracker_read_failed"), state };
+      tracker = execPayload(trackerResult);
+    } catch {
+      return { ...safeError("tracker_read_failed"), state };
+    }
+    let transitionId = "";
+    if (state.source.type === "jira") {
+      const parsed = parseJiraTracker(tracker);
+      if (!parsed.valid || (parsed.key && parsed.key !== state.source.key) || parsed.doneTransitions.length !== 1) return { ...safeError(parsed.valid ? "jira_done_transition_ambiguous" : parsed.error.code), state };
+      transitionId = parsed.doneTransitions[0].id;
+    } else {
+      const parsed = parseTaskwarriorTracker(tracker, state.source);
+      if (!parsed.valid) return { ...safeError(parsed.error.code), state };
+    }
+    let mutation: unknown;
+    try {
+      mutation = state.source.type === "jira"
+        ? await input.run("node", [JIRA_HELPER, "jira:transition", state.source.key, transitionId])
+        : await input.run("task", ["rc.verbose=nothing", `project:${state.source.project}`, state.source.uuid, "done"]);
+    } catch {
+      return { ...safeError("tracker_close_failed"), state };
+    }
+    if (!execSucceeded(mutation)) return { ...safeError("tracker_close_failed"), state };
+  }
   const artifact = buildFinalCloseoutArtifact(state, { identity });
   const lifecycle = input.lifecycle ?? (async (request) => coordinateLifecycle(request));
   let persisted: { status?: string; [key: string]: unknown };
@@ -877,7 +992,7 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
     description: "Start, inspect, stop, resume, or explicitly close one IMA lifecycle Story.",
     handler: async (args, ctx) => {
       const parsed = parseCycleCommand(args);
-      if (!parsed) { notify(ctx, "Usage: /ima:cycle start [--review-cap 0-10] [--implementation generic|js|wp] [--mode guided|autonomous] <Jira key|browse URL|taskwarrior project uuid> | status | stop [--ack] | resume [--autonomous|--guided] | close [--commit-prep].", "warning"); return; }
+      if (!parsed) { notify(ctx, "Usage: /ima:cycle start [--review-cap 0-10] [--implementation generic|js|wp] [--mode guided|autonomous] <Jira key|browse URL|taskwarrior project uuid|plane:workspace:PROJECT-sequence|plane workspace PROJECT-sequence> | status | stop [--ack] | resume [--autonomous|--guided] | close [--commit-prep].", "warning"); return; }
       if (parsed.command === "status") { await reconcile(ctx); notifyState(ctx); return; }
       if (parsed.command === "start") {
         const result = await coordinateCycleStart({ source: parsed.source, reviewCap: parsed.reviewCap, implementationMode: parsed.implementationMode, mode: parsed.mode, cwd: ctx.cwd, activeState: state, context: (request, cwd) => coordinateContext(request, cwd) as Promise<CycleContextResult>, applyRoute: (phase) => dependencies.applyRoute(pi, ctx, phase), appendState: appendFor(pi, ctx, dependencies.persistDurableState), sendUserMessage: sendCycleUserMessage, expandPrompt: (message) => dependencies.expandPrompt(message, ctx.cwd), branchId: ctx.sessionManager.getLeafId() ?? undefined });

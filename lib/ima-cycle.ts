@@ -33,7 +33,8 @@ export const CYCLE_PHASE_OUTCOMES: Readonly<Record<CyclePhase, readonly string[]
 
 export type CycleSource =
   | { type: "jira"; key: string; url: string }
-  | { type: "taskwarrior"; project: string; uuid: string };
+  | { type: "taskwarrior"; project: string; uuid: string }
+  | { type: "plane"; workspace: string; project: string; sequenceId: number };
 
 export type CycleEvidence = {
   phase: CyclePhase;
@@ -50,6 +51,8 @@ export type LifecycleSearchSelection = {
   phase: CyclePhase;
   jiraKey: string;
   taskwarriorUuid: string;
+  planeWorkspace?: string;
+  planeWorkItem?: string;
 };
 
 export type LifecycleSearchRecord = {
@@ -93,13 +96,35 @@ export type CycleCommand =
   | { command: "resume"; mode?: CycleMode }
   | { command: "close"; commitPrep: boolean };
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f-]{27}$/i;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const JIRA_KEY = /^[A-Z][A-Z0-9]+-\d+$/;
 const PROJECT = /^[\w.-]+$/;
+const PLANE_WORKSPACE = /^[A-Za-z0-9][A-Za-z0-9._~-]*$/;
+const PLANE_PROJECT = /^[A-Z][A-Z0-9_]*$/;
+const PLANE_WORK_ITEM = /^([A-Z][A-Z0-9_]*)-([1-9]\d*)$/;
+const PLANE_REFERENCE = /^plane:([A-Za-z0-9][A-Za-z0-9._~-]*):([A-Z][A-Z0-9_]*)-([1-9]\d*)$/;
+const PLANE_IDENTITY_MAXIMUM = 128;
+const MAX_PLANE_STATES = 1_000;
+const PLANE_STATE_GROUPS = ["backlog", "unstarted", "started", "completed", "cancelled"] as const;
+type PlaneStateGroup = typeof PLANE_STATE_GROUPS[number];
 const LIFECYCLE_KEY = /^[^\r\n]{1,512}$/;
 const JIRA_URL = /^https:\/\/flccc\.atlassian\.net\/browse\/([A-Z][A-Z0-9]+-\d+)$/;
 const CYCLE_MARKER = /<!--\s*ima-cycle outcome:\s*phase=(plan|implementation|test|review|resolution|rereview|document);\s*outcome=([A-Z_]+)\s*-->/g;
 const LIFECYCLE_VERIFICATION = /<!--\s*ima-lifecycle verification:\s*([\s\S]*?)\s*-->/g;
+const LEGACY_LIFECYCLE_MARKER_FIELDS = [
+  "lifecycle_key",
+  "nonce",
+  "phase",
+  "jira_key",
+  "taskwarrior_uuid",
+  "outcome",
+] as const;
+const PLANE_LIFECYCLE_MARKER_FIELDS = [
+  ...LEGACY_LIFECYCLE_MARKER_FIELDS.slice(0, 5),
+  "plane_workspace",
+  "plane_work_item",
+  "outcome",
+] as const;
 const MAX_PHASE_ARTIFACT_LENGTH = 128_000;
 const MAX_PERSISTED_ARTIFACT_LENGTH = 160_000;
 const MAX_SEARCH_RECORDS = 32;
@@ -118,22 +143,63 @@ const validStatus = (value: unknown): value is CycleStatus => CYCLE_STATUSES.inc
 const validImplementationMode = (value: unknown): value is CycleImplementationMode => CYCLE_IMPLEMENTATION_MODES.includes(value as CycleImplementationMode);
 const validCycleMode = (value: unknown): value is CycleMode => CYCLE_MODES.includes(value as CycleMode);
 const validOutcome = (phase: CyclePhase, value: unknown) => typeof value === "string" && CYCLE_PHASE_OUTCOMES[phase].includes(value);
+const planeWorkItemIdentifier = (source: Extract<CycleSource, { type: "plane" }>) => `${source.project}-${source.sequenceId}`;
+const planeCycleSource = (workspaceValue: unknown, projectValue: unknown, sequenceValue: unknown): Extract<CycleSource, { type: "plane" }> | null => {
+  const workspace = text(workspaceValue);
+  const project = text(projectValue);
+  if (
+    !PLANE_WORKSPACE.test(workspace)
+    || !PLANE_PROJECT.test(project)
+    || !boundedText(workspace, PLANE_IDENTITY_MAXIMUM)
+    || !boundedText(project, PLANE_IDENTITY_MAXIMUM)
+    || typeof sequenceValue !== "number"
+    || !Number.isSafeInteger(sequenceValue)
+    || sequenceValue < 1
+  ) return null;
+
+  const source = { type: "plane" as const, workspace, project, sequenceId: sequenceValue };
+  return boundedText(planeWorkItemIdentifier(source), PLANE_IDENTITY_MAXIMUM)
+    ? source
+    : null;
+};
+const planeCycleSourceFromReference = (value: unknown) => {
+  const match = PLANE_REFERENCE.exec(text(value));
+  return match ? planeCycleSource(match[1], match[2], Number(match[3])) : null;
+};
+const planeCycleSourceFromWorkItem = (workspace: unknown, workItem: unknown) => {
+  const match = PLANE_WORK_ITEM.exec(text(workItem));
+  return match ? planeCycleSource(workspace, match[1], Number(match[2])) : null;
+};
+const validPlaneLifecycleIdentity = (workspace: unknown, workItem: unknown) => {
+  const normalizedWorkspace = text(workspace);
+  const normalizedWorkItem = text(workItem);
+  if (!normalizedWorkspace && !normalizedWorkItem) return true;
+  return Boolean(planeCycleSourceFromWorkItem(normalizedWorkspace, normalizedWorkItem));
+};
+const isPlaneStateGroup = (value: unknown): value is PlaneStateGroup =>
+  PLANE_STATE_GROUPS.includes(value as PlaneStateGroup);
 
 export function sanitizeCycleError(code: string, _value?: unknown) {
   return { code, message: `Cycle integration failed: ${code}.` };
 }
 
 export function cycleSourceReference(source: CycleSource): string {
-  return source.type === "jira" ? source.key : `taskwarrior ${source.project} ${source.uuid}`;
+  if (source.type === "jira") return source.key;
+  if (source.type === "taskwarrior") return `taskwarrior ${source.project} ${source.uuid}`;
+  return `plane:${source.workspace}:${planeWorkItemIdentifier(source)}`;
 }
 
 export function cycleLifecycleKey(source: CycleSource): string {
-  return source.type === "jira" ? `${IMA_PROJECT}:jira:${source.key}` : `${IMA_PROJECT}:taskwarrior:${source.project}:${source.uuid}`;
+  if (source.type === "jira") return `${IMA_PROJECT}:jira:${source.key}`;
+  if (source.type === "taskwarrior") return `${IMA_PROJECT}:taskwarrior:${source.project}:${source.uuid}`;
+  return `${IMA_PROJECT}:plane:${source.workspace}:${planeWorkItemIdentifier(source)}`;
 }
 
 export function normalizeCycleSource(value: unknown): CycleSource | null {
   if (typeof value === "string") {
     const raw = value.trim();
+    const planeSource = planeCycleSourceFromReference(raw);
+    if (planeSource) return planeSource;
     const urlMatch = raw.match(JIRA_URL);
     const key = urlMatch?.[1] ?? (JIRA_KEY.test(raw) ? raw : "");
     return key ? { type: "jira", key, url: `https://flccc.atlassian.net/browse/${key}` } : null;
@@ -151,6 +217,9 @@ export function normalizeCycleSource(value: unknown): CycleSource | null {
     const uuid = text(input.uuid);
     if (!PROJECT.test(project) || !UUID.test(uuid)) return null;
     return { type: "taskwarrior", project, uuid };
+  }
+  if (input.type === "plane" && onlyKeys(input, ["type", "workspace", "project", "sequenceId"])) {
+    return planeCycleSource(input.workspace, input.project, input.sequenceId);
   }
   return null;
 }
@@ -221,7 +290,9 @@ export function parseCycleCommand(input: unknown): CycleCommand | null {
     ? normalizeCycleSource(sourceTokens[0])
     : sourceTokens.length === 3 && sourceTokens[0] === "taskwarrior"
       ? normalizeCycleSource({ type: "taskwarrior", project: sourceTokens[1], uuid: sourceTokens[2] })
-      : null;
+      : sourceTokens.length === 3 && sourceTokens[0] === "plane"
+        ? planeCycleSourceFromWorkItem(sourceTokens[1], sourceTokens[2])
+        : null;
   return source
     ? { command: "start", source, ...(reviewCap === undefined ? {} : { reviewCap }), ...(implementationMode === undefined ? {} : { implementationMode }), ...(mode === undefined ? {} : { mode }) }
     : null;
@@ -341,19 +412,40 @@ const searchRecordKey = (value: unknown, depth = 0, seen = new Set<object>()): s
   return null;
 };
 
-const verificationFields = (value: string) => {
+const verificationFields = (value: string): Map<string, string> | null => {
   const fields = new Map<string, string>();
   for (const field of value.split(";")) {
     const separator = field.indexOf("=");
-    if (separator < 1) continue;
-    fields.set(text(field.slice(0, separator)), text(field.slice(separator + 1)));
+    const key = field.slice(0, separator).trim();
+    const fieldValue = field.slice(separator + 1);
+    if (
+      separator < 1
+      || !key
+      || fieldValue !== fieldValue.trim()
+      || fields.has(key)
+    ) return null;
+    fields.set(key, fieldValue);
   }
-  return fields;
+
+  const expectedFields = fields.has("plane_workspace") || fields.has("plane_work_item")
+    ? PLANE_LIFECYCLE_MARKER_FIELDS
+    : LEGACY_LIFECYCLE_MARKER_FIELDS;
+  return fields.size === expectedFields.length
+    && expectedFields.every((field) => fields.has(field))
+    ? fields
+    : null;
 };
 
 const validLifecycleSearchSelection = (value: unknown): value is LifecycleSearchSelection => {
   const selection = object(value);
-  return Boolean(selection && LIFECYCLE_KEY.test(text(selection.lifecycleKey)) && validPhase(selection.phase) && text(selection.jiraKey).length <= 128 && text(selection.taskwarriorUuid).length <= 128);
+  return Boolean(
+    selection
+    && LIFECYCLE_KEY.test(text(selection.lifecycleKey))
+    && validPhase(selection.phase)
+    && text(selection.jiraKey).length <= 128
+    && text(selection.taskwarriorUuid).length <= 128
+    && validPlaneLifecycleIdentity(selection.planeWorkspace, selection.planeWorkItem),
+  );
 };
 
 const terminalLifecycleVerification = (content: string) => {
@@ -367,11 +459,21 @@ const verifiedLifecycleContent = (content: string, selection: LifecycleSearchSel
   const verification = terminalLifecycleVerification(content);
   if (!verification) return false;
   const fields = verificationFields(verification[1]);
+  if (!fields) return false;
+  const planeWorkspace = text(selection.planeWorkspace);
+  const planeWorkItem = text(selection.planeWorkItem);
+  const planeIdentityMatched = planeWorkspace
+    ? fields.get("jira_key") === ""
+      && fields.get("taskwarrior_uuid") === ""
+      && fields.get("plane_workspace") === planeWorkspace
+      && fields.get("plane_work_item") === planeWorkItem
+    : !fields.has("plane_workspace") && !fields.has("plane_work_item");
   return fields.get("lifecycle_key") === selection.lifecycleKey
     && fields.get("phase") === lifecycleTypeForPhase(selection.phase)
     && fields.get("outcome") === "completed"
     && (!selection.jiraKey || fields.get("jira_key") === selection.jiraKey)
-    && (!selection.taskwarriorUuid || fields.get("taskwarrior_uuid") === selection.taskwarriorUuid);
+    && (!selection.taskwarriorUuid || fields.get("taskwarrior_uuid") === selection.taskwarriorUuid)
+    && planeIdentityMatched;
 };
 
 const phaseArtifact = (content: string) => {
@@ -648,6 +750,8 @@ export function buildResumeSource(stateValue: unknown): string | null {
   const jiraKey = state.source.type === "jira" ? state.source.key : "none";
   const taskwarriorProject = state.source.type === "taskwarrior" ? state.source.project : "none";
   const taskwarriorUuid = state.source.type === "taskwarrior" ? state.source.uuid : "none";
+  const planeWorkspace = state.source.type === "plane" ? state.source.workspace : "none";
+  const planeWorkItem = state.source.type === "plane" ? planeWorkItemIdentifier(state.source) : "none";
   const priorArtifactIds = state.evidence.flatMap((item) => item.artifactId ? [cleanLine(item.artifactId)] : []);
   const priorArtifactRecordKeys = state.evidence.flatMap((item) => item.recordKey ? [cleanLine(item.recordKey)] : []);
   const orderedEvidence = state.evidence.flatMap((item) => [
@@ -676,6 +780,8 @@ export function buildResumeSource(stateValue: unknown): string | null {
     `jiraKey: ${cleanLine(jiraKey, 128)}`,
     `taskwarriorProject: ${cleanLine(taskwarriorProject, 128)}`,
     `taskwarriorUuid: ${cleanLine(taskwarriorUuid, 128)}`,
+    `planeWorkspace: ${cleanLine(planeWorkspace, 128)}`,
+    `planeWorkItem: ${cleanLine(planeWorkItem, 128)}`,
     `reviewCap: ${cleanLine(String(state.reviewCap), 32)}`,
     `implementationMode: ${cleanLine(state.implementationMode, 32)}`,
     "orderedPhaseEvidence:",
@@ -741,7 +847,7 @@ export function buildFinalCloseoutArtifact(stateValue: unknown, details: { ident
     "# Source and approved outcome",
     `Cycle source: ${cycleSourceReference(state.source)}. Lifecycle key: ${cleanLine(state.lifecycleKey)}.`,
     "## Scope",
-    "Coordinate one closed Jira or Taskwarrior Story through the approved Pi-native lifecycle with explicit user-gated phase progression.",
+    "Coordinate one closed Jira, Taskwarrior, or Plane Story through the approved Pi-native lifecycle with explicit user-gated phase progression.",
     "## Non-goals",
     "No generic workflow DSL, automatic progression, parallel stories, deployment, push, release, or mutation of an unrelated tracker.",
     "## Phase result",
@@ -790,6 +896,114 @@ export function parseTaskwarriorTracker(value: unknown, sourceValue: unknown): {
   const pending = matches[0];
   if (pending.status !== "pending") return { valid: false, error: sanitizeCycleError("taskwarrior_not_pending") };
   return { valid: true, source, matches, pending };
+}
+
+type PlaneTrackerWorkItem = {
+  id: string;
+  stateId: string;
+};
+type PlaneTrackerState = {
+  id: string;
+  group: PlaneStateGroup;
+};
+
+const exactText = (value: unknown) => typeof value === "string" ? value : "";
+const successfulPlaneData = (value: unknown) => {
+  const response = object(value);
+  return response?.success === true ? object(response.data) : null;
+};
+const planeTrackerWorkItem = (value: unknown): PlaneTrackerWorkItem | null => {
+  const workItem = object(value);
+  const id = exactText(workItem?.id);
+  const stateId = exactText(workItem?.stateId);
+  return UUID.test(id) && UUID.test(stateId) ? { id, stateId } : null;
+};
+const planeTrackerState = (value: unknown): PlaneTrackerState | null => {
+  const state = object(value);
+  const id = exactText(state?.id);
+  const group = exactText(state?.group);
+  return UUID.test(id) && isPlaneStateGroup(group) ? { id, group } : null;
+};
+const invalidPlaneTracker = () => ({ valid: false as const, error: sanitizeCycleError("tracker_read_failed") });
+const invalidPlaneMutation = () => ({ valid: false as const, error: sanitizeCycleError("tracker_close_failed") });
+
+export function parsePlaneCurrentWorkItem(value: unknown, sourceValue: unknown): { valid: true; source: Extract<CycleSource, { type: "plane" }>; workItem: PlaneTrackerWorkItem } | ReturnType<typeof invalidPlaneTracker> {
+  const source = normalizeCycleSource(sourceValue);
+  if (!source || source.type !== "plane") return invalidPlaneTracker();
+
+  const data = successfulPlaneData(value);
+  const workItem = data ? planeTrackerWorkItem(data) : null;
+  if (
+    !data
+    || !workItem
+    || !UUID.test(exactText(data.projectId))
+    || exactText(data.reference) !== cycleSourceReference(source)
+    || exactText(data.workspace) !== source.workspace
+    || exactText(data.identifier) !== planeWorkItemIdentifier(source)
+    || data.sequenceId !== source.sequenceId
+  ) return invalidPlaneTracker();
+
+  return { valid: true, source, workItem };
+}
+
+export function parsePlaneWorkflowStates(value: unknown, sourceValue: unknown, workItemValue: unknown): { valid: true; source: Extract<CycleSource, { type: "plane" }>; workItem: PlaneTrackerWorkItem; currentState: PlaneTrackerState; completedState: PlaneTrackerState } | ReturnType<typeof invalidPlaneTracker> {
+  const source = normalizeCycleSource(sourceValue);
+  const workItem = planeTrackerWorkItem(workItemValue);
+  if (!source || source.type !== "plane" || !workItem) return invalidPlaneTracker();
+
+  const data = successfulPlaneData(value);
+  const rawStates = data?.states;
+  if (
+    !data
+    || exactText(data.reference) !== cycleSourceReference(source)
+    || exactText(data.workItemId) !== workItem.id
+    || !Array.isArray(rawStates)
+    || rawStates.length === 0
+    || rawStates.length > MAX_PLANE_STATES
+  ) return invalidPlaneTracker();
+
+  const states = rawStates.map(planeTrackerState);
+  if (states.some((state) => state === null)) return invalidPlaneTracker();
+  const verifiedStates = states as PlaneTrackerState[];
+  if (new Set(verifiedStates.map((state) => state.id)).size !== verifiedStates.length) return invalidPlaneTracker();
+
+  const currentStates = verifiedStates.filter((state) => state.id === workItem.stateId);
+  if (currentStates.length !== 1) return invalidPlaneTracker();
+  const currentState = currentStates[0];
+  if (currentState.group === "completed") {
+    return { valid: false, error: sanitizeCycleError("plane_tracker_already_completed") };
+  }
+  if (currentState.group === "cancelled") {
+    return { valid: false, error: sanitizeCycleError("plane_tracker_cancelled") };
+  }
+  if (!(["backlog", "unstarted", "started"] as const).includes(currentState.group)) return invalidPlaneTracker();
+
+  const completedStates = verifiedStates.filter((state) => state.group === "completed");
+  if (completedStates.length === 0) {
+    return { valid: false, error: sanitizeCycleError("plane_completed_state_missing") };
+  }
+  if (completedStates.length !== 1) {
+    return { valid: false, error: sanitizeCycleError("plane_completed_state_ambiguous") };
+  }
+
+  return { valid: true, source, workItem, currentState, completedState: completedStates[0] };
+}
+
+export function parsePlaneStateMutation(value: unknown, sourceValue: unknown, workItemValue: unknown, selectedStateId: unknown): { valid: true; source: Extract<CycleSource, { type: "plane" }>; workItem: PlaneTrackerWorkItem; stateId: string } | ReturnType<typeof invalidPlaneMutation> {
+  const source = normalizeCycleSource(sourceValue);
+  const workItem = planeTrackerWorkItem(workItemValue);
+  const stateId = exactText(selectedStateId);
+  if (!source || source.type !== "plane" || !workItem || !UUID.test(stateId)) return invalidPlaneMutation();
+
+  const data = successfulPlaneData(value);
+  if (
+    !data
+    || exactText(data.reference) !== cycleSourceReference(source)
+    || exactText(data.workItemId) !== workItem.id
+    || exactText(data.stateId) !== stateId
+  ) return invalidPlaneMutation();
+
+  return { valid: true, source, workItem, stateId };
 }
 
 export const parseJiraTransitions = parseJiraTracker;

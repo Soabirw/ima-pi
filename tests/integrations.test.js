@@ -198,6 +198,24 @@ test("registers strict lifecycle summary schema alongside Serena-first context",
   }), true);
   assert.equal(Check(lifecycle.parameters, {
     type: "implementation",
+    identity: { ...identity, planeWorkspace: "", planeWorkItem: "" },
+    summary: "Completed implementation.",
+    artifact: "Detailed artifact",
+  }), true);
+  for (const invalidPlaneIdentity of [
+    { ...identity, planeWorkspace: "IMA; plane_workspace=other", planeWorkItem: "ERIC-1" },
+    { ...identity, planeWorkspace: "IMA", planeWorkItem: "eric-1" },
+    { ...identity, planeWorkspace: "IMA", planeWorkItem: "ERIC-0" },
+  ]) {
+    assert.equal(Check(lifecycle.parameters, {
+      type: "implementation",
+      identity: invalidPlaneIdentity,
+      summary: "Completed implementation.",
+      artifact: "Detailed artifact",
+    }), false);
+  }
+  assert.equal(Check(lifecycle.parameters, {
+    type: "implementation",
     identity,
     artifact: "Detailed artifact",
   }), false);
@@ -222,14 +240,19 @@ test("registers strict lifecycle summary schema alongside Serena-first context",
   }), false);
 });
 
-test("lifecycle rejects partial Plane identity before corpus effects", async () => {
-  const partialIdentities = [
+test("lifecycle rejects incomplete or noncanonical Plane identity before corpus effects", async () => {
+  const invalidPlaneIdentities = [
     { ...identity, planeWorkspace: "IMA" },
     { ...identity, planeWorkItem: "ERIC-1" },
     { ...identity, planeWorkspace: "" },
     { ...identity, planeWorkItem: "" },
     { ...identity, planeWorkspace: "", planeWorkItem: "ERIC-1" },
     { ...identity, planeWorkspace: "IMA", planeWorkItem: "" },
+    { ...identity, planeWorkspace: "IMA; plane_workspace=other", planeWorkItem: "ERIC-1" },
+    { ...identity, planeWorkspace: "IMA -->", planeWorkItem: "ERIC-1" },
+    { ...identity, planeWorkspace: "IMA", planeWorkItem: "eric-1" },
+    { ...identity, planeWorkspace: "IMA", planeWorkItem: "ERIC-0" },
+    { ...identity, planeWorkspace: "IMA", planeWorkItem: "ERIC-9007199254740992" },
   ];
   let corpusAccesses = 0;
   const corpus = new Proxy({}, {
@@ -239,12 +262,12 @@ test("lifecycle rejects partial Plane identity before corpus effects", async () 
     },
   });
 
-  for (const partialIdentity of partialIdentities) {
+  for (const invalidPlaneIdentity of invalidPlaneIdentities) {
     const result = await coordinateLifecycle({
       type: "implementation",
-      identity: partialIdentity,
-      summary: "Partial Plane identity must not persist.",
-      artifact: "# Partial identity",
+      identity: invalidPlaneIdentity,
+      summary: "Invalid Plane identity must not persist.",
+      artifact: "# Invalid Plane identity",
     }, { corpus });
     assert.equal(result.status, "failed");
     assert.equal(result.error.code, "invalid_lifecycle_request");
@@ -466,6 +489,40 @@ test("context hydrates an exact lifecycle source through corpus summary recall a
   assert.equal(calls.every(([server]) => server === "serena"), true);
 });
 
+test("context hydrates a persisted canonical Plane lifecycle marker", async () => {
+  const planeLifecycleKey = "ima-pi:plane:ima:SKYNET-61";
+  const planeIdentity = {
+    ...identity,
+    lifecycleKey: planeLifecycleKey,
+    taskwarriorProject: "",
+    taskwarriorTask: "",
+    taskwarriorUuid: "",
+    jiraKey: "",
+    planeWorkspace: "ima",
+    planeWorkItem: "SKYNET-61",
+    sourceRefs: ["plane:ima:SKYNET-61"],
+    priorArtifactIds: [],
+  };
+  const corpus = createCorpus();
+  const persisted = await coordinateLifecycle({
+    type: "implementation",
+    identity: planeIdentity,
+    summary: "Canonical Plane lifecycle markers hydrate through lifecycle context.",
+    artifact: "# Implementation\n\nPlane lifecycle source hydration.",
+  }, { corpus, now: () => new Date("2026-09-05T03:00:00.000Z") });
+  assert.equal(persisted.status, "completed");
+
+  const result = await coordinateContext(
+    { source: { type: "lifecycle", key: planeLifecycleKey } },
+    "/repo",
+    { canonical: async (path) => path, session: serenaSession(), corpus },
+  );
+  assert.equal(result.status, "ready");
+  assert.equal(result.source.type, "lifecycle");
+  assert.equal(result.source.key, planeLifecycleKey);
+  assert.match(result.source.content, /plane_workspace=ima; plane_work_item=SKYNET-61/);
+});
+
 test("corpus lifecycle reconciliation adapts verified direct detail to the existing cycle envelope", async () => {
   const corpus = createCorpus();
   const marker = `<!-- ima-lifecycle verification: lifecycle_key=${lifecycleKey}; nonce=01234567-89ab-cdef-0123-456789abcdef; phase=plan; jira_key=; taskwarrior_uuid=${identity.taskwarriorUuid}; outcome=completed -->`;
@@ -548,6 +605,64 @@ test("lifecycle persists a manifest and vectorless chunks, then directly verifie
   assert.equal(stored.filter(({ payload }) => payload.record_kind === "manifest").length, 1);
   assert.equal(stored.filter(({ payload }) => payload.record_kind === "detail_chunk").length, 1);
   assert.equal(stored.every(({ payload }) => payload.record_kind === "manifest" || payload.record_kind === "detail_chunk"), true);
+});
+
+test("lifecycle carries the Plane identity pair through direct reassembly", async () => {
+  const planeIdentity = {
+    project: "ima-pi",
+    lifecycleKey: "ima-pi:plane:ima:SKYNET-61",
+    lifecycleRootMemoryId: "",
+    taskwarriorProject: "",
+    taskwarriorTask: "",
+    taskwarriorUuid: "",
+    jiraKey: "",
+    planeWorkspace: "ima",
+    planeWorkItem: "SKYNET-61",
+    sourceRefs: ["plane:ima:SKYNET-61"],
+    priorArtifactIds: [],
+  };
+  const request = {
+    type: "implementation",
+    identity: planeIdentity,
+    summary: "Plane-bound lifecycle evidence was directly reassembled.",
+    artifact: "# Implementation\n\nPlane lifecycle identity is source-bound.",
+  };
+  const corpus = createCorpus();
+  const completed = await coordinateLifecycle(request, {
+    corpus,
+    now: () => new Date("2026-09-05T02:00:00.000Z"),
+  });
+
+  assert.equal(completed.status, "completed");
+  const full = await corpus.getInstitutional(completed.recordKey);
+  assert.equal(full.success, true);
+  assert.match(full.data.detail, /plane_workspace: 'ima'/);
+  assert.match(
+    full.data.detail,
+    /plane_workspace=ima; plane_work_item=SKYNET-61; outcome=completed -->/,
+  );
+
+  const mismatchedCorpus = createCorpus();
+  const getInstitutional = mismatchedCorpus.getInstitutional;
+  mismatchedCorpus.getInstitutional = async (recordKey) => {
+    const result = await getInstitutional(recordKey);
+    return result.success
+      ? success({
+        ...result.data,
+        detail: result.data.detail.replace(
+          "plane_workspace=ima",
+          "plane_workspace=other",
+        ),
+      })
+      : result;
+  };
+  const mismatched = await coordinateLifecycle(request, {
+    corpus: mismatchedCorpus,
+    now: () => new Date("2026-09-05T02:00:00.000Z"),
+  });
+  assert.equal(mismatched.status, "failed");
+  assert.equal(mismatched.semanticRecall.matched, false);
+  assert.equal(mismatched.error.code, "corpus_semantic_completion_unverified");
 });
 
 test("lifecycle retains both references when direct verification fails", async () => {

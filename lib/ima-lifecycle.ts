@@ -22,6 +22,23 @@ export const MAX_LIFECYCLE_KEY_BYTES = 512;
 export const MAX_LIFECYCLE_EXTERNAL_ID_BYTES = 128;
 export const MAX_LIFECYCLE_REFERENCE_BYTES = 1_024;
 export const MAX_LIFECYCLE_REFERENCES = 64;
+export const PLANE_WORKSPACE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._~-]*$/;
+export const PLANE_WORK_ITEM_PATTERN = /^([A-Z][A-Z0-9_]*)-([1-9]\d*)$/;
+
+export const isValidPlaneLifecycleIdentity = (
+  workspace: unknown,
+  workItem: unknown,
+) => {
+  if (typeof workspace !== "string" || typeof workItem !== "string") return false;
+  const workItemMatch = PLANE_WORK_ITEM_PATTERN.exec(workItem);
+  return Boolean(
+    PLANE_WORKSPACE_PATTERN.test(workspace)
+    && workItemMatch
+    && Number.isSafeInteger(Number(workItemMatch[2]))
+    && utf8ByteLength(workspace) <= MAX_LIFECYCLE_EXTERNAL_ID_BYTES
+    && utf8ByteLength(workItem) <= MAX_LIFECYCLE_EXTERNAL_ID_BYTES,
+  );
+};
 
 export type LifecyclePhase = typeof LIFECYCLE_PHASES[number];
 type BaseLifecycleIdentity = {
@@ -183,6 +200,7 @@ export function normalizeLifecycleIdentity(value: unknown): LifecycleIdentity | 
     : !planeWorkspace && !planeWorkItem
       ? {}
       : planeWorkspace && planeWorkItem
+        && isValidPlaneLifecycleIdentity(planeWorkspace, planeWorkItem)
         ? { planeWorkspace, planeWorkItem }
         : null;
   const sourceRefs = normalizeIdentityReferences(identity.sourceRefs);
@@ -257,8 +275,13 @@ export function buildLifecycleNonceMarker(input: {
   type: LifecyclePhase;
   jiraKey: string;
   taskwarriorUuid: string;
+  planeWorkspace?: string;
+  planeWorkItem?: string;
 }) {
-  return `<!-- ima-lifecycle verification: lifecycle_key=${input.lifecycleKey}; nonce=${input.nonce}; phase=${input.type}; jira_key=${input.jiraKey}; taskwarrior_uuid=${input.taskwarriorUuid}; outcome=completed -->`;
+  const planeIdentity = input.planeWorkspace && input.planeWorkItem
+    ? `; plane_workspace=${input.planeWorkspace}; plane_work_item=${input.planeWorkItem}`
+    : "";
+  return `<!-- ima-lifecycle verification: lifecycle_key=${input.lifecycleKey}; nonce=${input.nonce}; phase=${input.type}; jira_key=${input.jiraKey}; taskwarrior_uuid=${input.taskwarriorUuid}${planeIdentity}; outcome=completed -->`;
 }
 
 const quoted = (value: string) => `'${value.replace(/'/g, "''")}'`;
@@ -310,6 +333,8 @@ export function buildLifecycleArtifact(input: {
     type: input.type,
     jiraKey: input.identity.jiraKey,
     taskwarriorUuid: input.identity.taskwarriorUuid,
+    planeWorkspace: input.identity.planeWorkspace,
+    planeWorkItem: input.identity.planeWorkItem,
   })}\n`;
 }
 
@@ -335,6 +360,8 @@ export function prepareLifecycleArtifact(input: ValidLifecycleRequest):
     type: input.type,
     jiraKey: input.identity.jiraKey,
     taskwarriorUuid: input.identity.taskwarriorUuid,
+    planeWorkspace: input.identity.planeWorkspace,
+    planeWorkItem: input.identity.planeWorkItem,
   })) + 1;
   if (utf8ByteLength(body) + markerLength > MAX_SERIALIZED_LIFECYCLE_ARTIFACT_BYTES) {
     return { valid: false, error: sanitizeLifecycleError("lifecycle_artifact_too_large", input) };
@@ -373,14 +400,21 @@ export function evaluateLifecycleArtifact(input: {
   type: LifecyclePhase;
   jiraKey: string;
   taskwarriorUuid: string;
+  planeWorkspace?: string;
+  planeWorkItem?: string;
 }) {
-  if (typeof input.artifact !== "string") return unmatchedLifecycleVerification();
+  if (
+    typeof input.artifact !== "string"
+    || Boolean(input.planeWorkspace) !== Boolean(input.planeWorkItem)
+  ) return unmatchedLifecycleVerification();
   const marker = buildLifecycleNonceMarker({
     lifecycleKey: input.lifecycleKey,
     nonce: input.nonce,
     type: input.type,
     jiraKey: input.jiraKey,
     taskwarriorUuid: input.taskwarriorUuid,
+    planeWorkspace: input.planeWorkspace,
+    planeWorkItem: input.planeWorkItem,
   });
   const markerIndex = input.artifact.lastIndexOf(marker);
   const matches = markerIndex >= 0

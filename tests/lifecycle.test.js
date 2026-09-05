@@ -123,6 +123,11 @@ test("rejects closed identity violations before serialization", () => {
     { ...identity, lifecycleRootMemoryId: "r".repeat(513) },
     { ...identity, jiraKey: "J".repeat(129) },
     { ...identity, planeWorkspace: "P".repeat(129) },
+    { ...identity, planeWorkspace: "IMA; plane_workspace=other", planeWorkItem: "ERIC-1" },
+    { ...identity, planeWorkspace: "IMA -->", planeWorkItem: "ERIC-1" },
+    { ...identity, planeWorkspace: "IMA", planeWorkItem: "eric-1" },
+    { ...identity, planeWorkspace: "IMA", planeWorkItem: "ERIC-0" },
+    { ...identity, planeWorkspace: "IMA", planeWorkItem: "ERIC-9007199254740992" },
     { ...identity, planeWorkItem: "line\nbreak" },
     { ...identity, planeWorkspace: "IMA" },
     { ...identity, planeWorkItem: "ERIC-1" },
@@ -304,6 +309,76 @@ test("direct reassembled artifacts must contain every lifecycle completion marke
   assert.equal(verification(`${content}unrelated`).matched, false);
   const lifecycleOnly = completedArtifact({ jiraKey: "", taskwarriorUuid: "" });
   assert.equal(verification(lifecycleOnly, { jiraKey: "", taskwarriorUuid: "" }).matched, true);
+});
+
+test("binds Plane lifecycle markers to the complete source identity", () => {
+  const planeIdentity = {
+    ...standalone,
+    lifecycleKey: "ima-pi:plane:ima:SKYNET-61",
+    planeWorkspace: "ima",
+    planeWorkItem: "SKYNET-61",
+    sourceRefs: ["plane:ima:SKYNET-61"],
+  };
+  const serialized = buildLifecycleArtifact({
+    type: "implementation",
+    identity: planeIdentity,
+    artifact,
+    nonce,
+  });
+
+  assert.match(
+    serialized,
+    /plane_workspace=ima; plane_work_item=SKYNET-61; outcome=completed -->\n$/,
+  );
+  assert.equal(evaluateLifecycleArtifact({
+    artifact: serialized,
+    lifecycleKey: planeIdentity.lifecycleKey,
+    nonce,
+    type: "implementation",
+    jiraKey: "",
+    taskwarriorUuid: "",
+    planeWorkspace: "ima",
+    planeWorkItem: "SKYNET-61",
+  }).matched, true);
+  assert.equal(evaluateLifecycleArtifact({
+    artifact: serialized,
+    lifecycleKey: planeIdentity.lifecycleKey,
+    nonce,
+    type: "implementation",
+    jiraKey: "",
+    taskwarriorUuid: "",
+    planeWorkspace: "other",
+    planeWorkItem: "SKYNET-61",
+  }).matched, false);
+  assert.equal(evaluateLifecycleArtifact({
+    artifact: serialized,
+    lifecycleKey: planeIdentity.lifecycleKey,
+    nonce,
+    type: "implementation",
+    jiraKey: "",
+    taskwarriorUuid: "",
+    planeWorkspace: "ima",
+    planeWorkItem: "SKYNET-62",
+  }).matched, false);
+  assert.equal(evaluateLifecycleArtifact({
+    artifact: serialized,
+    lifecycleKey: planeIdentity.lifecycleKey,
+    nonce,
+    type: "implementation",
+    jiraKey: "",
+    taskwarriorUuid: "",
+    planeWorkspace: "ima",
+  }).matched, false);
+  assert.equal(
+    buildLifecycleNonceMarker({
+      lifecycleKey: identity.lifecycleKey,
+      nonce,
+      type: "implementation",
+      jiraKey: identity.jiraKey,
+      taskwarriorUuid: identity.taskwarriorUuid,
+    }),
+    `<!-- ima-lifecycle verification: lifecycle_key=${identity.lifecycleKey}; nonce=${nonce}; phase=implementation; jira_key=${identity.jiraKey}; taskwarrior_uuid=${identity.taskwarriorUuid}; outcome=completed -->`,
+  );
 });
 
 test("derivation retains both lifecycle references and sanitized failures", () => {

@@ -146,7 +146,7 @@ test("workflow routing treats arbitrary /ima:* tokens as command-keyed candidate
 
 test("README distinguishes direct implementation commands, cycle dispatch, and manual source identifiers", async () => {
   const readme = await readFile(join(root, "README.md"), "utf8");
-  for (const value of ["direct command `X` resolves `commands[X]`", "`implement-js` and `implement-wp` both use `phases.implement`", "The `/ima:cycle` implementation phase dispatches `implement`", "`commands.implement` then `phases.implement`", "Manual phase source identifiers", "taskwarrior:<project>:<uuid>", "jira:<KEY>", "lifecycle:<lifecycle-key>", "vestige:<UUID>", "space-delimited alias", "/ima:cycle start` remains Jira/Taskwarrior-only"]) has(readme, value);
+  for (const value of ["direct command `X` resolves `commands[X]`", "`implement-js` and `implement-wp` both use `phases.implement`", "The `/ima:cycle` implementation phase dispatches `implement`", "`commands.implement` then `phases.implement`", "Manual phase source identifiers", "taskwarrior:<project>:<uuid>", "jira:<KEY>", "lifecycle:<lifecycle-key>", "vestige:<UUID>", "space-delimited alias", "plane:<workspace>:<PROJECT>-<seq>", "/ima:cycle start` accepts Jira, Taskwarrior, and Plane sources"]) has(readme, value);
   assert.doesNotMatch(readme, /command routing resolves `commands\.implement`, then explicit legacy `phases\.implement`/);
 });
 

@@ -1,4 +1,5 @@
 import {
+  isValidPlaneLifecycleIdentity,
   LIFECYCLE_PHASES,
   MAX_SERIALIZED_LIFECYCLE_ARTIFACT_BYTES,
   normalizeLifecycleRecordKey,
@@ -241,13 +242,19 @@ const lifecycleArtifact = (value: unknown) => {
 };
 
 const lifecycleVerificationPattern = (key: string) => new RegExp(
-  `<!-- ima-lifecycle verification: lifecycle_key=${escapeRegularExpression(key)}; nonce=${UUID_FRAGMENT}; phase=(?:${LIFECYCLE_PHASE_PATTERN}); jira_key=[^;\\r\\n]*; taskwarrior_uuid=[^;\\r\\n]*; outcome=completed -->`,
+  `<!-- ima-lifecycle verification: lifecycle_key=${escapeRegularExpression(key)}; nonce=${UUID_FRAGMENT}; phase=(?:${LIFECYCLE_PHASE_PATTERN}); jira_key=[^;\\r\\n]*; taskwarrior_uuid=[^;\\r\\n]*;(?: outcome=completed| plane_workspace=([^;\\r\\n]*); plane_work_item=([^;\\r\\n]*); outcome=completed) -->`,
 );
 
 const verifiedLifecycleArtifact = (content: string, key: string) => {
   const markerPattern = lifecycleVerificationPattern(key);
   const marker = [...content.matchAll(new RegExp(markerPattern.source, "g"))].at(-1);
   if (!marker || marker.index === undefined) return false;
+  const [, planeWorkspace, planeWorkItem] = marker;
+  if (
+    (planeWorkspace === undefined) !== (planeWorkItem === undefined)
+    || (planeWorkspace !== undefined
+      && !isValidPlaneLifecycleIdentity(planeWorkspace, planeWorkItem))
+  ) return false;
   const trailingContent = content.slice(marker.index + marker[0].length);
   return trailingContent === "" || trailingContent === "\n";
 };

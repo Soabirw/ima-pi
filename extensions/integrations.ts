@@ -23,6 +23,8 @@ import {
 import {
   deriveLifecycleResult,
   evaluateLifecycleArtifact,
+  PLANE_WORK_ITEM_PATTERN,
+  PLANE_WORKSPACE_PATTERN,
   normalizeLifecycleRecordKey,
   prepareLifecycleArtifact,
   validateLifecycleRequest,
@@ -591,6 +593,8 @@ export async function coordinateLifecycle(
     type: valid.type,
     jiraKey: valid.identity.jiraKey,
     taskwarriorUuid: valid.identity.taskwarriorUuid,
+    planeWorkspace: valid.identity.planeWorkspace,
+    planeWorkItem: valid.identity.planeWorkItem,
   });
   if (!preparation.valid) {
     return deriveLifecycleResult({
@@ -610,6 +614,8 @@ export async function coordinateLifecycle(
     type: valid.type,
     jiraKey: valid.identity.jiraKey,
     taskwarriorUuid: valid.identity.taskwarriorUuid,
+    planeWorkspace: valid.identity.planeWorkspace,
+    planeWorkItem: valid.identity.planeWorkItem,
   };
   let stored;
   try {
@@ -730,8 +736,14 @@ const LIFECYCLE_IDENTITY_PARAMETERS = Type.Object({
   taskwarriorTask: Type.String({ maxLength: 256, pattern: CONTROL_SAFE_STRING_PATTERN }),
   taskwarriorUuid: Type.String({ maxLength: 128, pattern: CONTROL_SAFE_STRING_PATTERN }),
   jiraKey: Type.String({ maxLength: 128, pattern: CONTROL_SAFE_STRING_PATTERN }),
-  planeWorkspace: Type.Optional(Type.String({ maxLength: 128, pattern: CONTROL_SAFE_STRING_PATTERN, description: "Optional Plane workspace; supply only with planeWorkItem." })),
-  planeWorkItem: Type.Optional(Type.String({ maxLength: 128, pattern: CONTROL_SAFE_STRING_PATTERN, description: "Optional Plane work item; supply only with planeWorkspace." })),
+  planeWorkspace: Type.Optional(Type.Union([
+    Type.Literal(""),
+    Type.String({ maxLength: 128, pattern: PLANE_WORKSPACE_PATTERN.source }),
+  ], { description: "Optional Plane workspace; supply only with planeWorkItem." })),
+  planeWorkItem: Type.Optional(Type.Union([
+    Type.Literal(""),
+    Type.String({ maxLength: 128, pattern: PLANE_WORK_ITEM_PATTERN.source }),
+  ], { description: "Optional Plane work item; supply only with planeWorkspace." })),
   sourceRefs: Type.Array(Type.String({ minLength: 1, maxLength: 1_024, pattern: CONTROL_SAFE_STRING_PATTERN }), { maxItems: 64 }),
   priorArtifactIds: Type.Array(Type.String({ minLength: 1, maxLength: 1_024, pattern: CONTROL_SAFE_STRING_PATTERN }), { maxItems: 64 }),
 }, { additionalProperties: false });

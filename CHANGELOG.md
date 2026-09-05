@@ -12,6 +12,7 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 - Added guarded interactive `/ima:plane-migrate` status, apply, and reconcile operations with source-reproduced dynamic destination authorization, reviewed hash plus literal confirmation, locked revalidation, checkpoint recovery, and read-only reconciliation before verified completion.
 - Added reviewed blank-only Taskwarrior description backfills for already-migrated Plane items: preparation separates prompted inserts from in-place updates, persists a distinct backfill artifact without changing the create-plan hash, and apply uses a live blank re-check before its description-only PATCH.
 - Added typed Plane `ima_context` hydration with canonical work-item references and aliases, paired workspace-aware lifecycle identity, deterministic boundary coverage, and manual-phase documentation.
+- Added first-class Plane `/ima:cycle` sources with canonical and space-delimited syntax, source-bound Tier-1 lifecycle verification/reconciliation, and a human-confirmed close that requires exactly one completed-group state and an exact provider state receipt.
 - Added focused security references for durable webhook idempotency, constrained Python subprocess execution, and PHPUnit WordPress negative testing.
 
 ### Changed
@@ -20,6 +21,7 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ### Fixed
 
+- Hardened Plane lifecycle markers, lifecycle-key hydration, and state-update receipts to reject malformed or ambiguous identity and unconfirmed provider state before dependent effects.
 - Corrected recommended Node API response/error handling, IMA Forms field projection, webhook idempotency, Python subprocess argument boundaries, and Playwright auth-state handling.
 - Rejected schema-v2 and schema-v3 interactive prepared runs from legacy direct apply/reconcile paths with `PREPARED_RUN_INTERACTIVE_ONLY` before plan loading, configuration, client construction, or Plane access.
 - Bound current schema-v3 backfill artifacts to their authoritative source workspace and fail closed when a required artifact is missing, while retaining exact historical schema-v2 no-backfill compatibility.

@@ -252,7 +252,7 @@ const readyState = () => {
   return evidence(state, "document", "READY");
 };
 
-test("parses only closed Jira and Taskwarrior sources", () => {
+test("parses closed Jira and Taskwarrior sources", () => {
   assert.deepEqual(parseCycleCommand("start FNR-3036"), { command: "start", source: jira });
   assert.deepEqual(parseCycleCommand("/ima:cycle start https://flccc.atlassian.net/browse/FNR-3036"), { command: "start", source: jira });
   assert.deepEqual(parseCycleCommand("start taskwarrior FNR-3007 6bbd7673-451e-4372-b1ad-0534f869725b"), { command: "start", source: task });
@@ -491,7 +491,7 @@ test("renders ordered sanitized evidence with both lifecycle references", () => 
   );
   const packet = buildResumeSource(state);
   const lines = packet.split("\n");
-  assert.deepEqual(lines.slice(0, 13), [
+  assert.deepEqual(lines.slice(0, 15), [
     "/ima:test FNR-3036",
     "Lifecycle evidence packet:",
     `project: ${IMA_PROJECT}`,
@@ -501,6 +501,8 @@ test("renders ordered sanitized evidence with both lifecycle references", () => 
     "jiraKey: FNR-3036",
     "taskwarriorProject: none",
     "taskwarriorUuid: none",
+    "planeWorkspace: none",
+    "planeWorkItem: none",
     "reviewCap: 5",
     "implementationMode: generic",
     "orderedPhaseEvidence:",

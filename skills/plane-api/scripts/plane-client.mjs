@@ -420,7 +420,7 @@ export const createPlaneClient = ({
       });
       const responseIdentity = mutationIdentityFrom(rawResponse, workItem);
 
-      if (responseIdentity.stateId !== null && responseIdentity.stateId !== state.id) {
+      if (responseIdentity.stateId !== state.id) {
         fail("RESPONSE_ERROR");
       }
 
