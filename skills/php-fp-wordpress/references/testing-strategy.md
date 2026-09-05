@@ -164,54 +164,68 @@ if (!defined('WP_DEBUG')) {
 
 ## Security Testing
 
-**Dedicated tests for security edge cases.**
+**Test the enforcement point and the sink, not merely a hostile-looking string.** A pure validator
+that rejects `<script>` is a validation test; it does not prove output encoding. A formatter that
+returns a SQL-shaped string does not prove parameterization. Keep that distinction explicit.
+
+### Pure-rule tests
+
+Use pure tests for syntax, range, and business-rule rejection. Name the behavior accurately:
 
 ```php
 <?php
-class SecurityTest extends TestCase {
-    /**
-     * @dataProvider xss_vectors
-     */
-    public function test_xss_safety(string $malicious_input) {
-        $result = validate_email_domain(
-            $malicious_input,
-            ['<script>alert(1)</script>.com'],
-            []
-        );
+public function test_rejects_invalid_email_syntax(): void {
+    $result = validate_email_domain('not-an-email', [], []);
 
-        $this->assertIsArray($result);
-        $this->assertFalse($result['valid']);
-    }
-
-    public function xss_vectors(): array {
-        return [
-            'script_in_user' => ['<script>alert(1)</script>@example.com'],
-            'script_in_domain' => ['user@<script>alert(1)</script>.com'],
-            'javascript_protocol' => ['javascript:alert(1)@example.com'],
-            'data_protocol' => ['data:text/html,<script>alert(1)</script>@example.com'],
-        ];
-    }
-
-    /**
-     * @dataProvider sql_injection_vectors
-     */
-    public function test_sql_injection_safety(string $malicious_input) {
-        // Pure functions should handle malicious input safely
-        $result = format_user_data(['name' => $malicious_input]);
-
-        // Should not throw, should sanitize
-        $this->assertIsArray($result);
-    }
-
-    public function sql_injection_vectors(): array {
-        return [
-            'basic_injection' => ["'; DROP TABLE users; --"],
-            'union_select' => ["' UNION SELECT * FROM users --"],
-            'boolean_based' => ["' OR '1'='1"],
-        ];
-    }
+    $this->assertFalse($result['valid']);
+    $this->assertSame('Invalid email format', $result['error']);
 }
 ```
+
+### Integration tests for boundary enforcement
+
+Use a WordPress-aware test for the wrapper that actually performs the capability, nonce, prepared
+query, upload, redirect, or output effect. The example assertion must observe the control at that
+boundary:
+
+```php
+<?php
+public function test_update_handler_denies_a_user_without_post_capability(): void {
+    Functions\when('current_user_can')->justReturn(false);
+    Functions\expect('wp_send_json_error')
+        ->once()
+        ->with(['message' => 'Forbidden.'], 403);
+
+    do_action('wp_ajax_ima_update_post_title');
+}
+
+public function test_profile_renderer_encodes_html_body_text(): void {
+    $html = render_profile(['name' => '<script>alert(1)</script>']);
+
+    $this->assertStringContainsString('&lt;script&gt;', $html);
+    $this->assertStringNotContainsString('<script>', $html);
+}
+```
+
+When the handler uses `$wpdb`, assert that the integration path calls `$wpdb->prepare()` with a
+placeholder and separate dynamic values, or exercise the configured test database only when it is
+safe and available. Do not claim SQL-injection coverage from a sink-free pure-function test.
+
+### Risk-appropriate negative cases
+
+For each exposed boundary, select hostile and failure cases proportional to impact:
+
+| Boundary | Minimum negative evidence |
+| --- | --- |
+| Privileged AJAX / REST | Missing or invalid nonce where applicable; denied capability for the affected resource |
+| Request validation | Missing, malformed, overlong, and allowlist-rejected input |
+| Query / command / path | Injection-shaped value reaches the parameterized or allowlisted enforcement point |
+| HTML / URL output | Dangerous text or scheme reaches the actual contextual encoding or URL validation sink |
+| Upload / outbound HTTP | Disallowed MIME, path, host, scheme, redirect, or failed remote response fails closed |
+
+Use [security-examples.md](security-examples.md) for the boundaries being tested. Integration-only
+wrapper behavior stays in integration tests; do not copy a simulated authorization check into an
+otherwise pure unit test.
 
 ---
 

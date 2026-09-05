@@ -19,7 +19,7 @@ WordPress form component library — Bootstrap 5 + functional programming patter
 
 - **Template IS definition**: Field rendering auto-registers validation specs + validators
 - **Validators at registration**: Field functions build closures at registration time (v1.4.0)
-- **Security by default**: Nonce verification, sanitization, escaping
+- **Security by default**: distinct nonce/CSRF, validation, sanitization, authorization, and contextual escaping controls
 - **Bootstrap 5 native**: Uses Bootstrap utilities and components
 
 ## Architecture (v1.4.0 - Unified Validator Registry)
@@ -111,22 +111,59 @@ ima_forms_form(['id' => 'contact', 'action' => 'contact_submit'], function() use
 
 // AJAX Handler
 function contact_submit_handler() {
-    if (!wp_verify_nonce($_POST['nonce'], 'ima_forms_ajax')) {
+    $submission = wp_unslash($_POST);
+    $nonce = $submission['nonce'] ?? '';
+    if (!is_string($nonce) || !wp_verify_nonce($nonce, 'ima_forms_ajax')) {
         wp_send_json_error(['message' => 'Security check failed.'], 403);
     }
 
-    $result = ima_forms_validate_form('templates/forms/contact', $_POST, 'contact');
+    // Keep transport metadata out of the registered-field validation input.
+    $form_input = $submission;
+    unset($form_input['nonce'], $form_input['action']);
+    $result = ima_forms_validate_form('templates/forms/contact', $form_input, 'contact');
 
-    if (!$result['valid']) {
-        wp_send_json_error(['errors' => $result['errors']], 400);
+    if (
+        !is_array($result)
+        || ($result['valid'] ?? false) !== true
+        || !is_array($result['sanitized'] ?? null)
+    ) {
+        $errors = is_array($result) && is_array($result['errors'] ?? null)
+            ? $result['errors']
+            : ['form' => 'Unable to process form.'];
+        wp_send_json_error(['errors' => $errors], 400);
     }
 
-    // Process $result['sanitized']...
+    // Process only $result['sanitized'], the registered-field projection.
     wp_send_json_success(['message' => 'Sent!']);
 }
 add_action('wp_ajax_contact_submit', 'contact_submit_handler');
 add_action('wp_ajax_nopriv_contact_submit', 'contact_submit_handler');
 ```
+
+## Security boundary rules
+
+The contact example is intentionally public: it has no privileged effect and must remain bounded
+by product-appropriate abuse controls. Its nonce is not authentication or authorization. A handler
+that changes protected data must register only the needed authenticated action and check
+`current_user_can()` for the affected resource after validating the resource identifier.
+
+The handler separates nonce/action transport metadata from `$form_input` before validation.
+`ima_forms_validate_form()` returns a validated and sanitized form representation; use only
+`$result['sanitized']` as the registered-field projection for downstream effects, never additions
+from `$submission`. Required registered fields must be present and valid; optional registered fields
+may be absent. Unregistered input is omitted rather than consumed as business data.
+
+PHP's normal `$_POST` parsing does not preserve duplicate scalar values. This example therefore does
+not promise generic duplicate rejection. If an operation must distinguish duplicates, use an upstream
+parser that preserves and checks them before the normal `$_POST` boundary. Missing or malformed
+specs, invalid required fields, and malformed validation results fail closed. The validation result
+does not authorize an operation, make arbitrary rich HTML safe, validate a redirect/URL destination,
+or encode output for its final sink. Render errors and values with the relevant contextual escaping in
+the template.
+
+Use [ima-security-guardrails](../ima-security-guardrails/SKILL.md) for the shared boundary contract.
+Keep validators pure and keep WordPress I/O in the handler rather than adding a security wrapper or
+custom FP utility.
 
 ## Reference Files
 

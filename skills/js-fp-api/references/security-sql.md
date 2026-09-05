@@ -1,110 +1,116 @@
-# Security-First SQL Patterns
+# Security-first SQL patterns
 
-## Core Principle
+Apply the [IMA security baseline](../../ima-security-guardrails/SKILL.md): validation,
+authorization, parameterization, and output handling are distinct controls. This reference covers
+SQL values and structure only; it does not authorize a request or make an API response safe to
+render.
 
-**NEVER use string concatenation for SQL. ALWAYS use parameterized queries.**
+## Parameterize every dynamic value
 
-## Parameterized Query Pattern
+Never concatenate or interpolate external values into SQL source. Pass a fixed SQL template and a
+separate parameter collection to the installed driver's documented API.
 
 ```javascript
-// NEVER: String concatenation (SQL INJECTION!)
-const sql = `SELECT * FROM users WHERE email = '${email}'`
-
-// ALWAYS: Parameterized queries
-export const selectUserByEmail = (meta) => (user) => async (ctx) => {
-    const sql = getSelectStmt(meta)({whereSet: [{field: 'email'}]})
-    const results = await ctx.db.query({sql, values: [user.email]})  // Safe!
-    return mapRecord(meta)(results[0])
+const selectUserByEmail = async (email, db) => {
+  const sql = "SELECT id, email FROM users WHERE email = $1"
+  return db.query({ sql, values: [email] })
 }
 ```
 
-## Prepared Statement Pattern
+The request handler validates `email` and authorizes the operation before calling this adapter. The
+adapter receives an already selected query shape and only binds values.
+
+## LIKE values stay values
+
+Build the wildcard pattern in data, then bind it. Do not put a request value inside the SQL string.
+If a feature treats `%` or `_` as literal search characters, escape them with the **installed
+database's documented** `LIKE ... ESCAPE` convention before binding; the escaping rule is
+DB-specific.
 
 ```javascript
-// Build SQL with placeholders, pass values separately
-const findUserQuery = createQueryBuilder(userSchema, ['email', 'active'])
-const { sql, values } = findUserQuery(criteria)
-const result = await ctx.db.query({ sql, values })
-```
-
-## SQL Builder Pattern
-
-All SQL builders return `{sql, params}`:
-
-```javascript
-// Filter builder - returns safe {sql, params} object
-export const buildDomainFilter = (domain) => {
+const buildDomainFilter = (domain) => {
   const validation = validateDomain(domain)
-  if (!validation.valid) throw new Error(validation.error)
+  if (!validation.valid) return { valid: false, error: validation.error }
+  if (validation.domain === "all") return { valid: true, sql: "", params: {} }
 
-  if (validation.domain === 'all') return { sql: '', params: {} }
-
-  // Zero string concatenation - placeholder only
   return {
-    sql: 'AND from_address LIKE @domain_pattern',
-    params: { domain_pattern: `%${validation.domain}%` }
+    valid: true,
+    sql: "AND from_address LIKE @domain_pattern",
+    params: { domain_pattern: `%${validation.domain}%` },
   }
 }
-
-export const buildTimeFilter = (startDate, endDate) => {
-  return {
-    sql: 'AND created_at BETWEEN @start_date AND @end_date',
-    params: { start_date: startDate, end_date: endDate }
-  }
-}
-
-// Combine filters safely
-const domain = buildDomainFilter(req.query.domain)
-const time = buildTimeFilter(req.query.start, req.query.end)
-
-const query = {
-  sql: `SELECT * FROM events WHERE 1=1 ${domain.sql} ${time.sql}`,
-  params: { ...domain.params, ...time.params }
-}
 ```
 
-## Triple-Layer Curry for Database Operations
+A result object makes invalid input explicit; the route returns a bounded 400 response rather than
+executing a partial query.
 
-```
-(Configuration) => (Parameters) => (Context) => Result
-```
+## Allowlist SQL structure
+
+Placeholders do not bind identifiers, column names, sort direction, or operators. Map a request
+choice to a small code-owned set before building the query.
 
 ```javascript
-export const selectUserByEmail = (meta) => (user) => async (ctx) => {
-    const sql = getSelectStmt(meta)({whereSet: [{field: 'email'}]})
-    const results = await ctx.db.query({sql, values: [user.email]})
-    return mapRecord(meta)(results[0])
+const sortColumns = {
+  created: "created_at",
+  name: "display_name",
 }
 
-// Usage
-const configuredQuery = selectUserByEmail(initMeta(userMeta))  // Layer 1: Config
-const user = await configuredQuery({email: 'test@example.com'})(context)  // Layers 2+3
+const sortDirections = {
+  ascending: "ASC",
+  descending: "DESC",
+}
+
+const selectSort = ({ column, direction }) => {
+  const selectedColumn = sortColumns[column]
+  const selectedDirection = sortDirections[direction]
+
+  if (!selectedColumn || !selectedDirection) {
+    return { valid: false, error: "Unsupported sort" }
+  }
+
+  return {
+    valid: true,
+    sql: `ORDER BY ${selectedColumn} ${selectedDirection}`,
+  }
+}
 ```
 
-## Domain Whitelisting (Input Validation)
+The interpolation is safe only because both fragments come from fixed allowlists, never from the
+request. Keep table selection in fixed route configuration whenever possible.
+
+## Compose filters with plain data
+
+Use direct, readable functions rather than custom curry or query-policy utilities. A pure builder
+can combine validated filter fragments without executing I/O:
 
 ```javascript
-const ALLOWED_DOMAINS = ['example.com', 'test.com', 'all']
+const buildEventQuery = ({ domain, startDate, endDate }) => {
+  const domainFilter = buildDomainFilter(domain)
+  if (!domainFilter.valid) return domainFilter
 
-export const validateDomain = (domain) => {
-  if (!domain) {
-    return { valid: false, error: 'Domain is required' }
+  return {
+    valid: true,
+    sql: [
+      "SELECT id, from_address, created_at FROM events WHERE created_at BETWEEN @start AND @end",
+      domainFilter.sql,
+    ].filter(Boolean).join(" "),
+    params: {
+      start: startDate,
+      end: endDate,
+      ...domainFilter.params,
+    },
   }
-
-  const normalized = domain.toLowerCase().trim()
-
-  if (!ALLOWED_DOMAINS.includes(normalized)) {
-    return { valid: false, error: 'Domain not allowed' }
-  }
-
-  return { valid: true, domain: normalized }
 }
 ```
 
-## Security Checklist
+The I/O boundary calls `db.query({ sql, params })` only after the route validates dates and
+authorizes access to this data. Do not log raw parameter values when they could contain sensitive
+information.
 
-- [ ] All SQL uses parameterized queries
-- [ ] User input validated before use in queries
-- [ ] Domain/value whitelisting where applicable
-- [ ] No string concatenation in SQL statements
-- [ ] Query builders return `{sql, params}` objects
+## Review and test checks
+
+- [ ] Every dynamic value uses the driver's parameter API.
+- [ ] Every dynamic identifier, operator, table, and sort choice comes from fixed code or an allowlist.
+- [ ] `LIKE` patterns are bound values, with documented literal-wildcard behavior.
+- [ ] Invalid or unsupported input fails closed before query execution.
+- [ ] Tests observe the parameterized or allowlisted query boundary, not only a validator result.

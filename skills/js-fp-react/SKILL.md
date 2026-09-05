@@ -167,6 +167,21 @@ const handleClick = useCallback(() => setCount(c => c + 1), [])
 // ❌ useCallback when child isn't memoized — no benefit
 ```
 
+## Security at UI boundaries
+
+React escapes string children and normal text props by default, but that protection is contextual and
+not a substitute for server-side authorization or URL validation. Treat API responses, route values,
+local storage, and props crossing a trust boundary as untrusted.
+
+Use ordinary JSX text rendering for untrusted content. `dangerouslySetInnerHTML` is an HTML sink:
+use it only when a deliberate feature supplies HTML sanitized by a reviewed policy, and document the
+trust boundary rather than passing API content through unchanged. Validate or allowlist schemes and
+destinations before assigning untrusted values to `href`, `src`, form actions, or navigation APIs.
+
+The server authorizes protected mutations; a hidden button, client route guard, or optimistic state
+is not authority. Render bounded error states for malformed or unavailable responses. See
+[ima-security-guardrails](../ima-security-guardrails/SKILL.md) for the shared controls.
+
 ## Testing
 
 ```typescript

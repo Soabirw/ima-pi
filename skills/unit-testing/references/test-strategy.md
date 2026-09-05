@@ -124,3 +124,21 @@ Testing has diminishing returns. Don't test:
 - **Type system guarantees** — if TypeScript/PHP types prevent it, don't test it
 - **Third-party library internals** — test your usage, not their code
 - **Obvious glue code** — `app.use(cors())` doesn't need a test
+
+## Security evidence is sink-aware
+
+Choose negative and adversarial cases in proportion to exposure and impact. Observe the actual
+enforcement point: an authorization guard, nonce/CSRF check, parameterized query, encoded output,
+allowlisted path or URL, or fail-closed external-response handler. Do not label a sink-free parser
+test as SQL, XSS, SSRF, or command-injection coverage.
+
+| Risk | Useful evidence |
+| --- | --- |
+| Protected resource | A caller without the required resource capability is denied |
+| Boundary input | Missing, malformed, ambiguous, and injection-shaped values are rejected |
+| Interpreter or renderer | The parameter, escaping, or allowlist reaches the real sink |
+| Failure handling | An unavailable or unverifiable dependency returns a bounded fail-closed result |
+
+Use a unit test for pure validation and transformations, then the narrowest integration or E2E test
+that exercises the wrapper. See [ima-security-guardrails](../../ima-security-guardrails/SKILL.md) for
+the distinct control definitions.

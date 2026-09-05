@@ -148,6 +148,20 @@ const userSettings = ref({ theme: 'dark', notifications: true })
 const isDarkTheme = computed(() => userSettings.value.theme === 'dark')
 ```
 
+## Security at UI boundaries
+
+Vue text interpolation (`{{ value }}`) and ordinary text bindings escape text by default, but that
+does not authorize an operation or validate a URL. Treat API responses, route values, storage, and
+props that cross a trust boundary as untrusted.
+
+`v-html` is an HTML sink. Use it only for a deliberate rich-HTML feature backed by a reviewed
+sanitization policy; do not pass an API field through unchanged. Validate or allowlist schemes and
+destinations before binding untrusted values to `:href`, `:src`, form actions, or navigation.
+
+Keep protected mutations authorized on the server. A hidden control, client-side route guard, or
+reactive state is not permission. Handle malformed and failed responses with a bounded error state.
+See [ima-security-guardrails](../ima-security-guardrails/SKILL.md) for the baseline.
+
 ## Quality Gates
 
 1. Business logic in composable, not component?

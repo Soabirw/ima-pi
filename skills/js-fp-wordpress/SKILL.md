@@ -5,9 +5,9 @@ description: "FP patterns for JavaScript in WordPress/Bootstrap context - ecosys
 
 # JavaScript FP - WordPress/Bootstrap
 
-**"In WordPress, jQuery IS native. Use what's simple and matches the ecosystem."**
+**"When it is declared as a WordPress dependency, jQuery IS native. Use what the page actually enqueues."**
 
-jQuery is always available (WordPress core dependency, 0 additional bytes). The js-fp "Native patterns > FP utilities" rule targets custom `pipe()`/`curry()` abstractions — not established ecosystem libraries like jQuery. Builds on `../js-fp/SKILL.md`.
+WordPress ships jQuery, but a script may use it only after its enqueue/dependency declaration makes it available on that page. The js-fp "Native patterns > FP utilities" rule targets custom `pipe()`/`curry()` abstractions — not established ecosystem libraries like jQuery. Builds on `../js-fp/SKILL.md`.
 
 ## Decision Matrix
 
@@ -40,12 +40,14 @@ YAGNI applies. Working jQuery code stays:
 
     $('.ima-form').on('submit', function(e) {
         e.preventDefault();
+        var $form = $(this);
         $.ajax({
             url: imaAjax.url,
             type: 'POST',
-            data: $(this).serialize(),
+            data: $form.serialize(),
             success: function(response) {
-                $(this).find('.ima-response').html(response.message);
+                var message = response && response.data ? response.data.message : '';
+                $form.find('.ima-response').text(message || '');
             }
         });
     });
@@ -76,6 +78,17 @@ YAGNI applies. Working jQuery code stays:
 ### Consistent Within Files
 
 Pick one approach per file. No mixing jQuery and vanilla selectors in the same scope.
+
+## Browser security boundaries
+
+Treat form values, AJAX responses, URLs, and DOM-derived data as untrusted boundary data. The
+server must authorize protected operations; a browser nonce or hidden control does not grant
+permission. Prefer `.text()` for untrusted content. `.html()`, `.append()` with an HTML string, and
+other HTML-parsing APIs are XSS sinks and require a deliberate trusted-HTML sanitization policy.
+
+Validate URL scheme and destination before assigning `href`, `src`, or navigation targets. Declare
+jQuery in the WordPress enqueue dependency list rather than assuming that a page loaded it. See
+[ima-security-guardrails](../ima-security-guardrails/SKILL.md) for the cross-language baseline.
 
 ## Pure Business Logic Pattern
 
@@ -154,3 +167,4 @@ plugin-name/assets/js/
 | `references/wp-integration.md` | GF hooks, ACF hooks, admin JS, pure logic extraction |
 | `../php-fp-wordpress/SKILL.md` | Server-side: AJAX handlers, security, PHP/JS coordination |
 | `../js-fp/SKILL.md` | Core FP: purity, composition, DI, testing |
+| `../ima-security-guardrails/SKILL.md` | Boundary data, authorization, DOM sinks, URL controls |

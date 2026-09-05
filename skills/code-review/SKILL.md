@@ -67,6 +67,14 @@ Apply these lenses only when they match the target:
 - WordPress: nonce/capability checks, prepared queries, contextual escaping, hook signatures, asset handling, and hook-based cross-plugin contracts.
 - Brand and public copy: load `ima-brand` for visible terminology; public-facing `Honest Medicine` is `Honest Medicine™` unless it is a source quote, URL, slug, identifier, filename, or historical/legal reference.
 
+### Security data-flow inventory
+
+For each materially changed trust boundary or sink, record the source, transformations, authorization decision, effect, and output sink. Then trace at least one realistic path from source to sink. Verify behavior in code and configured tests; a grep hit, helper name, route guard, or UI condition is not proof that the control reaches the sink.
+
+Check applicable controls separately: validation, sanitization, authentication, authorization, CSRF protection, parameterization, contextual encoding, and secret handling. In particular, confirm that protected operations authorize the affected resource rather than relying on route access or nonce possession, and that dynamic SQL structure, paths, URLs, commands, and redirects use allowlists where placeholders cannot apply.
+
+If evidence for a material boundary is unavailable or cannot be inspected, fail closed: report the review as blocked or retain a precisely scoped concern. Do not infer safe behavior from conventions, marker tests, or a happy-path response.
+
 ### 3. Independent verification
 
 Every candidate Critical or Warning receives one fresh, narrow `review-verifier` second opinion. Dispatch independent candidates in parallel only when their briefs and ranges are disjoint. Each brief must be self-contained:

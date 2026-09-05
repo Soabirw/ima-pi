@@ -21,7 +21,9 @@ Every assignment must state:
 - the approved plan or other source evidence the child needs;
 - relevant paths, symbols, acceptance criteria, and non-goals;
 - whether the assignment is read-only, test-only, documentation-only, or allowed to write;
-- applicable security, privacy, FP, brand, and workflow constraints;
+- applicable security, privacy, FP, brand, and workflow constraints; and, for boundary work,
+  the relevant validation, authorization, CSRF, sink-encoding, parameterization, and fail-closed
+  requirements;
 - the child’s disjoint `writeScope` when it may edit; and
 - blockers, risks, changed files, and verification results that must be reported back.
 

@@ -201,6 +201,10 @@ end
 
 ## Security (Standalone Scripts)
 
+Use [ima-security-guardrails](../ima-security-guardrails/SKILL.md) as the cross-language baseline;
+[references/security.md](references/security.md) applies it to Ruby database, shell, path, parsing,
+secret, and output boundaries.
+
 ```ruby
 # BAD — shell injection
 system("convert #{filename} output.png")

@@ -239,6 +239,13 @@ plugins/ima-brand/sass/
 mcp__context7__query-docs({ libraryId: "/websites/getbootstrap", query: "..." })
 ```
 
+## Security boundary note
+
+Bootstrap utilities, SCSS, and visual components are not security controls. A hidden element,
+client-side validation class, or styled error state does not authorize an operation or make untrusted
+output safe. Keep security decisions at the relevant server, data, and output boundary; use
+[ima-security-guardrails](../ima-security-guardrails/SKILL.md) when a template handles boundary data.
+
 ## Success Metrics
 - Bootstrap utility usage ≥80% vs custom CSS
 - IMA brand variables 100% (no hardcoded brand colors)
