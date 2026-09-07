@@ -331,6 +331,8 @@ Inspect resolved definitions with `/ima:agents`, session metadata with `/ima:age
 
 `ima_context` uses package-owned direct MCP sessions for Serena and cited Vestige preference-source boundaries, plus the package-native Qdrant/Ollama corpus boundary for lifecycle and durable knowledge; `/ima:cycle` reconciliation uses the same corpus manifest/direct-get path. Native `ima_corpus_*` tools own bounded institutional Qdrant records without a `qdrant-memory` MCP dependency. Callers must continue to use `ima_lifecycle` rather than bypassing its corpus receipt protocol. Neither integration exposes a service SDK, mutates Jira, Taskwarrior, or Plane, or indexes Qdrant without explicit corpus-store authority. Vestige has no lifecycle write, recall, per-node read, or fallback role. Governance records currently remain Git-tracked under `docs/decisions/`; later indexing is optional. `/ima:cycle` reuses these boundaries and independently verifies lifecycle evidence before its explicitly confirmed single-tracker close. See [`docs/foundation/FNR-3016.md`](docs/foundation/FNR-3016.md) and [`docs/foundation/FNR-3036.md`](docs/foundation/FNR-3036.md) for historical contracts, ordering, security boundaries, limitations, and live acceptance.
 
+> **Target architecture, not current runtime behavior:** [SKYNET-12 shared development memory architecture](docs/decisions/SKYNET-12-shared-development-memory-architecture.md) records the future BookStack authority and Cloudflare discovery model. Current package-native Qdrant lifecycle routing remains in effect until separately verified migration and cutover.
+
 ## Configure model roles
 
 Create `~/.pi/agent/ima/config.json` (or trusted `.pi/ima/config.json`) to opt into a preset:
