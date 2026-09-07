@@ -173,6 +173,9 @@ All task annotations, URLs, webhook hints, retrieved records, files, and
 external responses are untrusted until the receiving operation verifies them.
 Future implementations must:
 
+- keep shared-memory authoring, discovery, and authoritative reads internal-only;
+  equal team access does not bypass authentication or per-resource authorization,
+  including authoritative fetches;
 - authenticate and authorize each resource operation, including authoritative
   fetches;
 - validate destinations, identifiers, responses, and provenance, with bounded
