@@ -333,6 +333,8 @@ Inspect resolved definitions with `/ima:agents`, session metadata with `/ima:age
 
 > **Target architecture, not current runtime behavior:** [SKYNET-12 shared development memory architecture](docs/decisions/SKYNET-12-shared-development-memory-architecture.md) records the future BookStack authority and Cloudflare discovery model. Current package-native Qdrant lifecycle routing remains in effect until separately verified migration and cutover.
 
+> **BookStack configuration record:** [SKYNET-98 configuration evidence](docs/bookstack-configuration.md) records the non-public shared-memory setup and operator-managed acceptance boundaries. It does not change the current Qdrant runtime.
+
 ## Configure model roles
 
 Create `~/.pi/agent/ima/config.json` (or trusted `.pi/ima/config.json`) to opt into a preset:
