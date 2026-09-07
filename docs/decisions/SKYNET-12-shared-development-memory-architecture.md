@@ -78,10 +78,12 @@ current package runtime.
    source is the editable architecture source. Qdrant holds immutable published
    decision snapshots. They are not independently edited, competing
    architecture authorities.
-9. **Program isolation is required.** SKYNET-12 work is isolated on
-   `feature/shared-dev-memory` in its separate worktree. No partial program
-   promotion, installed-package switch, or merge to `main` is authorized by
-   this decision.
+9. **Program isolation uses a feature branch in the existing checkout.**
+   SKYNET-12 and subsequent shared-memory stories stay on
+   `feature/shared-dev-memory` in `/home/eric/IMA/dev/ima-pi`; no separate
+   worktree is required. Switch to `main` for unrelated work only from a clean
+   checkout. No partial program promotion, installed-package switch, or merge
+   to `main` is authorized by this decision.
 
 ## Authority and publication
 
