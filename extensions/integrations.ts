@@ -38,7 +38,7 @@ const execFile = promisify(execFileCallback);
 const TIMEOUT = 30_000;
 const MCP_TIMEOUT = 300_000;
 const VESTIGE_TIMEOUT = 300_000;
-const LIFECYCLE_RECALL_LIMIT = 10;
+const LIFECYCLE_RECALL_LIMIT = 20;
 const MAX_BUFFER = 128 * 1024;
 const SOURCE_ERROR_CODES = ["source_path_outside_project", "source_file_unreadable", "source_file_too_large"];
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -127,7 +127,17 @@ export const recallCorpusLifecycle = async (
     throwIfAborted(signal);
     if (!recalled.success) return null;
 
-    const records: Array<{ id: string; recordKey: string; content: string }> = [];
+    const records: Array<{
+      id: string;
+      recordKey: string;
+      project: string;
+      lifecycleKey: string;
+      phase: string;
+      sourceRefs: string[];
+      contentHash: string;
+      createdAt: string;
+      content: string;
+    }> = [];
     for (const summary of recalled.data) {
       const full = await corpus.getInstitutional(summary.recordKey, signal);
       throwIfAborted(signal);
@@ -137,6 +147,12 @@ export const recallCorpusLifecycle = async (
       records.push({
         id: full.data.id,
         recordKey,
+        project: full.data.project,
+        lifecycleKey: full.data.lifecycleKey,
+        phase: full.data.phase,
+        sourceRefs: [...full.data.sourceRefs],
+        contentHash: full.data.contentHash,
+        createdAt: full.data.createdAt,
         content: full.data.detail,
       });
     }

@@ -134,3 +134,11 @@ the current phase. Do not include any other cycle outcome marker.
 
 Use the phase's approved terminal outcome or `BLOCKED` when safe completion is impossible. Persist
 only meaningful completed or blocked phase results; never treat an unpersisted result as complete.
+
+## Manual-plan reuse
+
+A manually approved `plan` artifact also ends with exactly one canonical plan outcome marker. That marker makes the immutable, verified plan eligible for `/ima:cycle` adoption; it does not start a cycle, alter its mode, or grant autonomous authority.
+
+For an older verified plan with no plan outcome marker, cycle may obtain one explicit TUI confirmation of the exact artifact. It persists a small `plan` approval artifact with one strict versioned `ima-plan-approval` JSON reference to the original artifact ID, logical record key, and content hash, plus `plan=APPROVED`. The approval artifact must reference—not embed—the original serialized plan, and confirmation references never chain.
+
+When cycle evidence identifies an `approvedPlan` original contract separately from its approval artifact, downstream phases retain both artifact IDs and logical record keys. Before implementation, directly retrieve and verify the original contract; an approval receipt alone is not an implementation-grade plan.

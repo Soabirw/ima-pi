@@ -4,6 +4,19 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ## [Unreleased]
 
+### Added
+
+- `/ima:cycle` now automatically adopts the newest exact verified manual plan; marker-free legacy plans require one exact TUI confirmation/reference-only approval receipt.
+
+### Changed
+
+- Revalidates the original plan contract and downstream lineage before reuse, failing closed on mismatches.
+- Preserves guided and autonomous modes, review-cap behavior, fixed lifecycle ordering, and human-only close.
+
+### Fixed
+
+- Hardened stop, session, recovery, and publication-cancellation safeguards.
+
 ## [1.19.0] - 2026-09-05
 
 ### Added
