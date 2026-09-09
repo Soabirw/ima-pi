@@ -11,7 +11,7 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 - Added parser-backed Plane work-item description fidelity: HTML-only descriptions now hydrate as bounded readable text with independently bounded description and context payloads.
 - Added `plane:create` for explicit approved Plane work-item creation through the direct REST helper, with project resolution, strict fields, escaped descriptions, and no browser-control fallback.
 - `/ima:cycle` now automatically adopts the newest exact verified manual plan; marker-free legacy plans require one exact TUI confirmation/reference-only approval receipt.
-- Added separately invoked manual `/ima:closeout` after verified documentation, with itemized individual confirmation for Git, tracker, and lifecycle actions; it never invokes `/ima:cycle` or auto-dispatches from document.
+- Added separately invoked manual `/ima:closeout` after verified documentation, which best-effort normalizes an unambiguous supplied source to the canonical lifecycle form and presents Git, tracker, and lifecycle actions as one itemized final action overview whose single approval confirms every executable action shown; it never invokes `/ima:cycle` or auto-dispatches from document.
 - Added `/ima:cycle` observability: immediate start acknowledgement, below-editor phase and configured-route feedback, settled child identity, and deterministic retriable or terminal blocker guidance.
 
 ### Changed

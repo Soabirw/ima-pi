@@ -115,7 +115,7 @@ test("manual lifecycle prompts normalize shared source identifiers before declar
   assert.ok(planning.indexOf("ima_context") < planning.indexOf("ima-memory-workflow"));
 });
 
-test("manual closeout is a hydrated, individually confirmed, idempotent terminal lifecycle contract", async () => {
+test("manual closeout best-effort matches its source and uses one aggregate approval for an idempotent terminal contract", async () => {
   const text = await prompt("closeout");
 
   for (const value of [
@@ -123,33 +123,41 @@ test("manual closeout is a hydrated, individually confirmed, idempotent terminal
     'argument-hint: "[completed-lifecycle-source]"',
     "configured `commands.closeout` route",
     "otherwise remain on the current model",
-    "Require exactly one source",
+    "Require a non-empty source parameter",
+    "make a best effort to resolve it to exactly one supported canonical source",
+    "no match, or more than one plausible match",
     "/ima:closeout [completed-lifecycle-source]",
+    "First normalize the supplied parameter to one canonical identifier",
     'closed `{ type: "reference", value: "<identifier>" }` source',
     "ima-memory-workflow",
     "ima-lifecycle-contract",
     "ima-git",
     "canonical colon form",
+    "Best-effort matching includes trimming surrounding whitespace",
+    "extracting one recognizable identifier from a copied command, supported tracker URL, or short prose phrase",
+    "using exact read-only lookups to complete a structurally recognizable Plane item, Taskwarrior UUID, lifecycle key, or cited UUID",
+    "Do not fuzzy-match titles",
     "exact Tier-1 Qdrant manifest recall",
     "selected direct detail retrieval",
     "approved plan, implementation, test, final review or rereview, and `document` artifacts",
     "Closeout is available only after `/ima:document` has completed",
     "do not invoke `/ima:cycle`, auto-dispatch from document, call a next lifecycle phase, or create a cycle-outcome marker",
-    "Read-only source hydration and exact tracker or lifecycle evidence reads are allowed before proposal",
-    "evidence-backed, itemized closeout proposal before any state-changing effect",
+    "Read-only source hydration and exact tracker or lifecycle evidence reads are allowed before the final action overview",
+    "evidence-backed, itemized final action overview before any state-changing effect",
     "purpose, exact target, evidence, expected effect, reversibility",
-    "Proposal approval is not authority to execute any item",
-    "explicit confirmation for that one numbered action",
-    "Do not batch confirmations",
+    "Approval of that overview is the single confirmation for all presented actions",
+    "Approval authorizes every action presented as executable in the approved overview",
+    "execute the approved actions without asking for individual confirmations",
+    "present a revised complete overview and obtain one new aggregate approval",
     "Git is instruction-driven",
     "never stash, clean, discard, force-push, rewrite history, move or delete tags, or deploy",
-    "`/ima:ship-it` separately",
+    "include `/ima:ship-it` only as a separate recommendation",
     "dry-run never authorizes deployment",
-    "Only propose tracker closure when the verified canonical source identifies exactly one supported target and the operator asks to close it",
+    "Only include tracker closure in the final action overview when the verified canonical source identifies exactly one supported target and the operator asks to close it",
     "Plane:",
     "Jira:",
     "Taskwarrior:",
-    "receipt verification by rereading the exact target",
+    "verify identity and receipt by rereading the exact target",
     "Never perform a broad project operation",
     "do not retry the tracker mutation",
     "`commands.closeout` route selection is a **non-secret variable**",
@@ -181,8 +189,9 @@ test("manual closeout is a hydrated, individually confirmed, idempotent terminal
     "vestige <UUID>",
   ]) has(text, value);
 
-  assert.ok(text.indexOf("First call `ima_context`") < text.indexOf("exact Tier-1 Qdrant manifest recall"));
+  assert.ok(text.indexOf("First normalize the supplied parameter") < text.indexOf("exact Tier-1 Qdrant manifest recall"));
   assert.doesNotMatch(text, /<!-- ima-cycle outcome:/i);
+  assert.doesNotMatch(text, /individually confirms|Do not batch confirmations|Proposal approval is not authority|requires its own immediate confirmation/i);
 });
 
 test("active documentation assigns lifecycle artifacts to Qdrant, current preferences to Pi global AGENTS, and Vestige to legacy boundaries", async () => {
