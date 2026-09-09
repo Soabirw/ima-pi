@@ -12,6 +12,7 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 - Added `plane:create` for explicit approved Plane work-item creation through the direct REST helper, with project resolution, strict fields, escaped descriptions, and no browser-control fallback.
 - `/ima:cycle` now automatically adopts the newest exact verified manual plan; marker-free legacy plans require one exact TUI confirmation/reference-only approval receipt.
 - Added separately invoked manual `/ima:closeout` after verified documentation, with itemized individual confirmation for Git, tracker, and lifecycle actions; it never invokes `/ima:cycle` or auto-dispatches from document.
+- Added `/ima:cycle` observability: immediate start acknowledgement, below-editor phase and configured-route feedback, settled child identity, and deterministic retriable or terminal blocker guidance.
 
 ### Changed
 
@@ -26,6 +27,7 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 - Prevented cancellation, callback-drain, cleanup-ownership, and successor-dispatch races from allowing unsafe cycle phase work or replacement after failed cleanup.
 - Prevented unsupported binary/empty Plane descriptions and unrepresentable generated description payloads from being treated as safe blanks or sent to Plane writes.
 - Hardened stop, session, recovery, and publication-cancellation safeguards.
+- Cleared stale start feedback on pre-persist cancellation while restoring retained post-tracker-close blocker state.
 
 ## [1.19.0] - 2026-09-05
 

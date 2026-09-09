@@ -193,6 +193,7 @@ const createCycleExtensionHarness = (branch, run = async () => vestigeSearch()) 
   const entries = [];
   const messages = [];
   const statuses = [];
+  const widgets = [];
   const notifications = [];
   const sendWaiters = [];
   let aborted = false;
@@ -215,6 +216,7 @@ const createCycleExtensionHarness = (branch, run = async () => vestigeSearch()) 
     sessionManager: { getBranch: () => branch, getLeafId: () => "branch-id" },
     ui: {
       setStatus: (key, value) => statuses.push({ key, value }),
+      setWidget: (key, value, options) => widgets.push({ key, value, options }),
       notify: (message, level) => notifications.push({ message, level }),
       confirm: async () => true,
     },
@@ -227,6 +229,7 @@ const createCycleExtensionHarness = (branch, run = async () => vestigeSearch()) 
     entries,
     messages,
     statuses,
+    widgets,
     notifications,
     wasAborted: () => aborted,
     waitForSend: () => {
@@ -1337,6 +1340,13 @@ test("cancels fresh starts before publication without replacing an older termina
       assert.deepEqual(durableStates, [], `${label} ${stopCommand}`);
       assert.deepEqual(harness.messages, [], `${label} ${stopCommand}`);
       assert.match(harness.statuses.at(-1).value, new RegExp(`Cycle ${terminal.status}`), `${label} ${stopCommand}`);
+      assert.equal(harness.widgets.at(-1).key, "ima-cycle-phase", `${label} ${stopCommand}`);
+      assert.deepEqual(harness.widgets.at(-1).options, { placement: "belowEditor" }, `${label} ${stopCommand}`);
+      if (terminal.status === "closed") {
+        assert.equal(harness.widgets.at(-1).value, undefined, `${label} ${stopCommand}`);
+      } else {
+        assert.ok(harness.widgets.at(-1).value.some((line) => line.includes("blocker lifecycle_closeout_failed")), `${label} ${stopCommand}`);
+      }
     }
   }
 });
@@ -1911,8 +1921,31 @@ test("autonomous tail stops for blockers, defects, and review-cap excess", async
     assert.equal(harness.messages.length, 1);
     assert.equal(final.status, "blocked");
     assert.deepEqual(final.blockers, [blocker]);
-    assert.ok(harness.notifications.some(({ level, message }) => level === "warning" && /Autonomous cycle stopped/.test(message)));
+    const guidance = harness.notifications.find(({ level, message }) => level === "warning" && /Autonomous cycle stopped/.test(message));
+    assert.ok(guidance);
+    assert.match(guidance.message, new RegExp(`${blocker} \\((retriable|terminal)\\)`));
   }
+});
+
+test("guided blocked stops provide retriable guidance", async () => {
+  const state = implementationAwaitingResumeState();
+  const harness = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: state }]);
+  registerCycleExtension(harness.pi, cycleDependencies({
+    applyRoute: async () => ({ ok: true }),
+    expandPrompt: async () => "expanded prompt",
+  }));
+  await harness.handlers.get("session_start")({}, harness.ctx);
+
+  const sent = harness.waitForSend();
+  const run = harness.commands.get("ima:cycle").handler("resume", harness.ctx);
+  await sent;
+  await settleHarnessDispatch(harness, "implementation", "BLOCKED");
+  await run;
+
+  const guidance = harness.notifications.find(({ level, message }) => level === "warning" && message.startsWith("Cycle blocked:"));
+  assert.ok(guidance);
+  assert.match(guidance.message, /implementation:BLOCKED \(retriable\)/);
+  assert.match(guidance.message, /persisted phase artifact/);
 });
 
 test("autonomous stop during first resume dispatch preserves stopped state", async () => {

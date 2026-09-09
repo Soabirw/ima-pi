@@ -85,6 +85,7 @@ const createCyclePhaseHarness = (createPhaseRuntime, branch = [], overrides = {}
   const notifications = [];
   const phaseMessages = [];
   const statuses = [];
+  const widgets = [];
   const pi = {
     on: (event, handler) => handlers.set(event, handler),
     registerCommand: (name, command) => commands.set(name, command),
@@ -115,6 +116,7 @@ const createCyclePhaseHarness = (createPhaseRuntime, branch = [], overrides = {}
     },
     ui: {
       setStatus: (key, value) => statuses.push({ key, value }),
+      setWidget: (key, value, options) => widgets.push({ key, value, options }),
       notify: (message, level) => notifications.push({ message, level }),
       confirm: async () => true,
     },
@@ -130,7 +132,7 @@ const createCyclePhaseHarness = (createPhaseRuntime, branch = [], overrides = {}
     createPhaseRuntime,
     readPhaseSettlement: overrides.readPhaseSettlement ?? (async () => null),
   });
-  return { handlers, commands, entries, notifications, phaseMessages, statuses, pi, ctx };
+  return { handlers, commands, entries, notifications, phaseMessages, statuses, widgets, pi, ctx };
 };
 
 test("cycle dispatches an isolated phase host and advances only from its verified settled proof", async () => {
@@ -142,6 +144,7 @@ test("cycle dispatches an isolated phase host and advances only from its verifie
       identity: IDENTITY,
       run: async (message) => {
         state.runs.push(message);
+        input.onActivity("phase tool: ima_lifecycle");
         await input.onLifecycle(cycleLifecycleEvent(input, "plan", "APPROVED"));
         return settledResult(input, "plan", "plan saved");
       },
@@ -164,6 +167,20 @@ test("cycle dispatches an isolated phase host and advances only from its verifie
     { phase: "implementation", status: "awaiting-resume", execution: "settled" },
   );
   assert.equal(state.disposes, 1);
+  assert.ok(harness.notifications.some(({ message }) => message.startsWith("IMA cycle: start accepted for FNR-3036")));
+  assert.ok(harness.widgets.some(({ value }) => Array.isArray(value) && value.includes("activity: Using ima_lifecycle.")));
+  assert.ok(harness.widgets.some(({ value }) => Array.isArray(value) && value.includes("actual parent-provider/parent-model · thinking high")));
+  assert.ok(harness.widgets.every(({ options }) => options?.placement === "belowEditor"));
+  assert.deepEqual(harness.phaseMessages.at(-1).message, {
+    customType: "ima-cycle-phase-completion",
+    content: "Cycle plan completed with parent-provider/parent-model · thinking high.",
+    display: true,
+  });
+  assert.deepEqual(harness.widgets.at(-1), {
+    key: "ima-cycle-phase",
+    value: undefined,
+    options: { placement: "belowEditor" },
+  });
 });
 
 test("cycle reply is literal, retains the waiting phase host, and advances only after its settled proof", async () => {

@@ -10,6 +10,7 @@ import { coordinateContext, coordinateLifecycle, mcpResultData, recallCorpusLife
 import {
   CYCLE_ENTRY,
   CYCLE_PHASES,
+  CYCLE_REVIEW_CAP_DEFAULT,
   IMA_PROJECT,
   buildCycleStatus,
   buildResumeSource,
@@ -63,6 +64,13 @@ import {
   type CyclePhaseRuntime,
 } from "../lib/ima-cycle-phase-runtime.ts";
 import {
+  buildCyclePhaseCompletion,
+  buildCyclePhaseWidget,
+  buildCycleStartAck,
+  describeCycleBlockers,
+  describeCyclePhaseActivity,
+} from "../lib/ima-cycle-feedback.ts";
+import {
   coordinateCycleClose as coordinateCycleCloseCore,
   identityForCycleSource as identityForSource,
   type CycleCloseInput,
@@ -100,6 +108,8 @@ export const coordinateCycleClose = async (input: CycleCloseInput) =>
   coordinateCycleCloseCore({ ...input, lifecycle: input.lifecycle ?? coordinateLifecycle });
 
 export const CYCLE_STATUS_KEY = "ima-cycle";
+export const CYCLE_WIDGET_KEY = "ima-cycle-phase";
+const CYCLE_WIDGET_OPTIONS = { placement: "belowEditor" } as const;
 const WRITE_CAPABLE_PHASES = new Set<CyclePhase>(["implementation", "test", "resolution", "document"]);
 const text = (value: unknown) => typeof value === "string" ? value.trim() : "";
 const object = (value: unknown): Record<string, unknown> | null => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
@@ -629,6 +639,52 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
       notify(ctx, message, "info");
     }
   };
+  const hasCycleWidget = (ctx: ExtensionContext) => ctx.hasUI && typeof ctx.ui.setWidget === "function";
+  const clearCycleWidget = (ctx: ExtensionContext) => {
+    if (hasCycleWidget(ctx)) ctx.ui.setWidget(CYCLE_WIDGET_KEY, undefined, CYCLE_WIDGET_OPTIONS);
+  };
+  const renderCycleWidget = (
+    ctx: ExtensionContext,
+    value: CycleState | null,
+    options: {
+      activity?: string;
+      actual?: { provider: string; model: string; thinking?: CyclePhaseRoute["thinking"] };
+    } = {},
+  ) => {
+    if (!hasCycleWidget(ctx)) return;
+    const status = value ? buildCycleStatus(value) : null;
+    if (!status || status.status === "invalid") {
+      clearCycleWidget(ctx);
+      return;
+    }
+    const lines = buildCyclePhaseWidget({
+      status: status.status,
+      source: status.source,
+      phase: status.phase,
+      nextPhase: status.nextPhase,
+      mode: status.mode,
+      reviewAttempts: status.reviewAttempts,
+      reviewCap: status.reviewCap,
+      route: value.execution?.route,
+      activity: options.activity,
+      actual: options.actual,
+      blockers: status.blockers,
+    });
+    if (lines.length) ctx.ui.setWidget(CYCLE_WIDGET_KEY, lines, CYCLE_WIDGET_OPTIONS);
+    else clearCycleWidget(ctx);
+  };
+  const presentPhaseCompletion = (ctx: ExtensionContext, phase: CyclePhase, actual: { provider: string; model: string; thinking: NonNullable<CyclePhaseRoute["thinking"]> }) => {
+    const message = buildCyclePhaseCompletion(phase, actual);
+    try {
+      pi.sendMessage({
+        customType: "ima-cycle-phase-completion",
+        content: message,
+        display: true,
+      });
+    } catch {
+      notify(ctx, message, "info");
+    }
+  };
   const operationCurrent = (operation: ActiveCycleOperation) =>
     currentOperation === operation
     && operation.generation === dispatchGeneration
@@ -853,6 +909,8 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
     if (settled && active.bufferedState) {
       const phaseState = updatePhaseExecution(active.bufferedState, { status: "settled", updatedAt: nowIso() });
       if (outcome.output) notify(ctx, outcome.output.slice(0, 4_000), "info");
+      renderCycleWidget(ctx, active.state, { actual: outcome.settlement.actual });
+      presentPhaseCompletion(ctx, active.state.phase, outcome.settlement.actual);
       if (!(await settleActivePhase(active, false))) {
         const failedExecution = updatePhaseExecution(active.state, { status: "failed", updatedAt: nowIso() });
         const cleanupBlockedState = { ...failedExecution, status: "awaiting-resume" as const, updatedAt: nowIso() };
@@ -893,6 +951,7 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
         status: "running",
         updatedAt: nowIso(),
       });
+      renderCycleWidget(ctx, holder.state, { activity: "phase agent started" });
       await strictAppendFor(ctx, operation ? () => operationCurrent(operation) : undefined, operation)(holder.state);
     },
     onLifecycle: async (event: Parameters<NonNullable<Parameters<typeof createCyclePhaseRuntime>[0]["onLifecycle"]>>[0]): Promise<CyclePhaseLifecycleAcceptance | null> => {
@@ -926,7 +985,7 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
       return acceptance;
     },
     onActivity: (message: string) => {
-      if (ctx.hasUI) ctx.ui.setStatus("ima-cycle-phase", message);
+      renderCycleWidget(ctx, holder.state, { activity: describeCyclePhaseActivity(message) });
     },
   });
   const sendCyclePhaseMessage = async (
@@ -974,7 +1033,7 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
         throw new Error("cycle_operation_cancelled");
       }
       const completed = await finishPhaseRuntime(ctx, active, result);
-      if (ctx.hasUI && !["waiting-reply", "busy"].includes(result.status)) ctx.ui.setStatus("ima-cycle-phase", undefined);
+      if (ctx.hasUI && !["waiting-reply", "busy"].includes(result.status)) clearCycleWidget(ctx);
       return completed ?? active.state;
     } catch (error) {
       if (operation && !operationCurrent(operation)) throw error;
@@ -1016,7 +1075,7 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
     const outcome = await active.host.reply(answer);
     if (!operationCurrent(operation)) return null;
     const completed = await finishPhaseRuntime(ctx, active, outcome);
-    if (ctx.hasUI && !["waiting-reply", "busy"].includes(outcome.status)) ctx.ui.setStatus("ima-cycle-phase", undefined);
+    if (ctx.hasUI && !["waiting-reply", "busy"].includes(outcome.status)) clearCycleWidget(ctx);
     return completed;
   };
   const resumeCyclePhaseRuntime = async (
@@ -1106,10 +1165,16 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
     if (ctx.hasUI) {
       ctx.ui.setStatus(CYCLE_STATUS_KEY, stateText(value));
       ctx.ui.notify(stateText(value), "info");
+      renderCycleWidget(ctx, value);
     }
   };
-  const notifyAutonomousStop = (ctx: ExtensionContext, value: CycleState | null = state) => {
-    if (value?.mode === "autonomous" && value.status === "blocked") notify(ctx, `Autonomous cycle stopped: ${value.blockers.join(", ") || "phase blocked"}.`, "warning");
+  const notifyBlockerGuidance = (ctx: ExtensionContext, value: CycleState | null = state) => {
+    if (!value || !["blocked", "blocked-after-tracker-close"].includes(value.status) || value.blockers.length === 0) return;
+    const prefix = value.mode === "autonomous" ? "Autonomous cycle stopped" : "Cycle blocked";
+    const guidance = describeCycleBlockers(value.blockers)
+      .map(({ code, guidance: action, terminal }) => `${code} (${terminal ? "terminal" : "retriable"}) — ${action}`)
+      .join("\n");
+    notify(ctx, `${prefix}:\n${guidance}`, "warning");
   };
   const recoverImportedPlan = async (
     ctx: ExtensionContext,
@@ -1199,7 +1264,7 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
         }
         state = copyState(result.state);
         notifyState(ctx);
-        notifyAutonomousStop(ctx);
+        notifyBlockerGuidance(ctx);
       }
     } finally {
       if (autonomousRun === run) autonomousRun = null;
@@ -1312,6 +1377,7 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
     }
     const generation = invalidateOperation();
     if (active) await abortActivePhase(ctx);
+    if (ctx) clearCycleWidget(ctx);
     await publication;
     return generation;
   };
@@ -1357,7 +1423,12 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
     handler: async (args, ctx) => {
       const parsed = parseCycleCommand(args);
       if (!parsed) { notify(ctx, "Usage: /ima:cycle start [--review-cap 0-10] [--implementation generic|js|wp] [--mode guided|autonomous] <Jira key|Jira browse URL|taskwarrior project uuid|plane:workspace:PROJECT-sequence|plane workspace PROJECT-sequence|Plane browse URL> | status | stop [--ack] | resume [--autonomous|--guided] | reply <answer> | close [--commit-prep].", "warning"); return; }
-      if (parsed.command === "status") { await reconcile(ctx); notifyState(ctx); return; }
+      if (parsed.command === "status") {
+        await reconcile(ctx);
+        notifyState(ctx);
+        notifyBlockerGuidance(ctx);
+        return;
+      }
       if (parsed.command === "reply") {
         if (!state || !activePhase || currentOperation || activePhase.operation || state.status !== "awaiting-evidence" || state.execution?.status !== "waiting-reply" || activePhase.dispatchId !== state.execution.dispatchId) {
           notify(ctx, "No cycle phase is waiting for a reply.", "warning");
@@ -1372,7 +1443,7 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
           if (!current(isCurrent)) return;
           state = copyState(replied);
           notifyState(ctx);
-          notifyAutonomousStop(ctx);
+          notifyBlockerGuidance(ctx);
           if (state.mode === "autonomous" && state.status === "awaiting-resume") await runAutonomousTail(ctx, operation);
         } finally {
           finishOperation(operation);
@@ -1384,8 +1455,28 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
           notify(ctx, "A cycle phase is already active; reply to it or stop the cycle before starting another Story.", "warning");
           return;
         }
+        notify(ctx, buildCycleStartAck(cycleSourceReference(parsed.source), {
+          reviewCap: parsed.reviewCap ?? CYCLE_REVIEW_CAP_DEFAULT,
+          implementationMode: parsed.implementationMode,
+          mode: parsed.mode,
+        }), "info");
+        if (hasCycleWidget(ctx)) {
+          const lines = buildCyclePhaseWidget({
+            status: "awaiting-evidence",
+            source: cycleSourceReference(parsed.source),
+            phase: "plan",
+            nextPhase: "implementation",
+            mode: parsed.mode ?? "guided",
+            reviewAttempts: 0,
+            reviewCap: parsed.reviewCap ?? CYCLE_REVIEW_CAP_DEFAULT,
+            activity: "Accepted, preparing route and context.",
+            blockers: [],
+          });
+          ctx.ui.setWidget(CYCLE_WIDGET_KEY, lines, CYCLE_WIDGET_OPTIONS);
+        }
         const orchestrator = await ensureOrchestratorRoute(ctx);
         if (!orchestrator.ok) {
+          clearCycleWidget(ctx);
           notify(ctx, orchestrator.message ?? sanitizeCycleError(orchestrator.error).message, "warning");
           return;
         }
@@ -1423,10 +1514,11 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
           if (result.ok) {
             state = result.state;
             notifyState(ctx);
-            notifyAutonomousStop(ctx);
+            notifyBlockerGuidance(ctx);
             if (state.mode === "autonomous") await runAutonomousTail(ctx, operation);
           } else {
             if (result.state) { state = copyState(result.state); notifyState(ctx); }
+            else clearCycleWidget(ctx);
             notify(ctx, result.error.message, "warning");
           }
         } finally {
@@ -1442,6 +1534,7 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
         ) {
           invalidateOperation();
           ctx.abort();
+          renderCycleWidget(ctx, state);
           notify(ctx, "Cycle start cancelled before a phase was persisted.", "info");
           return;
         }
@@ -1450,6 +1543,7 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
           if (currentOperation) {
             invalidateOperation();
             ctx.abort();
+            renderCycleWidget(ctx, state);
             notify(ctx, "Cycle start cancelled before a phase was persisted.", "info");
           } else {
             notify(ctx, "No active cycle. Start one first.", "warning");
@@ -1533,7 +1627,7 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
             if (!current(isCurrent)) return;
             state = copyState(recovered);
             notifyState(ctx);
-            notifyAutonomousStop(ctx);
+            notifyBlockerGuidance(ctx);
             if (state.mode === "autonomous" && state.status === "awaiting-resume") await runAutonomousTail(ctx, operation);
             return;
           }
@@ -1554,7 +1648,7 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
           if (result.ok) {
             state = result.state;
             notifyState(ctx);
-            notifyAutonomousStop(ctx);
+            notifyBlockerGuidance(ctx);
             if (state.mode === "autonomous") await runAutonomousTail(ctx, operation);
           } else {
             if (result.state) { state = copyState(result.state); notifyState(ctx); }
@@ -1572,7 +1666,17 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
           confirmed = await ctx.ui.confirm("Close cycle", `Close ${cycleSourceReference(state.source)} and mark its single tracker source complete?`);
         }
         const result = await coordinateCycleClose({ state, mode: ctx.mode, commitPrep: parsed.commitPrep, confirmed, run: (program, commandArgs) => pi.exec(program, commandArgs), appendState: appendFor(ctx) });
-        if (result.ok) { if (result.state) state = result.state; notifyState(ctx, result.state ?? state); } else { if (result.state) state = result.state; notify(ctx, result.error.message, "warning"); }
+        if (result.ok) {
+          if (result.state) state = result.state;
+          notifyState(ctx, result.state ?? state);
+        } else {
+          if (result.state) {
+            state = result.state;
+            notifyState(ctx, state);
+            notifyBlockerGuidance(ctx, state);
+          }
+          notify(ctx, result.error.message, "warning");
+        }
       }
     },
   });
