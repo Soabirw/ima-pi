@@ -56,6 +56,42 @@ test("selects a newest direct approved manual plan and records its contract meta
   assert.match(packet, new RegExp(`approvedPlanRecordKey: ${direct.recordKey}`));
 });
 
+test("refuses manual plan adoption for execution-owned planning", () => {
+  const direct = planRecord({ id: uuid(40), key: recordKey("execution-owned") });
+  const selected = select([direct]);
+  assert.equal(selected.kind, "approved");
+  if (selected.kind !== "approved") return;
+  const executionOwned = {
+    ...createCycleState(planContext.source, { lifecycleKey, timestamp: "2026-09-08T01:00:00.000Z" }),
+    status: "awaiting-resume",
+    execution: {
+      schemaVersion: 1,
+      dispatchId: "plan-dispatch",
+      phase: "plan",
+      route: {
+        provider: "test-provider",
+        model: "test-model",
+        thinking: "high",
+        profile: "cycle-profile",
+        source: "command",
+      },
+      parentSessionId: "parent-session",
+      childSessionId: "child-session",
+      childSessionFile: "/sessions/child-session.jsonl",
+      childSessionDir: "/sessions",
+      status: "failed",
+      possiblePartialWrite: false,
+      startedAt: "2026-09-08T01:00:00.000Z",
+      updatedAt: "2026-09-08T01:00:00.000Z",
+    },
+  };
+
+  assert.deepEqual(adoptedPlanState(executionOwned, selected), {
+    ok: false,
+    code: "plan_adoption_unavailable",
+  });
+});
+
 test("validates direct manual plans for Jira, Taskwarrior, and Plane identities", () => {
   const taskUuid = uuid(16);
   const cases = [

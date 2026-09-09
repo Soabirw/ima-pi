@@ -290,7 +290,7 @@ test("loads nonfatal command and phase warnings without blocking configured sibl
       schemaVersion: 1,
       stray: true,
       phases: { plan: { provider: "", model: "" }, test: role("provider", "test") },
-      commands: { plan: role("provider", "plan"), typo: role("provider", "typo"), broken: "unsupported" },
+      commands: { plan: role("provider", "plan"), cycle: role("provider", "cycle"), typo: role("provider", "typo"), broken: "unsupported" },
     })],
   ]);
   const loaded = await loadImaConfig({
@@ -310,7 +310,10 @@ test("loads nonfatal command and phase warnings without blocking configured sibl
 
   assert.ok(loaded.config);
   assert.deepEqual(loaded.config.phases, { test: { provider: "provider", model: "test", thinking: "medium", source: "user" } });
-  assert.deepEqual(loaded.config.commands, { plan: { provider: "provider", model: "plan", thinking: "medium", source: "user" } });
+  assert.deepEqual(loaded.config.commands, {
+    plan: { provider: "provider", model: "plan", thinking: "medium", source: "user" },
+    cycle: { provider: "provider", model: "cycle", thinking: "medium", source: "user" },
+  });
   for (const code of ["config_unknown_key", "config_invalid_provider", "config_invalid_phase", "config_invalid_command", "config_unknown_command"]) assert.ok(codes(loaded).includes(code), code);
 });
 

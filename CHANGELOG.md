@@ -6,16 +6,19 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ### Added
 
+- Added isolated, profile-routed native Pi phase hosts for `/ima:cycle`, including `commands.cycle` orchestration routing, literal `/ima:cycle reply`, durable original-reviewer continuation, and local-only cycle-owned session records.
 - Added parser-backed Plane work-item description fidelity: HTML-only descriptions now hydrate as bounded readable text with independently bounded description and context payloads.
 - `/ima:cycle` now automatically adopts the newest exact verified manual plan; marker-free legacy plans require one exact TUI confirmation/reference-only approval receipt.
 
 ### Changed
 
+- Made `/ima:cycle` a parent orchestrator: phase hosts retain lifecycle context and bounded specialist delegation while human-confirmed tracker close remains coordinator-owned.
 - Revalidates the original plan contract and downstream lineage before reuse, failing closed on mismatches.
 - Preserves guided and autonomous modes, review-cap behavior, fixed lifecycle ordering, and human-only close.
 
 ### Fixed
 
+- Prevented cancellation, callback-drain, cleanup-ownership, and successor-dispatch races from allowing unsafe cycle phase work or replacement after failed cleanup.
 - Prevented unsupported binary/empty Plane descriptions and unrepresentable generated description payloads from being treated as safe blanks or sent to Plane writes.
 - Hardened stop, session, recovery, and publication-cancellation safeguards.
 

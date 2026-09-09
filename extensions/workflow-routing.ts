@@ -4,6 +4,11 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
+  selectCycleOrchestratorRoute,
+  selectCyclePhaseRoute,
+  type CyclePhaseRoute,
+} from "../lib/ima-cycle-phase.ts";
+import {
   discoverImaProfiles,
   deriveImaConfigPaths,
   isFatalConfigDiagnostic,
@@ -27,6 +32,9 @@ export type ParsedProfileCommand = { mode: "list" } | { mode: "activate"; name: 
 export type CommandRoute = { command: string; provider: string; model: string; thinking?: ThinkingLevel };
 export type WorkflowRoute = CommandRoute;
 export type RoleRoute = { role: ImaRole; provider: string; model: string; thinking?: ThinkingLevel };
+export type CycleRouteResolution =
+  | { ok: true; route: CyclePhaseRoute }
+  | { ok: false; error: string; message: string; rollback?: "succeeded" | "failed" | "not-needed" };
 export type RouteSwitchResult =
   | { ok: true; route: CommandRoute | RoleRoute }
   | { ok: false; error: string; message: string; rollback?: "succeeded" | "failed" | "not-needed" };
@@ -255,6 +263,61 @@ export async function applyConfiguredRoleRoute(pi: ExtensionAPI, ctx: ExtensionC
   const loaded = await loadImaConfig({ packageRoot, agentDir, cwd: ctx.cwd, projectTrusted: projectTrusted(ctx), ...(profileOverride ? { profileOverride } : {}) });
   if (!loaded.config) return { ok: false, error: "role_config_unavailable", message: `${role} role routing is unavailable: ${loaded.diagnostics.map(({ code }) => code).join(", ") || "invalid configuration"}.`, rollback: "not-needed" };
   return applyRoleRoute(loaded.config, role, routeDependencies(pi, ctx, profileOverride ?? loaded.config.profile));
+}
+
+const currentCycleParentRoute = (pi: ExtensionAPI, ctx: ExtensionContext, profile: string | null): CycleRouteResolution => {
+  if (!ctx.model) return { ok: false, error: "parent_model_unavailable", message: "Cycle routing requires an active parent model.", rollback: "not-needed" };
+  return {
+    ok: true,
+    route: {
+      provider: ctx.model.provider,
+      model: ctx.model.id,
+      thinking: pi.getThinkingLevel(),
+      profile,
+      source: "parent",
+    },
+  };
+};
+
+const validateCycleRoute = async (ctx: ExtensionContext, route: CyclePhaseRoute): Promise<CycleRouteResolution> => {
+  const model = ctx.modelRegistry.find(route.provider, route.model);
+  if (!model) return { ok: false, error: "model_unavailable", message: `Configured cycle model ${route.provider}/${route.model} is unavailable.`, rollback: "not-needed" };
+  try {
+    if (!await ctx.modelRegistry.hasConfiguredAuth(model as any)) return { ok: false, error: "auth_unavailable", message: `Configured cycle model ${route.provider}/${route.model} is unauthenticated.`, rollback: "not-needed" };
+  } catch {
+    return { ok: false, error: "auth_unavailable", message: `Configured cycle model ${route.provider}/${route.model} is unauthenticated.`, rollback: "not-needed" };
+  }
+  return { ok: true, route };
+};
+
+export async function applyConfiguredCycleOrchestratorRoute(pi: ExtensionAPI, ctx: ExtensionContext, profileOverride?: string | null): Promise<CycleRouteResolution> {
+  const loaded = await loadImaConfig({ packageRoot, agentDir, cwd: ctx.cwd, projectTrusted: projectTrusted(ctx), ...(profileOverride ? { profileOverride } : {}) });
+  if (!loaded.config) return { ok: false, error: "command_config_unavailable", message: `cycle command routing is unavailable: ${loaded.diagnostics.map(({ code }) => code).join(", ") || "invalid configuration"}.`, rollback: "not-needed" };
+  const profile = profileOverride ?? loaded.config.profile;
+  const parent = currentCycleParentRoute(pi, ctx, profile);
+  if (!parent.ok) return parent;
+  const selected = selectCycleOrchestratorRoute({ config: loaded.config, parentRoute: parent.route, profile });
+  if (selected.source === "parent") return parent;
+
+  const applied = selected.source === "command"
+    ? await applyCommandRoute(loaded.config, "cycle", routeDependencies(pi, ctx, profile))
+    : await applyRoleRoute(loaded.config, "HIGH", routeDependencies(pi, ctx, profile));
+  if (!applied || !applied.ok) return applied ?? { ok: false, error: "cycle_route_unavailable", message: "Cycle routing is unavailable.", rollback: "not-needed" };
+  return {
+    ok: true,
+    route: {
+      ...selected,
+      thinking: pi.getThinkingLevel(),
+    },
+  };
+}
+
+export async function resolveConfiguredCyclePhaseRoute(ctx: ExtensionContext, command: string, parentRoute: CyclePhaseRoute, profileOverride?: string | null): Promise<CycleRouteResolution> {
+  const loaded = await loadImaConfig({ packageRoot, agentDir, cwd: ctx.cwd, projectTrusted: projectTrusted(ctx), ...(profileOverride ? { profileOverride } : {}) });
+  if (!loaded.config) return { ok: false, error: "command_config_unavailable", message: `${command} phase routing is unavailable: ${loaded.diagnostics.map(({ code }) => code).join(", ") || "invalid configuration"}.`, rollback: "not-needed" };
+  const profile = profileOverride ?? loaded.config.profile;
+  const route = selectCyclePhaseRoute({ config: loaded.config, command, parentRoute, profile });
+  return route.source === "parent" ? { ok: true, route } : validateCycleRoute(ctx, route);
 }
 
 export default function workflowRouting(pi: ExtensionAPI) {

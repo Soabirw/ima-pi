@@ -38,7 +38,14 @@ const fakeSession = (overrides = {}) => {
   };
 };
 
-const continuation = ({ record = makeRecord(), definition = agent, fake = fakeSession(), modelRuntime = runtime, exists = true } = {}) => {
+const continuation = ({
+  record = makeRecord(),
+  definition = agent,
+  fake = fakeSession(),
+  modelRuntime = runtime,
+  exists = true,
+  manager = {},
+} = {}) => {
   const store = new Map([[record.reference, record]]);
   let opened = 0;
   let created = 0;
@@ -46,7 +53,15 @@ const continuation = ({ record = makeRecord(), definition = agent, fake = fakeSe
     record, agent: definition, brief: "Fix the retained finding", runtime: modelRuntime, cwd: "/repo", sessionStore: store,
     dependencies: {
       fileExists: () => exists,
-      openManager: (path) => { opened += 1; assert.equal(path, record.sessionFile); return {}; },
+      openManager: (path) => {
+        opened += 1;
+        assert.equal(path, record.sessionFile);
+        return {
+          getSessionId: () => manager.sessionId ?? record.sessionId,
+          getSessionFile: () => manager.sessionFile ?? record.sessionFile,
+          getCwd: () => manager.cwd ?? "/repo",
+        };
+      },
       createSession: async () => { created += 1; return { session: fake.session }; },
       scopedTools: () => [], clock: () => "new",
     },
@@ -112,19 +127,26 @@ test("refuses agent identity mismatch and preserves reviewer/vision isolation wi
   assert.deepEqual(visionRun.counts(), { opened: 1, created: 1 });
 });
 
-test("fails closed on observed identity mismatch, exposes unverified context, and preserves the stored record", async () => {
-  const wrong = fakeSession({ model: { provider: "p", id: "other" } });
-  const run = continuation({ fake: wrong });
-  const result = await run.promise;
-  assert.equal(result.status, "failed");
-  assert.ok(result.completion.includes("runtime_identity_mismatch"));
-  assert.equal(result.report, undefined);
-  assert.equal(result.unverifiedReport, undefined);
-  assert.equal(result.summary, report);
-  assert.equal(result.unverifiedReason, "runtime_identity_mismatch");
-  assert.deepEqual(result.session, { id: "s", file: "/sessions/a.jsonl", resumeReference: null });
-  assert.equal(run.store.get("a").updatedAt, "old");
-  assert.equal(wrong.state.disposes, 1);
+test("refuses manager, model, thinking, session ID, and session-file drift before a continuation prompt", async () => {
+  const cases = [
+    { name: "wrong manager ID", manager: { sessionId: "other" }, created: 0 },
+    { name: "wrong manager file", manager: { sessionFile: "/sessions/other.jsonl" }, created: 0 },
+    { name: "wrong manager cwd", manager: { cwd: "/other" }, created: 0 },
+    { name: "wrong actual model", fake: fakeSession({ model: { provider: "p", id: "other" } }), created: 1 },
+    { name: "clamped thinking", fake: fakeSession({ thinking: "low" }), created: 1 },
+    { name: "wrong actual session ID", fake: fakeSession({ sessionId: "other" }), created: 1 },
+    { name: "wrong actual session file", fake: fakeSession({ sessionFile: "/sessions/other.jsonl" }), created: 1 },
+  ];
+  for (const scenario of cases) {
+    const run = continuation(scenario);
+    const result = await run.promise;
+    assert.equal(result.status, "refused", scenario.name);
+    assert.equal(result.error, "session_not_reusable", scenario.name);
+    assert.deepEqual(run.counts(), { opened: 1, created: scenario.created }, scenario.name);
+    assert.equal(run.fake.state.prompts.length, 0, scenario.name);
+    assert.equal(run.store.get("a").updatedAt, "old", scenario.name);
+    assert.equal(run.fake.state.disposes, scenario.created, scenario.name);
+  }
 });
 
 test("does not relabel prior session text after an empty aborted continuation", async () => {

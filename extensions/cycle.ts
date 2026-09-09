@@ -1,49 +1,39 @@
-import { lstat, mkdir, open, readFile, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { homedir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DefaultResourceLoader, getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { applyConfiguredCommandRoute, latestSessionProfile } from "./workflow-routing.ts";
+import {
+  applyConfiguredCycleOrchestratorRoute,
+  latestSessionProfile,
+  resolveConfiguredCyclePhaseRoute,
+} from "./workflow-routing.ts";
 import { coordinateContext, coordinateLifecycle, mcpResultData, recallCorpusLifecycle } from "./integrations.ts";
 import {
   CYCLE_ENTRY,
   CYCLE_PHASES,
   IMA_PROJECT,
   buildCycleStatus,
-  buildFinalCloseoutArtifact,
   buildResumeSource,
   createCycleState,
   cycleSourceReference,
-  lifecycleTypeForPhase,
   normalizeCycleSource,
   parseCycleCommand,
-  parseJiraTracker,
-  parseLifecycleSearchRecords,
-  parsePlaneCurrentWorkItem,
-  parsePlaneStateMutation,
-  parsePlaneWorkflowStates,
-  parseTaskwarriorTracker,
   prepareCycleResume,
-  reconcileCycleFromLifecycle,
-  reduceCycleState,
-  resolvePhaseOutcome,
   requiredCloseoutEvidence,
   sanitizeCycleError,
   validateCycleState,
-  type CycleCommand,
-  type CycleEvidence,
   type CycleImplementationMode,
   type CycleMode,
   type CyclePhase,
   type CycleSource,
   type CycleState,
 } from "../lib/ima-cycle.ts";
-import { CYCLE_ROOT_MARKERS, CYCLE_STORE_FILENAME, CYCLE_STORE_GITIGNORE_BODY, cycleStorePaths, parseCycleRecord, selectProjectRoot, serializeCycleRecord } from "../lib/ima-cycle-store.ts";
 import {
-  normalizeLifecycleRecordKey,
-  type LifecycleIdentity,
-} from "../lib/ima-lifecycle.ts";
+  defaultResolveCycleProjectRoot,
+  loadDurableStateWith,
+  persistDurableStateWith,
+  type CyclePersistenceOptions,
+  type ResolveCycleProjectRoot,
+} from "../lib/ima-cycle-persistence.ts";
 import {
   adoptedPlanState,
   coordinateCyclePlanAdoption,
@@ -55,22 +45,66 @@ import {
   filterImportedPlanLineage,
   type VerifiedPlanRecord,
 } from "../lib/ima-cycle-plan.ts";
+import {
+  canResumeCyclePhaseExecution,
+  createCyclePhaseExecution,
+  hasMatchingCyclePhaseExecution,
+  hasMatchingCyclePhaseSettlement,
+  validateCyclePhaseArtifactReference,
+  withCyclePhaseExecution,
+  type CyclePhaseArtifactReference,
+  type CyclePhaseContext,
+  type CyclePhaseRoute,
+} from "../lib/ima-cycle-phase.ts";
+import {
+  createCyclePhaseRuntime,
+  readCyclePhaseSettlement,
+  type CyclePhaseLifecycleAcceptance,
+  type CyclePhaseRuntime,
+} from "../lib/ima-cycle-phase-runtime.ts";
+import {
+  coordinateCycleClose as coordinateCycleCloseCore,
+  identityForCycleSource as identityForSource,
+  type CycleCloseInput,
+} from "../lib/ima-cycle-close.ts";
+import {
+  coordinateCycleReconcile,
+  coordinateCycleRecovery,
+  observeLifecycleResult,
+  type CycleObservationDiagnostic,
+  type CycleObservationInput,
+  type CycleObservationResult,
+  type CycleRecall,
+  type CycleRecallValidation,
+  type CycleReconcileInput,
+  type CycleReconcileResult,
+} from "../lib/ima-cycle-evidence.ts";
+
+export {
+  coordinateCycleReconcile,
+  coordinateCycleRecovery,
+  observeLifecycleResult,
+};
+export type { CycleCloseInput } from "../lib/ima-cycle-close.ts";
+export type {
+  CycleObservationDiagnostic,
+  CycleObservationInput,
+  CycleObservationResult,
+  CycleRecall,
+  CycleRecallValidation,
+  CycleReconcileInput,
+  CycleReconcileResult,
+};
+
+export const coordinateCycleClose = async (input: CycleCloseInput) =>
+  coordinateCycleCloseCore({ ...input, lifecycle: input.lifecycle ?? coordinateLifecycle });
 
 export const CYCLE_STATUS_KEY = "ima-cycle";
-const JIRA_HELPER = join(homedir(), ".agents", "skills", "mcp-atlassian", "scripts", "atlassian-api.mjs");
-const PLANE_HELPER = fileURLToPath(new URL("../skills/plane-api/scripts/plane-api.mjs", import.meta.url));
-const MAX_PLANE_HELPER_OUTPUT_BYTES = 128 * 1024;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const WRITE_CAPABLE_PHASES = new Set<CyclePhase>(["implementation", "test", "resolution", "document"]);
 const text = (value: unknown) => typeof value === "string" ? value.trim() : "";
 const object = (value: unknown): Record<string, unknown> | null => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 const nowIso = () => new Date().toISOString();
 const safeError = (code: string) => ({ ok: false as const, error: sanitizeCycleError(code) });
-const safeArtifactReference = (value: unknown) => {
-  const reference = text(value).replace(/[\r\n]+/g, " ").replace(/(?:authorization|token|secret|password)\s*[:=]\s*\S+/gi, "[redacted]").slice(0, 512);
-  return reference || null;
-};
-const safeRecordKey = (value: unknown) => normalizeLifecycleRecordKey(value);
 const unresolvedOutcomeMessage = (phase: CyclePhase, artifactId: string | null, recordKey: string | null) => `Cycle lifecycle outcome is unresolved for ${phase}; inspect persisted artifactId ${artifactId ?? "unavailable"}; recordKey ${recordKey ?? "unavailable"}. State was preserved.`;
 const notify = (ctx: ExtensionContext, message: string, level: "info" | "warning" | "error" = "info") => { if (ctx.hasUI) ctx.ui.notify(message, level); };
 const copyState = (state: CycleState): CycleState => structuredClone(state);
@@ -141,8 +175,9 @@ const CYCLE_ROUTE_COMMANDS: Readonly<Record<CyclePhase, string>> = {
 export const cycleRoutePhase = (phase: CyclePhase): string => CYCLE_ROUTE_COMMANDS[phase];
 
 export type CycleContextResult = { status: string; source?: unknown; diagnostics?: unknown[] };
-export type CycleRouteResult = { ok: true; route?: unknown } | { ok: false; error: string; message?: string; rollback?: string };
+export type CycleRouteResult = { ok: true; route?: CyclePhaseRoute } | { ok: false; error: string; message?: string; rollback?: string };
 export type CycleAppend = (state: CycleState) => void | Promise<void>;
+export type CyclePrepareDispatch = (state: CycleState, route?: CyclePhaseRoute) => CycleState;
 export type CycleSend = (message: string, provisionalState: CycleState) => Promise<CycleState>;
 export type CycleExpand = (message: string) => string | Promise<string>;
 export type CycleRoute = (phase: CyclePhase) => Promise<CycleRouteResult>;
@@ -150,6 +185,9 @@ export type CyclePlanAdopter = (state: CycleState) => Promise<PlanAdoptionResult
 export type CycleCurrent = () => boolean;
 
 const current = (isCurrent?: CycleCurrent) => isCurrent?.() ?? true;
+const requireCurrent = (isCurrent?: CycleCurrent) => {
+  if (!current(isCurrent)) throw new Error("cycle_state_stale");
+};
 
 export const CYCLE_DISPATCH_CONFIRMATION_STATES = ["waiting-input", "waiting-before-agent", "waiting-agent-start", "waiting-agent-end", "waiting-settled", "succeeded", "failed"] as const;
 export type CycleDispatchConfirmationStatus = typeof CYCLE_DISPATCH_CONFIRMATION_STATES[number];
@@ -210,6 +248,7 @@ export type CycleStartInput = {
   appendState: CycleAppend;
   persistAdoptionState?: CycleAppend;
   sendUserMessage: CycleSend;
+  prepareDispatch?: CyclePrepareDispatch;
   expandPrompt?: CycleExpand;
   isCurrent?: CycleCurrent;
   timestamp?: string;
@@ -221,7 +260,7 @@ const sameCycleSource = (left: CycleSource, right: CycleSource) => cycleSourceRe
 
 const reusablePlanningState = (stateValue: CycleState, source: CycleSource, input: CycleStartInput) => {
   const valid = validateCycleState(stateValue);
-  if (!valid.valid || !sameCycleSource(valid.state.source, source) || valid.state.phase !== "plan") return null;
+  if (!valid.valid || !sameCycleSource(valid.state.source, source) || valid.state.phase !== "plan" || valid.state.execution) return null;
   const state = valid.state;
   const resumable = state.status === "awaiting-resume"
     || state.status === "stopped"
@@ -315,6 +354,7 @@ export async function coordinateCycleStart(input: CycleStartInput): Promise<Cycl
         applyRoute: input.applyRoute,
         appendState: append,
         sendUserMessage: input.sendUserMessage,
+        prepareDispatch: input.prepareDispatch,
         expandPrompt: input.expandPrompt,
         isCurrent: input.isCurrent,
         timestamp: input.timestamp,
@@ -337,8 +377,14 @@ export async function coordinateCycleStart(input: CycleStartInput): Promise<Cycl
   }
   if (!current(input.isCurrent)) return safeError("cycle_operation_cancelled");
   if (!route.ok) return safeError(route.error || "phase_route_apply_failed");
-  const command = buildResumeSource({ ...state, status: "awaiting-resume" }) ?? "/ima:plan";
-  const provisional = copyState(state);
+  let prepared: CycleState;
+  try {
+    prepared = input.prepareDispatch ? input.prepareDispatch(copyState(state), route.route) : state;
+  } catch {
+    return safeError("cycle_phase_dispatch_prepare_failed");
+  }
+  const command = buildResumeSource({ ...prepared, status: "awaiting-resume" }) ?? "/ima:plan";
+  const provisional = copyState(prepared);
   try {
     await input.appendState(provisional);
   } catch {
@@ -370,6 +416,7 @@ export type CycleDispatchInput = {
   applyRoute: CycleRoute;
   appendState: CycleAppend;
   sendUserMessage: CycleSend;
+  prepareDispatch?: CyclePrepareDispatch;
   expandPrompt?: CycleExpand;
   isCurrent?: CycleCurrent;
   timestamp?: string;
@@ -389,7 +436,13 @@ export async function dispatchCyclePhase(input: CycleDispatchInput): Promise<Cyc
   if (!current(input.isCurrent)) return safeError("cycle_operation_cancelled");
   if (!route.ok) return safeError(route.error || "phase_route_apply_failed");
   const state: CycleState = { ...copyState(input.state), status: "awaiting-evidence", updatedAt: input.timestamp ?? nowIso() };
-  const provisional = copyState(state);
+  let prepared: CycleState;
+  try {
+    prepared = input.prepareDispatch ? input.prepareDispatch(copyState(state), route.route) : state;
+  } catch {
+    return safeError("cycle_phase_dispatch_prepare_failed");
+  }
+  const provisional = copyState(prepared);
   try {
     await input.appendState(provisional);
   } catch {
@@ -420,437 +473,28 @@ export type CycleStopInput = {
   state: CycleState;
   acknowledge: boolean;
   appendState: CycleAppend;
-  abort: () => void;
+  abort: () => void | Promise<void>;
+  updateStoppedState?: (state: CycleState) => CycleState;
   timestamp?: string;
 };
 
 export async function coordinateCycleStop(input: CycleStopInput): Promise<{ ok: true; state: CycleState; message: string } | { ok: false; error: ReturnType<typeof sanitizeCycleError> }> {
   if (!["awaiting-evidence", "awaiting-resume"].includes(input.state.status)) return safeError("cycle_stop_unavailable");
   if (WRITE_CAPABLE_PHASES.has(input.state.phase) && input.state.mode !== "autonomous" && !input.acknowledge) return safeError("cycle_stop_ack_required");
-  const state: CycleState = {
+  const stopped: CycleState = {
     ...copyState(input.state),
     status: "stopped",
     stoppedAt: input.timestamp ?? nowIso(),
     stoppedPhase: input.state.phase,
     updatedAt: input.timestamp ?? nowIso(),
   };
+  const state = input.updateStoppedState?.(stopped) ?? stopped;
   await input.appendState(copyState(state));
-  input.abort();
+  await input.abort();
   return { ok: true, state, message: `Cycle stopped during ${state.phase}.` };
 }
 
-const contentText = (content: unknown): string => Array.isArray(content)
-  ? content.flatMap((item) => { const entry = object(item); return entry?.type === "text" ? [text(entry.text)] : []; }).join("\n")
-  : text(content);
 
-const jsonObject = (value: unknown): Record<string, unknown> | null => {
-  if (object(value)) return value;
-  if (typeof value !== "string") return null;
-  try { return object(JSON.parse(value)); } catch { return null; }
-};
-
-const lifecyclePayload = (value: unknown): Record<string, unknown> | null => {
-  const input = object(value);
-  if (!input) return null;
-  const details = object(input.details);
-  if (details?.status) return details;
-  const parsed = jsonObject(contentText(input.content));
-  return parsed ?? details;
-};
-
-const sameLifecycleIdentity = (state: CycleState, identityValue: unknown): boolean => {
-  const identity = object(identityValue);
-  if (!identity || text(identity.project) !== IMA_PROJECT || text(identity.lifecycleKey) !== state.lifecycleKey) return false;
-  if (state.source.type === "jira") return text(identity.jiraKey) === state.source.key;
-  if (state.source.type === "taskwarrior") {
-    return text(identity.taskwarriorProject) === state.source.project
-      && text(identity.taskwarriorUuid) === state.source.uuid;
-  }
-  return text(identity.jiraKey) === ""
-    && text(identity.taskwarriorProject) === ""
-    && text(identity.taskwarriorTask) === ""
-    && text(identity.taskwarriorUuid) === ""
-    && text(identity.planeWorkspace) === state.source.workspace
-    && text(identity.planeWorkItem) === `${state.source.project}-${state.source.sequenceId}`;
-};
-
-const hasImportedPlanLineage = (state: CycleState, identityValue: unknown) => {
-  const evidence = [...state.evidence]
-    .reverse()
-    .find((item) => item.phase === "plan" && item.outcome === "APPROVED" && item.approvedPlan);
-  if (!evidence?.approvedPlan) return true;
-  const identity = object(identityValue);
-  const priorArtifactIds = identity?.priorArtifactIds;
-  return Boolean(
-    evidence.artifactId
-    && Array.isArray(priorArtifactIds)
-    && priorArtifactIds.every((id) => typeof id === "string" && UUID.test(id))
-    && priorArtifactIds.includes(evidence.artifactId)
-    && priorArtifactIds.includes(evidence.approvedPlan.artifactId),
-  );
-};
-
-export type CycleObservationInput = {
-  state: CycleState;
-  toolName: unknown;
-  toolCallId: unknown;
-  input: unknown;
-  result: unknown;
-  timestamp?: string;
-};
-
-export type CycleObservationDiagnostic = {
-  phase: CyclePhase;
-  artifactId: string | null;
-  recordKey: string | null;
-};
-export type CycleObservationResult =
-  | { matched: true; state: CycleState; evidence: CycleEvidence }
-  | { matched: false; state: CycleState; error: ReturnType<typeof sanitizeCycleError>; diagnostic?: CycleObservationDiagnostic };
-
-export function observeLifecycleResult(input: CycleObservationInput): CycleObservationResult {
-  if (input.toolName !== "ima_lifecycle") return { matched: false, state: input.state, error: sanitizeCycleError("tool_not_cycle_lifecycle") };
-  const request = object(input.input);
-  const resultObject = object(input.result);
-  const payload = lifecyclePayload(input.result);
-  if (!request || !payload || resultObject?.isError === true || payload.status !== "completed" || payload.receiptAccepted !== true || object(payload.semanticRecall)?.matched !== true) return { matched: false, state: input.state, error: sanitizeCycleError("lifecycle_completion_unverified") };
-  const expectedLifecycleType = lifecycleTypeForPhase(input.state.phase);
-  if (text(payload.lifecycleKey) !== input.state.lifecycleKey || text(payload.phase) !== expectedLifecycleType || text(request.type) !== expectedLifecycleType || !sameLifecycleIdentity(input.state, request.identity)) return { matched: false, state: input.state, error: sanitizeCycleError("lifecycle_identity_mismatch") };
-  if (!hasImportedPlanLineage(input.state, request.identity)) return { matched: false, state: input.state, error: sanitizeCycleError("lifecycle_plan_lineage_mismatch") };
-  const artifactId = safeArtifactReference(payload.artifactId);
-  const rawRecordKey = payload.recordKey;
-  const recordKey = rawRecordKey === undefined || rawRecordKey === null
-    ? null
-    : safeRecordKey(rawRecordKey);
-  if (rawRecordKey !== undefined && rawRecordKey !== null && !recordKey) return { matched: false, state: input.state, error: sanitizeCycleError("lifecycle_completion_unverified") };
-  const outcome = resolvePhaseOutcome(text(request.artifact), input.state.phase);
-  if (!outcome.ok) return { matched: false, state: input.state, error: outcome.error, diagnostic: { phase: input.state.phase, artifactId, recordKey } };
-  const toolCallId = text(input.toolCallId);
-  if (!toolCallId) return { matched: false, state: input.state, error: sanitizeCycleError("lifecycle_tool_call_missing") };
-  const reduced = reduceCycleState(input.state, {
-    phase: outcome.phase,
-    outcome: outcome.outcome,
-    marker: outcome.marker,
-    artifactId,
-    recordKey,
-    toolCallId,
-    timestamp: input.timestamp,
-  }, { timestamp: input.timestamp });
-  if (!reduced.ok) return { matched: false, state: input.state, error: reduced.error };
-  return { matched: true, state: reduced.state, evidence: reduced.state.evidence[reduced.state.evidence.length - 1] };
-}
-
-const execPayload = (value: unknown): unknown => {
-  const result = object(value);
-  if (!result) return value;
-  if (typeof result.stdout === "string") {
-    try { return JSON.parse(result.stdout); } catch { return result.stdout; }
-  }
-  return value;
-};
-
-const planePayload = (value: unknown): unknown | null => {
-  const result = object(value);
-  if (
-    !result
-    || typeof result.stdout !== "string"
-    || Buffer.byteLength(result.stdout, "utf8") > MAX_PLANE_HELPER_OUTPUT_BYTES
-  ) return null;
-  try {
-    return JSON.parse(result.stdout);
-  } catch {
-    return null;
-  }
-};
-
-const execSucceeded = (value: unknown) => {
-  const result = object(value);
-  if (!result) return false;
-  if (typeof result.code === "number") return result.code === 0;
-  return result.ok === true || result.success === true;
-};
-
-export type CycleRecall = (query: string) => Promise<unknown>;
-export type CycleRecallValidation =
-  | { valid: true; payload: Record<string, unknown> }
-  | { valid: false; code: string };
-
-export type CycleReconcileInput = {
-  state: CycleState;
-  recall: CycleRecall;
-  appendState: CycleAppend;
-  validateRecall?: (state: CycleState, payload: Record<string, unknown>) => CycleRecallValidation;
-  isCurrent?: CycleCurrent;
-  timestamp?: string;
-};
-
-export type CycleReconcileResult =
-  | { ok: true; state: CycleState; reconciled: boolean }
-  | { ok: false; state: CycleState | null; error: ReturnType<typeof sanitizeCycleError>; diagnostic?: CycleObservationDiagnostic };
-
-export async function coordinateCycleReconcile(input: CycleReconcileInput): Promise<CycleReconcileResult> {
-  const valid = validateCycleState(input.state);
-  if (!valid.valid) return { ok: false, state: null, error: valid.error };
-  const state = valid.state;
-  if (!current(input.isCurrent)) return { ...safeError("cycle_operation_cancelled"), state };
-  if (state.status !== "awaiting-evidence") return { ok: true, state, reconciled: false };
-
-  const query = `${state.lifecycleKey} ${lifecycleTypeForPhase(state.phase)}`;
-  let response: unknown;
-  try {
-    response = await input.recall(query);
-  } catch {
-    return { ...safeError("cycle_reconcile_read_failed"), state };
-  }
-  if (!current(input.isCurrent)) return { ...safeError("cycle_operation_cancelled"), state };
-
-  const payload = mcpResultData(response);
-  if (!payload) return { ...safeError("cycle_reconcile_read_failed"), state };
-  const validatedPayload = input.validateRecall
-    ? input.validateRecall(state, payload)
-    : { valid: true as const, payload };
-  if (!validatedPayload.valid) return { ...safeError(validatedPayload.code), state };
-  const parsed = parseLifecycleSearchRecords(validatedPayload.payload, {
-    lifecycleKey: state.lifecycleKey,
-    phase: state.phase,
-    jiraKey: state.source.type === "jira" ? state.source.key : "",
-    taskwarriorUuid: state.source.type === "taskwarrior" ? state.source.uuid : "",
-    planeWorkspace: state.source.type === "plane" ? state.source.workspace : "",
-    planeWorkItem: state.source.type === "plane"
-      ? `${state.source.project}-${state.source.sequenceId}`
-      : "",
-  });
-  if (!parsed.valid) return { ...safeError("cycle_reconcile_read_failed"), state };
-  const reconciled = reconcileCycleFromLifecycle(state, parsed.records, { timestamp: input.timestamp });
-  if (!current(input.isCurrent)) return { ...safeError("cycle_operation_cancelled"), state };
-  if (!reconciled.ok) {
-    return {
-      ok: false,
-      state: reconciled.state ?? state,
-      error: reconciled.error,
-      ...(reconciled.error.code === "lifecycle_outcome_undetermined" ? {
-        diagnostic: {
-          phase: state.phase,
-          artifactId: safeArtifactReference(reconciled.artifactId),
-          recordKey: safeRecordKey(reconciled.recordKey),
-        },
-      } : {}),
-    };
-  }
-  if (!reconciled.reconciled) return { ok: true, state: reconciled.state, reconciled: false };
-  try {
-    await input.appendState(copyState(reconciled.state));
-  } catch {
-    return { ...safeError("cycle_state_persist_failed"), state };
-  }
-  if (!current(input.isCurrent)) return { ...safeError("cycle_operation_cancelled"), state };
-  return { ok: true, state: reconciled.state, reconciled: true };
-}
-
-const cycleRecoveryLimit = (state: CycleState) => CYCLE_PHASES.length + (state.reviewCap * 2);
-
-export async function coordinateCycleRecovery(input: CycleReconcileInput): Promise<CycleReconcileResult> {
-  const valid = validateCycleState(input.state);
-  if (!valid.valid) return { ok: false, state: null, error: valid.error };
-  let state = valid.state;
-  let reconciled = false;
-  for (let step = 0; step < cycleRecoveryLimit(state); step += 1) {
-    if (!current(input.isCurrent)) return { ...safeError("cycle_operation_cancelled"), state };
-    if (!["awaiting-evidence", "awaiting-resume"].includes(state.status)) return { ok: true, state, reconciled };
-    const probe: CycleState = state.status === "awaiting-resume" ? { ...copyState(state), status: "awaiting-evidence" } : state;
-    const result = await coordinateCycleReconcile({ ...input, state: probe });
-    if (!current(input.isCurrent)) return { ...safeError("cycle_operation_cancelled"), state };
-    if (!result.ok) {
-      return {
-        ok: false,
-        state,
-        error: result.error,
-        ...(result.diagnostic ? { diagnostic: result.diagnostic } : {}),
-      };
-    }
-    if (!result.reconciled) return { ok: true, state, reconciled };
-    state = copyState(result.state);
-    reconciled = true;
-  }
-  return { ok: false, state, error: sanitizeCycleError("cycle_recovery_limit_reached") };
-}
-
-const identityForSource = (state: CycleState): LifecycleIdentity => {
-  const priorArtifactIds = [...new Set(state.evidence.flatMap((item) => [
-    ...(item.artifactId ? [item.artifactId] : []),
-    ...(item.approvedPlan ? [item.approvedPlan.artifactId] : []),
-  ]))];
-  if (state.source.type === "jira") {
-    return { project: IMA_PROJECT, lifecycleKey: state.lifecycleKey, lifecycleRootMemoryId: "", taskwarriorProject: "", taskwarriorTask: "", taskwarriorUuid: "", jiraKey: state.source.key, sourceRefs: [`Jira:${state.source.key}`], priorArtifactIds };
-  }
-  if (state.source.type === "taskwarrior") {
-    return { project: IMA_PROJECT, lifecycleKey: state.lifecycleKey, lifecycleRootMemoryId: "", taskwarriorProject: state.source.project, taskwarriorTask: state.source.uuid, taskwarriorUuid: state.source.uuid, jiraKey: "", sourceRefs: [`Taskwarrior:${state.source.project}:${state.source.uuid}`], priorArtifactIds };
-  }
-  const planeWorkItem = `${state.source.project}-${state.source.sequenceId}`;
-  return {
-    project: IMA_PROJECT,
-    lifecycleKey: state.lifecycleKey,
-    lifecycleRootMemoryId: "",
-    taskwarriorProject: "",
-    taskwarriorTask: "",
-    taskwarriorUuid: "",
-    jiraKey: "",
-    planeWorkspace: state.source.workspace,
-    planeWorkItem,
-    sourceRefs: [cycleSourceReference(state.source)],
-    priorArtifactIds,
-  };
-};
-
-export type CycleCloseInput = {
-  state: CycleState;
-  mode: string;
-  commitPrep: boolean;
-  confirmed?: boolean;
-  run: (program: string, args: string[]) => Promise<unknown>;
-  lifecycle?: (request: { type: "closeout"; identity: LifecycleIdentity; summary: string; artifact: string }) => Promise<{ status?: string; [key: string]: unknown }>;
-  identity?: LifecycleIdentity;
-  appendState: CycleAppend;
-  timestamp?: string;
-};
-
-const closePlaneTracker = async (
-  source: Extract<CycleSource, { type: "plane" }>,
-  run: CycleCloseInput["run"],
-): Promise<{ ok: true } | { ok: false; code: string }> => {
-  const reference = cycleSourceReference(source);
-  let currentResult: unknown;
-  try {
-    currentResult = await run("node", [PLANE_HELPER, "plane:get", reference]);
-  } catch {
-    return { ok: false, code: "tracker_read_failed" };
-  }
-  if (!execSucceeded(currentResult)) return { ok: false, code: "tracker_read_failed" };
-
-  const current = parsePlaneCurrentWorkItem(planePayload(currentResult), source);
-  if (!current.valid) return { ok: false, code: current.error.code };
-
-  let statesResult: unknown;
-  try {
-    statesResult = await run("node", [PLANE_HELPER, "plane:states", reference]);
-  } catch {
-    return { ok: false, code: "tracker_read_failed" };
-  }
-  if (!execSucceeded(statesResult)) return { ok: false, code: "tracker_read_failed" };
-
-  const workflow = parsePlaneWorkflowStates(
-    planePayload(statesResult),
-    source,
-    current.workItem,
-  );
-  if (!workflow.valid) return { ok: false, code: workflow.error.code };
-
-  let mutationResult: unknown;
-  try {
-    mutationResult = await run("node", [
-      PLANE_HELPER,
-      "plane:set-state",
-      reference,
-      workflow.completedState.id,
-    ]);
-  } catch {
-    return { ok: false, code: "tracker_close_failed" };
-  }
-  if (!execSucceeded(mutationResult)) return { ok: false, code: "tracker_close_failed" };
-
-  const mutation = parsePlaneStateMutation(
-    planePayload(mutationResult),
-    source,
-    current.workItem,
-    workflow.completedState.id,
-  );
-  return mutation.valid
-    ? { ok: true }
-    : { ok: false, code: mutation.error.code };
-};
-
-export async function coordinateCycleClose(input: CycleCloseInput): Promise<{ ok: true; state?: CycleState; commitPrep?: { status: string; diffCheck: string; gitStatus: string }; message: string } | { ok: false; error: ReturnType<typeof sanitizeCycleError>; state?: CycleState }> {
-  if (input.commitPrep) {
-    let status: unknown;
-    let diffCheck: unknown;
-    try {
-      [status, diffCheck] = await Promise.all([input.run("git", ["status", "--short"]), input.run("git", ["diff", "--check"])]);
-    } catch {
-      return safeError("commit_prep_failed");
-    }
-    if (!execSucceeded(status) || !execSucceeded(diffCheck)) return safeError("commit_prep_failed");
-    const statusResult = object(status);
-    const diffResult = object(diffCheck);
-    return { ok: true, commitPrep: { status: "read-only", gitStatus: text(statusResult?.stdout), diffCheck: text(diffResult?.stdout) }, message: "Read-only commit preparation completed." };
-  }
-  if (input.mode !== "tui") return { ...safeError("close_requires_tui"), state: input.state };
-  const evidence = requiredCloseoutEvidence(input.state);
-  if (!evidence.valid) return { ...safeError("closeout_evidence_missing"), state: input.state };
-  if (input.confirmed !== true) return { ...safeError("close_confirmation_required"), state: input.state };
-  const state = input.state;
-  const identity = input.identity ?? identityForSource(state);
-  if (!sameLifecycleIdentity(state, identity)) {
-    return { ...safeError("lifecycle_identity_mismatch"), state };
-  }
-  if (state.source.type === "plane") {
-    const closed = await closePlaneTracker(state.source, input.run);
-    if (!closed.ok) return { ...safeError(closed.code), state };
-  } else {
-    let tracker: unknown;
-    try {
-      const trackerResult = state.source.type === "jira"
-        ? await input.run("node", [JIRA_HELPER, "jira:transitions", state.source.key])
-        : await input.run("task", ["rc.verbose=nothing", `project:${state.source.project}`, state.source.uuid, "export"]);
-      if (object(trackerResult) && !execSucceeded(trackerResult)) return { ...safeError("tracker_read_failed"), state };
-      tracker = execPayload(trackerResult);
-    } catch {
-      return { ...safeError("tracker_read_failed"), state };
-    }
-    let transitionId = "";
-    if (state.source.type === "jira") {
-      const parsed = parseJiraTracker(tracker);
-      if (!parsed.valid || (parsed.key && parsed.key !== state.source.key) || parsed.doneTransitions.length !== 1) return { ...safeError(parsed.valid ? "jira_done_transition_ambiguous" : parsed.error.code), state };
-      transitionId = parsed.doneTransitions[0].id;
-    } else {
-      const parsed = parseTaskwarriorTracker(tracker, state.source);
-      if (!parsed.valid) return { ...safeError(parsed.error.code), state };
-    }
-    let mutation: unknown;
-    try {
-      mutation = state.source.type === "jira"
-        ? await input.run("node", [JIRA_HELPER, "jira:transition", state.source.key, transitionId])
-        : await input.run("task", ["rc.verbose=nothing", `project:${state.source.project}`, state.source.uuid, "done"]);
-    } catch {
-      return { ...safeError("tracker_close_failed"), state };
-    }
-    if (!execSucceeded(mutation)) return { ...safeError("tracker_close_failed"), state };
-  }
-  const artifact = buildFinalCloseoutArtifact(state, { identity });
-  const lifecycle = input.lifecycle ?? (async (request) => coordinateLifecycle(request));
-  let persisted: { status?: string; [key: string]: unknown };
-  try {
-    persisted = await lifecycle({
-      type: "closeout",
-      identity,
-      summary: "Cycle closeout verified after tracker completion.",
-      artifact,
-    });
-  } catch {
-    persisted = { status: "failed" };
-  }
-  const success = persisted.status === "completed";
-  const next: CycleState = {
-    ...copyState(state),
-    status: success ? "closed" : "blocked-after-tracker-close",
-    trackerClosed: true,
-    blockers: success ? [] : ["lifecycle_closeout_failed"],
-    updatedAt: input.timestamp ?? nowIso(),
-  };
-  await input.appendState(copyState(next));
-  return success
-    ? { ok: true, state: next, message: "Tracker closed and lifecycle closeout verified." }
-    : { ...safeError("lifecycle_closeout_failed"), state: next };
-}
 
 export function restoreCycleState(entries: readonly unknown[]): CycleState | null {
   for (const entry of [...entries].reverse()) {
@@ -870,162 +514,46 @@ const statusText = (state: CycleState | null) => {
   return status.status === "invalid" ? "Cycle state is invalid." : `Cycle ${status.status}: ${status.source}; phase ${status.phase}; mode ${status.mode}; review ${status.reviewAttempts}/${status.reviewCap}.`;
 };
 
-const routeFor = (pi: ExtensionAPI, ctx: ExtensionContext): CycleRoute => async (phase) =>
-  await applyConfiguredCommandRoute(pi, ctx, cycleRoutePhase(phase), latestSessionProfile(ctx.sessionManager.getBranch())) ?? { ok: true };
-
-const pathExists = async (path: string): Promise<boolean> => {
-  try {
-    await stat(path);
-    return true;
-  } catch {
-    return false;
-  }
-};
-
-const ancestorDirectories = (cwd: string): string[] => {
-  const directories: string[] = [];
-  for (let current = resolve(cwd); ; current = dirname(current)) {
-    directories.push(current);
-    if (dirname(current) === current) return directories;
-  }
-};
-
-const defaultResolveProjectRoot = async (cwd: string): Promise<string> => {
-  const root = resolve(cwd);
-  const marks = await Promise.all(ancestorDirectories(root).map(async (dir) => ({
-    dir,
-    hasMarker: (await Promise.all(CYCLE_ROOT_MARKERS.map((marker) => pathExists(join(dir, marker))))).some(Boolean),
-  })));
-  return selectProjectRoot(root, marks);
-};
-
-const errorCode = (error: unknown) => error && typeof error === "object" && "code" in error ? error.code : "";
-
-const isWithinRoot = (root: string, path: string) => {
-  const pathFromRoot = relative(root, path);
-  return pathFromRoot === "" || (pathFromRoot !== ".." && !pathFromRoot.startsWith(`..${sep}`) && !isAbsolute(pathFromRoot));
-};
-
-const resolveCycleStoreRoot = async (cwd: string, resolveProjectRoot: CycleExtensionDependencies["resolveProjectRoot"]) =>
-  realpath(await resolveProjectRoot(cwd));
-
-const verifyCycleStoreDirectory = async (root: string, create: boolean) => {
-  const paths = cycleStorePaths(root);
-  if (create) await mkdir(paths.dir, { recursive: true });
-  const details = await lstat(paths.dir);
-  if (!details.isDirectory() || details.isSymbolicLink()) throw new Error("cycle_store_directory_invalid");
-  const canonicalDirectory = await realpath(paths.dir);
-  if (!isWithinRoot(root, canonicalDirectory)) throw new Error("cycle_store_path_invalid");
-  return paths;
-};
-
-const verifySafeRegularFile = async (root: string, path: string) => {
-  const details = await lstat(path);
-  if (!details.isFile() || details.isSymbolicLink()) throw new Error("cycle_store_file_invalid");
-  const canonicalPath = await realpath(path);
-  if (!isWithinRoot(root, canonicalPath)) throw new Error("cycle_store_path_invalid");
-  return canonicalPath;
-};
-
-const verifyExistingSafeRegularFile = async (root: string, path: string) => {
-  try {
-    return await verifySafeRegularFile(root, path);
-  } catch (error) {
-    if (errorCode(error) === "ENOENT") return null;
-    throw error;
-  }
-};
-
-const writeCycleStoreGitignore = async (root: string, path: string): Promise<void> => {
-  try {
-    await writeFile(path, CYCLE_STORE_GITIGNORE_BODY, { encoding: "utf8", flag: "wx" });
-  } catch (error) {
-    if (errorCode(error) !== "EEXIST") throw error;
-  }
-  const safePath = await verifySafeRegularFile(root, path);
-  if (await readFile(safePath, "utf8") !== CYCLE_STORE_GITIGNORE_BODY) throw new Error("cycle_store_gitignore_invalid");
-};
-
-type CyclePersistenceOptions = { isCurrent?: CycleCurrent };
-
-const requireCurrent = (isCurrent?: CycleCurrent) => {
-  if (!current(isCurrent)) throw new Error("cycle_state_stale");
-};
-
-const writeCycleStoreState = async (
-  root: string,
-  path: string,
-  state: CycleState,
-  options: CyclePersistenceOptions = {},
-): Promise<void> => {
-  const temporary = join(dirname(path), `.${CYCLE_STORE_FILENAME}.${randomUUID()}.tmp`);
-  const serialized = serializeCycleRecord(state);
-  try {
-    requireCurrent(options.isCurrent);
-    await verifyExistingSafeRegularFile(root, path);
-    const handle = await open(temporary, "wx");
-    try {
-      await handle.writeFile(serialized, "utf8");
-    } finally {
-      await handle.close();
+const routeFor = (pi: ExtensionAPI, ctx: ExtensionContext, parentRoute: CyclePhaseRoute | null): CycleRoute => async (phase) => {
+  const profile = latestSessionProfile(ctx.sessionManager.getBranch());
+  const parent = parentRoute ?? (ctx.model
+    ? {
+      provider: ctx.model.provider,
+      model: ctx.model.id,
+      thinking: pi.getThinkingLevel(),
+      profile,
+      source: "parent" as const,
     }
-    requireCurrent(options.isCurrent);
-    await verifySafeRegularFile(root, temporary);
-    await verifyExistingSafeRegularFile(root, path);
-    requireCurrent(options.isCurrent);
-    await rename(temporary, path);
-  } catch (error) {
-    await unlink(temporary).catch(() => undefined);
-    throw error;
-  }
+    : null);
+  if (!parent) return { ok: false, error: "parent_model_unavailable", message: "Cycle phase routing requires an active parent model." };
+  return resolveConfiguredCyclePhaseRoute(ctx, cycleRoutePhase(phase), parent, profile);
 };
 
-const loadDurableStateWith = (resolveProjectRoot: CycleExtensionDependencies["resolveProjectRoot"]) => async (cwd: string): Promise<CycleState | null> => {
-  try {
-    const root = await resolveCycleStoreRoot(cwd, resolveProjectRoot);
-    const paths = await verifyCycleStoreDirectory(root, false);
-    const safePath = await verifySafeRegularFile(root, paths.file);
-    return parseCycleRecord(await readFile(safePath, "utf8"));
-  } catch {
-    return null;
-  }
-};
-
-const persistDurableStateWith = (resolveProjectRoot: CycleExtensionDependencies["resolveProjectRoot"]) => async (
-  cwd: string,
-  state: CycleState,
-  options: CyclePersistenceOptions = {},
-): Promise<void> => {
-  requireCurrent(options.isCurrent);
-  const root = await resolveCycleStoreRoot(cwd, resolveProjectRoot);
-  requireCurrent(options.isCurrent);
-  const paths = await verifyCycleStoreDirectory(root, true);
-  requireCurrent(options.isCurrent);
-  await writeCycleStoreGitignore(root, paths.gitignore);
-  requireCurrent(options.isCurrent);
-  await writeCycleStoreState(root, paths.file, state, options);
-};
 
 export type CycleExtensionDependencies = {
   context: (request: unknown, cwd: string) => Promise<CycleContextResult>;
-  applyRoute: (pi: ExtensionAPI, ctx: ExtensionContext, phase: CyclePhase) => Promise<CycleRouteResult>;
+  applyRoute: (pi: ExtensionAPI, ctx: ExtensionContext, phase: CyclePhase, parentRoute?: CyclePhaseRoute | null) => Promise<CycleRouteResult>;
   expandPrompt: (value: string, cwd: string) => Promise<string>;
+  createPhaseRuntime: typeof createCyclePhaseRuntime;
+  readPhaseSettlement: typeof readCyclePhaseSettlement;
   recall: CycleRecall;
   lifecycle: (request: PlanApprovalPersistenceRequest) => Promise<unknown>;
-  resolveProjectRoot: (cwd: string) => Promise<string>;
+  resolveProjectRoot: ResolveCycleProjectRoot;
   loadDurableState: (cwd: string) => Promise<CycleState | null>;
   persistDurableState: (cwd: string, state: CycleState, options?: CyclePersistenceOptions) => Promise<void>;
 };
 
 const defaultCycleExtensionDependencies: CycleExtensionDependencies = {
   context: (request, cwd) => coordinateContext(request, cwd) as Promise<CycleContextResult>,
-  applyRoute: (pi, ctx, phase) => routeFor(pi, ctx)(phase),
+  applyRoute: (pi, ctx, phase, parentRoute) => routeFor(pi, ctx, parentRoute ?? null)(phase),
   expandPrompt: expandCyclePromptFromResources,
+  createPhaseRuntime: createCyclePhaseRuntime,
+  readPhaseSettlement: readCyclePhaseSettlement,
   recall: (query) => recallCorpusLifecycle(query),
   lifecycle: (request) => coordinateLifecycle(request),
-  resolveProjectRoot: defaultResolveProjectRoot,
-  loadDurableState: loadDurableStateWith(defaultResolveProjectRoot),
-  persistDurableState: persistDurableStateWith(defaultResolveProjectRoot),
+  resolveProjectRoot: defaultResolveCycleProjectRoot,
+  loadDurableState: loadDurableStateWith(defaultResolveCycleProjectRoot),
+  persistDurableState: persistDurableStateWith(defaultResolveCycleProjectRoot),
 };
 
 export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<CycleExtensionDependencies> = {}) {
@@ -1057,9 +585,20 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
     isCurrent?: CycleCurrent;
     operation?: ActiveCycleOperation | null;
   };
+  type ActivePhaseRuntime = {
+    dispatchId: string;
+    host: CyclePhaseRuntime;
+    state: CycleState;
+    bufferedState: CycleState | null;
+    acceptance: CyclePhaseArtifactReference | null;
+    operation: ActiveCycleOperation | null;
+    cleanup: Promise<boolean> | null;
+  };
   let pendingDispatch: PendingDispatch | null = null;
+  let activePhase: ActivePhaseRuntime | null = null;
   let autonomousRun: { aborted: boolean; dispatches: number } | null = null;
   let currentOperation: ActiveCycleOperation | null = null;
+  let orchestratorRoute: CyclePhaseRoute | null = null;
   let dispatchGeneration = 0;
   let publication: Promise<void> = Promise.resolve();
   const operationCurrent = (operation: ActiveCycleOperation) =>
@@ -1070,17 +609,43 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
     const pending = pendingDispatch;
     if (pending) pending.reject(new Error(code));
   };
-  const invalidateOperation = () => {
+  const settleActivePhase = async (active: ActivePhaseRuntime, abort: boolean) => {
+    if (!active.cleanup) {
+      active.cleanup = (async () => {
+        try {
+          if (abort) await active.host.abort();
+          else await active.host.dispose();
+        } catch {
+          return false;
+        }
+        if (activePhase === active) activePhase = null;
+        return true;
+      })();
+    }
+    return active.cleanup;
+  };
+  const cleanupWarning = (ctx: ExtensionContext) => {
+    notify(ctx, "Cycle phase cleanup is unsettled; ownership is retained and no replacement may start.", "warning");
+  };
+  const abortActivePhase = async (ctx?: ExtensionContext) => {
+    const active = activePhase;
+    if (!active) return true;
+    const settled = await settleActivePhase(active, true);
+    if (!settled && ctx) cleanupWarning(ctx);
+    return settled;
+  };
+  const invalidateOperation = (preservePhase = false) => {
     dispatchGeneration += 1;
     const operation = currentOperation;
     currentOperation = null;
     operation?.controller.abort();
     if (autonomousRun) autonomousRun.aborted = true;
     cancelPendingDispatch("cycle_operation_cancelled");
+    if (!preservePhase) void abortActivePhase();
     return dispatchGeneration;
   };
-  const beginOperation = () => {
-    invalidateOperation();
+  const beginOperation = (preservePhase = false) => {
+    invalidateOperation(preservePhase);
     const operation: ActiveCycleOperation = {
       generation: dispatchGeneration,
       controller: new AbortController(),
@@ -1122,6 +687,11 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
     isCurrent?: CycleCurrent,
     operation: ActiveCycleOperation | null = null,
   ): CycleAppend => async (next) => publishState(ctx, next, { isCurrent, operation });
+  const strictAppendFor = (
+    ctx: ExtensionContext,
+    isCurrent?: CycleCurrent,
+    operation: ActiveCycleOperation | null = null,
+  ): CycleAppend => async (next) => publishState(ctx, next, { strict: true, isCurrent, operation });
   const strictAdoptionAppend = (
     ctx: ExtensionContext,
     next: CycleState,
@@ -1182,6 +752,274 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
       pending.reject(error instanceof Error ? error : new Error("cycle_phase_injection_failed"));
     }
   });
+  const phaseRuntimeAvailable = (ctx: ExtensionContext) => Boolean(
+    ctx.model
+      && ctx.modelRegistry
+      && typeof ctx.isProjectTrusted === "function",
+  );
+  const preparePhaseDispatch = (ctx: ExtensionContext): CyclePrepareDispatch => (candidate, route) => {
+    if (!route) throw new Error("phase_route_unavailable");
+    const timestamp = nowIso();
+    const execution = createCyclePhaseExecution({
+      dispatchId: randomUUID(),
+      phase: candidate.phase,
+      route,
+      parentSessionId: text((ctx.sessionManager as any).getSessionId?.()) || `parent:${randomUUID()}`,
+      status: "starting",
+      possiblePartialWrite: WRITE_CAPABLE_PHASES.has(candidate.phase),
+      startedAt: timestamp,
+      updatedAt: timestamp,
+    });
+    if (!execution) throw new Error("phase_execution_invalid");
+    return { ...candidate, execution };
+  };
+  const updatePhaseExecution = (
+    candidate: CycleState,
+    patch: Parameters<typeof withCyclePhaseExecution>[1],
+  ): CycleState => {
+    if (!candidate.execution) throw new Error("phase_execution_missing");
+    const execution = withCyclePhaseExecution(candidate.execution, patch);
+    if (!execution) throw new Error("phase_execution_invalid");
+    return { ...candidate, execution };
+  };
+  const phaseContext = (candidate: CycleState, execution: NonNullable<CycleState["execution"]>): CyclePhaseContext => ({
+    schemaVersion: 1,
+    project: IMA_PROJECT,
+    lifecycleKey: candidate.lifecycleKey,
+    source: cycleSourceReference(candidate.source),
+    phase: execution.phase,
+    dispatchId: execution.dispatchId,
+  });
+  const phaseIdentityMatches = (active: ActivePhaseRuntime, outcome: Awaited<ReturnType<CyclePhaseRuntime["run"]>>) => {
+    const execution = active.state.execution;
+    return Boolean(
+      execution
+        && outcome.identity.childSessionId === execution.childSessionId
+        && outcome.identity.childSessionFile === execution.childSessionFile
+        && outcome.identity.childSessionDir === execution.childSessionDir,
+    );
+  };
+  const acceptedSettlement = (active: ActivePhaseRuntime, outcome: Awaited<ReturnType<CyclePhaseRuntime["run"]>>) => {
+    const execution = active.state.execution;
+    const evidence = active.bufferedState?.evidence.at(-1);
+    if (!execution || !evidence || !active.acceptance || !outcome.settlement || !phaseIdentityMatches(active, outcome)) return false;
+    if (!validateCyclePhaseArtifactReference(active.acceptance)) return false;
+    if (evidence.phase !== execution.phase || evidence.artifactId !== active.acceptance.artifactId || evidence.recordKey !== active.acceptance.recordKey) return false;
+    return hasMatchingCyclePhaseSettlement({
+      settlement: outcome.settlement,
+      execution,
+      context: phaseContext(active.state, execution),
+      artifact: active.acceptance,
+    });
+  };
+  const finishPhaseRuntime = async (
+    ctx: ExtensionContext,
+    active: ActivePhaseRuntime,
+    outcome: Awaited<ReturnType<CyclePhaseRuntime["run"]>>,
+  ): Promise<CycleState | null> => {
+    if (outcome.status === "busy") {
+      active.operation = null;
+      return null;
+    }
+    const settled = outcome.status === "settled" && outcome.acceptedEvidence && acceptedSettlement(active, outcome);
+    if (settled && active.bufferedState) {
+      const phaseState = updatePhaseExecution(active.bufferedState, { status: "settled", updatedAt: nowIso() });
+      if (outcome.output) notify(ctx, outcome.output.slice(0, 4_000), "info");
+      if (!(await settleActivePhase(active, false))) {
+        const failedExecution = updatePhaseExecution(active.state, { status: "failed", updatedAt: nowIso() });
+        const cleanupBlockedState = { ...failedExecution, status: "awaiting-resume" as const, updatedAt: nowIso() };
+        active.state = cleanupBlockedState;
+        cleanupWarning(ctx);
+        return cleanupBlockedState;
+      }
+      active.state = phaseState;
+      return phaseState;
+    }
+    if (outcome.status === "waiting-reply") {
+      const phaseState = updatePhaseExecution(active.state, { status: "waiting-reply", updatedAt: nowIso() });
+      active.state = phaseState;
+      active.operation = null;
+      if (outcome.output) notify(ctx, outcome.output.slice(0, 4_000), "info");
+      return phaseState;
+    }
+    const status = outcome.status === "aborted" ? "interrupted" : "failed";
+    let phaseState = updatePhaseExecution(active.state, { status, updatedAt: nowIso() });
+    phaseState = { ...phaseState, status: "awaiting-resume", updatedAt: nowIso() };
+    active.state = phaseState;
+    if (outcome.output) notify(ctx, outcome.output.slice(0, 4_000), "warning");
+    const error = outcome.error ?? (outcome.status === "settled" ? "phase_settlement_unverified" : undefined);
+    if (error) notify(ctx, `Cycle phase ${active.state.execution?.phase ?? "unknown"} ended without verified evidence: ${error}.`, "warning");
+    if (!(await settleActivePhase(active, true))) cleanupWarning(ctx);
+    return phaseState;
+  };
+  const createPhaseCallbacks = (
+    ctx: ExtensionContext,
+    holder: { state: CycleState; active: ActivePhaseRuntime | null },
+    execution: NonNullable<CycleState["execution"]>,
+    operation: ActiveCycleOperation | null,
+  ) => ({
+    onStarted: async (identity: Awaited<ReturnType<typeof createCyclePhaseRuntime>>["identity"]) => {
+      if (operation && !operationCurrent(operation)) throw new Error("cycle_operation_cancelled");
+      holder.state = updatePhaseExecution(holder.state, {
+        ...identity,
+        status: "running",
+        updatedAt: nowIso(),
+      });
+      await strictAppendFor(ctx, operation ? () => operationCurrent(operation) : undefined, operation)(holder.state);
+    },
+    onLifecycle: async (event: Parameters<NonNullable<Parameters<typeof createCyclePhaseRuntime>[0]["onLifecycle"]>>[0]): Promise<CyclePhaseLifecycleAcceptance | null> => {
+      const active = holder.active;
+      const activeOperation = active?.operation ?? operation;
+      if (!active || activeOperation && !operationCurrent(activeOperation)) return null;
+      const activeExecution = active.state.execution;
+      if (!activeExecution || !hasMatchingCyclePhaseExecution({
+        execution: activeExecution,
+        phase: execution.phase,
+        dispatchId: execution.dispatchId,
+      })) return null;
+      const observed = observeLifecycleResult({
+        state: active.state,
+        toolName: "ima_lifecycle",
+        toolCallId: event.toolCallId,
+        input: event.input,
+        result: event.result,
+      });
+      if (!observed.matched) {
+        warnObservation(ctx, observed);
+        return null;
+      }
+      const acceptance = {
+        artifactId: observed.evidence.artifactId,
+        recordKey: observed.evidence.recordKey,
+      };
+      if (!validateCyclePhaseArtifactReference(acceptance)) return null;
+      active.bufferedState = { ...observed.state, execution: activeExecution };
+      active.acceptance = acceptance;
+      return acceptance;
+    },
+    onActivity: (message: string) => {
+      if (ctx.hasUI) ctx.ui.setStatus("ima-cycle-phase", message);
+    },
+  });
+  const sendCyclePhaseMessage = async (
+    ctx: ExtensionContext,
+    message: string,
+    provisionalState: CycleState,
+    operation: ActiveCycleOperation | null = null,
+  ) => {
+    if (activePhase) throw new Error("cycle_phase_ownership_retained");
+    if (!phaseRuntimeAvailable(ctx)) return sendCycleUserMessage(message, provisionalState, operation);
+    if (operation && !operationCurrent(operation)) throw new Error("cycle_operation_cancelled");
+    const execution = provisionalState.execution;
+    if (!execution || !hasMatchingCyclePhaseExecution({ execution, phase: provisionalState.phase, dispatchId: execution.dispatchId })) {
+      throw new Error("phase_execution_missing");
+    }
+    const holder = { state: copyState(provisionalState), active: null as ActivePhaseRuntime | null };
+    let active: ActivePhaseRuntime | null = null;
+    try {
+      const host = await dependencies.createPhaseRuntime({
+        cwd: ctx.cwd,
+        route: execution.route,
+        execution,
+        context: phaseContext(provisionalState, execution),
+        projectTrusted: ctx.isProjectTrusted(),
+        ...createPhaseCallbacks(ctx, holder, execution, operation),
+      });
+      if (operation && !operationCurrent(operation)) {
+        await host.abort();
+        throw new Error("cycle_operation_cancelled");
+      }
+      active = {
+        dispatchId: execution.dispatchId,
+        host,
+        state: holder.state,
+        bufferedState: null,
+        acceptance: null,
+        operation,
+        cleanup: null,
+      };
+      holder.active = active;
+      activePhase = active;
+      const result = await host.run(message);
+      if (operation && !operationCurrent(operation)) {
+        await settleActivePhase(active, true);
+        throw new Error("cycle_operation_cancelled");
+      }
+      const completed = await finishPhaseRuntime(ctx, active, result);
+      if (ctx.hasUI && !["waiting-reply", "busy"].includes(result.status)) ctx.ui.setStatus("ima-cycle-phase", undefined);
+      return completed ?? active.state;
+    } catch (error) {
+      if (operation && !operationCurrent(operation)) throw error;
+      if (!active) throw error;
+      const failed = await finishPhaseRuntime(ctx, active, {
+        status: "failed",
+        acceptedEvidence: false,
+        output: "",
+        identity: active.host.identity,
+        error: safeResultError(error),
+      });
+      return failed ?? active.state;
+    }
+  };
+  const replyToCyclePhase = async (
+    ctx: ExtensionContext,
+    answer: string,
+    operation: ActiveCycleOperation,
+  ) => {
+    const active = activePhase;
+    if (!active || !state?.execution || active.dispatchId !== state.execution.dispatchId || active.operation || state.execution.status !== "waiting-reply") return null;
+    const replyState = updatePhaseExecution(active.state, { status: "running", updatedAt: nowIso() });
+    active.operation = operation;
+    try {
+      await strictAppendFor(ctx, () => operationCurrent(operation), operation)(replyState);
+    } catch {
+      if (active.operation === operation) active.operation = null;
+      if (operationCurrent(operation)) {
+        notify(ctx, "Cycle reply intent could not be persisted; no reply was sent.", "warning");
+      }
+      return null;
+    }
+    if (!operationCurrent(operation)) {
+      if (active.operation === operation) active.operation = null;
+      return null;
+    }
+    active.state = replyState;
+    state = copyState(replyState);
+    const outcome = await active.host.reply(answer);
+    if (!operationCurrent(operation)) return null;
+    const completed = await finishPhaseRuntime(ctx, active, outcome);
+    if (ctx.hasUI && !["waiting-reply", "busy"].includes(outcome.status)) ctx.ui.setStatus("ima-cycle-phase", undefined);
+    return completed;
+  };
+  const resumeCyclePhaseRuntime = async (
+    ctx: ExtensionContext,
+    candidate: CycleState,
+    operation: ActiveCycleOperation,
+  ): Promise<CycleState | null> => {
+    const execution = candidate.execution;
+    if (!canResumeCyclePhaseExecution(execution) || !execution) return null;
+    try {
+      return await sendCyclePhaseMessage(ctx, [
+        "This isolated lifecycle phase is resuming after an explicit operator request.",
+        "Do not repeat prior effects blindly. Reconcile the persisted lifecycle evidence and current repository state before continuing.",
+        "Continue only the existing bounded phase and persist a valid lifecycle result when safe.",
+      ].join("\n"), candidate, operation);
+    } catch (error) {
+      if (operationCurrent(operation)) notify(ctx, `Cycle phase recovery could not start: ${error instanceof Error ? error.message : "unknown error"}.`, "warning");
+      return null;
+    }
+  };
+  const ensureOrchestratorRoute = async (ctx: ExtensionContext): Promise<CycleRouteResult> => {
+    if (!phaseRuntimeAvailable(ctx)) {
+      orchestratorRoute = null;
+      return { ok: true };
+    }
+    const profile = latestSessionProfile(ctx.sessionManager.getBranch());
+    const resolved = await applyConfiguredCycleOrchestratorRoute(pi, ctx, profile);
+    if (!resolved.ok) return resolved;
+    orchestratorRoute = resolved.route;
+    return { ok: true, route: resolved.route };
+  };
   const confirmLegacyPlan = async (ctx: ExtensionContext, plan: VerifiedPlanRecord) => {
     if (ctx.mode !== "tui") return false;
     const reviewed = await ctx.ui.editor("Review saved manual plan", plan.detail);
@@ -1210,10 +1048,11 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
     && (candidate.status === "awaiting-resume"
       || candidate.status === "stopped"
       || candidate.status === "blocked" && candidate.blockers.length === 1 && candidate.blockers[0] === "plan:BLOCKED");
-  const canRecoverPlan = (
+  const canAdoptManualPlan = (
     candidate: CycleState,
     operation: ActiveCycleOperation | null = null,
   ) => !pendingDispatch
+    && candidate.execution === undefined
     && candidate.phase === "plan"
     && (candidate.status === "awaiting-evidence" || canInteractivelyAdoptPlan(candidate))
     && (operation ? operationCurrent(operation) : !currentOperation);
@@ -1266,6 +1105,16 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
       state: candidate,
       recall: dependencies.recall,
       appendState,
+      readExecutionSettlement: async (recoveryState) => {
+        const execution = recoveryState.execution;
+        return execution && execution.phase === recoveryState.phase
+          ? dependencies.readPhaseSettlement({
+            cwd: ctx.cwd,
+            execution,
+            context: phaseContext(recoveryState, execution),
+          })
+          : null;
+      },
       validateRecall: validateImportedPlanLineage,
       isCurrent,
     });
@@ -1287,6 +1136,14 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
     autonomousRun = run;
     try {
       while (isCurrent() && state && state.mode === "autonomous" && state.status === "awaiting-resume") {
+        if (activePhase) {
+          notify(ctx, "Autonomous cycle stopped while phase ownership is retained.", "warning");
+          break;
+        }
+        if (state.execution?.phase === state.phase && ["failed", "interrupted"].includes(state.execution.status)) {
+          notify(ctx, "Autonomous cycle stopped after a phase host failure; use an explicit resume after inspection.", "warning");
+          break;
+        }
         if (run.dispatches >= ceiling) {
           notify(ctx, "Autonomous cycle dispatch ceiling reached; cycle state was preserved.", "warning");
           break;
@@ -1296,9 +1153,12 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
         run.dispatches += 1;
         const result = await dispatchCyclePhase({
           state: resumable.state,
-          applyRoute: (phase) => dependencies.applyRoute(pi, ctx, phase),
-          appendState: appendFor(ctx, isCurrent, operation),
-          sendUserMessage: (message, provisional) => sendCycleUserMessage(message, provisional, operation),
+          applyRoute: (phase) => dependencies.applyRoute(pi, ctx, phase, orchestratorRoute),
+          appendState: phaseRuntimeAvailable(ctx)
+            ? strictAppendFor(ctx, isCurrent, operation)
+            : appendFor(ctx, isCurrent, operation),
+          sendUserMessage: (message, provisional) => sendCyclePhaseMessage(ctx, message, provisional, operation),
+          ...(phaseRuntimeAvailable(ctx) ? { prepareDispatch: preparePhaseDispatch(ctx) } : {}),
           expandPrompt: (value) => dependencies.expandPrompt(value, ctx.cwd),
           isCurrent,
         });
@@ -1334,8 +1194,7 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
     if (!current(isCurrent)) return false;
     if (pendingDispatch || currentOperation && currentOperation !== operation) return true;
 
-    if (state.phase === "plan") {
-      if (!canRecoverPlan(state, operation)) return true;
+    if (state.phase === "plan" && canAdoptManualPlan(state, operation)) {
       const candidate = state;
       const adoption = await requestPlanAdoption(
         ctx,
@@ -1413,8 +1272,18 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
     if (generation !== dispatchGeneration) return;
     if (ctx.hasUI) ctx.ui.setStatus(CYCLE_STATUS_KEY, stateText(state));
   };
-  const invalidateAndDrain = async () => {
+  const invalidateAndDrain = async (ctx?: ExtensionContext) => {
+    const active = activePhase;
+    if (ctx && active && state?.execution && state.execution.dispatchId === active.dispatchId) {
+      state = updatePhaseExecution(state, { status: "interrupted", updatedAt: nowIso() });
+      try {
+        await publishState(ctx, state);
+      } catch {
+        // A shutdown can interrupt local cache writes; verified lifecycle artifacts remain authoritative.
+      }
+    }
     const generation = invalidateOperation();
+    if (active) await abortActivePhase(ctx);
     await publication;
     return generation;
   };
@@ -1423,14 +1292,14 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
   };
 
   pi.on("session_start", async (_event, ctx) => {
-    const generation = await invalidateAndDrain();
+    const generation = await invalidateAndDrain(ctx);
     await restore(ctx, true, generation);
   });
   pi.on("session_tree", async (_event, ctx) => {
-    const generation = await invalidateAndDrain();
+    const generation = await invalidateAndDrain(ctx);
     await restore(ctx, false, generation);
   });
-  pi.on("session_shutdown", async () => { await invalidateAndDrain(); });
+  pi.on("session_shutdown", async (_event, ctx) => { await invalidateAndDrain(ctx); });
   pi.on("input", (event) => reducePendingDispatch({ type: "input", source: event.source, text: event.text }));
   pi.on("before_agent_start", (event) => reducePendingDispatch({ type: "before-agent-start", prompt: event.prompt }));
   pi.on("agent_start", () => reducePendingDispatch({ type: "agent-start" }));
@@ -1441,12 +1310,13 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
     if (event.toolName !== "ima_lifecycle") return;
     const observation = { state: state ?? undefined, toolName: event.toolName, toolCallId: event.toolCallId, input: event.input, result: { content: event.content, details: event.details, isError: event.isError } };
     if (pendingDispatch) {
+      if (pendingDispatch.state.execution) return;
       const observed = observeLifecycleResult({ ...observation, state: pendingDispatch.state });
       if (observed.matched) pendingDispatch.state = copyState(observed.state);
       else warnObservation(ctx, observed);
       return;
     }
-    if (!state) return;
+    if (!state || state.execution) return;
     const observed = observeLifecycleResult({ ...observation, state });
     if (!observed.matched) { warnObservation(ctx, observed); return; }
     state = observed.state;
@@ -1458,9 +1328,39 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
     description: "Start, inspect, stop, resume, or explicitly close one IMA lifecycle Story.",
     handler: async (args, ctx) => {
       const parsed = parseCycleCommand(args);
-      if (!parsed) { notify(ctx, "Usage: /ima:cycle start [--review-cap 0-10] [--implementation generic|js|wp] [--mode guided|autonomous] <Jira key|Jira browse URL|taskwarrior project uuid|plane:workspace:PROJECT-sequence|plane workspace PROJECT-sequence|Plane browse URL> | status | stop [--ack] | resume [--autonomous|--guided] | close [--commit-prep].", "warning"); return; }
+      if (!parsed) { notify(ctx, "Usage: /ima:cycle start [--review-cap 0-10] [--implementation generic|js|wp] [--mode guided|autonomous] <Jira key|Jira browse URL|taskwarrior project uuid|plane:workspace:PROJECT-sequence|plane workspace PROJECT-sequence|Plane browse URL> | status | stop [--ack] | resume [--autonomous|--guided] | reply <answer> | close [--commit-prep].", "warning"); return; }
       if (parsed.command === "status") { await reconcile(ctx); notifyState(ctx); return; }
+      if (parsed.command === "reply") {
+        if (!state || !activePhase || currentOperation || activePhase.operation || state.status !== "awaiting-evidence" || state.execution?.status !== "waiting-reply" || activePhase.dispatchId !== state.execution.dispatchId) {
+          notify(ctx, "No cycle phase is waiting for a reply.", "warning");
+          return;
+        }
+        const operation = beginOperation(true);
+        const isCurrent = () => operationCurrent(operation);
+        try {
+          const replied = await replyToCyclePhase(ctx, parsed.answer, operation);
+          if (!current(isCurrent) || !replied) return;
+          await strictAppendFor(ctx, isCurrent, operation)(replied);
+          if (!current(isCurrent)) return;
+          state = copyState(replied);
+          notifyState(ctx);
+          notifyAutonomousStop(ctx);
+          if (state.mode === "autonomous" && state.status === "awaiting-resume") await runAutonomousTail(ctx, operation);
+        } finally {
+          finishOperation(operation);
+        }
+        return;
+      }
       if (parsed.command === "start") {
+        if (activePhase) {
+          notify(ctx, "A cycle phase is already active; reply to it or stop the cycle before starting another Story.", "warning");
+          return;
+        }
+        const orchestrator = await ensureOrchestratorRoute(ctx);
+        if (!orchestrator.ok) {
+          notify(ctx, orchestrator.message ?? sanitizeCycleError(orchestrator.error).message, "warning");
+          return;
+        }
         const operation = beginOperation();
         const isCurrent = () => operationCurrent(operation);
         try {
@@ -1480,10 +1380,13 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
               (next) => strictAdoptionAppend(ctx, next, isCurrent, operation),
               operation.controller.signal,
             ),
-            applyRoute: (phase) => dependencies.applyRoute(pi, ctx, phase),
-            appendState: appendFor(ctx, isCurrent, operation),
+            applyRoute: (phase) => dependencies.applyRoute(pi, ctx, phase, orchestratorRoute),
+            appendState: phaseRuntimeAvailable(ctx)
+              ? strictAppendFor(ctx, isCurrent, operation)
+              : appendFor(ctx, isCurrent, operation),
             persistAdoptionState: (next) => strictAdoptionAppend(ctx, next, isCurrent, operation),
-            sendUserMessage: (message, provisional) => sendCycleUserMessage(message, provisional, operation),
+            sendUserMessage: (message, provisional) => sendCyclePhaseMessage(ctx, message, provisional, operation),
+            ...(phaseRuntimeAvailable(ctx) ? { prepareDispatch: preparePhaseDispatch(ctx) } : {}),
             expandPrompt: (message) => dependencies.expandPrompt(message, ctx.cwd),
             isCurrent,
             branchId: ctx.sessionManager.getLeafId() ?? undefined,
@@ -1533,14 +1436,20 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
           notify(ctx, sanitizeCycleError("cycle_stop_ack_required").message, "warning");
           return;
         }
-        const operation = beginOperation();
+        const operation = beginOperation(true);
         const isCurrent = () => operationCurrent(operation);
         try {
           const result = await coordinateCycleStop({
             state: activeState,
             acknowledge: parsed.acknowledge,
             appendState: appendFor(ctx, isCurrent, operation),
-            abort: () => ctx.abort(),
+            updateStoppedState: (candidate) => candidate.execution
+              ? updatePhaseExecution(candidate, { status: "stopped", updatedAt: nowIso() })
+              : candidate,
+            abort: async () => {
+              await abortActivePhase(ctx);
+              ctx.abort();
+            },
           });
           if (!current(isCurrent)) return;
           if (result.ok) {
@@ -1556,8 +1465,13 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
       }
       if (!state) { notify(ctx, "No active cycle. Start one first.", "warning"); return; }
       if (parsed.command === "resume") {
-        if (pendingDispatch || currentOperation) {
+        if (pendingDispatch || currentOperation || activePhase) {
           notify(ctx, sanitizeCycleError("cycle_resume_unavailable").message, "warning");
+          return;
+        }
+        const orchestrator = await ensureOrchestratorRoute(ctx);
+        if (!orchestrator.ok) {
+          notify(ctx, orchestrator.message ?? sanitizeCycleError(orchestrator.error).message, "warning");
           return;
         }
         const operation = beginOperation();
@@ -1571,13 +1485,40 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
             state = copyState(candidate);
           }
           if (!(await reconcile(ctx, { operation, interactive: true })) || !current(isCurrent) || !state) return;
+          if (state.status === "awaiting-evidence" && ["starting", "failed"].includes(state.execution?.status ?? "")) {
+            const failedExecution = state.execution
+              ? withCyclePhaseExecution(state.execution, { status: "failed", updatedAt: nowIso() })
+              : null;
+            if (!failedExecution) {
+              notify(ctx, "Cycle phase recovery record is invalid; inspect the retained lifecycle state.", "warning");
+              return;
+            }
+            const retry = { ...state, status: "awaiting-resume" as const, execution: failedExecution, updatedAt: nowIso() };
+            await appendFor(ctx, isCurrent, operation)(retry);
+            if (!current(isCurrent)) return;
+            state = copyState(retry);
+          }
+          if (state.status === "awaiting-evidence" && phaseRuntimeAvailable(ctx) && canResumeCyclePhaseExecution(state.execution)) {
+            const recovered = await resumeCyclePhaseRuntime(ctx, state, operation);
+            if (!current(isCurrent) || !recovered) return;
+            await appendFor(ctx, isCurrent, operation)(recovered);
+            if (!current(isCurrent)) return;
+            state = copyState(recovered);
+            notifyState(ctx);
+            notifyAutonomousStop(ctx);
+            if (state.mode === "autonomous" && state.status === "awaiting-resume") await runAutonomousTail(ctx, operation);
+            return;
+          }
           const resumable = prepareCycleResume(state);
           if (!resumable.ok) { notify(ctx, resumable.error.message, "warning"); return; }
           const result = await dispatchCyclePhase({
             state: resumable.state,
-            applyRoute: (phase) => dependencies.applyRoute(pi, ctx, phase),
-            appendState: appendFor(ctx, isCurrent, operation),
-            sendUserMessage: (message, provisional) => sendCycleUserMessage(message, provisional, operation),
+            applyRoute: (phase) => dependencies.applyRoute(pi, ctx, phase, orchestratorRoute),
+            appendState: phaseRuntimeAvailable(ctx)
+              ? strictAppendFor(ctx, isCurrent, operation)
+              : appendFor(ctx, isCurrent, operation),
+            sendUserMessage: (message, provisional) => sendCyclePhaseMessage(ctx, message, provisional, operation),
+            ...(phaseRuntimeAvailable(ctx) ? { prepareDispatch: preparePhaseDispatch(ctx) } : {}),
             expandPrompt: (value) => dependencies.expandPrompt(value, ctx.cwd),
             isCurrent,
           });

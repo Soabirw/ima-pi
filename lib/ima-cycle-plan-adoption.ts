@@ -126,7 +126,7 @@ export function adoptedPlanState(
   options: { allowAwaitingEvidence?: boolean; timestamp?: string } = {},
 ): PlanAdoptionStateResult {
   const valid = validateCycleState(stateValue);
-  if (!valid.valid || valid.state.phase !== "plan") return { ok: false, code: "plan_adoption_unavailable" };
+  if (!valid.valid || valid.state.phase !== "plan" || valid.state.execution) return { ok: false, code: "plan_adoption_unavailable" };
   const state = valid.state;
   const probe = state.status === "awaiting-evidence" && options.allowAwaitingEvidence
     ? state
