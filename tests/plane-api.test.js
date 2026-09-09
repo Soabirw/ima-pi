@@ -7,8 +7,10 @@ import {
   createPlaneClient,
   descriptionHtmlFromText,
   normalizeComment,
+  normalizeCreateWorkItemFields,
   normalizeState,
   parsePlaneBaseUrl,
+  parsePlaneProjectReference,
   parsePlaneReference,
   readPlaneConfig,
 } from "../skills/plane-api/scripts/plane-client.mjs";
@@ -17,6 +19,7 @@ import { runPlaneApi } from "../skills/plane-api/scripts/plane-api.mjs";
 const API_KEY = "synthetic-plane-api-key";
 const BASE_URL = "https://plane.internal.example";
 const REFERENCE = "plane:acme:PROJ-123";
+const PROJECT_REFERENCE = "plane:acme:PROJ";
 const WORK_ITEM_ID = "11111111-1111-4111-8111-111111111111";
 const PROJECT_ID = "22222222-2222-4222-8222-222222222222";
 const CURRENT_STATE_ID = "33333333-3333-4333-8333-333333333333";
@@ -24,6 +27,14 @@ const NEXT_STATE_ID = "44444444-4444-4444-8444-444444444444";
 const ASSIGNEE_ID = "55555555-5555-4555-8555-555555555555";
 const LABEL_ID = "66666666-6666-4666-8666-666666666666";
 const COMMENT_ID = "77777777-7777-4777-8777-777777777777";
+
+const project = (overrides = {}) => ({
+  id: PROJECT_ID,
+  identifier: "PROJ",
+  name: "Project",
+  archived_at: null,
+  ...overrides,
+});
 
 const workItem = (overrides = {}) => ({
   id: WORK_ITEM_ID,
@@ -126,6 +137,18 @@ test("parses only canonical Plane work-item references", async () => {
   const { client, calls } = clientFor([]);
   await assertErrorCode(client.getWorkItem("plane:acme:PROJ-0"), "REFERENCE_ERROR");
   assert.equal(calls.length, 0);
+});
+
+test("parses only canonical Plane project references for creation", () => {
+  assert.deepEqual(parsePlaneProjectReference(PROJECT_REFERENCE), {
+    canonical: PROJECT_REFERENCE,
+    workspace: "acme",
+    projectIdentifier: "PROJ",
+  });
+
+  for (const value of ["plane:acme:PROJ-1", "plane:acme:proj", "plane:acme:PROJ "]) {
+    assert.throws(() => parsePlaneProjectReference(value), (error) => error.code === "REFERENCE_ERROR");
+  }
 });
 
 test("requires a configured self-hosted base URL and API key", () => {
@@ -275,6 +298,104 @@ test("converts a plain-text work-item description to escaped multiline HTML", ()
   assert.equal(html.includes("<tag>"), false);
   assert.equal(descriptionHtmlFromText(""), "");
   assert.throws(() => descriptionHtmlFromText(null), (error) => error.code === "CREATE_ERROR");
+});
+
+test("creates a work item with only the required name", async () => {
+  const { client, calls } = clientFor([
+    jsonResponse({ results: [project()], next_page_results: false, next_cursor: null }),
+    jsonResponse(workItem({ sequence_id: 124, name: "Created item" })),
+  ]);
+  const result = await client.createWorkItem(PROJECT_REFERENCE, { name: "Created item" });
+
+  assert.deepEqual(result, {
+    reference: "plane:acme:PROJ-124",
+    workItemId: WORK_ITEM_ID,
+    sequenceId: 124,
+    name: "Created item",
+    stateId: CURRENT_STATE_ID,
+  });
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].url, `${BASE_URL}/api/v1/workspaces/acme/projects/?per_page=100`);
+  assert.equal(calls[1].options.method, "POST");
+  assert.equal(calls[1].options.redirect, "error");
+  assert.equal(calls[1].url, `${BASE_URL}/api/v1/workspaces/acme/projects/${PROJECT_ID}/work-items/`);
+  assert.deepEqual(JSON.parse(calls[1].options.body), { name: "Created item" });
+});
+
+test("creates a work item with an escaped description and allowlisted priority", async () => {
+  const { client, calls } = clientFor([
+    jsonResponse({ results: [project()], next_page_results: false, next_cursor: null }),
+    jsonResponse(workItem({ sequence_id: 124 })),
+  ]);
+  await client.createWorkItem(PROJECT_REFERENCE, {
+    name: "Created item",
+    description: "<script>unsafe</script>",
+    priority: "high",
+  });
+
+  assert.deepEqual(JSON.parse(calls[1].options.body), {
+    name: "Created item",
+    description_html: "<p>&lt;script&gt;unsafe&lt;/script&gt;</p>",
+    description_stripped: "<script>unsafe</script>",
+    priority: "high",
+  });
+});
+
+test("fails closed before a create write for invalid input or ambiguous projects", async () => {
+  const invalidReference = clientFor([]);
+  await assertErrorCode(invalidReference.client.createWorkItem("plane:acme:PROJ-1", { name: "Item" }), "REFERENCE_ERROR");
+  assert.equal(invalidReference.calls.length, 0);
+
+  const invalidPriority = clientFor([]);
+  await assertErrorCode(invalidPriority.client.createWorkItem(PROJECT_REFERENCE, { name: "Item", priority: "urgent" }), "CREATE_ERROR");
+  assert.equal(invalidPriority.calls.length, 0);
+  assert.throws(
+    () => normalizeCreateWorkItemFields({ name: "Item", unsupported: true }),
+    (error) => error.code === "CREATE_ERROR",
+  );
+
+  for (const projects of [[], [project(), project({ id: ASSIGNEE_ID })], [project({ archived_at: "2026-09-01T00:00:00Z" })]]) {
+    const candidate = clientFor([jsonResponse({ results: projects, next_page_results: false, next_cursor: null })]);
+    await assertErrorCode(candidate.client.createWorkItem(PROJECT_REFERENCE, { name: "Item" }), "PROJECT_ERROR");
+    assert.equal(candidate.calls.length, 1);
+  }
+});
+
+test("requires the created work item to belong to the resolved project", async () => {
+  const { client, calls } = clientFor([
+    jsonResponse({ results: [project()], next_page_results: false, next_cursor: null }),
+    jsonResponse(workItem({ project: ASSIGNEE_ID, sequence_id: 124 })),
+  ]);
+
+  await assertErrorCode(client.createWorkItem(PROJECT_REFERENCE, { name: "Item" }), "RESPONSE_ERROR");
+  assert.equal(calls.length, 2);
+});
+
+test("CLI creates a work item and rejects a missing title", async () => {
+  const queue = queuedFetch([
+    jsonResponse({ results: [project()], next_page_results: false, next_cursor: null }),
+    jsonResponse(workItem({ sequence_id: 124, name: "Created item" })),
+  ]);
+  const stdout = outputWriter();
+  const stderr = outputWriter();
+  const exitCode = await runPlaneApi({
+    argv: ["plane:create", PROJECT_REFERENCE, "Created item"],
+    env: { PLANE_BASE_URL: BASE_URL, PLANE_API_KEY: API_KEY },
+    stdout: stdout.writer,
+    stderr: stderr.writer,
+    fetchImpl: queue.fetchImpl,
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(JSON.parse(stdout.output()).data.reference, "plane:acme:PROJ-124");
+  assert.equal(stderr.output(), "");
+
+  const missingTitle = outputWriter();
+  assert.equal(await runPlaneApi({
+    argv: ["plane:create", PROJECT_REFERENCE],
+    stderr: missingTitle.writer,
+  }), 2);
+  assert.equal(JSON.parse(missingTitle.output()).error.code, "USAGE_ERROR");
 });
 
 test("creates a comment only after rereading the selected work item", async () => {

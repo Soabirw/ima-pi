@@ -9,6 +9,7 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 - Added prompt-only `/ima:soft-cycle` SDLC orchestration with bounded guided/autonomous specialist delegation, parent-owned artifact persistence, and a stop before human-led closeout.
 - Added isolated, profile-routed native Pi phase hosts for `/ima:cycle`, including `commands.cycle` orchestration routing, literal `/ima:cycle reply`, durable original-reviewer continuation, and local-only cycle-owned session records.
 - Added parser-backed Plane work-item description fidelity: HTML-only descriptions now hydrate as bounded readable text with independently bounded description and context payloads.
+- Added `plane:create` for explicit approved Plane work-item creation through the direct REST helper, with project resolution, strict fields, escaped descriptions, and no browser-control fallback.
 - `/ima:cycle` now automatically adopts the newest exact verified manual plan; marker-free legacy plans require one exact TUI confirmation/reference-only approval receipt.
 - Added separately invoked manual `/ima:closeout` after verified documentation, with itemized individual confirmation for Git, tracker, and lifecycle actions; it never invokes `/ima:cycle` or auto-dispatches from document.
 

@@ -6,6 +6,7 @@ import {
   fail,
   isRecord,
   normalizeComment,
+  normalizeCreateWorkItemFields,
   normalizeCreateWorkItemInput,
   normalizeUpdateWorkItemDescriptionInput,
   normalizeProject,
@@ -19,6 +20,7 @@ import {
   normalizeWorkItemRelationScope,
   normalizeUuid,
   parsePlaneBaseUrl,
+  parsePlaneProjectReference,
   parsePlaneReference,
   readPlaneApiKey,
   readPlaneConfig,
@@ -39,6 +41,7 @@ export {
   descriptionHtmlFromText,
   escapeHtml,
   normalizeComment,
+  normalizeCreateWorkItemFields,
   normalizeCreateWorkItemInput,
   normalizeUpdateWorkItemDescriptionInput,
   normalizeProject,
@@ -46,6 +49,7 @@ export {
   normalizeWorkItem,
   normalizeWorkItemRelation,
   parsePlaneBaseUrl,
+  parsePlaneProjectReference,
   parsePlaneReference,
   readPlaneConfig,
 } from "./plane-contract.mjs";
@@ -327,6 +331,13 @@ export const createPlaneClient = ({
     });
   };
 
+  const resolveProjectByIdentifier = async ({ workspace, projectIdentifier }) => {
+    const matches = (await listWorkspaceProjects({ workspace })).filter((project) =>
+      project.archivedAt === null && project.identifier === projectIdentifier);
+    if (matches.length !== 1) fail("PROJECT_ERROR");
+    return matches[0];
+  };
+
   const listProjectItemsByExternalSource = async (lookupInput) => {
     const lookup = projectExternalSourceLookup(lookupInput);
     const workItems = await collectCursorPages({
@@ -398,6 +409,37 @@ export const createPlaneClient = ({
         reference: reference.canonical,
         workItemId: workItem.id,
         comments,
+      }, normalizedApiKey);
+    },
+
+    createWorkItem: async (projectReferenceValue, fields) => {
+      const reference = parsePlaneProjectReference(projectReferenceValue);
+      const input = normalizeCreateWorkItemFields(fields);
+      const project = await resolveProjectByIdentifier(reference);
+      const description = input.description === null || input.description === ""
+        ? null
+        : descriptionPayloadFrom(input.description);
+      const rawWorkItem = await requestJson({
+        path: pathForProjectWorkItems({ workspace: reference.workspace, projectId: project.id }),
+        method: "POST",
+        body: {
+          name: input.name,
+          ...(description === null ? {} : {
+            description_html: description.descriptionHtml,
+            description_stripped: description.descriptionStripped,
+          }),
+          ...(input.priority === null ? {} : { priority: input.priority }),
+        },
+      });
+      const workItem = normalizeWorkItem(rawWorkItem);
+      if (workItem.projectId !== project.id) fail("RESPONSE_ERROR");
+
+      return redactSecret({
+        reference: `plane:${reference.workspace}:${reference.projectIdentifier}-${workItem.sequenceId}`,
+        workItemId: workItem.id,
+        sequenceId: workItem.sequenceId,
+        name: workItem.name,
+        stateId: workItem.stateId,
       }, normalizedApiKey);
     },
 

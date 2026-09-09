@@ -4,9 +4,11 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 const WORKSPACE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._~-]*$/;
 const PROJECT_IDENTIFIER_PATTERN = /^[A-Z][A-Z0-9_]*$/;
 const REFERENCE_PATTERN = /^plane:([A-Za-z0-9][A-Za-z0-9._~-]*):([A-Z][A-Z0-9_]*)-([1-9]\d*)$/;
+const PROJECT_REFERENCE_PATTERN = /^plane:([A-Za-z0-9][A-Za-z0-9._~-]*):([A-Z][A-Z0-9_]*)$/;
 const LOOPBACK_HTTP_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
 const WORK_ITEM_PRIORITIES = new Set(["high", "medium", "low", "none"]);
 const RELATION_TYPES = new Set(["blocked_by"]);
+const CREATE_WORK_ITEM_FIELD_KEYS = new Set(["name", "description", "priority"]);
 const CREATE_WORK_ITEM_KEYS = new Set([
   "name",
   "descriptionStripped",
@@ -119,6 +121,23 @@ export const parsePlaneReference = (reference) => {
     projectIdentifier,
     sequenceId,
     workItemIdentifier,
+  };
+};
+
+export const parsePlaneProjectReference = (reference) => {
+  if (typeof reference !== "string") fail("REFERENCE_ERROR");
+
+  const match = PROJECT_REFERENCE_PATTERN.exec(reference);
+  if (!match || !WORKSPACE_PATTERN.test(match[1]) || !PROJECT_IDENTIFIER_PATTERN.test(match[2])) {
+    fail("REFERENCE_ERROR");
+  }
+
+  const workspace = match[1];
+  const projectIdentifier = match[2];
+  return {
+    canonical: `plane:${workspace}:${projectIdentifier}`,
+    workspace,
+    projectIdentifier,
   };
 };
 
@@ -291,6 +310,24 @@ export const normalizeProjectWorkItemLookup = (value) => {
   if (/[\r\n]/.test(externalSource)) fail("PROJECT_ERROR");
 
   return { ...scope, externalId, externalSource };
+};
+
+export const normalizeCreateWorkItemFields = (value) => {
+  const input = requireExactKeys(value, CREATE_WORK_ITEM_FIELD_KEYS, "CREATE_ERROR");
+  const description = input.description === null || input.description === undefined
+    ? null
+    : typeof input.description === "string" ? input.description : fail("CREATE_ERROR");
+  const priority = input.priority === null || input.priority === undefined
+    ? null
+    : typeof input.priority === "string" && WORK_ITEM_PRIORITIES.has(input.priority)
+      ? input.priority
+      : fail("CREATE_ERROR");
+
+  return {
+    name: requireText(input.name, "CREATE_ERROR"),
+    description,
+    priority,
+  };
 };
 
 export const normalizeCreateWorkItemInput = (value) => {

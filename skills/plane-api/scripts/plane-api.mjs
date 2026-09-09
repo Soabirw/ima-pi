@@ -14,11 +14,13 @@ export const usage = `Usage:
   plane-api.mjs plane:comments plane:<workspace>:PROJ-123
   plane-api.mjs plane:comment plane:<workspace>:PROJ-123 "Plain-text comment"
   plane-api.mjs plane:set-state plane:<workspace>:PROJ-123 STATE_UUID
+  plane-api.mjs plane:create plane:<workspace>:PROJECT "Title" [description] [priority]
 `;
 
 const oneArgument = (args) => args.length === 1 ? args : null;
 const commentArguments = (args) => args.length >= 2 ? [args[0], args.slice(1).join(" ")] : null;
 const twoArguments = (args) => args.length === 2 ? args : null;
+const createArguments = (args) => args.length >= 2 && args.length <= 4 ? args : null;
 
 const commands = Object.freeze({
   "plane:get": {
@@ -36,6 +38,14 @@ const commands = Object.freeze({
   "plane:comment": {
     parseArgs: commentArguments,
     run: (client, [reference, text]) => client.createComment(reference, text),
+  },
+  "plane:create": {
+    parseArgs: createArguments,
+    run: (client, [reference, name, description, priority]) => client.createWorkItem(reference, {
+      name,
+      ...(description === undefined ? {} : { description }),
+      ...(priority === undefined ? {} : { priority }),
+    }),
   },
   "plane:set-state": {
     parseArgs: twoArguments,
