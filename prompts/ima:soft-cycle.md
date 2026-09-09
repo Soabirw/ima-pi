@@ -93,6 +93,10 @@ skipped, flaky, unavailable, or unrun verification is evidence to report, not pe
 passing test phase. If the approved plan does not include test changes, do not add speculative test
 infrastructure. Keep tests independent, behavior-focused, and free of unrelated production edits.
 
+## Pre-review test-defect loop
+
+When test reports `DEFECTS`, require stable `TEST-NNN` evidence containing the affected acceptance criterion, reproduction, expected and actual behavior, failure evidence, known affected file/module/symbol, and relevant error or security path. Persist the test artifact, then delegate only plan-bound repair work; its implementation artifact must map every `TEST-NNN` to a disposition. Rerun test after repair, including preserved defects and relevant regression coverage. Do not delegate review until the newest test passes. Test defects never enter resolution or rereview: a passing retest receives a fresh initial review. Guided mode waits at its normal gate; autonomous mode continues this repair loop only within its existing safety checks and dispatch ceiling.
+
 ## Phase handoff discipline
 
 Before each phase, summarize the inherited plan outcome, non-goals, exact target boundary,

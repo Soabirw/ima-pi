@@ -82,8 +82,8 @@ export const describeCycleBlockers = (blockers: readonly string[]): CycleBlocker
   if (code === "test:DEFECTS") {
     return {
       code,
-      guidance: "Defects found; address them through a new implementation plan. Resume cannot bypass defects.",
-      terminal: true,
+      guidance: "Legacy test defects resume at implementation for plan-bound repair and retest before fresh review.",
+      terminal: false,
     };
   }
   if (code === "review_cap_exceeded") {

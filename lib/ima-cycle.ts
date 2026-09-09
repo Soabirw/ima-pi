@@ -771,7 +771,31 @@ export function validateCycleState(value: unknown): { valid: true; state: CycleS
 }
 
 const lastEvidence = (state: CycleState) => state.evidence[state.evidence.length - 1] ?? null;
+
+const hasPreReviewDefectLoop = (evidence: readonly CycleEvidence[]) => evidence.some((item, index) => {
+  if (item.phase !== "test" || item.outcome !== "DEFECTS") return false;
+  let prior = index - 1;
+  while (evidence[prior]?.phase === "test" && evidence[prior]?.outcome === "BLOCKED") prior -= 1;
+  return evidence[prior]?.phase === "implementation" && evidence[prior]?.outcome === "COMPLETED";
+});
+
+const isRepairLoopMarkerReuse = (state: CycleState, phase: CyclePhase) => {
+  const previous = lastEvidence(state);
+  if (!hasPreReviewDefectLoop(state.evidence)) return false;
+  if (phase === "implementation") return previous?.phase === "test" && previous.outcome === "DEFECTS";
+  return phase === "test" && previous?.phase === "implementation" && previous.outcome === "COMPLETED";
+};
+
+const isLegacyTestDefectBlock = (state: CycleState) => state.phase === "test"
+  && state.status === "blocked"
+  && state.blockers.length === 1
+  && state.blockers[0] === "test:DEFECTS"
+  && lastEvidence(state)?.phase === "test"
+  && lastEvidence(state)?.outcome === "DEFECTS"
+  && hasPreReviewDefectLoop(state.evidence);
+
 const transition = (state: CycleState, outcome: string): { phase: CyclePhase; status: CycleStatus; reviewAttempts: number; blockers: string[] } => {
+  if (state.phase === "test" && outcome === "DEFECTS") return { phase: "implementation", status: "awaiting-resume", reviewAttempts: state.reviewAttempts, blockers: [] };
   if (outcome === "BLOCKED" || outcome === "DEFECTS") return { phase: state.phase, status: "blocked", reviewAttempts: state.reviewAttempts, blockers: [`${state.phase}:${outcome}`] };
   if (state.phase === "plan" && outcome === "APPROVED") return { phase: "implementation", status: "awaiting-resume", reviewAttempts: state.reviewAttempts, blockers: [] };
   if (state.phase === "implementation" && outcome === "COMPLETED") return { phase: "test", status: "awaiting-resume", reviewAttempts: state.reviewAttempts, blockers: [] };
@@ -812,7 +836,10 @@ export function reduceCycleState(stateValue: unknown, evidenceValue: unknown, op
   if (!validPhase(phase) || !validOutcome(phase, outcome) || !boundedText(marker, 512) || !boundedText(toolCallId, 256) || (rawRecordKey !== undefined && rawRecordKey !== null && recordKey === null) || (rawApprovedPlan !== undefined && (!approvedPlan || phase !== "plan" || outcome !== "APPROVED"))) return { ok: false, state, error: sanitizeCycleError("phase_evidence_invalid") };
   if (phase !== state.phase) return { ok: false, state, error: sanitizeCycleError("phase_evidence_out_of_order") };
   const previous = lastEvidence(state);
-  const repeatableMarkerPhase = phase === "resolution" || phase === "rereview" || (previous?.phase === phase && previous.outcome === "BLOCKED");
+  const repeatableMarkerPhase = phase === "resolution"
+    || phase === "rereview"
+    || (previous?.phase === phase && previous.outcome === "BLOCKED")
+    || isRepairLoopMarkerReuse(state, phase);
   if (state.evidence.some((item) => item.toolCallId === toolCallId || (!repeatableMarkerPhase && item.marker === marker))) return { ok: false, state, error: sanitizeCycleError("phase_evidence_duplicate") };
   const evidence: CycleEvidence = {
     phase,
@@ -857,6 +884,9 @@ export function prepareCycleResume(stateValue: unknown): { ok: true; state: Cycl
   if (state.status === "stopped") return { ok: true, state: { ...state, status: "awaiting-resume", stoppedAt: undefined, stoppedPhase: undefined } };
   if (state.status === "blocked" && state.blockers.length === 1 && state.blockers[0] === `${state.phase}:BLOCKED`) {
     return { ok: true, state: { ...state, status: "awaiting-resume", blockers: [] } };
+  }
+  if (isLegacyTestDefectBlock(state)) {
+    return { ok: true, state: { ...state, phase: "implementation", status: "awaiting-resume", blockers: [] } };
   }
   return { ok: false, error: sanitizeCycleError("cycle_resume_unavailable") };
 }

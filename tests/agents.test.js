@@ -217,6 +217,8 @@ test("quality agents enforce fresh verification and exact documentation authorit
   const byName = new Map(loaded.definitions.map((definition) => [definition.name, definition]));
   assert.equal(byName.get("review-verifier").tier, "reviewVerify");
   assert.equal(byName.get("tester").phase, "test");
+  assert.match(byName.get("tester").prompt, /stable `TEST-NNN` identifiers/);
+  assert.match(byName.get("tester").prompt, /affected acceptance criterion/);
   assert.equal(byName.get("reviewer").phase, "review");
   assert.match(byName.get("reviewer").useWhen.join(" "), /initial review only/i);
   assert.match(byName.get("reviewer").useWhen.join(" "), /existing reviewer continuation/i);

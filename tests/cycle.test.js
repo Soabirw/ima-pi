@@ -287,7 +287,7 @@ const lifecycleToolResult = (state, phase, outcome, toolCallId = `${phase}-tool`
   };
 };
 
-const settleHarnessDispatch = async (harness, phase, outcome, waitForNext = false) => {
+const settleHarnessDispatch = async (harness, phase, outcome, waitForNext = false, toolCallId = `${phase}-tool`) => {
   const nextSend = waitForNext ? harness.waitForSend() : null;
   const provisional = harness.entries.at(-1)?.data;
   assert.equal(provisional?.phase, phase);
@@ -295,7 +295,7 @@ const settleHarnessDispatch = async (harness, phase, outcome, waitForNext = fals
   harness.handlers.get("input")({ source: "extension", text: "expanded prompt" });
   harness.handlers.get("before_agent_start")({ prompt: "expanded prompt" });
   harness.handlers.get("agent_start")();
-  await harness.handlers.get("tool_result")(lifecycleToolResult(provisional, phase, outcome), harness.ctx);
+  await harness.handlers.get("tool_result")(lifecycleToolResult(provisional, phase, outcome, toolCallId), harness.ctx);
   harness.handlers.get("agent_end")({ messages: [{ role: "assistant", stopReason: "stop" }] });
   harness.handlers.get("agent_settled")();
   if (nextSend) await nextSend;
@@ -562,8 +562,8 @@ test("prepares stopped and recoverable phase blocks for explicit resume", () => 
   defects = evidence(defects, "plan", "APPROVED");
   defects = evidence(awaitingEvidence(defects), "implementation", "COMPLETED");
   defects = evidence(awaitingEvidence(defects), "test", "DEFECTS");
-  assert.deepEqual(defects.blockers, ["test:DEFECTS"]);
-  assert.equal(prepareCycleResume(defects).error.code, "cycle_resume_unavailable");
+  assert.deepEqual({ phase: defects.phase, status: defects.status, blockers: defects.blockers }, { phase: "implementation", status: "awaiting-resume", blockers: [] });
+  assert.equal(prepareCycleResume(defects).ok, true);
   assert.equal(prepareCycleResume({ ...blocked, status: "blocked-after-tracker-close", blockers: [] }).error.code, "cycle_resume_unavailable");
 });
 
@@ -1892,12 +1892,11 @@ test("autonomously chains verified phases and leaves close human-gated", async (
   assert.ok(durableStates.every((next) => next.mode === "autonomous"));
 });
 
-test("autonomous tail stops for blockers, defects, and review-cap excess", async () => {
+test("autonomous tail stops for blockers and review-cap excess", async () => {
   const testAwaitingResume = () => evidence(awaitingEvidence(implementationAwaitingResumeState()), "implementation", "COMPLETED");
   const reviewAwaitingResume = () => evidence(awaitingEvidence(testAwaitingResume()), "test", "PASSED");
   const cases = [
     { state: { ...implementationAwaitingResumeState(), mode: "autonomous" }, phase: "implementation", outcome: "BLOCKED", blocker: "implementation:BLOCKED" },
-    { state: { ...testAwaitingResume(), mode: "autonomous" }, phase: "test", outcome: "DEFECTS", blocker: "test:DEFECTS" },
     { state: { ...reviewAwaitingResume(), mode: "autonomous", reviewCap: 0 }, phase: "review", outcome: "REQUEST_CHANGES", blocker: "review_cap_exceeded" },
   ];
 
@@ -1925,6 +1924,30 @@ test("autonomous tail stops for blockers, defects, and review-cap excess", async
     assert.ok(guidance);
     assert.match(guidance.message, new RegExp(`${blocker} \\((retriable|terminal)\\)`));
   }
+});
+
+test("autonomous tail repairs test defects before dispatching review", async () => {
+  const testAwaitingResume = () => evidence(awaitingEvidence(implementationAwaitingResumeState()), "implementation", "COMPLETED");
+  const harness = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: { ...testAwaitingResume(), mode: "autonomous" } }]);
+  const routed = [];
+  registerCycleExtension(harness.pi, cycleDependencies({
+    applyRoute: async (_pi, _ctx, phase) => { routed.push(phase); return { ok: true }; },
+    expandPrompt: async () => "expanded prompt",
+  }));
+  await harness.handlers.get("session_start")({}, harness.ctx);
+
+  const sent = harness.waitForSend();
+  const run = harness.commands.get("ima:cycle").handler("resume", harness.ctx);
+  await sent;
+  await settleHarnessDispatch(harness, "test", "DEFECTS", true, "test-defects");
+  await settleHarnessDispatch(harness, "implementation", "COMPLETED", true, "implementation-repair");
+  await settleHarnessDispatch(harness, "test", "PASSED", true, "test-passed");
+  await settleHarnessDispatch(harness, "review", "APPROVED", true, "review-approved");
+  await settleHarnessDispatch(harness, "document", "READY", false, "document-ready");
+  await run;
+
+  assert.deepEqual(routed, ["test", "implementation", "test", "review", "document"]);
+  assert.equal(harness.entries.at(-1).data.status, "closeout-ready");
 });
 
 test("guided blocked stops provide retriable guidance", async () => {
@@ -2399,7 +2422,7 @@ test("reconciles verified lifecycle records through the existing phase transitio
   const defectsParsed = parseLifecycleSearchRecords({ data: { results: [persistedRecord(defects, "test", "DEFECTS")] } }, { lifecycleKey: defects.lifecycleKey, phase: "test", jiraKey: defects.source.key, taskwarriorUuid: "" });
   const defectsResult = reconcileCycleFromLifecycle(defects, defectsParsed.records, { timestamp: at });
   assert.equal(defectsResult.ok, true);
-  assert.deepEqual(defectsResult.state.blockers, ["test:DEFECTS"]);
+  assert.deepEqual({ phase: defectsResult.state.phase, status: defectsResult.state.status, blockers: defectsResult.state.blockers }, { phase: "implementation", status: "awaiting-resume", blockers: [] });
 });
 
 test("keeps reconciliation idempotent and fails loudly for verified unresolved or conflicting evidence", () => {

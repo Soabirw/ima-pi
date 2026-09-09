@@ -4,6 +4,14 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ## [Unreleased]
 
+## [1.20.0] - 2026-09-09
+
+Notable upgrade to the `cycle` system. It can now be reliably triggered in three ways:
+
+1. **Natural language:** The system can often select the SDLC workflow for ordinary work and does so reliably when the request is direct or explicit.
+2. **`/ima:soft-cycle`:** A prompt-based trigger that uses a long-horizon model to orchestrate the full SDLC through agent delegation, stopping before human-led closeout.
+3. **`/ima:cycle`:** An improved, more rigid, and explicit system that takes a task through the full SDLC in guided or autonomous mode.
+
 ### Added
 
 - Added prompt-only `/ima:soft-cycle` SDLC orchestration with bounded guided/autonomous specialist delegation, parent-owned artifact persistence, and a stop before human-led closeout.
@@ -22,6 +30,7 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ### Fixed
 
+- Routed pre-review test defects back through plan-bound implementation repair and retesting, with stable `TEST-NNN` evidence, legacy defect-state recovery, and a fresh initial review only after tests pass.
 - Allowed multiline `/ima:cycle reply` answers while continuing to reject unsafe control characters and oversized replies.
 - Made cycle phase questions persistent and actionable in the parent transcript instead of relying on transient notifications.
 - Prevented cancellation, callback-drain, cleanup-ownership, and successor-dispatch races from allowing unsafe cycle phase work or replacement after failed cleanup.

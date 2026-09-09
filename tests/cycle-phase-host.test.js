@@ -167,13 +167,14 @@ test("cycle dispatches an isolated phase host and advances only from its verifie
     { phase: "implementation", status: "awaiting-resume", execution: "settled" },
   );
   assert.equal(state.disposes, 1);
+  const actualRoute = `${state.input.route.provider}/${state.input.route.model} · thinking ${state.input.route.thinking ?? "default"}`;
   assert.ok(harness.notifications.some(({ message }) => message.startsWith("IMA cycle: start accepted for FNR-3036")));
   assert.ok(harness.widgets.some(({ value }) => Array.isArray(value) && value.includes("activity: Using ima_lifecycle.")));
-  assert.ok(harness.widgets.some(({ value }) => Array.isArray(value) && value.includes("actual parent-provider/parent-model · thinking high")));
+  assert.ok(harness.widgets.some(({ value }) => Array.isArray(value) && value.includes(`actual ${actualRoute}`)));
   assert.ok(harness.widgets.every(({ options }) => options?.placement === "belowEditor"));
   assert.deepEqual(harness.phaseMessages.at(-1).message, {
     customType: "ima-cycle-phase-completion",
-    content: "Cycle plan completed with parent-provider/parent-model · thinking high.",
+    content: `Cycle plan completed with ${actualRoute}.`,
     display: true,
   });
   assert.deepEqual(harness.widgets.at(-1), {

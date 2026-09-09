@@ -56,7 +56,7 @@ test("describeCycleBlockers classifies known blockers and fails safely for unkno
   assert.deepEqual(guidance.map(({ code, terminal }) => ({ code, terminal })), [
     { code: "plan:BLOCKED", terminal: false },
     { code: "implementation:BLOCKED", terminal: false },
-    { code: "test:DEFECTS", terminal: true },
+    { code: "test:DEFECTS", terminal: false },
     { code: "review_cap_exceeded", terminal: true },
     { code: "phase_transition_invalid", terminal: true },
     { code: "lifecycle_closeout_failed", terminal: true },
@@ -64,7 +64,7 @@ test("describeCycleBlockers classifies known blockers and fails safely for unkno
   ]);
   assert.match(guidance[0].guidance, /decompose multiple units/);
   assert.match(guidance[1].guidance, /persisted phase artifact/);
-  assert.match(guidance[2].guidance, /cannot bypass/);
+  assert.match(guidance[2].guidance, /implementation.*repair.*retest/i);
   assert.match(guidance.at(-1).guidance, /persisted artifact/);
 });
 

@@ -88,6 +88,7 @@ test("implementation prompts expose a MID current-session, plan-bound terminal c
     const text = await prompt(name);
     for (const value of ["description:", "argument-hint: \"[approved-plan-source]\"", "MID-tier", "current session", "approved", "scope", "non-goals", "ima_context", "Serena-first", "ima_delegate", "ima_lifecycle", "implementation", "contradiction", "verification", "/ima:plan", "/ima:test", "formal test or review"]) has(text, value);
     for (const sharedSkill of ["ima-security-guardrails", "readable-code", "functional-programmer", "ima-delegation-contract"]) has(text, sharedSkill);
+    for (const value of ["pre-review test `DEFECTS`", "TEST-NNN", "disposition", "return completed repair work to `/ima:test`", "Block rather than redesign"]) has(text, value);
     has(text, readableCodeDirectives[name]);
     for (const prohibition of ["Do not invoke `/ima:cycle`", "a workflow DSL", "Goose recipes", "subrecipe mechanics", "does not change the active model"]) has(text, prohibition);
   }
@@ -266,6 +267,11 @@ test("soft-cycle is a prompt-only delegating SDLC orchestrator with bounded auto
     "never auto-close",
     "stop",
     "ima-cycle outcome: phase=plan",
+    "Pre-review test-defect loop",
+    "TEST-NNN",
+    "newest test passes",
+    "Test defects never enter resolution or rereview",
+    "dispatch ceiling",
   ]) has(text, value);
   assert.equal((text.match(/ima-cycle outcome:/g) ?? []).length, 1);
   assert.match(
@@ -317,9 +323,12 @@ test("WordPress implementation prompt treats security as a primary production co
 
 test("quality and learning prompts retain distinct bounded terminal contracts", async () => {
   for (const name of ["test", "review", "review-verify", "document"]) { const text = await prompt(name); has(text, "description:"); has(text, "argument-hint:"); has(text, "stop"); has(text, "/ima:cycle"); }
-  const testing = await prompt("test"); for (const value of ["Do not redesign or edit production behavior", "ima_lifecycle", "unit-testing", "evidence", "smallest project-supported", "ima-security-guardrails", "detected testing contract", "tests or test support added or repaired", "changed files", "commands and results", "behaviors covered", "defects or blockers", "evidence gaps and residual risk", "phase outcome", "recommended next phase", "implementation details", "deep mock chains", "real timers, network, or filesystem", "weaken assertions", "skip markers"]) has(testing, value);
-  const review = await prompt("review"); for (const value of ["fresh", "product-read-only", "Critical or Warning", "review-verifier", "REVIEW-NNN", "ima_lifecycle", "code-review", "Integration Contract", "request-changes gate"]) has(review, value);
-  const rereview = await prompt("rereview"); for (const value of ["code-review", "regression", "next unused ID", "implementation-grade", "append", "corrective", "resolution dependencies", "must never suppress"]) has(rereview, value);
+  const testing = await prompt("test"); for (const value of ["Do not redesign or edit production behavior", "ima_lifecycle", "unit-testing", "evidence", "smallest project-supported", "ima-security-guardrails", "detected testing contract", "tests or test support added or repaired", "changed files", "commands and results", "behaviors covered", "defects or blockers", "evidence gaps and residual risk", "phase outcome", "recommended next phase", "implementation details", "deep mock chains", "real timers, network, or filesystem", "weaken assertions", "skip markers", "TEST-NNN", "affected acceptance criterion", "On `DEFECTS`", "/ima:implement <canonical-source>", "retest every preserved"] ) has(testing, value);
+  const testCycleInstructions = testing.slice(testing.indexOf("When dispatched by `/ima:cycle`"));
+  for (const value of ["recommend `/ima:implement <canonical-source>` for `DEFECTS`", "`/ima:review` for `PASSED`", "no advancement for `BLOCKED`"]) has(testCycleInstructions, value);
+  assert.doesNotMatch(testCycleInstructions, /stop; recommend `\/ima:review`/i);
+  const review = await prompt("review"); for (const value of ["fresh", "product-read-only", "Critical or Warning", "review-verifier", "REVIEW-NNN", "ima_lifecycle", "code-review", "Integration Contract", "request-changes gate", "latest ordered lifecycle evidence", "implementation COMPLETED -> test PASSED", "fresh initial review", "existing formal review"]) has(review, value);
+  const rereview = await prompt("rereview"); for (const value of ["code-review", "regression", "next unused ID", "implementation-grade", "append", "corrective", "resolution dependencies", "must never suppress", "Test-origin repairs without an original formal review", "fresh initial review"]) has(rereview, value);
   const verify = await prompt("review-verify"); for (const value of ["CONFIRMED|WITHDRAWN|PARTIAL", "Do not edit", "one dependency hop", "only that evidence range", "code-review", "malformed brief"]) has(verify, value); assert.doesNotMatch(verify, /range, named remediation surface/i);
   const document = await prompt("document"); for (const value of ["exact approved", "external-update manifest", "Serena", "Vestige", "Qdrant", "ima_lifecycle"]) has(document, value);
   for (const value of ["ima-memory-workflow", "ima-vision-handoff", "ima-delegation-contract", "active docs", "archive docs", "transient notes", "high-signal", "document-assessor", "documenter", "writeScope"]) has(document, value);
