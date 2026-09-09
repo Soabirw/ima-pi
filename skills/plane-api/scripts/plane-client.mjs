@@ -1,3 +1,4 @@
+import { normalizeWorkItemDescription } from "./plane-description.mjs";
 import {
   PlaneApiError,
   commentHtmlFromText,
@@ -62,6 +63,7 @@ const publicMessages = Object.freeze({
   CONFIG_ERROR: "Plane configuration is missing or invalid.",
   REFERENCE_ERROR: "Plane references must use plane:<workspace>:<PROJECT>-<positive-id>.",
   RESPONSE_ERROR: "Plane returned an invalid response.",
+  DESCRIPTION_ERROR: "Plane description could not be represented safely.",
   PAGINATION_ERROR: "Plane pagination could not be completed safely.",
   COMMENT_ERROR: "Plane comments must contain non-whitespace plain text.",
   STATE_ERROR: "Plane state must be one exact state UUID from the selected project.",
@@ -131,6 +133,16 @@ const publicError = (error) => {
 };
 
 export const toPublicPlaneError = publicError;
+
+const descriptionPayloadFrom = (descriptionStripped) => {
+  const descriptionHtml = descriptionHtmlFromText(descriptionStripped);
+  const description = normalizeWorkItemDescription({
+    description_stripped: descriptionStripped,
+    description_html: descriptionHtml,
+  });
+  if (!description.success) fail("DESCRIPTION_ERROR");
+  return { descriptionHtml, descriptionStripped };
+};
 
 const mutationIdentityFrom = (rawResponse, workItem) => {
   if (!isRecord(rawResponse)) fail("RESPONSE_ERROR");
@@ -462,14 +474,14 @@ export const createPlaneClient = ({
 
     createProjectWorkItem: async (requestInput) => {
       const request = projectWorkItemRequest(requestInput);
-      const descriptionHtml = descriptionHtmlFromText(request.input.descriptionStripped);
+      const description = descriptionPayloadFrom(request.input.descriptionStripped);
       const rawWorkItem = await requestJson({
         path: pathForProjectWorkItems(request),
         method: "POST",
         body: {
           name: request.input.name,
-          description_html: descriptionHtml,
-          description_stripped: request.input.descriptionStripped,
+          description_html: description.descriptionHtml,
+          description_stripped: description.descriptionStripped,
           priority: request.input.priority,
           state: request.input.stateId,
           external_id: request.input.externalId,
@@ -490,12 +502,13 @@ export const createPlaneClient = ({
 
     updateProjectWorkItemDescription: async (requestInput) => {
       const request = updateProjectWorkItemDescriptionRequest(requestInput);
+      const description = descriptionPayloadFrom(request.input.descriptionStripped);
       const rawResponse = await requestJson({
         path: pathForWorkItem(request, request.projectId, request.input.workItemId),
         method: "PATCH",
         body: {
-          description_html: descriptionHtmlFromText(request.input.descriptionStripped),
-          description_stripped: request.input.descriptionStripped,
+          description_html: description.descriptionHtml,
+          description_stripped: description.descriptionStripped,
         },
       });
       const responseIdentity = mutationIdentityFrom(rawResponse, {

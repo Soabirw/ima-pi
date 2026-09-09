@@ -38,6 +38,16 @@ export PLANE_API_KEY="<configured-personal-access-token>"
 - `plane:comment` validates non-empty plain text, escapes it to `comment_html`, rereads the selected item immediately before the POST, and creates a comment only on that item's UUID path.
 - `plane:set-state` resolves the item, reads its project's states, requires one exact state UUID, and PATCHes only `{ "state": "STATE_UUID" }` on that item's UUID path.
 
+### Description fidelity
+
+`plane:get` preserves a nonblank `description_stripped`, then a nonblank legacy `description`, and otherwise converts supported `description_html` to readable plain text. Blank plain-text fields do not hide meaningful HTML. HTML conversion is parser-backed, bounded, and non-executing: it retains ordinary text, paragraphs, lists, line breaks, entities, and link text while omitting link destinations. It does not render HTML or fetch embedded resources.
+
+The helper accepts only bounded textual/layout HTML. Scripts, styles, embedded resources, form controls, malformed representation fields, unsupported-only content such as `description_binary`, and unrecoverable or oversized descriptions fail closed with the stable `DESCRIPTION_ERROR` envelope. An explicitly empty supported representation remains empty only when no non-null binary content is present; absent or null-only representations are not silently treated as empty. Each supported text representation is bounded before selection, and normalized description output is independently limited to 48 KiB UTF-8 and 60,000 UTF-8 bytes after JSON serialization. The complete `{ name, description, state, reference }` Plane source is separately limited to 64,000 UTF-8 bytes before generic context handling.
+
+Migration creates and description-backfill PATCHes generate escaped `description_html` and validate it with `description_stripped` before the network write. An unrepresentable pair fails with `DESCRIPTION_ERROR` and sends no write.
+
+Run the helper from an installed package checkout. Its parser-backed description support requires the package dependencies, including `html-to-text` and `htmlparser2`, to be installed through `npm install`.
+
 The calling lifecycle plan or operator establishes approval for the requested comment or state action. The helper does not add a write-level `--confirm` prompt, and it exposes no generic URL, method, or JSON-body passthrough. It never creates cycles, modules, milestones, projects, work items, states, or comments other than the explicitly requested comment action.
 
 Read API metadata before every write. Every request rejects HTTP redirects rather than following or replaying an authenticated operation. State names are never accepted in place of a state UUID. Missing or invalid configuration, references, responses, pagination cursors, comments, and states fail before an unsafe dependent request. Errors do not expose request URLs, response bodies, raw fetch failures, headers, or credentials.

@@ -4,10 +4,12 @@ import {
   PlaneApiError,
   createPlaneClient,
   normalizeCreateWorkItemInput,
+  normalizeWorkItem,
   normalizeUpdateWorkItemDescriptionInput,
   normalizeWorkItemRelation,
 } from "../skills/plane-api/scripts/plane-client.mjs";
 import { runPlaneApi } from "../skills/plane-api/scripts/plane-api.mjs";
+import { DESCRIPTION_OUTPUT_MAXIMUM_BYTES } from "../skills/plane-api/scripts/plane-description.mjs";
 import { normalizeWorkItemRelations } from "../skills/plane-api/scripts/plane-contract.mjs";
 
 const API_KEY = "synthetic-plane-migration-key";
@@ -375,6 +377,88 @@ test("updates only a normalized plain-text description and validates the returne
     workItemId: WORK_ITEM_ID,
     descriptionStripped,
   }), "RESPONSE_ERROR");
+});
+
+test("rejects unrepresentable descriptions before Plane writes", async () => {
+  const descriptions = [
+    "x".repeat(DESCRIPTION_OUTPUT_MAXIMUM_BYTES + 1),
+    "\\".repeat(30_000),
+    "<".repeat(32_767),
+  ];
+
+  for (const descriptionStripped of descriptions) {
+    const create = clientFor([]);
+    await assertErrorCode(create.client.createProjectWorkItem({
+      workspace: WORKSPACE,
+      projectId: PROJECT_ID,
+      input: {
+        name: "Migrated task",
+        descriptionStripped,
+        priority: "high",
+        stateId: STATE_ID,
+        externalId: EXTERNAL_ID,
+        externalSource: "taskwarrior",
+      },
+    }), "DESCRIPTION_ERROR");
+    assert.equal(create.calls.length, 0);
+
+    const update = clientFor([]);
+    await assertErrorCode(update.client.updateProjectWorkItemDescription({
+      workspace: WORKSPACE,
+      projectId: PROJECT_ID,
+      workItemId: WORK_ITEM_ID,
+      descriptionStripped,
+    }), "DESCRIPTION_ERROR");
+    assert.equal(update.calls.length, 0);
+  }
+});
+
+test("sends representable boundary descriptions unchanged", async () => {
+  const descriptions = [
+    {
+      plain: "x".repeat(DESCRIPTION_OUTPUT_MAXIMUM_BYTES),
+      html: `<p>${"x".repeat(DESCRIPTION_OUTPUT_MAXIMUM_BYTES)}</p>`,
+    },
+    {
+      plain: "\\".repeat(29_999),
+      html: `<p>${"\\".repeat(29_999)}</p>`,
+    },
+    {
+      plain: "<".repeat(32_766),
+      html: `<p>${"&lt;".repeat(32_766)}</p>`,
+    },
+  ];
+
+  for (const { plain, html } of descriptions) {
+    const create = clientFor([jsonResponse(workItem())]);
+    await create.client.createProjectWorkItem({
+      workspace: WORKSPACE,
+      projectId: PROJECT_ID,
+      input: {
+        name: "Migrated task",
+        descriptionStripped: plain,
+        priority: "high",
+        stateId: STATE_ID,
+        externalId: EXTERNAL_ID,
+        externalSource: "taskwarrior",
+      },
+    });
+    const createBody = JSON.parse(create.calls[0].options.body);
+    assert.equal(createBody.description_stripped, plain);
+    assert.equal(createBody.description_html, html);
+
+    const update = clientFor([jsonResponse(workItem())]);
+    await update.client.updateProjectWorkItemDescription({
+      workspace: WORKSPACE,
+      projectId: PROJECT_ID,
+      workItemId: WORK_ITEM_ID,
+      descriptionStripped: plain,
+    });
+    const updateBody = JSON.parse(update.calls[0].options.body);
+    assert.equal(updateBody.description_stripped, plain);
+    assert.equal(updateBody.description_html, html);
+    assert.equal(normalizeWorkItem(workItem({ description_stripped: plain })).description, plain);
+  }
 });
 
 test("lists and creates only blocked_by relations with UUID endpoints", async () => {

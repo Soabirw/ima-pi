@@ -6,6 +6,7 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ### Added
 
+- Added parser-backed Plane work-item description fidelity: HTML-only descriptions now hydrate as bounded readable text with independently bounded description and context payloads.
 - `/ima:cycle` now automatically adopts the newest exact verified manual plan; marker-free legacy plans require one exact TUI confirmation/reference-only approval receipt.
 
 ### Changed
@@ -15,6 +16,7 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ### Fixed
 
+- Prevented unsupported binary/empty Plane descriptions and unrepresentable generated description payloads from being treated as safe blanks or sent to Plane writes.
 - Hardened stop, session, recovery, and publication-cancellation safeguards.
 
 ## [1.19.0] - 2026-09-05

@@ -1,3 +1,5 @@
+import { normalizeWorkItemDescription } from "./plane-description.mjs";
+
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const WORKSPACE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._~-]*$/;
 const PROJECT_IDENTIFIER_PATTERN = /^[A-Z][A-Z0-9_]*$/;
@@ -187,9 +189,9 @@ export const descriptionHtmlFromText = (text) => {
 };
 
 const descriptionFrom = (workItem) => {
-  const strippedDescription = optionalText(workItem.description_stripped);
-  if (strippedDescription !== null) return strippedDescription;
-  return optionalText(workItem.description) ?? "";
+  const description = normalizeWorkItemDescription(workItem);
+  if (!description.success) fail("DESCRIPTION_ERROR");
+  return description.data;
 };
 
 export const normalizeWorkItem = (rawWorkItem, reference = null) => {
