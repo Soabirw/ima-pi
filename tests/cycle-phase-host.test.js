@@ -83,11 +83,13 @@ const createCyclePhaseHarness = (createPhaseRuntime, branch = [], overrides = {}
   const commands = new Map();
   const entries = [];
   const notifications = [];
+  const phaseMessages = [];
   const statuses = [];
   const pi = {
     on: (event, handler) => handlers.set(event, handler),
     registerCommand: (name, command) => commands.set(name, command),
     appendEntry: (customType, data) => entries.push({ customType, data }),
+    sendMessage: overrides.sendMessage ?? ((message, options) => phaseMessages.push({ message, options })),
     getThinkingLevel: () => "high",
     setModel: async () => true,
     setThinkingLevel: () => undefined,
@@ -128,7 +130,7 @@ const createCyclePhaseHarness = (createPhaseRuntime, branch = [], overrides = {}
     createPhaseRuntime,
     readPhaseSettlement: overrides.readPhaseSettlement ?? (async () => null),
   });
-  return { handlers, commands, entries, notifications, statuses, pi, ctx };
+  return { handlers, commands, entries, notifications, phaseMessages, statuses, pi, ctx };
 };
 
 test("cycle dispatches an isolated phase host and advances only from its verified settled proof", async () => {
@@ -184,6 +186,14 @@ test("cycle reply is literal, retains the waiting phase host, and advances only 
 
   await harness.commands.get("ima:cycle").handler("start FNR-3036", harness.ctx);
   assert.equal(harness.entries.at(-1).data.execution.status, "waiting-reply");
+  assert.deepEqual(harness.phaseMessages, [{
+    message: {
+      customType: "ima-cycle-phase-question",
+      content: "need evidence\n\nReply with `/ima:cycle reply <answer>`.",
+      display: true,
+    },
+    options: undefined,
+  }]);
   await harness.commands.get("ima:cycle").handler("reply /ima:cycle close", harness.ctx);
 
   const finalState = harness.entries.at(-1).data;
@@ -194,6 +204,76 @@ test("cycle reply is literal, retains the waiting phase host, and advances only 
   );
   assert.equal(state.aborts, 0);
   assert.equal(state.disposes, 1);
+});
+
+test("cycle preserves a waiting phase when its persistent question cannot be displayed", async () => {
+  const createPhaseRuntime = async (input) => {
+    await input.onStarted(IDENTITY);
+    return {
+      identity: IDENTITY,
+      run: async () => ({ status: "waiting-reply", acceptedEvidence: false, output: "need evidence", identity: IDENTITY }),
+      reply: async () => { throw new Error("unexpected reply"); },
+      abort: async () => undefined,
+      dispose: async () => undefined,
+    };
+  };
+  const harness = createCyclePhaseHarness(createPhaseRuntime, [], {
+    sendMessage: () => { throw new Error("display unavailable"); },
+  });
+
+  await harness.commands.get("ima:cycle").handler("start FNR-3036", harness.ctx);
+
+  assert.equal(harness.entries.at(-1).data.execution.status, "waiting-reply");
+  assert.ok(harness.notifications.some(({ message }) => (
+    message === "need evidence\n\nReply with `/ima:cycle reply <answer>`."
+  )));
+});
+
+test("cycle displays an actionable fallback when a waiting phase returns no text", async () => {
+  const createPhaseRuntime = async (input) => {
+    await input.onStarted(IDENTITY);
+    return {
+      identity: IDENTITY,
+      run: async () => ({ status: "waiting-reply", acceptedEvidence: false, output: "", identity: IDENTITY }),
+      reply: async () => { throw new Error("unexpected reply"); },
+      abort: async () => undefined,
+      dispose: async () => undefined,
+    };
+  };
+  const harness = createCyclePhaseHarness(createPhaseRuntime);
+
+  await harness.commands.get("ima:cycle").handler("start FNR-3036", harness.ctx);
+
+  assert.equal(harness.entries.at(-1).data.execution.status, "waiting-reply");
+  assert.equal(
+    harness.phaseMessages[0].message.content,
+    "Cycle phase is waiting for operator input.\n\nReply with `/ima:cycle reply <answer>`.",
+  );
+});
+
+test("cycle converts a thrown host run into retryable failed state without losing the runtime error", async () => {
+  const state = { aborts: 0 };
+  const createPhaseRuntime = async (input) => {
+    await input.onStarted(IDENTITY);
+    return {
+      identity: IDENTITY,
+      run: async () => { throw new Error("provider_transport_failed"); },
+      reply: async () => { throw new Error("unexpected reply"); },
+      abort: async () => { state.aborts += 1; },
+      dispose: async () => undefined,
+    };
+  };
+  const harness = createCyclePhaseHarness(createPhaseRuntime);
+
+  await harness.commands.get("ima:cycle").handler("start FNR-3036", harness.ctx);
+
+  const failed = harness.entries.at(-1).data;
+  assert.deepEqual(
+    { phase: failed.phase, status: failed.status, execution: failed.execution.status },
+    { phase: "plan", status: "awaiting-resume", execution: "failed" },
+  );
+  assert.equal(state.aborts, 1);
+  assert.ok(harness.notifications.some(({ message }) => message.includes("provider_transport_failed")));
 });
 
 test("cycle keeps buffered lifecycle evidence out of committed state after a failed terminal host", async () => {
@@ -254,6 +334,13 @@ test("cycle rejects a second reply while the first owns the waiting phase", asyn
   release.resolve();
   await first;
   assert.equal(harness.entries.at(-1).data.execution.status, "waiting-reply");
+  assert.deepEqual(
+    harness.phaseMessages.map(({ message }) => message.content),
+    [
+      "need answer\n\nReply with `/ima:cycle reply <answer>`.",
+      "still waiting\n\nReply with `/ima:cycle reply <answer>`.",
+    ],
+  );
 });
 
 test("cycle ignores parent lifecycle events while an isolated execution owns the phase", async () => {

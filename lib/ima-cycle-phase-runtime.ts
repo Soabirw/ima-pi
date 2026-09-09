@@ -1,5 +1,6 @@
 import { lstat, realpath } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   createAgentSessionFromServices,
   createAgentSessionRuntime,
@@ -25,7 +26,8 @@ import {
 
 export const CYCLE_PHASE_CONTEXT_ENTRY = "ima-cycle-phase-context";
 const IMA_PROFILE_ENTRY = "ima-profile-state";
-const cycleExtensionPath = resolve(new URL("../extensions/cycle.ts", import.meta.url).pathname);
+const packageRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
+const cycleExtensionPath = resolve(packageRoot, "extensions", "cycle.ts");
 const REQUIRED_PHASE_TOOLS = [
   "ima_context",
   "ima_lifecycle",
@@ -128,6 +130,15 @@ const safeResultError = (error: unknown) => {
 const phaseRuntimeExtensions = (base: any) => ({
   ...base,
   extensions: base.extensions.filter((extension: any) => resolve(extension.resolvedPath) !== cycleExtensionPath),
+});
+
+export const cyclePhaseResourceLoaderOptions = () => ({
+  additionalExtensionPaths: [packageRoot],
+  noExtensions: true,
+  noSkills: true,
+  noPromptTemplates: true,
+  noThemes: true,
+  extensionsOverride: phaseRuntimeExtensions,
 });
 
 const validContext = (value: unknown, expected: CyclePhaseContext): boolean => {
@@ -276,7 +287,7 @@ export async function createCyclePhaseRuntime(input: CreateCyclePhaseRuntimeInpu
       agentDir: runtimeAgentDir,
       settingsManager,
       modelRuntime,
-      resourceLoaderOptions: { extensionsOverride: phaseRuntimeExtensions },
+      resourceLoaderOptions: cyclePhaseResourceLoaderOptions(),
     });
     const model = services.modelRuntime.getModel(input.route.provider, input.route.model);
     if (!model) throw new Error("phase_model_unavailable");

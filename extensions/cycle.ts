@@ -105,6 +105,21 @@ const text = (value: unknown) => typeof value === "string" ? value.trim() : "";
 const object = (value: unknown): Record<string, unknown> | null => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 const nowIso = () => new Date().toISOString();
 const safeError = (code: string) => ({ ok: false as const, error: sanitizeCycleError(code) });
+const PHASE_STARTUP_ERRORS = new Set([
+  "phase_model_unavailable",
+  "phase_resource_provenance_mismatch",
+  "phase_runtime_identity_mismatch",
+  "phase_thinking_unsupported",
+  "phase_toolkit_missing",
+]);
+const phaseInjectionError = (error: unknown) => {
+  const code = error instanceof Error ? error.message : "";
+  return safeError(PHASE_STARTUP_ERRORS.has(code) ? code : "cycle_phase_injection_failed");
+};
+const safeResultError = (error: unknown) => {
+  const message = error instanceof Error ? error.message : "phase_runtime_failed";
+  return message.replace(/[\r\n]+/g, " ").slice(0, 256) || "phase_runtime_failed";
+};
 const unresolvedOutcomeMessage = (phase: CyclePhase, artifactId: string | null, recordKey: string | null) => `Cycle lifecycle outcome is unresolved for ${phase}; inspect persisted artifactId ${artifactId ?? "unavailable"}; recordKey ${recordKey ?? "unavailable"}. State was preserved.`;
 const notify = (ctx: ExtensionContext, message: string, level: "info" | "warning" | "error" = "info") => { if (ctx.hasUI) ctx.ui.notify(message, level); };
 const copyState = (state: CycleState): CycleState => structuredClone(state);
@@ -406,8 +421,8 @@ export async function coordinateCycleStart(input: CycleStartInput): Promise<Cycl
     await input.appendState(copyState(confirmedState));
     if (!current(input.isCurrent)) return { ...safeError("cycle_operation_cancelled"), state: provisional };
     return { ok: true, state: confirmedState, message: `Cycle started for ${cycleSourceReference(source)}.` };
-  } catch {
-    return { ...safeError("cycle_phase_injection_failed"), state: provisional };
+  } catch (error) {
+    return { ...phaseInjectionError(error), state: provisional };
   }
 }
 
@@ -464,8 +479,8 @@ export async function dispatchCyclePhase(input: CycleDispatchInput): Promise<Cyc
     await input.appendState(copyState(confirmedState));
     if (!current(input.isCurrent)) return { ...safeError("cycle_operation_cancelled"), state: provisional };
     return { ok: true, state: confirmedState, message: `Dispatched ${input.state.phase}.` };
-  } catch {
-    return { ...safeError("cycle_phase_injection_failed"), state: provisional };
+  } catch (error) {
+    return { ...phaseInjectionError(error), state: provisional };
   }
 }
 
@@ -601,6 +616,19 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
   let orchestratorRoute: CyclePhaseRoute | null = null;
   let dispatchGeneration = 0;
   let publication: Promise<void> = Promise.resolve();
+  const presentPhaseQuestion = (ctx: ExtensionContext, output: string) => {
+    const content = output.trim() ? output.slice(0, 4_000) : "Cycle phase is waiting for operator input.";
+    const message = `${content}\n\nReply with \`/ima:cycle reply <answer>\`.`;
+    try {
+      pi.sendMessage({
+        customType: "ima-cycle-phase-question",
+        content: message,
+        display: true,
+      });
+    } catch {
+      notify(ctx, message, "info");
+    }
+  };
   const operationCurrent = (operation: ActiveCycleOperation) =>
     currentOperation === operation
     && operation.generation === dispatchGeneration
@@ -839,7 +867,7 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
       const phaseState = updatePhaseExecution(active.state, { status: "waiting-reply", updatedAt: nowIso() });
       active.state = phaseState;
       active.operation = null;
-      if (outcome.output) notify(ctx, outcome.output.slice(0, 4_000), "info");
+      presentPhaseQuestion(ctx, outcome.output);
       return phaseState;
     }
     const status = outcome.status === "aborted" ? "interrupted" : "failed";

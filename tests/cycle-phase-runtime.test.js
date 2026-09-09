@@ -1,13 +1,19 @@
 import assert from "node:assert/strict";
-import { resolve } from "node:path";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { CYCLE_PHASE_SETTLEMENT_ENTRY, createCyclePhaseSettlement } from "../lib/ima-cycle-phase.ts";
 import {
   CYCLE_PHASE_CONTEXT_ENTRY,
   createCyclePhaseRuntime,
+  cyclePhaseResourceLoaderOptions,
   readCyclePhaseSettlement,
 } from "../lib/ima-cycle-phase-runtime.ts";
 
+const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PROJECT = "/isolated/project";
 const ROUTE = Object.freeze({
   provider: "test-provider",
@@ -226,6 +232,11 @@ test("seeds an isolated phase session, filters only the cycle extension, verifie
     ],
     marker: "preserved",
   });
+  assert.deepEqual(harness.state.serviceInput.resourceLoaderOptions.additionalExtensionPaths, [PACKAGE_ROOT]);
+  assert.equal(harness.state.serviceInput.resourceLoaderOptions.noExtensions, true);
+  assert.equal(harness.state.serviceInput.resourceLoaderOptions.noSkills, true);
+  assert.equal(harness.state.serviceInput.resourceLoaderOptions.noPromptTemplates, true);
+  assert.equal(harness.state.serviceInput.resourceLoaderOptions.noThemes, true);
   assert.deepEqual(harness.state.modelRequests, [{ provider: ROUTE.provider, model: ROUTE.model }]);
   assert.deepEqual(harness.state.createSessionInput.model, { provider: ROUTE.provider, id: ROUTE.model });
   assert.equal(harness.state.createSessionInput.thinkingLevel, ROUTE.thinking);
@@ -235,6 +246,57 @@ test("seeds an isolated phase session, filters only the cycle extension, verifie
   await host.dispose();
   assert.equal(harness.state.runtimeDisposes, 1);
   assert.equal(harness.state.unsubscribes, 1);
+});
+
+test("isolated phase resources use the active package when configured package resources are stale", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ima-cycle-phase-resources-"));
+  const agentDir = join(directory, "agent");
+  const projectDir = join(directory, "project");
+  const stalePackage = join(directory, "stale-ima-pi");
+
+  try {
+    await mkdir(join(stalePackage, "extensions"), { recursive: true });
+    await mkdir(agentDir, { recursive: true });
+    await mkdir(projectDir, { recursive: true });
+    await writeFile(join(stalePackage, "package.json"), JSON.stringify({
+      name: "stale-ima-pi",
+      type: "module",
+      pi: { extensions: ["./extensions"] },
+    }));
+    await writeFile(join(stalePackage, "extensions", "agents.ts"), `
+      export default function (pi) {
+        pi.registerTool({ name: "ima_delegate", description: "stale", parameters: {}, execute: async () => ({ content: [] }) });
+      }
+    `);
+    await writeFile(join(stalePackage, "extensions", "cycle.ts"), `
+      export default function (pi) {
+        pi.registerCommand("ima:cycle", { description: "stale", handler: async () => {} });
+      }
+    `);
+    await writeFile(join(agentDir, "settings.json"), JSON.stringify({ packages: [stalePackage] }));
+
+    const settingsManager = SettingsManager.create(projectDir, agentDir, { projectTrusted: true });
+    const loader = new DefaultResourceLoader({
+      cwd: projectDir,
+      agentDir,
+      settingsManager,
+      ...cyclePhaseResourceLoaderOptions(),
+    });
+    await loader.reload();
+
+    const result = loader.getExtensions();
+    const loadedPaths = result.extensions.map((extension) => resolve(extension.resolvedPath));
+    const activeTools = new Set(result.extensions.flatMap((extension) => [...extension.tools.keys()]));
+
+    assert.deepEqual(result.errors, []);
+    assert.equal(loadedPaths.some((path) => path.startsWith(stalePackage)), false);
+    assert.equal(loadedPaths.some((path) => path.endsWith(join("extensions", "cycle.ts"))), false);
+    for (const toolName of ACTIVE_TOOLS) {
+      assert.equal(activeTools.has(toolName), true, toolName);
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("fails closed before prompting for missing toolkit or initial identity drift", async () => {

@@ -130,6 +130,7 @@ const MAX_PLANE_STATES = 1_000;
 const PLANE_STATE_GROUPS = ["backlog", "unstarted", "started", "completed", "cancelled"] as const;
 type PlaneStateGroup = typeof PLANE_STATE_GROUPS[number];
 const LIFECYCLE_KEY = /^[^\r\n]{1,512}$/;
+const DISALLOWED_REPLY_CONTROL = /[\u0000-\u0009\u000b\u000c\u000e-\u001f\u007f]/;
 const JIRA_URL = /^https:\/\/flccc\.atlassian\.net\/browse\/([A-Z][A-Z0-9]+-\d+)$/;
 const CYCLE_MARKER = /<!--\s*ima-cycle outcome:\s*phase=(plan|implementation|test|review|resolution|rereview|document);\s*outcome=([A-Z_]+)\s*-->/g;
 const LIFECYCLE_VERIFICATION = /<!--\s*ima-lifecycle verification:\s*([\s\S]*?)\s*-->/g;
@@ -301,7 +302,7 @@ export function parseCycleCommand(input: unknown): CycleCommand | null {
   const reply = raw.match(/^(?:\/ima:cycle\s+)?reply(?:\s+([\s\S]+))?$/);
   if (reply) {
     const answer = reply[1]?.trim() ?? "";
-    return answer && answer.length <= 8_192 && !/[\u0000-\u001f\u007f]/.test(answer)
+    return answer && answer.length <= 8_192 && !DISALLOWED_REPLY_CONTROL.test(answer)
       ? { command: "reply", answer }
       : null;
   }

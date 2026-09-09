@@ -20,6 +20,8 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ### Fixed
 
+- Allowed multiline `/ima:cycle reply` answers while continuing to reject unsafe control characters and oversized replies.
+- Made cycle phase questions persistent and actionable in the parent transcript instead of relying on transient notifications.
 - Prevented cancellation, callback-drain, cleanup-ownership, and successor-dispatch races from allowing unsafe cycle phase work or replacement after failed cleanup.
 - Prevented unsupported binary/empty Plane descriptions and unrepresentable generated description payloads from being treated as safe blanks or sent to Plane writes.
 - Hardened stop, session, recovery, and publication-cancellation safeguards.

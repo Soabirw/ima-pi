@@ -354,6 +354,18 @@ test("parses closed Jira and Taskwarrior sources", () => {
   assert.equal(parseCycleCommand("close --force"), null);
 });
 
+test("parses multiline cycle replies literally while rejecting unsafe controls", () => {
+  const answer = "1. Add Plane creation.\n\n2. Use explicit state and priority.\n3. Permit direct creation.";
+  assert.deepEqual(parseCycleCommand(`reply ${answer}`), { command: "reply", answer });
+
+  const windowsAnswer = "first line\r\nsecond line";
+  assert.deepEqual(parseCycleCommand(`/ima:cycle reply ${windowsAnswer}`), { command: "reply", answer: windowsAnswer });
+
+  assert.equal(parseCycleCommand("reply first\tsecond"), null);
+  assert.equal(parseCycleCommand("reply first\u0000second"), null);
+  assert.equal(parseCycleCommand(`reply ${"x".repeat(8_193)}`), null);
+});
+
 test("constructs each implementation phase command and persists explicit selection", () => {
   let generic = createCycleState(jira, { timestamp: at });
   generic = evidence(generic, "plan", "APPROVED");
@@ -980,7 +992,7 @@ test("persists a provisional state when prompt expansion fails", async () => {
   assert.equal(stateEntries[0].status, "awaiting-evidence");
 });
 
-test("returns the provisional state for synchronous injection failures", async () => {
+test("returns the provisional state and preserves allow-listed phase startup diagnostics", async () => {
   const startEntries = [];
   const start = await coordinateCycleStart({
     source: jira,
@@ -1006,6 +1018,20 @@ test("returns the provisional state for synchronous injection failures", async (
   assert.equal(dispatch.ok, false);
   assert.equal(dispatch.error.code, "cycle_phase_injection_failed");
   assert.deepEqual(dispatch.state, dispatchEntries[0]);
+
+  const toolkitEntries = [];
+  const missingToolkit = await coordinateCycleStart({
+    source: jira,
+    cwd: "/repo",
+    context: async () => ({ status: "ready" }),
+    applyRoute: async () => ({ ok: true }),
+    appendState: (state) => toolkitEntries.push(state),
+    sendUserMessage: () => { throw new Error("phase_toolkit_missing"); },
+    timestamp: at,
+  });
+  assert.equal(missingToolkit.ok, false);
+  assert.equal(missingToolkit.error.code, "phase_toolkit_missing");
+  assert.deepEqual(missingToolkit.state, toolkitEntries[0]);
 });
 
 test("evaluates resume evidence against provisional awaiting-evidence state", async () => {
