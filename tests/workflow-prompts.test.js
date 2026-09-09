@@ -115,6 +115,76 @@ test("manual lifecycle prompts normalize shared source identifiers before declar
   assert.ok(planning.indexOf("ima_context") < planning.indexOf("ima-memory-workflow"));
 });
 
+test("manual closeout is a hydrated, individually confirmed, idempotent terminal lifecycle contract", async () => {
+  const text = await prompt("closeout");
+
+  for (const value of [
+    "description: Perform manual terminal lifecycle closeout after documented lifecycle evidence",
+    'argument-hint: "[completed-lifecycle-source]"',
+    "configured `commands.closeout` route",
+    "otherwise remain on the current model",
+    "Require exactly one source",
+    "/ima:closeout [completed-lifecycle-source]",
+    'closed `{ type: "reference", value: "<identifier>" }` source',
+    "ima-memory-workflow",
+    "ima-lifecycle-contract",
+    "ima-git",
+    "canonical colon form",
+    "exact Tier-1 Qdrant manifest recall",
+    "selected direct detail retrieval",
+    "approved plan, implementation, test, final review or rereview, and `document` artifacts",
+    "Closeout is available only after `/ima:document` has completed",
+    "do not invoke `/ima:cycle`, auto-dispatch from document, call a next lifecycle phase, or create a cycle-outcome marker",
+    "Read-only source hydration and exact tracker or lifecycle evidence reads are allowed before proposal",
+    "evidence-backed, itemized closeout proposal before any state-changing effect",
+    "purpose, exact target, evidence, expected effect, reversibility",
+    "Proposal approval is not authority to execute any item",
+    "explicit confirmation for that one numbered action",
+    "Do not batch confirmations",
+    "Git is instruction-driven",
+    "never stash, clean, discard, force-push, rewrite history, move or delete tags, or deploy",
+    "`/ima:ship-it` separately",
+    "dry-run never authorizes deployment",
+    "Only propose tracker closure when the verified canonical source identifies exactly one supported target and the operator asks to close it",
+    "Plane:",
+    "Jira:",
+    "Taskwarrior:",
+    "receipt verification by rereading the exact target",
+    "Never perform a broad project operation",
+    "do not retry the tracker mutation",
+    "`commands.closeout` route selection is a **non-secret variable**",
+    "self-hosted tracker endpoint, selected workspace/project, and Git remote are **platform bindings**",
+    "Tracker authentication material is a **secret**",
+    "Taskwarrior context, local repository path, and local configuration are **local-only values**",
+    "Never show secret values or credential examples",
+    "persist one formal `closeout` artifact through `ima_lifecycle`",
+    "Final lifecycle closeout:",
+    "## Final Closeout",
+    "prior artifact IDs and separate prior artifact record keys",
+    "without embedding them",
+    "Do not include an `ima-cycle` marker",
+    "verifies persistence and direct detail reassembly",
+    "distinguish completed actions from recommendations and unperformed human-owned work",
+    "then stop",
+  ]) has(text, value);
+
+  for (const value of [
+    "taskwarrior:<project>:<uuid>",
+    "taskwarrior <project> <uuid>",
+    "plane:<workspace>:<PROJECT>-<seq>",
+    "plane <workspace> <PROJECT>-<seq>",
+    "jira:<KEY>",
+    "jira <KEY>",
+    "lifecycle:<lifecycle-key>",
+    "lifecycle <lifecycle-key>",
+    "vestige:<UUID>",
+    "vestige <UUID>",
+  ]) has(text, value);
+
+  assert.ok(text.indexOf("First call `ima_context`") < text.indexOf("exact Tier-1 Qdrant manifest recall"));
+  assert.doesNotMatch(text, /<!-- ima-cycle outcome:/i);
+});
+
 test("active documentation assigns lifecycle artifacts to Qdrant, current preferences to Pi global AGENTS, and Vestige to legacy boundaries", async () => {
   const [readme, guide, workflow, lifecycle, vestige, conventions, completion] = await Promise.all([
     readFile(join(root, "README.md"), "utf8"),
