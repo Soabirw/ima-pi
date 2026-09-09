@@ -144,6 +144,69 @@ test("workflow routing treats arbitrary /ima:* tokens as command-keyed candidate
   assert.equal(parseWorkflowCommand("/other:command source"), null);
 });
 
+test("soft-cycle is a prompt-only delegating SDLC orchestrator with bounded autonomy", async () => {
+  const text = await prompt("soft-cycle");
+  for (const value of [
+    "description:",
+    "argument-hint:",
+    "guided|autonomous",
+    "implementer:",
+    "primary orchestrator",
+    "delegates every phase",
+    "does not change the active model",
+    "instruction-based",
+    "Do not invoke `/ima:cycle`",
+    "ima_context",
+    "/ima:decompose",
+    "ima-memory-workflow",
+    "ima-lifecycle-contract",
+    "ima-delegation-contract",
+    "readable-code",
+    "functional-programmer",
+    "ima-security-guardrails",
+    "the orchestrator persists",
+    "ima_lifecycle",
+    "ima_delegate",
+    "planner",
+    "tester",
+    "reviewer",
+    "documenter",
+    "review-verifier",
+    "second opinion",
+    "request-changes gate",
+    "resumeReference",
+    "ima_agent_follow_up",
+    "never create a replacement reviewer",
+    "resolve",
+    "rereview",
+    "until",
+    "approval",
+    "bounded, conflict-free, low-risk",
+    "BLOCKED",
+    "final verification",
+    "never auto-close",
+    "stop",
+    "ima-cycle outcome: phase=plan",
+  ]) has(text, value);
+  assert.equal((text.match(/ima-cycle outcome:/g) ?? []).length, 1);
+  assert.match(
+    text,
+    /expected-empty recall[\s\S]*new normalized Taskwarrior, Jira, or Plane source[\s\S]*proceed to Plan/i,
+  );
+  assert.match(
+    text,
+    /matching verified evidence[\s\S]*retrieve selected detail[\s\S]*reuse its lifecycle identity/i,
+  );
+  assert.match(
+    text,
+    /explicit lifecycle or resume source[\s\S]*missing required artifact is `BLOCKED`/i,
+  );
+  assert.match(
+    text,
+    /mismatched,[\s\S]*incomplete, corrupt, or unverified evidence is also `BLOCKED`; stop/i,
+  );
+});
+
 test("README distinguishes direct implementation commands, cycle dispatch, and manual source identifiers", async () => {
   const readme = await readFile(join(root, "README.md"), "utf8");
   for (const value of ["direct command `X` resolves `commands[X]`", "`implement-js` and `implement-wp` both use `phases.implement`", "The `/ima:cycle` implementation phase dispatches `implement`", "`commands.implement` then `phases.implement`", "Manual phase source identifiers", "taskwarrior:<project>:<uuid>", "jira:<KEY>", "lifecycle:<lifecycle-key>", "vestige:<UUID>", "space-delimited alias", "plane:<workspace>:<PROJECT>-<seq>", "/ima:cycle start` accepts Jira, Taskwarrior, and Plane sources"]) has(readme, value);
