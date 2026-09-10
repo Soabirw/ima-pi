@@ -12,9 +12,9 @@ Pi-native IMA agent harness, packaged through Pi's standard Git/npm package mode
 
 ## BookStack migration (SKYNET-149)
 
-`/ima:bookstack-migrate dry-run config/bookstack-migrations/shared-dev-memory.json` prepares a local, immutable migration report for the approved Qdrant lifecycle and current eligible `ima-rag` Markdown tree. It snapshots relative paths and SHA-256 source hashes, rejecting source drift rather than requiring a Git commit. Applying a report requires a second explicit confirmation and BookStack secrets outside Git. The tool does not alter normal Pi lifecycle persistence (which remains Qdrant), deploy the Worker, delete sources, or perform the separately owned `ima-memory-search` catalog/indexer work.
+`/ima:bookstack-migrate dry-run config/bookstack-migrations/shared-dev-memory.json` prepares a local, immutable itemized report for the approved Qdrant lifecycle and current eligible `ima-rag` Markdown tree. Its `inventory.json` is a deterministic manifest referencing bounded immutable local parts. Record-level source problems are quarantined and reported without aborting the dry-run; filesystem security-boundary failures still fail closed. It snapshots relative paths and SHA-256 source hashes, rejecting source drift rather than requiring a Git commit. Applying a report requires a second explicit confirmation and BookStack secrets outside Git. The tool does not alter normal Pi lifecycle persistence (which remains Qdrant), deploy the Worker, delete sources, or perform the separately owned `ima-memory-search` catalog/indexer work.
 
-Configuration: optional `IMA_QDRANT_URL` and `BOOKSTACK_ORIGIN` are **non-secret variables**; `BOOKSTACK_TOKEN_ID` and `BOOKSTACK_TOKEN_SECRET` are **secrets**; `SYNC_COORDINATOR` is a Worker **platform binding**; `IMA_RAG_ROOT` and `.ima/bookstack-migrate/` report paths are **local-only values**.
+Configuration: optional `IMA_QDRANT_URL` and `BOOKSTACK_ORIGIN` are **non-secret variables**; `BOOKSTACK_TOKEN_ID` and `BOOKSTACK_TOKEN_SECRET` are **secrets**; `SYNC_COORDINATOR` is a Worker **platform binding**; `IMA_RAG_ROOT`, `.ima/bookstack-migrate/` report paths, and inventory manifests/parts are **local-only values**.
 
 ## Text-to-speech command and engine (S1–S4, S6)
 

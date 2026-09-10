@@ -3,11 +3,12 @@ import { relative, resolve, sep } from "node:path";
 import { parseFrontMatter, sourceHash, type MigrationSource } from "./bookstack-migrate-source.ts";
 
 const EXCLUDED_NAMES = new Set(["README.md", "CONTRIBUTING.md", "CLAUDE.md"]);
-const EXCLUDED_DIRECTORIES = new Set(["scripts", ".serena", ".claude"]);
+const EXCLUDED_DIRECTORIES = new Set(["scripts"]);
 
 const within = (root: string, path: string) => path === root || path.startsWith(`${root}${sep}`);
 const relativePath = (root: string, path: string) => relative(root, path).split(sep).join("/");
-const isExcluded = (path: string) => path.split("/").some((part) => EXCLUDED_DIRECTORIES.has(part));
+const isExcluded = (path: string) => path.split("/").some((part) =>
+  part.startsWith(".") || EXCLUDED_DIRECTORIES.has(part));
 
 const checkedRoot = async (root: string) => {
   const resolved = resolve(root);

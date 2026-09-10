@@ -4,6 +4,18 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ## [Unreleased]
 
+### Added
+
+- Added the `ima-pi` BookStack migration producer's verified read-only `dry-run` workflow, with itemized quarantine reporting and bounded immutable inventory manifests and parts.
+
+### Fixed
+
+- Preserved quarantined dry-run outcomes when an apply report is constructed, retaining migration provenance in the final report.
+
+### Known limitations
+
+- `apply`, `verify`, and cleanup have not been exercised against live BookStack. Qdrant/BookStack migration, Worker indexing/deployment, discovery, source deletion, and `ima-rag` disposition remain separately operator-gated.
+
 ## [1.20.0] - 2026-09-09
 
 Notable upgrade to the `cycle` system. It can now be reliably triggered in three ways:

@@ -29,6 +29,13 @@ export type TargetPage = MigrationSource & {
   markdown: string;
 };
 
+export type QuarantineOutcome = {
+  sourceId: string;
+  sourceHash: string;
+  status: "quarantined";
+  code: string;
+};
+
 const sha256 = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
 const bounded = (value: unknown, maximum: number) => typeof value === "string" && value.trim() && value.length <= maximum
   ? value.trim()
@@ -129,14 +136,38 @@ export function extractSourceBody(markdown: string): string | null {
   return position < 0 ? null : markdown.slice(position + marker.length);
 }
 
-export function deterministicPages(sources: MigrationSource[]): TargetPage[] {
-  const pages = sources.map(targetPage).sort((left, right) =>
-    left.createdAt.localeCompare(right.createdAt) || left.sourceId.localeCompare(right.sourceId));
+const quarantineCode = (error: unknown) => error instanceof Error && /^[a-z0-9_]+$/.test(error.message)
+  ? error.message
+  : "target_page_invalid";
+
+export function deterministicPages(sources: MigrationSource[]): { pages: TargetPage[]; quarantined: QuarantineOutcome[] } {
+  const pages: TargetPage[] = [];
+  const quarantined: QuarantineOutcome[] = [];
   const identities = new Set<string>();
-  for (const page of pages) {
-    const identity = `${page.shelfName}\0${page.bookName}\0${page.chapterName}\0${page.pageName}`;
-    if (identities.has(identity)) throw new Error("target_identity_conflict");
-    identities.add(identity);
+  for (const source of [...sources].sort((left, right) =>
+    left.createdAt.localeCompare(right.createdAt) || left.sourceId.localeCompare(right.sourceId))) {
+    try {
+      const page = targetPage(source);
+      const identity = `${page.shelfName}\0${page.bookName}\0${page.chapterName}\0${page.pageName}`;
+      if (identities.has(identity)) {
+        quarantined.push({
+          sourceId: source.sourceId,
+          sourceHash: sourceHash(JSON.stringify(source)),
+          status: "quarantined",
+          code: "target_identity_conflict",
+        });
+        continue;
+      }
+      identities.add(identity);
+      pages.push(page);
+    } catch (error) {
+      quarantined.push({
+        sourceId: source.sourceId,
+        sourceHash: sourceHash(JSON.stringify(source)),
+        status: "quarantined",
+        code: quarantineCode(error),
+      });
+    }
   }
-  return pages;
+  return { pages, quarantined };
 }

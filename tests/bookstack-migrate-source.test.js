@@ -27,7 +27,13 @@ test("maps lifecycle and knowledge sources to deterministic BookStack leaves wit
   assert.match(knowledgePage.markdown, /source_kind: filesystem/);
 });
 
-test("fails closed for changed source bytes and target identity collisions", () => {
+test("quarantines target identity collisions while targetPage still fails closed", () => {
   assert.throws(() => targetPage(lifecycle({ sourceHash: "a".repeat(64) })), /migration_source_invalid/);
-  assert.throws(() => deterministicPages([lifecycle(), lifecycle({ sourceId: "qdrant:two" })]), /target_identity_conflict/);
+  const result = deterministicPages([lifecycle(), lifecycle({ sourceId: "qdrant:two" })]);
+  assert.equal(result.pages.length, 1);
+  assert.deepEqual(result.quarantined.map(({ sourceId, code, status }) => ({ sourceId, code, status })), [{
+    sourceId: "qdrant:two",
+    code: "target_identity_conflict",
+    status: "quarantined",
+  }]);
 });

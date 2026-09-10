@@ -1,12 +1,25 @@
 import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { createBookStackArtifactRun, readProjectArtifact, writeImmutableArtifact, type BookStackArtifactRun } from "./bookstack-migrate-artifacts.ts";
+import {
+  createBookStackArtifactRun,
+  readBookStackInventory,
+  readProjectArtifact,
+  writeBookStackInventory,
+  writeImmutableArtifact,
+  type BookStackArtifactRun,
+} from "./bookstack-migrate-artifacts.ts";
 import { createBookStackClient, type BookStackClient } from "./bookstack-migrate-client.ts";
 import { stableMarkdownSnapshot } from "./bookstack-migrate-markdown.ts";
-import { stableLifecycleSnapshot } from "./bookstack-migrate-qdrant.ts";
+import { lifecycleSnapshot } from "./bookstack-migrate-qdrant.ts";
 import { DEFAULT_QDRANT_URL, resolveCorpusEndpoint } from "./qdrant-http-boundary.ts";
 import { buildBookStackMigrationReport, parseBookStackMigrationReport, serializeBookStackMigrationReport, type BookStackMigrationReport } from "./bookstack-migrate-report.ts";
-import { deterministicPages, extractSourceBody, sourceHash, type TargetPage } from "./bookstack-migrate-source.ts";
+import {
+  deterministicPages,
+  extractSourceBody,
+  sourceHash,
+  type QuarantineOutcome,
+  type TargetPage,
+} from "./bookstack-migrate-source.ts";
 
 export type BookStackMigrationSpec = {
   schemaVersion: 1;
@@ -26,7 +39,11 @@ const sourceFingerprint = (pages: TargetPage[]) => sourceHash(
   pages.map((page) => `${page.sourceId}\0${page.sourceHash}`).sort().join("\n"),
 );
 
-const migrationPages = async (spec: BookStackMigrationSpec, signal?: AbortSignal) => {
+const migrationSnapshot = async (spec: BookStackMigrationSpec, signal?: AbortSignal): Promise<{
+  pages: TargetPage[];
+  quarantined: QuarantineOutcome[];
+  fingerprint: string;
+}> => {
   const qdrantOrigin = resolveCorpusEndpoint(
     spec.lifecycle.qdrantOrigin || process.env.IMA_QDRANT_URL,
     DEFAULT_QDRANT_URL,
@@ -34,25 +51,41 @@ const migrationPages = async (spec: BookStackMigrationSpec, signal?: AbortSignal
   const knowledgeRoot = spec.knowledge.root || process.env.IMA_RAG_ROOT;
   if (!qdrantOrigin || !knowledgeRoot) throw new Error("migration_binding_missing");
   const [lifecycle, knowledge] = await Promise.all([
-    stableLifecycleSnapshot({ origin: qdrantOrigin, collection: spec.lifecycle.collection, signal }),
+    lifecycleSnapshot({ origin: qdrantOrigin, collection: spec.lifecycle.collection, signal }),
     stableMarkdownSnapshot({ root: knowledgeRoot, signal }),
   ]);
-  return deterministicPages([...lifecycle.sources, ...knowledge.sources]);
+  const pages = deterministicPages([...lifecycle.sources, ...knowledge.sources]);
+  return {
+    ...pages,
+    quarantined: [...lifecycle.quarantined, ...pages.quarantined]
+      .sort((left, right) => left.sourceId.localeCompare(right.sourceId)),
+    fingerprint: sourceFingerprint(pages.pages),
+  };
 };
 
 export async function dryRunBookStackMigration(input: { projectRoot: string; specPath: string; signal?: AbortSignal }) {
   const specText = await readFile(input.specPath, "utf8");
   const spec = await readBookStackMigrationSpec(input.specPath);
-  const pages = await migrationPages(spec, input.signal);
+  const snapshot = await migrationSnapshot(spec, input.signal);
   const run = await createBookStackArtifactRun(input.projectRoot);
   await writeImmutableArtifact(run, "spec.json", specText);
-  await writeImmutableArtifact(run, "inventory.json", `${JSON.stringify(pages, null, 2)}\n`);
+  await writeBookStackInventory(run, snapshot.pages);
+  await writeImmutableArtifact(run, "quarantine.json", `${JSON.stringify(snapshot.quarantined, null, 2)}\n`);
   const report = buildBookStackMigrationReport({
-    runId: run.runId, specHash: hash(specText), sourceFingerprint: sourceFingerprint(pages),
-    outcomes: pages.map((page) => ({ sourceId: page.sourceId, sourceHash: page.sourceHash, status: "unverified" as const })),
+    runId: run.runId,
+    specHash: hash(specText),
+    sourceFingerprint: snapshot.fingerprint,
+    outcomes: [
+      ...snapshot.pages.map((page) => ({
+        sourceId: page.sourceId,
+        sourceHash: page.sourceHash,
+        status: "unverified" as const,
+      })),
+      ...snapshot.quarantined,
+    ].sort((left, right) => left.sourceId.localeCompare(right.sourceId)),
   });
   const artifact = await writeImmutableArtifact(run, "dry-run-report.json", serializeBookStackMigrationReport(report));
-  return { run, pages, report, artifact };
+  return { run, ...snapshot, report, artifact };
 }
 
 const existing = (items: Array<Record<string, unknown>>, name: string, parent: string, parentId: number) =>
@@ -86,15 +119,19 @@ async function ensurePage(client: BookStackClient, page: TargetPage, shelves: Ma
 
 export async function applyBookStackMigration(input: { projectRoot: string; dryRunReportPath: string; bookStack: Parameters<typeof createBookStackClient>[0] }) {
   const report = parseBookStackMigrationReport(JSON.parse(await readProjectArtifact(input.projectRoot, input.dryRunReportPath)));
-  if (!report || report.outcomes.some((outcome) => outcome.status !== "unverified")) throw new Error("migration_report_not_ready");
+  if (!report || report.outcomes.some((outcome) => outcome.status !== "unverified" && outcome.status !== "quarantined")) {
+    throw new Error("migration_report_not_ready");
+  }
   const runDirectory = input.dryRunReportPath.replace(/\/dry-run-report\.json$/, "");
-  const inventory = JSON.parse(await readProjectArtifact(input.projectRoot, `${runDirectory}/inventory.json`)) as TargetPage[];
+  const inventory = await readBookStackInventory(input.projectRoot, `${runDirectory}/inventory.json`);
   const spec = await readBookStackMigrationSpec(`${input.projectRoot}/${runDirectory}/spec.json`);
-  if (sourceFingerprint(await migrationPages(spec)) !== report.sourceFingerprint) throw new Error("migration_source_changed");
+  if ((await migrationSnapshot(spec)).fingerprint !== report.sourceFingerprint) throw new Error("migration_source_changed");
   const client = createBookStackClient(input.bookStack);
   const shelves = new Map<string, number>();
   for (const name of ["Lifecycle Artifacts", "Institutional Knowledge"] as const) shelves.set(name, (await client.resolveShelf(name)).id);
-  const outcomes = [];
+  const outcomes: BookStackMigrationReport["outcomes"] = report.outcomes.filter(
+    (outcome) => outcome.status === "quarantined",
+  );
   for (const page of inventory) {
     const result = await ensurePage(client, page, shelves);
     outcomes.push({ sourceId: page.sourceId, sourceHash: page.sourceHash, ...result });
@@ -114,7 +151,7 @@ export async function cleanupBookStackMigration(input: { projectRoot: string; re
   const report = parseBookStackMigrationReport(JSON.parse(await readProjectArtifact(input.projectRoot, input.reportPath)));
   if (!report) throw new Error("migration_report_invalid");
   const runDirectory = input.reportPath.replace(/\/(?:dry-run|final)-report\.json$/, "");
-  const inventory = JSON.parse(await readProjectArtifact(input.projectRoot, `${runDirectory}/inventory.json`)) as TargetPage[];
+  const inventory = await readBookStackInventory(input.projectRoot, `${runDirectory}/inventory.json`);
   const bySourceId = new Map(inventory.map((page) => [page.sourceId, page]));
   const client = createBookStackClient(input.bookStack);
   const deleted: number[] = [];

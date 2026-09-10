@@ -33,3 +33,18 @@ test("rejects Markdown symlinks instead of following them", async (t) => {
   await symlink(outside, join(root, "escape.md"));
   await assert.rejects(enumerateMarkdownWorkingTree({ root }), /markdown_symlink_invalid/);
 });
+
+test("ignores cache symlinks in excluded dot-directories", async (t) => {
+  const root = await sourceRoot(t);
+  const cache = join(root, ".fastembed_cache");
+  const outside = join(root, "model.bin");
+  await mkdir(join(root, "knowledge"), { recursive: true });
+  await mkdir(cache, { recursive: true });
+  await writeFile(join(root, "knowledge", "current.md"), "# Current source\n");
+  await writeFile(outside, "model cache", "utf8");
+  await symlink(outside, join(cache, "model-link"));
+
+  const sources = await enumerateMarkdownWorkingTree({ root });
+
+  assert.deepEqual(sources.map((source) => source.sourceId), ["filesystem:knowledge/current.md"]);
+});

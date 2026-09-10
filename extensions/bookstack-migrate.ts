@@ -30,7 +30,20 @@ export function registerBookStackMigrateTools(pi: Pick<ExtensionAPI, "registerTo
       return withMigrationLock(ctx.cwd, async () => {
         if (request.operation === "dry-run") {
           const result = await dryRunBookStackMigration({ projectRoot: ctx.cwd, specPath: required(request.specPath, "spec_path_required") });
-          return { content: [{ type: "text" as const, text: JSON.stringify({ reportPath: result.artifact.path, runId: result.run.runId, outcome: "READY" }) }] };
+          const status = result.report.summary.quarantined + result.report.summary.failed === 0
+            ? "READY"
+            : "NEEDS_REVIEW";
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({
+                reportPath: result.artifact.path,
+                runId: result.run.runId,
+                status,
+                summary: result.report.summary,
+              }),
+            }],
+          };
         }
         if (request.operation === "verify") {
           const result = await verifyBookStackMigration({ projectRoot: ctx.cwd, reportPath: required(request.reportPath, "report_path_required") });
