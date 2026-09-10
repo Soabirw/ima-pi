@@ -7,10 +7,24 @@ const run = promisify(execFile);
 const COMMIT = /^[0-9a-f]{40}$/i;
 const EXCLUDED = new Set(["README.md", "CONTRIBUTING.md", "CLAUDE.md"]);
 const blockedPath = (path: string) => path.startsWith("scripts/") || path.startsWith(".serena/") || path.startsWith(".claude/");
+const SYSTEM_GIT_PATH = "/usr/local/bin:/usr/bin:/bin";
 
 const git = async (root: string, args: string[], signal?: AbortSignal) => {
-  const result = await run("git", args, { cwd: root, encoding: "utf8", signal, maxBuffer: 4 * 1024 * 1024 });
-  return result.stdout;
+  try {
+    const result = await run("git", args, {
+      cwd: root,
+      encoding: "utf8",
+      signal,
+      maxBuffer: 4 * 1024 * 1024,
+      shell: false,
+      env: { PATH: SYSTEM_GIT_PATH },
+    });
+    return result.stdout;
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    const code = error && typeof error === "object" && "code" in error ? error.code : "";
+    throw new Error(code === "ENOENT" ? "git_unavailable" : "git_command_failed");
+  }
 };
 
 export type MarkdownGitInput = { root: string; commit: string; signal?: AbortSignal };
