@@ -1,7 +1,7 @@
 {
   "name": "ima-pi",
   "private": true,
-  "version": "1.19.0",
+  "version": "1.20.0",
   "type": "module",
   "engines": {
     "node": ">=24"
@@ -33,6 +33,8 @@
   "dependencies": {
     "@earendil-works/pi-ai": "0.84.4",
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "html-to-text": "^10.0.1",
+    "htmlparser2": "^10.1.0",
     "pi-mcp-adapter": "2.17.0",
     "typebox": "1.1.38",
     "uuid": "^14.0.2",

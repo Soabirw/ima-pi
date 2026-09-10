@@ -36,6 +36,11 @@ export const COMMAND_PHASE_FALLBACK: Readonly<Record<string, ImaPhase>> = {
   "implement-wp": "implement",
 };
 
+const COMMAND_ROUTE_FALLBACKS: Readonly<Record<string, readonly string[]>> = {
+  "resolve-review": ["resolve-review", "implement"],
+  rereview: ["rereview", "review"],
+};
+
 const CONFIG_KEYS = new Set(["schemaVersion", "profile", "models", "phases", "agents", "commands"]);
 const MAPPING_KEYS = new Set(["provider", "model", "thinking"]);
 const ROLE_FOR_SHORTHAND: Readonly<Record<RoleShorthand, ImaRole>> = { low: "LOW", mid: "MID", high: "HIGH", xhigh: "XHIGH" };
@@ -187,13 +192,21 @@ export function mergeConfigLayers(input: { packageDefaults: ValidConfigLayer; pr
 export function resolveCommandRoute(config: Pick<ResolvedImaConfig, "commands" | "phases"> | null | undefined, commandName: string): ImaModelMapping | null {
   const name = commandName.trim();
   if (!name) return null;
-  const commands = config?.commands;
-  const command = commands && Object.hasOwn(commands, name) ? commands[name] : undefined;
-  const phase = Object.hasOwn(COMMAND_PHASE_FALLBACK, name)
-    ? COMMAND_PHASE_FALLBACK[name]
-    : (IMA_PHASES.includes(name as ImaPhase) ? name as ImaPhase : null);
-  const mapping = command ?? (phase ? config?.phases?.[phase] : undefined);
-  return mapping ? { provider: mapping.provider, model: mapping.model, ...(mapping.thinking ? { thinking: mapping.thinking } : {}) } : null;
+  const candidates = Object.hasOwn(COMMAND_ROUTE_FALLBACKS, name)
+    ? COMMAND_ROUTE_FALLBACKS[name]
+    : [name];
+  for (const candidate of candidates) {
+    const command = config?.commands && Object.hasOwn(config.commands, candidate)
+      ? config.commands[candidate]
+      : undefined;
+    if (command) return { provider: command.provider, model: command.model, ...(command.thinking ? { thinking: command.thinking } : {}) };
+    const phase = Object.hasOwn(COMMAND_PHASE_FALLBACK, candidate)
+      ? COMMAND_PHASE_FALLBACK[candidate]
+      : (IMA_PHASES.includes(candidate as ImaPhase) ? candidate as ImaPhase : null);
+    const mapping = phase ? config?.phases?.[phase] : undefined;
+    if (mapping) return { provider: mapping.provider, model: mapping.model, ...(mapping.thinking ? { thinking: mapping.thinking } : {}) };
+  }
+  return null;
 }
 
 export function resolveNamedResources<T extends { name: string }>(input: { packageResources: T[]; userResources: T[]; projectResources: T[] }): Array<T & { source: "package" | "user" | "project" }> {
@@ -344,10 +357,13 @@ export async function loadImaConfig(input: { packageRoot: string; agentDir: stri
   if (Object.keys(commands).length) {
     try {
       const names = await readDirectory(join(input.packageRoot, "prompts"));
-      const known = new Set(names
-        .map((entry) => typeof entry === "string" ? entry : object(entry) && typeof entry.name === "string" ? entry.name : "")
-        .map((entry) => entry.match(/^ima:([a-z0-9][a-z0-9-]*)\.md$/)?.[1] ?? "")
-        .filter(Boolean));
+      const known = new Set([
+        "cycle",
+        ...names
+          .map((entry) => typeof entry === "string" ? entry : object(entry) && typeof entry.name === "string" ? entry.name : "")
+          .map((entry) => entry.match(/^ima:([a-z0-9][a-z0-9-]*)\.md$/)?.[1] ?? "")
+          .filter(Boolean),
+      ]);
       for (const [name, mapping] of Object.entries(commands)) {
         if (isRoleShorthand(name) || known.has(name)) continue;
         diagnostics.push(diagnostic("config_unknown_command", mapping.source, ["commands", name], "Command does not match a packaged IMA prompt or role selector."));

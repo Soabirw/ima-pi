@@ -122,7 +122,7 @@ test("README documents the walkthrough entry point and current package inventory
   ]);
 
   assert.equal(skillCount, 57);
-  assert.equal(promptCount, 33);
+  assert.equal(promptCount, 35);
   has(content, `${skillCount} packaged skills and ${promptCount} \`/ima:*\` prompt templates`);
 
   for (const marker of [
@@ -134,6 +134,8 @@ test("README documents the walkthrough entry point and current package inventory
     "understanding-first, never emits `REVIEW-NNN` findings or a verdict",
     "without starting speech automatically",
     "Use `/ima:review` when a graded verdict is required.",
+    "/ima:closeout [completed-lifecycle-source]",
+    "separately invoked manual terminal lifecycle closeout",
   ]) has(content, marker);
 });
 

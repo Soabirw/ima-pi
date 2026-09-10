@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs";
 import { lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -57,9 +56,18 @@ import {
 } from "../lib/ima-delegation.ts";
 import { loadImaConfig } from "../lib/ima-config.ts";
 import { admitVisionImages, publicVisionSource } from "../lib/ima-vision.ts";
+import { runFocusedAgentContinuation } from "../lib/ima-agent-continuation.ts";
+import {
+  createCycleSessionReference,
+  cycleSessionOwnerFromEntries,
+  loadCycleOwnedSession,
+  storeCycleOwnedSessionRecord,
+  type CycleSessionOwner,
+} from "../lib/ima-agent-sessions.ts";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const sessions = new Map<string, SessionRecord>();
+const continuingSessions = new Set<string>();
 const agentDir = getAgentDir();
 export function resolveProjectTrust(ctx: Partial<Pick<ExtensionContext, "isProjectTrusted">> | undefined, fallback = process.env.IMA_PI_PROJECT_TRUSTED === "true"): boolean {
   return typeof ctx?.isProjectTrusted === "function" ? ctx.isProjectTrusted() : fallback;
@@ -216,6 +224,8 @@ type CoordinatorInput = {
   onActivity?: (snapshot: DelegationActivityState) => void;
   signal?: AbortSignal;
   sessionStore?: Map<string, SessionRecord>;
+  sessionReference?: (assignment: DelegationAssignment) => string;
+  onSessionRecord?: (record: SessionRecord) => Promise<void> | void;
   dependencies?: CoordinatorDependencies;
 };
 
@@ -378,14 +388,17 @@ export async function coordinateDelegation(input: CoordinatorInput) {
           return { id: assignment.id, status: cancelled ? "cancelled" : "failed", attempts: attempt, error: detail, failure, completion: completion.failures, resumeReference: null, ...(unverifiedReport ? { unverifiedReport: report, unverifiedReason: detail, sessionId: observed.sessionId, sessionFile: observed.sessionFile } : {}) };
         }
         const timestamp = deps.clock();
+        const reference = text(input.sessionReference?.(assignment) ?? assignment.id);
+        if (!reference) throw new Error("session_reference_invalid");
         const record: SessionRecord = {
-          reference: assignment.id, agent: agent.name, role: agent.authority, resultKind: agent.result.kind,
+          reference, agent: agent.name, role: agent.authority, resultKind: agent.result.kind,
           provider: observed.provider!, model: observed.model!, thinking: observed.thinking,
           sessionId: observed.sessionId!, sessionFile: observed.sessionFile!, writeScope: [...assignment.writeScope],
           contractFingerprint: agentContractFingerprint(agent, assignment.writeScope), status: "succeeded",
           fresh: agent.independence.freshInitial, followUpAllowed: agent.independence.followUpAllowed,
           createdAt: timestamp, updatedAt: timestamp,
         };
+        await input.onSessionRecord?.(record);
         store.set(record.reference, record);
         emit({ type: "succeeded", id: assignment.id, at: deps.activityClock() });
         state = reduceDelegationEvent(state, { type: "succeeded", id: assignment.id });
@@ -459,86 +472,114 @@ type ContinuationInput = {
   brief: string;
   runtime: any;
   cwd: string;
+  signal?: AbortSignal;
   sessionStore?: Map<string, SessionRecord>;
+  onSessionRecord?: (record: SessionRecord) => Promise<void> | void;
   dependencies?: CoordinatorDependencies & { openManager?: (path: string) => unknown; fileExists?: (path: string) => boolean };
 };
 
 // REVIEW-004: reopen and execute the exact persisted session after status, independence,
 // fingerprint, file, model, terminal-result, and observed-identity checks.
 export async function runFocusedContinuation(input: ContinuationInput) {
-  const purpose = input.agent.authority === "review-read" ? "finding-follow-up" : input.agent.authority === "vision-read" ? "vision-follow-up" : "implementation-follow-up";
-  const fileExists = input.dependencies?.fileExists ?? existsSync;
-  if (!canResumeSession({ record: input.record, agent: input.agent, purpose, sessionFileExists: fileExists(input.record.sessionFile) })) return createDelegationResult({ id: input.record.reference, status: "refused", attempts: 0, error: "session_not_reusable", session: null });
-  if (input.record.contractFingerprint !== agentContractFingerprint(input.agent, input.record.writeScope)) return createDelegationResult({ id: input.record.reference, status: "refused", attempts: 0, error: "agent_contract_drift", session: null });
-  const model = input.runtime.getModel(input.record.provider, input.record.model);
-  if (!model) return createDelegationResult({ id: input.record.reference, status: "refused", attempts: 0, error: "model_unavailable", session: null });
-  const deps = {
-    createSession: input.dependencies?.createSession ?? createAgentSession,
-    openManager: input.dependencies?.openManager ?? ((path: string) => SessionManager.open(path)),
-    scopedTools: input.dependencies?.scopedTools ?? createScopedTools,
-    clock: input.dependencies?.clock ?? now,
-  };
-  const store = input.sessionStore ?? sessions;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    let session: any;
-    let unsubscribe = () => undefined;
-    try {
-      const created = await deps.createSession({
-        cwd: input.cwd, modelRuntime: input.runtime, model, thinkingLevel: input.record.thinking as any,
-        tools: deriveToolAuthority(input.agent).map((tool) => agentToolNames[tool]).filter(Boolean),
-        customTools: deps.scopedTools({ cwd: input.cwd, assignment: { id: input.record.reference, agent: input.agent.name, goal: input.brief, context: "Focused continuation", paths: [], constraints: [], nonGoals: [], expectedOutput: input.agent.result.requiredSections.join(", "), writeScope: input.record.writeScope }, agent: input.agent }),
-        sessionManager: deps.openManager(input.record.sessionFile) as any,
-      });
-      session = created.session;
-      let unsafe = false;
-      unsubscribe = session.subscribe?.((event: any) => { if (mutationAttemptUnsafe(event, { writeScope: input.record.writeScope } as DelegationAssignment)) { unsafe = true; void session.abort?.(); } }) ?? unsubscribe;
-      await session.prompt(input.brief);
-      await session.waitForIdle();
-      if (unsafe) return createDelegationResult({ id: input.record.reference, status: "failed", attempts: attempt + 1, error: "unsafe-partial-state", failure: "unsafe-partial-state", session: null });
-      const final = finalAssistant(session);
-      const report = final?.report ?? "";
-      const observed = observedIdentity(session);
-      const completion = validateDelegationCompletion({ final, text: report, requiredSections: input.agent.result.requiredSections, expected: { provider: input.record.provider, model: input.record.model, thinking: input.record.thinking, sessionId: input.record.sessionId, sessionFile: input.record.sessionFile }, observed });
-      if (!completion.ok) {
-        const failure = final?.errorMessage ? classifyChildFailure(final.errorMessage) : "agent-contract";
-        if (attempt === 0 && decideRecovery({ failure, retries: 0 }).retry) continue;
-        const detail = final?.errorMessage ? sanitizeDelegationError(final.errorMessage) : completion.failures.join(",");
-        const unverifiedReport = report.trim();
-        return createDelegationResult({
-          id: input.record.reference,
-          status: "failed",
-          attempts: attempt + 1,
-          error: detail,
-          failure,
-          completion: completion.failures,
-          report: unverifiedReport ? report : undefined,
-          unverifiedReason: unverifiedReport ? detail : undefined,
-          session: unverifiedReport ? { id: observed.sessionId, file: observed.sessionFile, resumeReference: null } : null,
-        });
-      }
-      const updated = { ...input.record, status: "succeeded" as const, updatedAt: deps.clock() };
-      store.set(updated.reference, updated);
-      return createDelegationResult({
-        id: input.record.reference,
-        status: "succeeded",
-        attempts: attempt + 1,
-        provider: observed.provider,
-        model: observed.model,
-        thinking: observed.thinking,
-        report,
-        session: { id: observed.sessionId, file: observed.sessionFile, resumeReference: input.record.reference },
-      });
-    } catch (error) {
-      const failure = classifyChildFailure(error);
-      if (attempt === 0 && decideRecovery({ failure, retries: 0 }).retry) continue;
-      return createDelegationResult({ id: input.record.reference, status: "failed", attempts: attempt + 1, error: sanitizeDelegationError(error), failure, session: null });
-    } finally {
-      unsubscribe();
-      session?.dispose?.();
-    }
-  }
-  return createDelegationResult({ id: input.record.reference, status: "failed", attempts: 2, error: "terminal", failure: "terminal", session: null });
+  return runFocusedAgentContinuation({
+    record: input.record,
+    agent: input.agent,
+    brief: input.brief,
+    runtime: input.runtime,
+    cwd: input.cwd,
+    signal: input.signal,
+    sessionStore: input.sessionStore ?? sessions,
+    onSessionRecord: input.onSessionRecord,
+    dependencies: {
+      createSession: input.dependencies?.createSession,
+      openManager: input.dependencies?.openManager,
+      scopedTools: input.dependencies?.scopedTools ?? createScopedTools,
+      toolNames: agentToolNames,
+      finalAssistant,
+      mutationAttemptUnsafe,
+      clock: input.dependencies?.clock ?? now,
+      fileExists: input.dependencies?.fileExists,
+    },
+  });
 }
+
+const cycleOwner = (ctx: Pick<ExtensionContext, "sessionManager">): CycleSessionOwner | null =>
+  cycleSessionOwnerFromEntries(ctx.sessionManager.getBranch?.() ?? []);
+
+const restoreCycleSessionRecord = async (ctx: Pick<ExtensionContext, "cwd" | "sessionManager">, reference: string) => {
+  const owner = cycleOwner(ctx);
+  if (!owner) {
+    const record = sessions.get(reference) ?? null;
+    return record ? { record, owner: null } : null;
+  }
+  const persisted = await loadCycleOwnedSession({ cwd: ctx.cwd, owner, reference });
+  if (persisted) sessions.set(persisted.record.reference, persisted.record);
+  return persisted ? { record: persisted.record, owner: persisted.owner } : null;
+};
+
+const validCycleContinuationSession = async (cwd: string, record: SessionRecord) => {
+  try {
+    const [root, fileDetails, file] = await Promise.all([
+      realpath(cwd),
+      lstat(record.sessionFile),
+      realpath(record.sessionFile),
+    ]);
+    if (!fileDetails.isFile() || fileDetails.isSymbolicLink()) return false;
+    const manager = SessionManager.open(file);
+    const header = manager.getHeader();
+    const managerFile = manager.getSessionFile();
+    return Boolean(header)
+      && header.id === record.sessionId
+      && resolve(header.cwd) === root
+      && manager.getSessionId() === record.sessionId
+      && typeof managerFile === "string"
+      && resolve(managerFile) === file
+      && resolve(manager.getCwd()) === root;
+  } catch {
+    return false;
+  }
+};
+
+const runAgentFollowUp = async (input: {
+  ctx: ExtensionContext;
+  reference: string;
+  brief: string;
+  signal?: AbortSignal;
+}) => {
+  const reference = text(input.reference);
+  const brief = typeof input.brief === "string" && input.brief.trim().length <= 16_000
+    ? input.brief.trim()
+    : "";
+  if (!reference || !brief) return createDelegationResult({ id: reference || "unknown", status: "refused", attempts: 0, error: "session_follow_up_invalid", session: null });
+  if (continuingSessions.has(reference)) return createDelegationResult({ id: reference, status: "refused", attempts: 0, error: "session_follow_up_busy", session: null });
+  continuingSessions.add(reference);
+  try {
+    const restored = await restoreCycleSessionRecord(input.ctx, reference);
+    const record = restored?.record;
+    const loaded = await definitions(input.ctx.cwd, resolveProjectTrust(input.ctx));
+    const agent = loaded.definitions.find((item) => item.name === record?.agent);
+    if (!record || !agent) return createDelegationResult({ id: reference, status: "refused", attempts: 0, error: "session_not_reusable", session: null });
+    if (restored?.owner && !await validCycleContinuationSession(input.ctx.cwd, record)) {
+      return createDelegationResult({ id: reference, status: "refused", attempts: 0, error: "session_not_reusable", session: null });
+    }
+    const owner = restored?.owner ?? cycleOwner(input.ctx);
+    const runtime = await ModelRuntime.create();
+    return await runFocusedContinuation({
+      record,
+      agent,
+      brief,
+      runtime,
+      cwd: input.ctx.cwd,
+      signal: input.signal,
+      sessionStore: sessions,
+      ...(owner ? { onSessionRecord: (updated: SessionRecord) => storeCycleOwnedSessionRecord({ cwd: input.ctx.cwd, owner, record: updated }) } : {}),
+    });
+  } catch {
+    return createDelegationResult({ id: reference, status: "refused", attempts: 0, error: "session_record_unavailable", session: null });
+  } finally {
+    continuingSessions.delete(reference);
+  }
+};
 
 export default function agents(pi: ExtensionAPI) {
   pi.registerTool({
@@ -569,7 +610,24 @@ export default function agents(pi: ExtensionAPI) {
         if (!config || loaded.diagnostics.length) return { content: [{ type: "text", text: JSON.stringify({ status: "blocked", errors: [...config?.diagnostics ?? [], ...loaded.diagnostics] }) }], details: { status: "blocked" } };
         const valid = validateDelegationRequest(request, loaded.definitions);
         if (!valid.valid) return { content: [{ type: "text", text: JSON.stringify({ status: "blocked", errors: valid.errors }) }], details: { status: "blocked" } };
-        result = await coordinateDelegation({ cwd: ctx.cwd, request, agents: loaded.definitions, config, runtime, runId: toolCallId, onActivity: project, signal, sessionStore: sessions });
+        const owner = cycleOwner(ctx);
+        result = await coordinateDelegation({
+          cwd: ctx.cwd,
+          request,
+          agents: loaded.definitions,
+          config,
+          runtime,
+          runId: toolCallId,
+          onActivity: project,
+          signal,
+          sessionStore: sessions,
+          ...(owner
+            ? {
+              sessionReference: () => createCycleSessionReference(),
+              onSessionRecord: (record: SessionRecord) => storeCycleOwnedSessionRecord({ cwd: ctx.cwd, owner, record }),
+            }
+            : {}),
+        });
       } finally {
         if (ctx.mode === "tui") {
           try { ctx.ui.setWidget(activityProjectionKey, undefined); } catch { projectionDegraded = true; }
@@ -586,6 +644,22 @@ export default function agents(pi: ExtensionAPI) {
         ? { ...parentResult.payload, projectionDegraded }
         : { ...result, status: parentResult.payload.status, results: parentResult.payload.results, report: parentResult.payload.report, projectionDegraded };
       return { content: [{ type: "text", text: parentResult.serialized }], details };
+    },
+  });
+  pi.registerTool({
+    name: "ima_agent_follow_up",
+    label: "IMA Agent Follow-up",
+    description: "Continue one eligible persisted IMA specialist session with a bounded literal brief.",
+    parameters: Type.Object({
+      reference: Type.String({ minLength: 1, maxLength: 256 }),
+      brief: Type.String({ minLength: 1, maxLength: 16_000 }),
+    }),
+    async execute(_toolCallId, request, signal, _onUpdate, ctx) {
+      const result = await runAgentFollowUp({ ctx, reference: request.reference, brief: request.brief, signal });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result) }],
+        details: result,
+      };
     },
   });
   pi.on("before_agent_start", async (event, ctx) => {
@@ -614,13 +688,7 @@ export default function agents(pi: ExtensionAPI) {
   pi.registerCommand("ima:agent-sessions", { description: "List sanitized IMA agent session references.", handler: async (_args, ctx) => ctx.ui.notify([...sessions.values()].map((record) => `${record.reference}\t${record.role}\t${record.provider}/${record.model}\t${record.status}`).join("\n") || "No IMA agent sessions.", "info") });
   pi.registerCommand("ima:agent-follow-up", { description: "Run a focused continuation: <session-reference> <brief>.", handler: async (args, ctx) => {
     const [reference, ...rest] = args.trim().split(/\s+/);
-    const record = sessions.get(reference);
-    const brief = rest.join(" ");
-    const loaded = await definitions(ctx.cwd, resolveProjectTrust(ctx));
-    const agent = loaded.definitions.find((item) => item.name === record?.agent);
-    if (!record || !agent || !brief) { ctx.ui.notify("Follow-up refused: unknown, unsafe, or non-reusable session.", "warning"); return; }
-    const runtime = await ModelRuntime.create();
-    const result = await runFocusedContinuation({ record, agent, brief, runtime, cwd: ctx.cwd, sessionStore: sessions });
+    const result = await runAgentFollowUp({ ctx, reference, brief: rest.join(" ") });
     ctx.ui.notify(JSON.stringify(result), result.status === "succeeded" ? "info" : "warning");
   } });
 }

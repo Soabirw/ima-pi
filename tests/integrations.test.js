@@ -578,7 +578,7 @@ test("cycle reconciliation filters lifecycle recall by phase before the bounded 
   };
 
   const recalled = await recallCorpusLifecycle(`${lifecycleKey} review`, corpus);
-  assert.deepEqual(calls, [{ lifecycleKey, phase: "review", limit: 10 }]);
+  assert.deepEqual(calls, [{ lifecycleKey, phase: "review", limit: 20 }]);
   assert.deepEqual(recalled.structuredContent.results.map(({ id }) => id), [target.id]);
 });
 

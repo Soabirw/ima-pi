@@ -1,4 +1,5 @@
 /** FNR-3016 production boundary for external IMA context and lifecycle services. */
+import { Buffer } from "node:buffer";
 import { execFile as execFileCallback } from "node:child_process";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -38,8 +39,9 @@ const execFile = promisify(execFileCallback);
 const TIMEOUT = 30_000;
 const MCP_TIMEOUT = 300_000;
 const VESTIGE_TIMEOUT = 300_000;
-const LIFECYCLE_RECALL_LIMIT = 10;
+const LIFECYCLE_RECALL_LIMIT = 20;
 const MAX_BUFFER = 128 * 1024;
+const PLANE_SOURCE_CONTENT_MAXIMUM_BYTES = 64_000;
 const SOURCE_ERROR_CODES = ["source_path_outside_project", "source_file_unreadable", "source_file_too_large"];
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const sourceErrorCode = (error: unknown) => error instanceof Error && SOURCE_ERROR_CODES.includes(error.message) ? error.message : "source_boundary_unavailable";
@@ -127,7 +129,17 @@ export const recallCorpusLifecycle = async (
     throwIfAborted(signal);
     if (!recalled.success) return null;
 
-    const records: Array<{ id: string; recordKey: string; content: string }> = [];
+    const records: Array<{
+      id: string;
+      recordKey: string;
+      project: string;
+      lifecycleKey: string;
+      phase: string;
+      sourceRefs: string[];
+      contentHash: string;
+      createdAt: string;
+      content: string;
+    }> = [];
     for (const summary of recalled.data) {
       const full = await corpus.getInstitutional(summary.recordKey, signal);
       throwIfAborted(signal);
@@ -137,6 +149,12 @@ export const recallCorpusLifecycle = async (
       records.push({
         id: full.data.id,
         recordKey,
+        project: full.data.project,
+        lifecycleKey: full.data.lifecycleKey,
+        phase: full.data.phase,
+        sourceRefs: [...full.data.sourceRefs],
+        contentHash: full.data.contentHash,
+        createdAt: full.data.createdAt,
         content: full.data.detail,
       });
     }
@@ -383,10 +401,13 @@ const normalizePlaneResponse = (source: PlaneSource, value: unknown) => {
     || (data.stateId !== null && stateId === null)
   ) return null;
 
+  const content = JSON.stringify({ name, description, state: stateId, reference: canonical });
+  if (Buffer.byteLength(content, "utf8") > PLANE_SOURCE_CONTENT_MAXIMUM_BYTES) return null;
+
   return {
     key: canonical,
     title: name,
-    content: JSON.stringify({ name, description, state: stateId, reference: canonical }),
+    content,
     references: [`Plane:${source.workspace}:${identifier}`],
   };
 };

@@ -4,6 +4,40 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ## [Unreleased]
 
+## [1.20.0] - 2026-09-09
+
+Notable upgrade to the `cycle` system. It can now be reliably triggered in three ways:
+
+1. **Natural language:** The system can often select the SDLC workflow for ordinary work and does so reliably when the request is direct or explicit.
+2. **`/ima:soft-cycle`:** A prompt-based trigger that uses a long-horizon model to orchestrate the full SDLC through agent delegation, stopping before human-led closeout.
+3. **`/ima:cycle`:** An improved, more rigid, and explicit system that takes a task through the full SDLC in guided or autonomous mode.
+
+### Added
+
+- Added prompt-only `/ima:soft-cycle` SDLC orchestration with bounded guided/autonomous specialist delegation, parent-owned artifact persistence, and a stop before human-led closeout.
+- Added isolated, profile-routed native Pi phase hosts for `/ima:cycle`, including `commands.cycle` orchestration routing, literal `/ima:cycle reply`, durable original-reviewer continuation, and local-only cycle-owned session records.
+- Added parser-backed Plane work-item description fidelity: HTML-only descriptions now hydrate as bounded readable text with independently bounded description and context payloads.
+- Added `plane:create` for explicit approved Plane work-item creation through the direct REST helper, with project resolution, strict fields, escaped descriptions, and no browser-control fallback.
+- `/ima:cycle` now automatically adopts the newest exact verified manual plan; marker-free legacy plans require one exact TUI confirmation/reference-only approval receipt.
+- Added separately invoked manual `/ima:closeout` after verified documentation, which best-effort normalizes an unambiguous supplied source to the canonical lifecycle form and presents Git, tracker, and lifecycle actions as one itemized final action overview whose single approval confirms every executable action shown; it never invokes `/ima:cycle` or auto-dispatches from document.
+- Added `/ima:cycle` observability: immediate start acknowledgement, below-editor phase and configured-route feedback, settled child identity, and deterministic retriable or terminal blocker guidance.
+
+### Changed
+
+- Made `/ima:cycle` a parent orchestrator: phase hosts retain lifecycle context and bounded specialist delegation while human-confirmed tracker close remains coordinator-owned.
+- Revalidates the original plan contract and downstream lineage before reuse, failing closed on mismatches.
+- Preserves guided and autonomous modes, review-cap behavior, fixed lifecycle ordering, and human-only close.
+
+### Fixed
+
+- Routed pre-review test defects back through plan-bound implementation repair and retesting, with stable `TEST-NNN` evidence, legacy defect-state recovery, and a fresh initial review only after tests pass.
+- Allowed multiline `/ima:cycle reply` answers while continuing to reject unsafe control characters and oversized replies.
+- Made cycle phase questions persistent and actionable in the parent transcript instead of relying on transient notifications.
+- Prevented cancellation, callback-drain, cleanup-ownership, and successor-dispatch races from allowing unsafe cycle phase work or replacement after failed cleanup.
+- Prevented unsupported binary/empty Plane descriptions and unrepresentable generated description payloads from being treated as safe blanks or sent to Plane writes.
+- Hardened stop, session, recovery, and publication-cancellation safeguards.
+- Cleared stale start feedback on pre-persist cancellation while restoring retained post-tracker-close blocker state.
+
 ## [1.19.0] - 2026-09-05
 
 ### Added

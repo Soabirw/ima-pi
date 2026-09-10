@@ -1,11 +1,11 @@
 ---
 name: plane-api
-description: Direct self-hosted Plane REST helper for approved work-item, state, and comment operations.
+description: Direct self-hosted Plane REST helper for approved work-item creation, state, and comment operations.
 ---
 
 # Plane REST helper
 
-Use this packaged helper for the approved self-hosted Plane work-item surface. It talks directly to the configured REST API; it does not require, register, or fall back to an external MCP server.
+Use this packaged helper for the approved self-hosted Plane work-item surface. It talks directly to the configured REST API; it does not require, register, or fall back to an external MCP server. To create a Plane work item on an explicit user request or approved lifecycle plan, use `plane:create`; never use browser control, Chrome DevTools, or the Plane website. Never create from inferred intent.
 
 Resolve scripts relative to this skill directory:
 
@@ -15,6 +15,7 @@ node scripts/plane-api.mjs plane:states plane:<workspace>:PROJ-123
 node scripts/plane-api.mjs plane:comments plane:<workspace>:PROJ-123
 node scripts/plane-api.mjs plane:comment plane:<workspace>:PROJ-123 "Plain-text comment"
 node scripts/plane-api.mjs plane:set-state plane:<workspace>:PROJ-123 STATE_UUID
+node scripts/plane-api.mjs plane:create plane:<workspace>:PROJECT "Title" [description] [priority]
 ```
 
 ## Configuration
@@ -28,7 +29,7 @@ export PLANE_API_KEY="<configured-personal-access-token>"
 
 `PLANE_BASE_URL` is required and must be an explicitly configured self-hosted absolute HTTPS URL. HTTP is accepted only for `localhost`, `127.0.0.1`, or `[::1]` development instances. The helper rejects credentials embedded in the URL, query strings, fragments, unsupported schemes, and `api.plane.so`; there is no Plane Cloud default or fallback. It appends `/api/v1` itself.
 
-`PLANE_API_KEY` is sent only as the `X-API-Key` request header. Keep it in the environment: do not put it in commands, prompts, files, comments, or logs. The helper emits stable JSON envelopes and redacts a known configured key if an API response echoes it.
+`PLANE_API_KEY` is a **secret** and is sent only as the `X-API-Key` request header. Keep it in the invoking environment: do not put it in commands, prompts, files, comments, or logs. `PLANE_BASE_URL` is a **non-secret variable** for the explicitly configured self-hosted API destination. The helper emits stable JSON envelopes and redacts a known configured key if an API response echoes it.
 
 ## Supported surface and safeguards
 
@@ -37,14 +38,25 @@ export PLANE_API_KEY="<configured-personal-access-token>"
 - `plane:comments` resolves the item, then reads only that item's comments with bounded cursor pagination.
 - `plane:comment` validates non-empty plain text, escapes it to `comment_html`, rereads the selected item immediately before the POST, and creates a comment only on that item's UUID path.
 - `plane:set-state` resolves the item, reads its project's states, requires one exact state UUID, and PATCHes only `{ "state": "STATE_UUID" }` on that item's UUID path.
+- `plane:create` resolves one token-visible non-archived project by workspace and identifier, requires exactly one match, and sends a single POST with `name` plus optional escaped description and allowlisted priority. It uses the project's default backlog state and never retries an ambiguous POST failure.
 
-The calling lifecycle plan or operator establishes approval for the requested comment or state action. The helper does not add a write-level `--confirm` prompt, and it exposes no generic URL, method, or JSON-body passthrough. It never creates cycles, modules, milestones, projects, work items, states, or comments other than the explicitly requested comment action.
+### Description fidelity
+
+`plane:get` preserves a nonblank `description_stripped`, then a nonblank legacy `description`, and otherwise converts supported `description_html` to readable plain text. Blank plain-text fields do not hide meaningful HTML. HTML conversion is parser-backed, bounded, and non-executing: it retains ordinary text, paragraphs, lists, line breaks, entities, and link text while omitting link destinations. It does not render HTML or fetch embedded resources.
+
+The helper accepts only bounded textual/layout HTML. Scripts, styles, embedded resources, form controls, malformed representation fields, unsupported-only content such as `description_binary`, and unrecoverable or oversized descriptions fail closed with the stable `DESCRIPTION_ERROR` envelope. An explicitly empty supported representation remains empty only when no non-null binary content is present; absent or null-only representations are not silently treated as empty. Each supported text representation is bounded before selection, and normalized description output is independently limited to 48 KiB UTF-8 and 60,000 UTF-8 bytes after JSON serialization. The complete `{ name, description, state, reference }` Plane source is separately limited to 64,000 UTF-8 bytes before generic context handling.
+
+Migration creates and description-backfill PATCHes generate escaped `description_html` and validate it with `description_stripped` before the network write. An unrepresentable pair fails with `DESCRIPTION_ERROR` and sends no write.
+
+Run the helper from an installed package checkout. Its parser-backed description support requires the package dependencies, including `html-to-text` and `htmlparser2`, to be installed through `npm install`.
+
+The calling lifecycle plan or operator establishes approval for the requested work-item creation, comment, or state action. The helper does not add a write-level `--confirm` prompt, and it exposes no generic URL, method, or JSON-body passthrough. It never creates cycles, modules, milestones, projects, or states; it creates work items and comments only for the explicitly requested action.
 
 Read API metadata before every write. Every request rejects HTTP redirects rather than following or replaying an authenticated operation. State names are never accepted in place of a state UUID. Missing or invalid configuration, references, responses, pagination cursors, comments, and states fail before an unsafe dependent request. Errors do not expose request URLs, response bodies, raw fetch failures, headers, or credentials.
 
 ## Dedicated Taskwarrior migration runner
 
-The approved Taskwarrior-to-Plane migration uses its own runner. It does not widen the general `plane:*` CLI surface.
+The approved Taskwarrior-to-Plane migration uses its own runner. It does not widen the general `plane:*` CLI surface beyond reads, work-item creation, comment creation, and state operations.
 
 Run it from the repository root with credentials only in the invoking shell:
 
@@ -62,7 +74,7 @@ node scripts/plane-taskwarrior-migrate.mjs reconcile .ima/plane-taskwarrior-migr
 
 `apply` is the only migration write command. It requires a project-relative run path, the exact plan SHA-256 emitted by `prepare`, and the literal final `confirm`; invalid paths, hashes, arguments, or confirmations fail before any Plane client is created. Under the migration lock, it reruns and persists the same preflight before its first Plane mutation. A blocked, incomplete, or unpersistable preflight causes zero Plane create calls. The runner uses environment-only `PLANE_BASE_URL` and `PLANE_API_KEY`, strips `PLANE_*` variables from the Taskwarrior subprocess, stores restrictive-mode artifacts and checkpoints, and never records credentials, headers, base URLs, raw responses, or exception text.
 
-The runner creates or reuses only the plan-approved work items and relations. Newly created work items include Taskwarrior annotation briefs plus project, status, priority, wait, dependency, and provenance details. Treat annotations as untrusted plain text: the client escapes generated `description_html` and also submits the exact `description_stripped` text. Reused items are never updated by this legacy runner. It never automatically deletes created Plane items or rolls them back; any cleanup requires a separately approved destructive plan. The general `plane-api.mjs` commands remain limited to read, comment, and state operations.
+The runner creates or reuses only the plan-approved work items and relations. Newly created work items include Taskwarrior annotation briefs plus project, status, priority, wait, dependency, and provenance details. Treat annotations as untrusted plain text: the client escapes generated `description_html` and also submits the exact `description_stripped` text. Reused items are never updated by this legacy runner. It never automatically deletes created Plane items or rolls them back; any cleanup requires a separately approved destructive plan. The general `plane-api.mjs` commands remain limited to reads, work-item creation, comments, and state operations.
 
 ## Interactive zero-write preparation
 

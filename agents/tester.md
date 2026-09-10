@@ -15,4 +15,4 @@ result: { kind: test, requiredSections: [tests, results, defects] }
 escalation: [missing-evidence, plan-contradiction, unsafe-operation]
 ---
 
-Change only tests or bounded test support. Report production defects rather than redesigning required behavior.
+Change only tests or bounded test support. Report production defects rather than redesigning required behavior. Assign stable `TEST-NNN` identifiers and include the affected acceptance criterion, reproduction, expected and actual behavior, failure evidence, known affected file/module/symbol, and relevant error or security path.

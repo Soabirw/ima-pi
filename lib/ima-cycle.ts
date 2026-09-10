@@ -1,5 +1,11 @@
 /** Pure cycle parsing, state reduction, evidence, and tracker-shape helpers. */
 
+import {
+  hasMatchingCyclePhaseSettlement,
+  validateCyclePhaseExecution,
+  type CyclePhaseExecution,
+  type CyclePhaseSettlement,
+} from "./ima-cycle-phase.ts";
 import { normalizeLifecycleRecordKey } from "./ima-lifecycle.ts";
 
 export const CYCLE_SCHEMA_VERSION = 1;
@@ -36,6 +42,13 @@ export type CycleSource =
   | { type: "taskwarrior"; project: string; uuid: string }
   | { type: "plane"; workspace: string; project: string; sequenceId: number };
 
+export type ApprovedPlanReference = {
+  artifactId: string;
+  recordKey: string;
+  contentHash: string;
+  approvedAt: string;
+};
+
 export type CycleEvidence = {
   phase: CyclePhase;
   outcome: string;
@@ -44,6 +57,7 @@ export type CycleEvidence = {
   artifactId: string | null;
   recordKey: string | null;
   timestamp: string;
+  approvedPlan?: ApprovedPlanReference;
 };
 
 export type LifecycleSearchSelection = {
@@ -70,6 +84,11 @@ export type CycleLifecycleReconciliation =
   | { ok: true; state: CycleState; reconciled: boolean; artifactId: string | null; recordKey: string | null }
   | { ok: false; state: CycleState | null; error: ReturnType<typeof sanitizeCycleError>; artifactId: string | null; recordKey: string | null };
 
+export type CycleLifecycleReconciliationOptions = {
+  timestamp?: string;
+  executionSettlement?: CyclePhaseSettlement;
+};
+
 export type CycleState = {
   schemaVersion: 1;
   source: CycleSource;
@@ -87,6 +106,7 @@ export type CycleState = {
   stoppedPhase?: CyclePhase;
   trackerClosed?: boolean;
   branchId?: string;
+  execution?: CyclePhaseExecution;
 };
 
 export type CycleCommand =
@@ -94,9 +114,11 @@ export type CycleCommand =
   | { command: "status" }
   | { command: "stop"; acknowledge: boolean }
   | { command: "resume"; mode?: CycleMode }
+  | { command: "reply"; answer: string }
   | { command: "close"; commitPrep: boolean };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const HASH = /^[a-f0-9]{64}$/i;
 const JIRA_KEY = /^[A-Z][A-Z0-9]+-\d+$/;
 const PROJECT = /^[\w.-]+$/;
 const PLANE_WORKSPACE = /^[A-Za-z0-9][A-Za-z0-9._~-]*$/;
@@ -108,6 +130,7 @@ const MAX_PLANE_STATES = 1_000;
 const PLANE_STATE_GROUPS = ["backlog", "unstarted", "started", "completed", "cancelled"] as const;
 type PlaneStateGroup = typeof PLANE_STATE_GROUPS[number];
 const LIFECYCLE_KEY = /^[^\r\n]{1,512}$/;
+const DISALLOWED_REPLY_CONTROL = /[\u0000-\u0009\u000b\u000c\u000e-\u001f\u007f]/;
 const JIRA_URL = /^https:\/\/flccc\.atlassian\.net\/browse\/([A-Z][A-Z0-9]+-\d+)$/;
 const CYCLE_MARKER = /<!--\s*ima-cycle outcome:\s*phase=(plan|implementation|test|review|resolution|rereview|document);\s*outcome=([A-Z_]+)\s*-->/g;
 const LIFECYCLE_VERIFICATION = /<!--\s*ima-lifecycle verification:\s*([\s\S]*?)\s*-->/g;
@@ -138,6 +161,32 @@ const validTimestamp = (value: unknown) => /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}
 const cleanLine = (value: unknown, maximum = 512) => text(value).replace(/[\r\n]+/g, " ").replace(/(?:authorization|token|secret|password)\s*[:=]\s*\S+/gi, "[redacted]").slice(0, maximum);
 const validRecordKey = (value: unknown) => Boolean(normalizeLifecycleRecordKey(value));
 const optionalRecordKey = (value: unknown) => value === undefined || value === null || validRecordKey(value);
+
+export function normalizeApprovedPlanReference(value: unknown): ApprovedPlanReference | null {
+  const reference = object(value);
+  const artifactId = typeof reference?.artifactId === "string" && UUID.test(reference.artifactId)
+    ? reference.artifactId.toLowerCase()
+    : null;
+  const rawRecordKey = reference?.recordKey;
+  const recordKey = normalizeLifecycleRecordKey(rawRecordKey);
+  const contentHash = typeof reference?.contentHash === "string" && HASH.test(reference.contentHash)
+    ? reference.contentHash.toLowerCase()
+    : null;
+  const approvedAt = typeof reference?.approvedAt === "string" && validTimestamp(reference.approvedAt)
+    && reference.approvedAt === text(reference.approvedAt)
+    ? reference.approvedAt
+    : null;
+  return reference
+    && Object.keys(reference).length === 4
+    && artifactId
+    && recordKey
+    && rawRecordKey === recordKey
+    && contentHash
+    && approvedAt
+    ? { artifactId, recordKey, contentHash, approvedAt }
+    : null;
+}
+
 const validPhase = (value: unknown): value is CyclePhase => CYCLE_PHASES.includes(value as CyclePhase);
 const validStatus = (value: unknown): value is CycleStatus => CYCLE_STATUSES.includes(value as CycleStatus);
 const validImplementationMode = (value: unknown): value is CycleImplementationMode => CYCLE_IMPLEMENTATION_MODES.includes(value as CycleImplementationMode);
@@ -249,7 +298,15 @@ export function normalizeCycleSource(value: unknown): CycleSource | null {
 
 export function parseCycleCommand(input: unknown): CycleCommand | null {
   if (typeof input !== "string") return null;
-  const tokens = input.trim().split(/\s+/).filter(Boolean);
+  const raw = input.trim();
+  const reply = raw.match(/^(?:\/ima:cycle\s+)?reply(?:\s+([\s\S]+))?$/);
+  if (reply) {
+    const answer = reply[1]?.trim() ?? "";
+    return answer && answer.length <= 8_192 && !DISALLOWED_REPLY_CONTROL.test(answer)
+      ? { command: "reply", answer }
+      : null;
+  }
+  const tokens = raw.split(/\s+/).filter(Boolean);
   if (!tokens.length) return null;
   if (tokens[0] === "/ima:cycle") tokens.shift();
   if (!tokens.length) return null;
@@ -539,12 +596,12 @@ const reconciliationToolCallId = (record: LifecycleSearchRecord) => {
   return `reconcile:${(hash >>> 0).toString(36)}`;
 };
 
-export function reconcileCycleFromLifecycle(stateValue: unknown, recordsValue: unknown, options: { timestamp?: string } = {}): CycleLifecycleReconciliation {
+export function reconcileCycleFromLifecycle(stateValue: unknown, recordsValue: unknown, options: CycleLifecycleReconciliationOptions = {}): CycleLifecycleReconciliation {
   const valid = validateCycleState(stateValue);
   if (!valid.valid) return { ok: false, state: null, error: valid.error, artifactId: null, recordKey: null };
   const state = valid.state;
   if (state.status !== "awaiting-evidence") return { ok: true, state, reconciled: false, artifactId: null, recordKey: null };
-  const records = (Array.isArray(recordsValue) ? recordsValue : []).flatMap((value) => {
+  let records = (Array.isArray(recordsValue) ? recordsValue : []).flatMap((value) => {
     const record = object(value);
     if (record?.verified !== true) return [];
     return [{
@@ -555,6 +612,33 @@ export function reconcileCycleFromLifecycle(stateValue: unknown, recordsValue: u
     } satisfies LifecycleSearchRecord];
   });
   if (!records.length) return { ok: true, state, reconciled: false, artifactId: null, recordKey: null };
+  if (state.execution) {
+    if (state.execution.phase !== state.phase) return { ok: true, state, reconciled: false, artifactId: null, recordKey: null };
+    const context = {
+      schemaVersion: 1 as const,
+      project: IMA_PROJECT,
+      lifecycleKey: state.lifecycleKey,
+      source: cycleSourceReference(state.source),
+      phase: state.phase,
+      dispatchId: state.execution.dispatchId,
+    };
+    if (!hasMatchingCyclePhaseSettlement({
+      settlement: options.executionSettlement,
+      execution: state.execution,
+      context,
+    })) {
+      return { ok: false, state, error: sanitizeCycleError("cycle_execution_settlement_missing"), artifactId: null, recordKey: null };
+    }
+    records = records.filter((record) => hasMatchingCyclePhaseSettlement({
+      settlement: options.executionSettlement,
+      execution: state.execution,
+      context,
+      artifact: { artifactId: record.artifactId, recordKey: record.recordKey },
+    }));
+    if (!records.length) {
+      return { ok: false, state, error: sanitizeCycleError("cycle_execution_settlement_mismatch"), artifactId: null, recordKey: null };
+    }
+  }
   const consumedArtifactIds = new Set(state.evidence.flatMap((item) => item.artifactId ? [cleanLine(item.artifactId, 512)] : []));
   const consumedRecordKeys = new Set(state.evidence.flatMap((item) => item.recordKey ? [item.recordKey] : []));
   const consumedToolCallIds = new Set(state.evidence.map((item) => cleanLine(item.toolCallId, 256)));
@@ -608,6 +692,9 @@ export function reconcileCycleFromLifecycle(stateValue: unknown, recordsValue: u
 
 const validateEvidence = (value: unknown): value is CycleEvidence => {
   const evidence = object(value);
+  const approvedPlan = evidence?.approvedPlan === undefined
+    ? null
+    : normalizeApprovedPlanReference(evidence.approvedPlan);
   return Boolean(
     evidence
       && validPhase(evidence.phase)
@@ -616,7 +703,9 @@ const validateEvidence = (value: unknown): value is CycleEvidence => {
       && boundedText(evidence.toolCallId, 256)
       && (evidence.artifactId === null || boundedText(evidence.artifactId, 512))
       && optionalRecordKey(evidence.recordKey)
-      && validTimestamp(evidence.timestamp),
+      && validTimestamp(evidence.timestamp)
+      && (evidence.approvedPlan === undefined || approvedPlan)
+      && (!approvedPlan || (evidence.phase === "plan" && evidence.outcome === "APPROVED")),
   );
 };
 
@@ -657,6 +746,7 @@ export function validateCycleState(value: unknown): { valid: true; state: CycleS
   if (state.stoppedPhase !== undefined && !validPhase(state.stoppedPhase)) return { valid: false, error: sanitizeCycleError("cycle_state_invalid") };
   if (state.trackerClosed !== undefined && typeof state.trackerClosed !== "boolean") return { valid: false, error: sanitizeCycleError("cycle_state_invalid") };
   if (state.branchId !== undefined && !boundedText(state.branchId, 256)) return { valid: false, error: sanitizeCycleError("cycle_state_invalid") };
+  if (state.execution !== undefined && !validateCyclePhaseExecution(state.execution)) return { valid: false, error: sanitizeCycleError("cycle_state_invalid") };
   const source = normalizeCycleSource(state.source)!;
   const duplicateToolCall = new Set<string>();
   for (const evidence of state.evidence) {
@@ -674,13 +764,38 @@ export function validateCycleState(value: unknown): { valid: true; state: CycleS
         ...item,
         recordKey: item.recordKey === undefined ? null : item.recordKey,
       })),
+      ...(state.execution ? { execution: structuredClone(state.execution) } : {}),
       blockers: state.blockers.map((item) => cleanLine(item)),
     } as CycleState,
   };
 }
 
 const lastEvidence = (state: CycleState) => state.evidence[state.evidence.length - 1] ?? null;
+
+const hasPreReviewDefectLoop = (evidence: readonly CycleEvidence[]) => evidence.some((item, index) => {
+  if (item.phase !== "test" || item.outcome !== "DEFECTS") return false;
+  let prior = index - 1;
+  while (evidence[prior]?.phase === "test" && evidence[prior]?.outcome === "BLOCKED") prior -= 1;
+  return evidence[prior]?.phase === "implementation" && evidence[prior]?.outcome === "COMPLETED";
+});
+
+const isRepairLoopMarkerReuse = (state: CycleState, phase: CyclePhase) => {
+  const previous = lastEvidence(state);
+  if (!hasPreReviewDefectLoop(state.evidence)) return false;
+  if (phase === "implementation") return previous?.phase === "test" && previous.outcome === "DEFECTS";
+  return phase === "test" && previous?.phase === "implementation" && previous.outcome === "COMPLETED";
+};
+
+const isLegacyTestDefectBlock = (state: CycleState) => state.phase === "test"
+  && state.status === "blocked"
+  && state.blockers.length === 1
+  && state.blockers[0] === "test:DEFECTS"
+  && lastEvidence(state)?.phase === "test"
+  && lastEvidence(state)?.outcome === "DEFECTS"
+  && hasPreReviewDefectLoop(state.evidence);
+
 const transition = (state: CycleState, outcome: string): { phase: CyclePhase; status: CycleStatus; reviewAttempts: number; blockers: string[] } => {
+  if (state.phase === "test" && outcome === "DEFECTS") return { phase: "implementation", status: "awaiting-resume", reviewAttempts: state.reviewAttempts, blockers: [] };
   if (outcome === "BLOCKED" || outcome === "DEFECTS") return { phase: state.phase, status: "blocked", reviewAttempts: state.reviewAttempts, blockers: [`${state.phase}:${outcome}`] };
   if (state.phase === "plan" && outcome === "APPROVED") return { phase: "implementation", status: "awaiting-resume", reviewAttempts: state.reviewAttempts, blockers: [] };
   if (state.phase === "implementation" && outcome === "COMPLETED") return { phase: "test", status: "awaiting-resume", reviewAttempts: state.reviewAttempts, blockers: [] };
@@ -713,11 +828,18 @@ export function reduceCycleState(stateValue: unknown, evidenceValue: unknown, op
   const recordKey = rawRecordKey === undefined || rawRecordKey === null
     ? null
     : normalizeLifecycleRecordKey(rawRecordKey);
+  const rawApprovedPlan = input?.approvedPlan;
+  const approvedPlan = rawApprovedPlan === undefined
+    ? null
+    : normalizeApprovedPlanReference(rawApprovedPlan);
   if (extracted && !extracted.ok) return { ok: false, state, error: extracted.error };
-  if (!validPhase(phase) || !validOutcome(phase, outcome) || !boundedText(marker, 512) || !boundedText(toolCallId, 256) || (rawRecordKey !== undefined && rawRecordKey !== null && recordKey === null)) return { ok: false, state, error: sanitizeCycleError("phase_evidence_invalid") };
+  if (!validPhase(phase) || !validOutcome(phase, outcome) || !boundedText(marker, 512) || !boundedText(toolCallId, 256) || (rawRecordKey !== undefined && rawRecordKey !== null && recordKey === null) || (rawApprovedPlan !== undefined && (!approvedPlan || phase !== "plan" || outcome !== "APPROVED"))) return { ok: false, state, error: sanitizeCycleError("phase_evidence_invalid") };
   if (phase !== state.phase) return { ok: false, state, error: sanitizeCycleError("phase_evidence_out_of_order") };
   const previous = lastEvidence(state);
-  const repeatableMarkerPhase = phase === "resolution" || phase === "rereview" || (previous?.phase === phase && previous.outcome === "BLOCKED");
+  const repeatableMarkerPhase = phase === "resolution"
+    || phase === "rereview"
+    || (previous?.phase === phase && previous.outcome === "BLOCKED")
+    || isRepairLoopMarkerReuse(state, phase);
   if (state.evidence.some((item) => item.toolCallId === toolCallId || (!repeatableMarkerPhase && item.marker === marker))) return { ok: false, state, error: sanitizeCycleError("phase_evidence_duplicate") };
   const evidence: CycleEvidence = {
     phase,
@@ -727,6 +849,7 @@ export function reduceCycleState(stateValue: unknown, evidenceValue: unknown, op
     artifactId: text(input?.artifactId) || null,
     recordKey,
     timestamp: timestamp(input?.timestamp, options.timestamp ?? nowIso()),
+    ...(approvedPlan ? { approvedPlan } : {}),
   };
   const next = transition(state, outcome);
   const updated: CycleState = {
@@ -762,6 +885,9 @@ export function prepareCycleResume(stateValue: unknown): { ok: true; state: Cycl
   if (state.status === "blocked" && state.blockers.length === 1 && state.blockers[0] === `${state.phase}:BLOCKED`) {
     return { ok: true, state: { ...state, status: "awaiting-resume", blockers: [] } };
   }
+  if (isLegacyTestDefectBlock(state)) {
+    return { ok: true, state: { ...state, phase: "implementation", status: "awaiting-resume", blockers: [] } };
+  }
   return { ok: false, error: sanitizeCycleError("cycle_resume_unavailable") };
 }
 
@@ -775,8 +901,14 @@ export function buildResumeSource(stateValue: unknown): string | null {
   const taskwarriorUuid = state.source.type === "taskwarrior" ? state.source.uuid : "none";
   const planeWorkspace = state.source.type === "plane" ? state.source.workspace : "none";
   const planeWorkItem = state.source.type === "plane" ? planeWorkItemIdentifier(state.source) : "none";
-  const priorArtifactIds = state.evidence.flatMap((item) => item.artifactId ? [cleanLine(item.artifactId)] : []);
-  const priorArtifactRecordKeys = state.evidence.flatMap((item) => item.recordKey ? [cleanLine(item.recordKey)] : []);
+  const priorArtifactIds = [...new Set(state.evidence.flatMap((item) => [
+    ...(item.artifactId ? [cleanLine(item.artifactId)] : []),
+    ...(item.approvedPlan ? [cleanLine(item.approvedPlan.artifactId)] : []),
+  ]))];
+  const priorArtifactRecordKeys = [...new Set(state.evidence.flatMap((item) => [
+    ...(item.recordKey ? [cleanLine(item.recordKey)] : []),
+    ...(item.approvedPlan ? [cleanLine(item.approvedPlan.recordKey)] : []),
+  ]))];
   const orderedEvidence = state.evidence.flatMap((item) => [
     `phase: ${cleanLine(item.phase, 128)}`,
     `outcome: ${cleanLine(item.outcome, 128)}`,
@@ -784,6 +916,12 @@ export function buildResumeSource(stateValue: unknown): string | null {
     `artifactId: ${item.artifactId === null ? "none" : cleanLine(item.artifactId)}`,
     `recordKey: ${item.recordKey === null ? "none" : cleanLine(item.recordKey)}`,
     `toolCallId: ${cleanLine(item.toolCallId)}`,
+    ...(item.approvedPlan ? [
+      `approvedPlanArtifactId: ${cleanLine(item.approvedPlan.artifactId)}`,
+      `approvedPlanRecordKey: ${cleanLine(item.approvedPlan.recordKey)}`,
+      `approvedPlanContentHash: ${cleanLine(item.approvedPlan.contentHash)}`,
+      `approvedPlanApprovedAt: ${cleanLine(item.approvedPlan.approvedAt, 64)}`,
+    ] : []),
   ]);
   const validOutcomes = CYCLE_PHASE_OUTCOMES[state.phase];
   const autonomousPlanDirectives = state.phase === "plan" && state.mode === "autonomous"

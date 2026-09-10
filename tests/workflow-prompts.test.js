@@ -88,6 +88,7 @@ test("implementation prompts expose a MID current-session, plan-bound terminal c
     const text = await prompt(name);
     for (const value of ["description:", "argument-hint: \"[approved-plan-source]\"", "MID-tier", "current session", "approved", "scope", "non-goals", "ima_context", "Serena-first", "ima_delegate", "ima_lifecycle", "implementation", "contradiction", "verification", "/ima:plan", "/ima:test", "formal test or review"]) has(text, value);
     for (const sharedSkill of ["ima-security-guardrails", "readable-code", "functional-programmer", "ima-delegation-contract"]) has(text, sharedSkill);
+    for (const value of ["pre-review test `DEFECTS`", "TEST-NNN", "disposition", "return completed repair work to `/ima:test`", "Block rather than redesign"]) has(text, value);
     has(text, readableCodeDirectives[name]);
     for (const prohibition of ["Do not invoke `/ima:cycle`", "a workflow DSL", "Goose recipes", "subrecipe mechanics", "does not change the active model"]) has(text, prohibition);
   }
@@ -113,6 +114,85 @@ test("manual lifecycle prompts normalize shared source identifiers before declar
   const planning = await prompt("plan");
   for (const value of ["ima-memory-workflow", "canonical prefixed source form", "/ima:implement taskwarrior:<project>:<uuid>", "/ima:implement jira:<KEY>", "/ima:implement lifecycle:<lifecycle-key>", "/ima:implement vestige:<UUID>"]) has(planning, value);
   assert.ok(planning.indexOf("ima_context") < planning.indexOf("ima-memory-workflow"));
+});
+
+test("manual closeout best-effort matches its source and uses one aggregate approval for an idempotent terminal contract", async () => {
+  const text = await prompt("closeout");
+
+  for (const value of [
+    "description: Perform manual terminal lifecycle closeout after documented lifecycle evidence",
+    'argument-hint: "[completed-lifecycle-source]"',
+    "configured `commands.closeout` route",
+    "otherwise remain on the current model",
+    "Require a non-empty source parameter",
+    "make a best effort to resolve it to exactly one supported canonical source",
+    "no match, or more than one plausible match",
+    "/ima:closeout [completed-lifecycle-source]",
+    "First normalize the supplied parameter to one canonical identifier",
+    'closed `{ type: "reference", value: "<identifier>" }` source',
+    "ima-memory-workflow",
+    "ima-lifecycle-contract",
+    "ima-git",
+    "canonical colon form",
+    "Best-effort matching includes trimming surrounding whitespace",
+    "extracting one recognizable identifier from a copied command, supported tracker URL, or short prose phrase",
+    "using exact read-only lookups to complete a structurally recognizable Plane item, Taskwarrior UUID, lifecycle key, or cited UUID",
+    "Do not fuzzy-match titles",
+    "exact Tier-1 Qdrant manifest recall",
+    "selected direct detail retrieval",
+    "approved plan, implementation, test, final review or rereview, and `document` artifacts",
+    "Closeout is available only after `/ima:document` has completed",
+    "do not invoke `/ima:cycle`, auto-dispatch from document, call a next lifecycle phase, or create a cycle-outcome marker",
+    "Read-only source hydration and exact tracker or lifecycle evidence reads are allowed before the final action overview",
+    "evidence-backed, itemized final action overview before any state-changing effect",
+    "purpose, exact target, evidence, expected effect, reversibility",
+    "Approval of that overview is the single confirmation for all presented actions",
+    "Approval authorizes every action presented as executable in the approved overview",
+    "execute the approved actions without asking for individual confirmations",
+    "present a revised complete overview and obtain one new aggregate approval",
+    "Git is instruction-driven",
+    "never stash, clean, discard, force-push, rewrite history, move or delete tags, or deploy",
+    "include `/ima:ship-it` only as a separate recommendation",
+    "dry-run never authorizes deployment",
+    "Only include tracker closure in the final action overview when the verified canonical source identifies exactly one supported target and the operator asks to close it",
+    "Plane:",
+    "Jira:",
+    "Taskwarrior:",
+    "verify identity and receipt by rereading the exact target",
+    "Never perform a broad project operation",
+    "do not retry the tracker mutation",
+    "`commands.closeout` route selection is a **non-secret variable**",
+    "self-hosted tracker endpoint, selected workspace/project, and Git remote are **platform bindings**",
+    "Tracker authentication material is a **secret**",
+    "Taskwarrior context, local repository path, and local configuration are **local-only values**",
+    "Never show secret values or credential examples",
+    "persist one formal `closeout` artifact through `ima_lifecycle`",
+    "Final lifecycle closeout:",
+    "## Final Closeout",
+    "prior artifact IDs and separate prior artifact record keys",
+    "without embedding them",
+    "Do not include an `ima-cycle` marker",
+    "verifies persistence and direct detail reassembly",
+    "distinguish completed actions from recommendations and unperformed human-owned work",
+    "then stop",
+  ]) has(text, value);
+
+  for (const value of [
+    "taskwarrior:<project>:<uuid>",
+    "taskwarrior <project> <uuid>",
+    "plane:<workspace>:<PROJECT>-<seq>",
+    "plane <workspace> <PROJECT>-<seq>",
+    "jira:<KEY>",
+    "jira <KEY>",
+    "lifecycle:<lifecycle-key>",
+    "lifecycle <lifecycle-key>",
+    "vestige:<UUID>",
+    "vestige <UUID>",
+  ]) has(text, value);
+
+  assert.ok(text.indexOf("First normalize the supplied parameter") < text.indexOf("exact Tier-1 Qdrant manifest recall"));
+  assert.doesNotMatch(text, /<!-- ima-cycle outcome:/i);
+  assert.doesNotMatch(text, /individually confirms|Do not batch confirmations|Proposal approval is not authority|requires its own immediate confirmation/i);
 });
 
 test("active documentation assigns lifecycle artifacts to Qdrant, current preferences to Pi global AGENTS, and Vestige to legacy boundaries", async () => {
@@ -142,6 +222,74 @@ test("workflow routing treats arbitrary /ima:* tokens as command-keyed candidate
   assert.deepEqual(parseWorkflowCommand("/ima:resolve-review source"), { command: "ima:resolve-review", name: "resolve-review", args: "source" });
   assert.deepEqual(parseWorkflowCommand("/ima:future-command source"), { command: "ima:future-command", name: "future-command", args: "source" });
   assert.equal(parseWorkflowCommand("/other:command source"), null);
+});
+
+test("soft-cycle is a prompt-only delegating SDLC orchestrator with bounded autonomy", async () => {
+  const text = await prompt("soft-cycle");
+  for (const value of [
+    "description:",
+    "argument-hint:",
+    "guided|autonomous",
+    "implementer:",
+    "primary orchestrator",
+    "delegates every phase",
+    "does not change the active model",
+    "instruction-based",
+    "Do not invoke `/ima:cycle`",
+    "ima_context",
+    "/ima:decompose",
+    "ima-memory-workflow",
+    "ima-lifecycle-contract",
+    "ima-delegation-contract",
+    "readable-code",
+    "functional-programmer",
+    "ima-security-guardrails",
+    "the orchestrator persists",
+    "ima_lifecycle",
+    "ima_delegate",
+    "planner",
+    "tester",
+    "reviewer",
+    "documenter",
+    "review-verifier",
+    "second opinion",
+    "request-changes gate",
+    "resumeReference",
+    "ima_agent_follow_up",
+    "never create a replacement reviewer",
+    "resolve",
+    "rereview",
+    "until",
+    "approval",
+    "bounded, conflict-free, low-risk",
+    "BLOCKED",
+    "final verification",
+    "never auto-close",
+    "stop",
+    "ima-cycle outcome: phase=plan",
+    "Pre-review test-defect loop",
+    "TEST-NNN",
+    "newest test passes",
+    "Test defects never enter resolution or rereview",
+    "dispatch ceiling",
+  ]) has(text, value);
+  assert.equal((text.match(/ima-cycle outcome:/g) ?? []).length, 1);
+  assert.match(
+    text,
+    /expected-empty recall[\s\S]*new normalized Taskwarrior, Jira, or Plane source[\s\S]*proceed to Plan/i,
+  );
+  assert.match(
+    text,
+    /matching verified evidence[\s\S]*retrieve selected detail[\s\S]*reuse its lifecycle identity/i,
+  );
+  assert.match(
+    text,
+    /explicit lifecycle or resume source[\s\S]*missing required artifact is `BLOCKED`/i,
+  );
+  assert.match(
+    text,
+    /mismatched,[\s\S]*incomplete, corrupt, or unverified evidence is also `BLOCKED`; stop/i,
+  );
 });
 
 test("README distinguishes direct implementation commands, cycle dispatch, and manual source identifiers", async () => {
@@ -175,9 +323,12 @@ test("WordPress implementation prompt treats security as a primary production co
 
 test("quality and learning prompts retain distinct bounded terminal contracts", async () => {
   for (const name of ["test", "review", "review-verify", "document"]) { const text = await prompt(name); has(text, "description:"); has(text, "argument-hint:"); has(text, "stop"); has(text, "/ima:cycle"); }
-  const testing = await prompt("test"); for (const value of ["Do not redesign or edit production behavior", "ima_lifecycle", "unit-testing", "evidence", "smallest project-supported", "ima-security-guardrails", "detected testing contract", "tests or test support added or repaired", "changed files", "commands and results", "behaviors covered", "defects or blockers", "evidence gaps and residual risk", "phase outcome", "recommended next phase", "implementation details", "deep mock chains", "real timers, network, or filesystem", "weaken assertions", "skip markers"]) has(testing, value);
-  const review = await prompt("review"); for (const value of ["fresh", "product-read-only", "Critical or Warning", "review-verifier", "REVIEW-NNN", "ima_lifecycle", "code-review", "Integration Contract", "request-changes gate"]) has(review, value);
-  const rereview = await prompt("rereview"); for (const value of ["code-review", "regression", "next unused ID", "implementation-grade", "append", "corrective", "resolution dependencies", "must never suppress"]) has(rereview, value);
+  const testing = await prompt("test"); for (const value of ["Do not redesign or edit production behavior", "ima_lifecycle", "unit-testing", "evidence", "smallest project-supported", "ima-security-guardrails", "detected testing contract", "tests or test support added or repaired", "changed files", "commands and results", "behaviors covered", "defects or blockers", "evidence gaps and residual risk", "phase outcome", "recommended next phase", "implementation details", "deep mock chains", "real timers, network, or filesystem", "weaken assertions", "skip markers", "TEST-NNN", "affected acceptance criterion", "On `DEFECTS`", "/ima:implement <canonical-source>", "retest every preserved"] ) has(testing, value);
+  const testCycleInstructions = testing.slice(testing.indexOf("When dispatched by `/ima:cycle`"));
+  for (const value of ["recommend `/ima:implement <canonical-source>` for `DEFECTS`", "`/ima:review` for `PASSED`", "no advancement for `BLOCKED`"]) has(testCycleInstructions, value);
+  assert.doesNotMatch(testCycleInstructions, /stop; recommend `\/ima:review`/i);
+  const review = await prompt("review"); for (const value of ["fresh", "product-read-only", "Critical or Warning", "review-verifier", "REVIEW-NNN", "ima_lifecycle", "code-review", "Integration Contract", "request-changes gate", "latest ordered lifecycle evidence", "implementation COMPLETED -> test PASSED", "fresh initial review", "existing formal review"]) has(review, value);
+  const rereview = await prompt("rereview"); for (const value of ["code-review", "regression", "next unused ID", "implementation-grade", "append", "corrective", "resolution dependencies", "must never suppress", "Test-origin repairs without an original formal review", "fresh initial review"]) has(rereview, value);
   const verify = await prompt("review-verify"); for (const value of ["CONFIRMED|WITHDRAWN|PARTIAL", "Do not edit", "one dependency hop", "only that evidence range", "code-review", "malformed brief"]) has(verify, value); assert.doesNotMatch(verify, /range, named remediation surface/i);
   const document = await prompt("document"); for (const value of ["exact approved", "external-update manifest", "Serena", "Vestige", "Qdrant", "ima_lifecycle"]) has(document, value);
   for (const value of ["ima-memory-workflow", "ima-vision-handoff", "ima-delegation-contract", "active docs", "archive docs", "transient notes", "high-signal", "document-assessor", "documenter", "writeScope"]) has(document, value);

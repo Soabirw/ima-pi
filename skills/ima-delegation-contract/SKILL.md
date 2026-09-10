@@ -34,3 +34,9 @@ Never rely on parent history, sibling history, or an unstated assumption. A chil
 Run independent assignments in parallel only when their write scopes do not overlap. Run dependent work in sequence when one result is required by the next.
 
 If a child reports an architectural fork, scope conflict, security concern, missing evidence, unsafe partial state, or failed verification, stop and escalate it to the parent. Retry at most once with a materially improved brief. Do not blindly repeat the same assignment or treat an incomplete child result as a completed phase.
+
+## Cycle phase hosts
+
+A `/ima:cycle` phase host is an isolated lifecycle session owned by the cycle coordinator, not an `ima_delegate` specialist leaf. It may hydrate its source, persist its lifecycle artifact, and invoke bounded specialists under this contract. The coordinator alone accepts verified lifecycle evidence, advances cycle state, forwards literal operator replies, and retains manual tracker close authority.
+
+Specialist children remain non-delegating leaves. When a cycle-owned reviewer succeeds, retain its opaque continuation reference in the review artifact; rereview and verified-finding follow-up must resume that eligible reviewer session through `ima_agent_follow_up`, never create a replacement reviewer. Cycle-owned session records are local-only state; profile mappings are non-secret configuration and credentials must never be persisted in briefs, records, or reports.

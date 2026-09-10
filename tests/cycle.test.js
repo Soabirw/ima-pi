@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -27,6 +28,7 @@ import {
   validateCycleState,
 } from "../lib/ima-cycle.ts";
 import { parseCycleRecord, serializeCycleRecord } from "../lib/ima-cycle-store.ts";
+import { buildLifecycleArtifact } from "../lib/ima-lifecycle.ts";
 import {
   coordinateCycleClose,
   coordinateCycleReconcile,
@@ -89,6 +91,78 @@ const persistedRecord = (state, phase, outcome, options = {}) => ({
 
 const vestigeSearch = (results = []) => ({ structuredContent: { results } });
 
+const reviewUuid = (number) => `00000000-0000-4000-8000-${String(number).padStart(12, "0")}`;
+const directPlanRecord = (state, outcome = "APPROVED", options = {}) => {
+  const id = options.id ?? reviewUuid(700);
+  const recordKey = options.recordKey ?? `${state.lifecycleKey}:plan:direct-${id.slice(-4)}`;
+  const createdAt = options.createdAt ?? "2026-08-04T18:00:00.000Z";
+  const planIdentity = {
+    ...identity,
+    lifecycleKey: state.lifecycleKey,
+    ...(options.identity ?? {}),
+  };
+  return {
+    id,
+    recordKey,
+    project: "ima-pi",
+    lifecycleKey: state.lifecycleKey,
+    phase: "plan",
+    sourceRefs: [...planIdentity.sourceRefs],
+    contentHash: createHash("sha256").update(recordKey, "utf8").digest("hex"),
+    createdAt,
+    content: buildLifecycleArtifact({
+      type: "plan",
+      identity: planIdentity,
+      artifact: options.artifact ?? marker("plan", outcome),
+      nonce: options.nonce ?? reviewUuid(800),
+    }),
+  };
+};
+
+const directDownstreamRecord = (state, phase, outcome, approvalId, options = {}) => {
+  const id = options.id ?? reviewUuid(900);
+  const recordKey = options.recordKey ?? `${state.lifecycleKey}:${phase}:direct-${id.slice(-4)}`;
+  const recordIdentity = {
+    ...identity,
+    lifecycleKey: state.lifecycleKey,
+    priorArtifactIds: options.priorArtifactIds ?? [approvalId],
+  };
+  return {
+    id,
+    recordKey,
+    project: "ima-pi",
+    lifecycleKey: state.lifecycleKey,
+    phase,
+    sourceRefs: [...recordIdentity.sourceRefs],
+    contentHash: createHash("sha256").update(recordKey, "utf8").digest("hex"),
+    createdAt: options.createdAt ?? "2026-08-04T18:01:00.000Z",
+    content: buildLifecycleArtifact({
+      type: lifecycleTypeForPhase(phase),
+      identity: recordIdentity,
+      artifact: marker(phase, outcome),
+      nonce: options.nonce ?? reviewUuid(950),
+    }),
+  };
+};
+
+const importedImplementationState = (plan) => {
+  const reduced = reduceCycleState(createCycleState(jira, { timestamp: at }), {
+    artifact: marker("plan", "APPROVED"),
+    artifactId: plan.id,
+    recordKey: plan.recordKey,
+    toolCallId: `imported-${plan.id}`,
+    timestamp: at,
+    approvedPlan: {
+      artifactId: plan.id,
+      recordKey: plan.recordKey,
+      contentHash: plan.contentHash,
+      approvedAt: plan.createdAt,
+    },
+  }, { timestamp: at });
+  assert.equal(reduced.ok, true, JSON.stringify(reduced));
+  return reduced.state;
+};
+
 const awaitingPhaseState = (phase) => {
   let state = createCycleState(jira, { timestamp: at });
   if (phase === "plan") return state;
@@ -119,6 +193,7 @@ const createCycleExtensionHarness = (branch, run = async () => vestigeSearch()) 
   const entries = [];
   const messages = [];
   const statuses = [];
+  const widgets = [];
   const notifications = [];
   const sendWaiters = [];
   let aborted = false;
@@ -141,6 +216,7 @@ const createCycleExtensionHarness = (branch, run = async () => vestigeSearch()) 
     sessionManager: { getBranch: () => branch, getLeafId: () => "branch-id" },
     ui: {
       setStatus: (key, value) => statuses.push({ key, value }),
+      setWidget: (key, value, options) => widgets.push({ key, value, options }),
       notify: (message, level) => notifications.push({ message, level }),
       confirm: async () => true,
     },
@@ -153,6 +229,7 @@ const createCycleExtensionHarness = (branch, run = async () => vestigeSearch()) 
     entries,
     messages,
     statuses,
+    widgets,
     notifications,
     wasAborted: () => aborted,
     waitForSend: () => {
@@ -210,7 +287,7 @@ const lifecycleToolResult = (state, phase, outcome, toolCallId = `${phase}-tool`
   };
 };
 
-const settleHarnessDispatch = async (harness, phase, outcome, waitForNext = false) => {
+const settleHarnessDispatch = async (harness, phase, outcome, waitForNext = false, toolCallId = `${phase}-tool`) => {
   const nextSend = waitForNext ? harness.waitForSend() : null;
   const provisional = harness.entries.at(-1)?.data;
   assert.equal(provisional?.phase, phase);
@@ -218,7 +295,7 @@ const settleHarnessDispatch = async (harness, phase, outcome, waitForNext = fals
   harness.handlers.get("input")({ source: "extension", text: "expanded prompt" });
   harness.handlers.get("before_agent_start")({ prompt: "expanded prompt" });
   harness.handlers.get("agent_start")();
-  await harness.handlers.get("tool_result")(lifecycleToolResult(provisional, phase, outcome), harness.ctx);
+  await harness.handlers.get("tool_result")(lifecycleToolResult(provisional, phase, outcome, toolCallId), harness.ctx);
   harness.handlers.get("agent_end")({ messages: [{ role: "assistant", stopReason: "stop" }] });
   harness.handlers.get("agent_settled")();
   if (nextSend) await nextSend;
@@ -278,6 +355,18 @@ test("parses closed Jira and Taskwarrior sources", () => {
   assert.equal(parseCycleCommand("start https://evil.example/browse/FNR-3036"), null);
   assert.equal(parseCycleCommand("start FNR-3036 && rm -rf ."), null);
   assert.equal(parseCycleCommand("close --force"), null);
+});
+
+test("parses multiline cycle replies literally while rejecting unsafe controls", () => {
+  const answer = "1. Add Plane creation.\n\n2. Use explicit state and priority.\n3. Permit direct creation.";
+  assert.deepEqual(parseCycleCommand(`reply ${answer}`), { command: "reply", answer });
+
+  const windowsAnswer = "first line\r\nsecond line";
+  assert.deepEqual(parseCycleCommand(`/ima:cycle reply ${windowsAnswer}`), { command: "reply", answer: windowsAnswer });
+
+  assert.equal(parseCycleCommand("reply first\tsecond"), null);
+  assert.equal(parseCycleCommand("reply first\u0000second"), null);
+  assert.equal(parseCycleCommand(`reply ${"x".repeat(8_193)}`), null);
 });
 
 test("constructs each implementation phase command and persists explicit selection", () => {
@@ -473,8 +562,8 @@ test("prepares stopped and recoverable phase blocks for explicit resume", () => 
   defects = evidence(defects, "plan", "APPROVED");
   defects = evidence(awaitingEvidence(defects), "implementation", "COMPLETED");
   defects = evidence(awaitingEvidence(defects), "test", "DEFECTS");
-  assert.deepEqual(defects.blockers, ["test:DEFECTS"]);
-  assert.equal(prepareCycleResume(defects).error.code, "cycle_resume_unavailable");
+  assert.deepEqual({ phase: defects.phase, status: defects.status, blockers: defects.blockers }, { phase: "implementation", status: "awaiting-resume", blockers: [] });
+  assert.equal(prepareCycleResume(defects).ok, true);
   assert.equal(prepareCycleResume({ ...blocked, status: "blocked-after-tracker-close", blockers: [] }).error.code, "cycle_resume_unavailable");
 });
 
@@ -906,7 +995,7 @@ test("persists a provisional state when prompt expansion fails", async () => {
   assert.equal(stateEntries[0].status, "awaiting-evidence");
 });
 
-test("returns the provisional state for synchronous injection failures", async () => {
+test("returns the provisional state and preserves allow-listed phase startup diagnostics", async () => {
   const startEntries = [];
   const start = await coordinateCycleStart({
     source: jira,
@@ -932,6 +1021,20 @@ test("returns the provisional state for synchronous injection failures", async (
   assert.equal(dispatch.ok, false);
   assert.equal(dispatch.error.code, "cycle_phase_injection_failed");
   assert.deepEqual(dispatch.state, dispatchEntries[0]);
+
+  const toolkitEntries = [];
+  const missingToolkit = await coordinateCycleStart({
+    source: jira,
+    cwd: "/repo",
+    context: async () => ({ status: "ready" }),
+    applyRoute: async () => ({ ok: true }),
+    appendState: (state) => toolkitEntries.push(state),
+    sendUserMessage: () => { throw new Error("phase_toolkit_missing"); },
+    timestamp: at,
+  });
+  assert.equal(missingToolkit.ok, false);
+  assert.equal(missingToolkit.error.code, "phase_toolkit_missing");
+  assert.deepEqual(missingToolkit.state, toolkitEntries[0]);
 });
 
 test("evaluates resume evidence against provisional awaiting-evidence state", async () => {
@@ -1019,6 +1122,646 @@ test("dispatches route before injection and requires acknowledgement for write-c
   assert.equal(failed.error.code, "cycle_phase_injection_failed");
   assert.equal(failedEntries.length, 1);
   assert.equal(failedEntries[0].status, "awaiting-evidence");
+});
+
+test("cancels dispatch and recovery effects after their current invocation is invalidated", async () => {
+  const expansionStarted = deferred();
+  const expansion = deferred();
+  let current = true;
+  const sends = [];
+  const dispatch = dispatchCyclePhase({
+    state: implementationAwaitingResumeState(),
+    applyRoute: async () => ({ ok: true }),
+    appendState: () => {},
+    expandPrompt: async () => {
+      expansionStarted.resolve();
+      return expansion.promise;
+    },
+    sendUserMessage: async (message) => { sends.push(message); return implementationAwaitingResumeState(); },
+    isCurrent: () => current,
+  });
+  await expansionStarted.promise;
+  current = false;
+  expansion.resolve("expanded prompt");
+  const dispatched = await dispatch;
+  assert.equal(dispatched.ok, false);
+  if (!dispatched.ok) assert.equal(dispatched.error.code, "cycle_operation_cancelled");
+  assert.deepEqual(sends, []);
+
+  const recallStarted = deferred();
+  const recall = deferred();
+  current = true;
+  const state = awaitingEvidence(implementationAwaitingResumeState());
+  const appended = [];
+  const recovery = coordinateCycleRecovery({
+    state,
+    recall: async () => {
+      recallStarted.resolve();
+      return recall.promise;
+    },
+    appendState: (next) => appended.push(next),
+    isCurrent: () => current,
+  });
+  await recallStarted.promise;
+  current = false;
+  recall.resolve(vestigeSearch([persistedRecord(state, "implementation", "COMPLETED", { id: "late" })]));
+  const recovered = await recovery;
+  assert.equal(recovered.ok, false);
+  if (!recovered.ok) assert.equal(recovered.error.code, "cycle_operation_cancelled");
+  assert.deepEqual(recovered.state, state);
+  assert.deepEqual(appended, []);
+});
+
+test("recovers adopted progress before dispatch and rejects conflicting retained settings", async () => {
+  const contract = {
+    artifact: marker("plan", "APPROVED"),
+    artifactId: reviewUuid(960),
+    recordKey: "ima-pi:jira:FNR-3036:plan:adopted",
+    contentHash: "a".repeat(64),
+    createdAt: at,
+    detail: "# Plan",
+    identity,
+    outcome: "APPROVED",
+    marker: buildCycleOutcomeMarker({ phase: "plan", outcome: "APPROVED" }),
+    approvalReference: null,
+  };
+  let recoveredState = implementationAwaitingResumeState();
+  recoveredState = evidence(awaitingEvidence(recoveredState), "implementation", "COMPLETED");
+  const routed = [];
+  const adopted = await coordinateCycleStart({
+    source: jira,
+    cwd: "/repo",
+    context: async () => ({ status: "ready" }),
+    adoptPlan: async () => ({ kind: "approved", approval: contract, contract }),
+    recoverAdoptedState: async () => ({ ok: true, state: recoveredState }),
+    applyRoute: async (phase) => { routed.push(phase); return { ok: true }; },
+    appendState: () => {},
+    persistAdoptionState: () => {},
+    expandPrompt: async (value) => value,
+    sendUserMessage: async (_message, provisional) => provisional,
+  });
+  assert.equal(adopted.ok, true);
+  assert.deepEqual(routed, ["test"]);
+
+  const resumable = { ...createCycleState(jira, { timestamp: at }), status: "awaiting-resume" };
+  const existingStates = [
+    resumable,
+    { ...resumable, status: "stopped", stoppedAt: at, stoppedPhase: "plan" },
+    { ...resumable, status: "blocked", blockers: ["plan:BLOCKED"] },
+  ];
+  for (const existing of existingStates) {
+    for (const overrides of [
+      { lifecycleKey: "ima-pi:jira:FNR-9999" },
+      { reviewCap: existing.reviewCap + 1 },
+      { implementationMode: "js" },
+    ]) {
+      const calls = [];
+      const result = await coordinateCycleStart({
+        source: jira,
+        cwd: "/repo",
+        activeState: existing,
+        ...overrides,
+        context: async () => { calls.push("context"); return { status: "ready" }; },
+        adoptPlan: async () => { calls.push("adopt"); return { kind: "no-plan" }; },
+        applyRoute: async () => { calls.push("route"); return { ok: true }; },
+        appendState: () => calls.push("append"),
+        sendUserMessage: async () => { calls.push("send"); return existing; },
+      });
+      assert.equal(result.ok, false);
+      if (!result.ok) assert.equal(result.error.code, "cycle_active_settings_conflict");
+      assert.deepEqual(calls, []);
+    }
+  }
+});
+
+test("registered resume recovers bound work before dispatch and blocks unbound work", async () => {
+  const initial = { ...createCycleState(jira, { timestamp: at }), status: "awaiting-resume" };
+  const direct = directPlanRecord(initial, "APPROVED", { id: reviewUuid(970), recordKey: `${initial.lifecycleKey}:plan:resume` });
+  const implementation = directDownstreamRecord(initial, "implementation", "COMPLETED", direct.id, {
+    id: reviewUuid(971),
+    recordKey: `${initial.lifecycleKey}:implementation:resume`,
+  });
+  const harness = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: initial }]);
+  const routed = [];
+  registerCycleExtension(harness.pi, cycleDependencies({
+    recall: async (query) => {
+      if (query.endsWith(" plan")) return vestigeSearch([direct]);
+      if (query.endsWith(" implementation")) return vestigeSearch([implementation]);
+      return vestigeSearch([]);
+    },
+    applyRoute: async (_pi, _ctx, phase) => { routed.push(phase); return { ok: true }; },
+    expandPrompt: async () => "expanded prompt",
+  }));
+  await harness.handlers.get("session_tree")({}, harness.ctx);
+  const sent = harness.waitForSend();
+  const resumed = harness.commands.get("ima:cycle").handler("resume", harness.ctx);
+  await sent;
+  assert.deepEqual(routed, ["test"]);
+  const provisional = harness.entries.at(-1).data;
+  assert.deepEqual({ phase: provisional.phase, status: provisional.status }, { phase: "test", status: "awaiting-evidence" });
+  const testResult = lifecycleToolResult(provisional, "test", "PASSED");
+  testResult.input.identity.priorArtifactIds = [direct.id];
+  harness.handlers.get("input")({ source: "extension", text: "expanded prompt" });
+  harness.handlers.get("before_agent_start")({ prompt: "expanded prompt" });
+  harness.handlers.get("agent_start")();
+  await harness.handlers.get("tool_result")(testResult, harness.ctx);
+  harness.handlers.get("agent_end")({ messages: [{ role: "assistant", stopReason: "stop" }] });
+  harness.handlers.get("agent_settled")();
+  await resumed;
+  assert.equal(harness.entries.at(-1).data.phase, "review");
+
+  const unboundHarness = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: initial }]);
+  const unbound = directDownstreamRecord(initial, "implementation", "COMPLETED", direct.id, {
+    id: reviewUuid(972),
+    recordKey: `${initial.lifecycleKey}:implementation:unbound`,
+    priorArtifactIds: [],
+  });
+  const unboundRoutes = [];
+  registerCycleExtension(unboundHarness.pi, cycleDependencies({
+    recall: async (query) => query.endsWith(" plan")
+      ? vestigeSearch([direct])
+      : query.endsWith(" implementation")
+        ? vestigeSearch([unbound])
+        : vestigeSearch([]),
+    applyRoute: async (_pi, _ctx, phase) => { unboundRoutes.push(phase); return { ok: true }; },
+    expandPrompt: async () => "expanded prompt",
+  }));
+  await unboundHarness.handlers.get("session_tree")({}, unboundHarness.ctx);
+  await unboundHarness.commands.get("ima:cycle").handler("resume", unboundHarness.ctx);
+  assert.deepEqual(unboundRoutes, []);
+  assert.deepEqual(unboundHarness.messages, []);
+  assert.ok(unboundHarness.notifications.some(({ level, message }) => level === "warning" && /plan_lineage_unbound/.test(message)));
+});
+
+test("cancels fresh starts before publication without replacing an older terminal cycle", async () => {
+  const terminalStates = [
+    { label: "closed", state: { ...createCycleState(jira, { timestamp: at }), status: "closed" } },
+    {
+      label: "post-close blocked",
+      state: {
+        ...createCycleState(jira, { timestamp: at }),
+        status: "blocked-after-tracker-close",
+        trackerClosed: true,
+        blockers: ["lifecycle_closeout_failed"],
+      },
+    },
+  ];
+  for (const { label, state: terminal } of terminalStates) {
+    for (const stopCommand of ["stop", "stop --ack"]) {
+      const lookupStarted = deferred();
+      const lookup = deferred();
+      const durableStates = [];
+      const routes = [];
+      let contexts = 0;
+      let approvalWrites = 0;
+      const harness = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: terminal }]);
+      registerCycleExtension(harness.pi, cycleDependencies({
+        context: async () => { contexts += 1; return { status: "ready" }; },
+        recall: async () => {
+          lookupStarted.resolve();
+          return lookup.promise;
+        },
+        lifecycle: async () => { approvalWrites += 1; return {}; },
+        persistDurableState: async (_cwd, next) => durableStates.push(next),
+        applyRoute: async (_pi, _ctx, phase) => { routes.push(phase); return { ok: true }; },
+        expandPrompt: async () => "expanded prompt",
+      }));
+      await harness.handlers.get("session_tree")({}, harness.ctx);
+      const started = harness.commands.get("ima:cycle").handler("start FNR-3036", harness.ctx);
+      await lookupStarted.promise;
+      await harness.commands.get("ima:cycle").handler(stopCommand, harness.ctx);
+      lookup.resolve(vestigeSearch([]));
+      await started;
+      assert.equal(contexts, 1, `${label} ${stopCommand}`);
+      assert.equal(harness.wasAborted(), true, `${label} ${stopCommand}`);
+      assert.equal(approvalWrites, 0, `${label} ${stopCommand}`);
+      assert.deepEqual(routes, [], `${label} ${stopCommand}`);
+      assert.deepEqual(harness.entries, [], `${label} ${stopCommand}`);
+      assert.deepEqual(durableStates, [], `${label} ${stopCommand}`);
+      assert.deepEqual(harness.messages, [], `${label} ${stopCommand}`);
+      assert.match(harness.statuses.at(-1).value, new RegExp(`Cycle ${terminal.status}`), `${label} ${stopCommand}`);
+      assert.equal(harness.widgets.at(-1).key, "ima-cycle-phase", `${label} ${stopCommand}`);
+      assert.deepEqual(harness.widgets.at(-1).options, { placement: "belowEditor" }, `${label} ${stopCommand}`);
+      if (terminal.status === "closed") {
+        assert.equal(harness.widgets.at(-1).value, undefined, `${label} ${stopCommand}`);
+      } else {
+        assert.ok(harness.widgets.at(-1).value.some((line) => line.includes("blocker lifecycle_closeout_failed")), `${label} ${stopCommand}`);
+      }
+    }
+  }
+});
+
+test("keeps current resume recovery phases as stop authority", async () => {
+  const plan = directPlanRecord(createCycleState(jira, { timestamp: at }), "APPROVED", {
+    id: reviewUuid(990),
+    recordKey: "ima-pi:jira:FNR-3036:plan:stop-authority",
+  });
+  const initial = importedImplementationState(plan);
+  const planLookupStarted = deferred();
+  const planLookup = deferred();
+  const durableStates = [];
+  const beforePublication = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: initial }]);
+  registerCycleExtension(beforePublication.pi, cycleDependencies({
+    recall: async (query) => {
+      if (query.endsWith(" plan")) {
+        planLookupStarted.resolve();
+        return planLookup.promise;
+      }
+      return vestigeSearch([]);
+    },
+    persistDurableState: async (_cwd, next) => durableStates.push(next),
+    applyRoute: async () => ({ ok: true }),
+    expandPrompt: async () => "expanded prompt",
+  }));
+  await beforePublication.handlers.get("session_tree")({}, beforePublication.ctx);
+  const resumedBeforePublication = beforePublication.commands.get("ima:cycle").handler("resume", beforePublication.ctx);
+  await planLookupStarted.promise;
+  await beforePublication.commands.get("ima:cycle").handler("stop", beforePublication.ctx);
+  assert.equal(beforePublication.wasAborted(), false);
+  assert.ok(beforePublication.notifications.some(({ level, message }) => level === "warning" && /cycle_stop_ack_required/.test(message)));
+  const stoppedBeforePublication = beforePublication.commands.get("ima:cycle").handler("stop --ack", beforePublication.ctx);
+  planLookup.resolve(vestigeSearch([plan]));
+  await Promise.all([resumedBeforePublication, stoppedBeforePublication]);
+  const firstStopped = beforePublication.entries.at(-1).data;
+  assert.deepEqual({ status: firstStopped.status, phase: firstStopped.phase, stoppedPhase: firstStopped.stoppedPhase }, {
+    status: "stopped",
+    phase: "implementation",
+    stoppedPhase: "implementation",
+  });
+  assert.deepEqual(durableStates.at(-1), firstStopped);
+
+  const implementation = directDownstreamRecord(initial, "implementation", "COMPLETED", plan.id, {
+    id: reviewUuid(991),
+    recordKey: "ima-pi:jira:FNR-3036:implementation:stop-authority",
+  });
+  const testLookupStarted = deferred();
+  const testLookup = deferred();
+  const afterPublication = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: initial }]);
+  registerCycleExtension(afterPublication.pi, cycleDependencies({
+    recall: async (query) => {
+      if (query.endsWith(" plan")) return vestigeSearch([plan]);
+      if (query.endsWith(" implementation")) return vestigeSearch([implementation]);
+      if (query.endsWith(" test")) {
+        testLookupStarted.resolve();
+        return testLookup.promise;
+      }
+      return vestigeSearch([]);
+    },
+    applyRoute: async () => ({ ok: true }),
+    expandPrompt: async () => "expanded prompt",
+  }));
+  await afterPublication.handlers.get("session_tree")({}, afterPublication.ctx);
+  const resumedAfterPublication = afterPublication.commands.get("ima:cycle").handler("resume", afterPublication.ctx);
+  await testLookupStarted.promise;
+  await afterPublication.commands.get("ima:cycle").handler("stop", afterPublication.ctx);
+  assert.equal(afterPublication.wasAborted(), false);
+  assert.ok(afterPublication.notifications.some(({ level, message }) => level === "warning" && /cycle_stop_ack_required/.test(message)));
+  const stoppedAfterPublication = afterPublication.commands.get("ima:cycle").handler("stop --ack", afterPublication.ctx);
+  testLookup.resolve(vestigeSearch([]));
+  await Promise.all([resumedAfterPublication, stoppedAfterPublication]);
+  const secondStopped = afterPublication.entries.at(-1).data;
+  assert.deepEqual({ status: secondStopped.status, phase: secondStopped.phase, stoppedPhase: secondStopped.stoppedPhase }, {
+    status: "stopped",
+    phase: "test",
+    stoppedPhase: "test",
+  });
+});
+
+test("uses strict plan selection for every explicit awaiting-evidence resume", async () => {
+  const initial = createCycleState(jira, { timestamp: at });
+  const direct = directPlanRecord(initial, "APPROVED", {
+    id: reviewUuid(992),
+    recordKey: "ima-pi:jira:FNR-3036:plan:awaiting-evidence",
+  });
+  const accepted = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: initial }]);
+  const routed = [];
+  registerCycleExtension(accepted.pi, cycleDependencies({
+    recall: async (query) => query.endsWith(" plan") ? vestigeSearch([direct]) : vestigeSearch([]),
+    applyRoute: async (_pi, _ctx, phase) => { routed.push(phase); return { ok: true }; },
+    expandPrompt: async () => "expanded prompt",
+  }));
+  await accepted.handlers.get("session_tree")({}, accepted.ctx);
+  const sent = accepted.waitForSend();
+  const resumed = accepted.commands.get("ima:cycle").handler("resume", accepted.ctx);
+  await sent;
+  assert.deepEqual(routed, ["implementation"]);
+  assert.equal(accepted.entries.find(({ data }) => data.phase === "implementation" && data.status === "awaiting-resume")?.data.evidence.at(-1).approvedPlan.artifactId, direct.id);
+  accepted.handlers.get("input")({ source: "extension", text: "expanded prompt" });
+  accepted.handlers.get("before_agent_start")({ prompt: "expanded prompt" });
+  accepted.handlers.get("agent_start")();
+  accepted.handlers.get("agent_end")({ messages: [{ role: "assistant", stopReason: "stop" }] });
+  accepted.handlers.get("agent_settled")();
+  await resumed;
+
+  const tied = [
+    directPlanRecord(initial, "APPROVED", { id: reviewUuid(993), recordKey: "ima-pi:jira:FNR-3036:plan:tie-a", createdAt: "2026-08-04T18:00:00Z" }),
+    directPlanRecord(initial, "BLOCKED", { id: reviewUuid(994), recordKey: "ima-pi:jira:FNR-3036:plan:tie-b", createdAt: "2026-08-04T18:00:00.000Z" }),
+  ];
+  const saturated = Array.from({ length: 20 }, (_, index) => directPlanRecord(initial, "APPROVED", {
+    id: reviewUuid(1000 + index),
+    recordKey: `ima-pi:jira:FNR-3036:plan:saturated-${index}`,
+  }));
+  const cases = [
+    [],
+    [{ ...direct, project: "other" }],
+    tied,
+    saturated,
+  ];
+  for (const records of cases) {
+    const harness = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: initial }]);
+    const queries = [];
+    const caseRoutes = [];
+    registerCycleExtension(harness.pi, cycleDependencies({
+      recall: async (query) => {
+        queries.push(query);
+        return queries.length === 1
+          ? vestigeSearch(records)
+          : vestigeSearch([persistedRecord(initial, "plan", "APPROVED", { id: "generic-fallback" })]);
+      },
+      applyRoute: async (_pi, _ctx, phase) => { caseRoutes.push(phase); return { ok: true }; },
+      expandPrompt: async () => "expanded prompt",
+    }));
+    await harness.handlers.get("session_tree")({}, harness.ctx);
+    await harness.commands.get("ima:cycle").handler("resume", harness.ctx);
+    assert.deepEqual(caseRoutes, []);
+    assert.deepEqual(harness.messages, []);
+    assert.equal(queries.filter((query) => query.endsWith(" plan")).length, 1);
+  }
+});
+
+test("does not reconcile around an active planning dispatch handshake", async () => {
+  const initial = { ...createCycleState(jira, { timestamp: at }), status: "awaiting-resume" };
+  const harness = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: initial }]);
+  const routed = [];
+  const queries = [];
+  registerCycleExtension(harness.pi, cycleDependencies({
+    recall: async (query) => { queries.push(query); return vestigeSearch([]); },
+    applyRoute: async (_pi, _ctx, phase) => { routed.push(phase); return { ok: true }; },
+    expandPrompt: async () => "expanded prompt",
+  }));
+  await harness.handlers.get("session_tree")({}, harness.ctx);
+  const sent = harness.waitForSend();
+  const firstResume = harness.commands.get("ima:cycle").handler("resume", harness.ctx);
+  await sent;
+  const entriesBefore = harness.entries.length;
+  await harness.commands.get("ima:cycle").handler("status", harness.ctx);
+  await harness.commands.get("ima:cycle").handler("resume", harness.ctx);
+  assert.equal(harness.wasAborted(), false);
+  assert.equal(harness.entries.length, entriesBefore);
+  assert.deepEqual(routed, ["plan"]);
+  assert.equal(queries.filter((query) => query.endsWith(" plan")).length, 1);
+  assert.ok(harness.notifications.some(({ level, message }) => level === "warning" && /cycle_resume_unavailable/.test(message)));
+  harness.handlers.get("input")({ source: "extension", text: "expanded prompt" });
+  harness.handlers.get("before_agent_start")({ prompt: "expanded prompt" });
+  harness.handlers.get("agent_start")();
+  harness.handlers.get("agent_end")({ messages: [{ role: "assistant", stopReason: "stop" }] });
+  harness.handlers.get("agent_settled")();
+  await firstResume;
+});
+
+test("retains the last imported publication after recovery failure", async () => {
+  const initial = { ...createCycleState(jira, { timestamp: at }), status: "awaiting-resume" };
+  const direct = directPlanRecord(initial, "APPROVED", {
+    id: reviewUuid(1020),
+    recordKey: "ima-pi:jira:FNR-3036:plan:failure-state",
+  });
+  const unboundImplementation = directDownstreamRecord(initial, "implementation", "COMPLETED", direct.id, {
+    id: reviewUuid(1021),
+    recordKey: "ima-pi:jira:FNR-3036:implementation:unbound-state",
+    priorArtifactIds: [],
+  });
+  const immediate = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: initial }]);
+  const immediateDurable = [];
+  const immediateRoutes = [];
+  registerCycleExtension(immediate.pi, cycleDependencies({
+    recall: async (query) => query.endsWith(" plan")
+      ? vestigeSearch([direct])
+      : query.endsWith(" implementation")
+        ? vestigeSearch([unboundImplementation])
+        : vestigeSearch([]),
+    persistDurableState: async (_cwd, next) => immediateDurable.push(next),
+    applyRoute: async (_pi, _ctx, phase) => { immediateRoutes.push(phase); return { ok: true }; },
+    expandPrompt: async () => "expanded prompt",
+  }));
+  await immediate.handlers.get("session_tree")({}, immediate.ctx);
+  await immediate.commands.get("ima:cycle").handler("resume", immediate.ctx);
+  assert.deepEqual(immediateRoutes, []);
+  const imported = immediate.entries.at(-1).data;
+  assert.deepEqual({ phase: imported.phase, status: imported.status }, { phase: "implementation", status: "awaiting-resume" });
+  assert.equal(imported.evidence.at(-1).approvedPlan.artifactId, direct.id);
+  assert.deepEqual(immediateDurable.at(-1), imported);
+  assert.match(immediate.statuses.at(-1).value, /phase implementation/);
+
+  const boundImplementation = directDownstreamRecord(initial, "implementation", "COMPLETED", direct.id, {
+    id: reviewUuid(1022),
+    recordKey: "ima-pi:jira:FNR-3036:implementation:bound-state",
+  });
+  const unboundTest = directDownstreamRecord(initial, "test", "PASSED", direct.id, {
+    id: reviewUuid(1023),
+    recordKey: "ima-pi:jira:FNR-3036:test:unbound-state",
+    priorArtifactIds: [],
+  });
+  const partial = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: initial }]);
+  const partialDurable = [];
+  registerCycleExtension(partial.pi, cycleDependencies({
+    recall: async (query) => query.endsWith(" plan")
+      ? vestigeSearch([direct])
+      : query.endsWith(" implementation")
+        ? vestigeSearch([boundImplementation])
+        : query.endsWith(" test")
+          ? vestigeSearch([unboundTest])
+          : vestigeSearch([]),
+    persistDurableState: async (_cwd, next) => partialDurable.push(next),
+    applyRoute: async () => ({ ok: true }),
+    expandPrompt: async () => "expanded prompt",
+  }));
+  await partial.handlers.get("session_tree")({}, partial.ctx);
+  await partial.commands.get("ima:cycle").handler("resume", partial.ctx);
+  const recovered = partial.entries.at(-1).data;
+  assert.deepEqual({ phase: recovered.phase, status: recovered.status }, { phase: "test", status: "awaiting-resume" });
+  assert.deepEqual(partialDurable.at(-1), recovered);
+  assert.match(partial.statuses.at(-1).value, /phase test/);
+  await partial.commands.get("ima:cycle").handler("start FNR-3036", partial.ctx);
+  assert.ok(partial.notifications.some(({ level, message }) => level === "warning" && /cycle_active_replacement_blocked/.test(message)));
+});
+
+test("cancels pending adoption on stop and requires acknowledgement for its persisted implementation phase", async () => {
+  const legacyState = { ...createCycleState(jira, { timestamp: at }), status: "awaiting-resume" };
+  const legacy = directPlanRecord(legacyState, "APPROVED", {
+    id: reviewUuid(973),
+    recordKey: `${legacyState.lifecycleKey}:plan:legacy-stop`,
+    artifact: "# Legacy Plan",
+  });
+  const editorStarted = deferred();
+  const editor = deferred();
+  let approvalWrites = 0;
+  const legacyHarness = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: legacyState }]);
+  legacyHarness.ctx.ui.editor = async () => {
+    editorStarted.resolve();
+    return editor.promise;
+  };
+  registerCycleExtension(legacyHarness.pi, cycleDependencies({
+    recall: async () => vestigeSearch([legacy]),
+    lifecycle: async () => { approvalWrites += 1; return {}; },
+    applyRoute: async () => ({ ok: true }),
+    expandPrompt: async () => "expanded prompt",
+  }));
+  await legacyHarness.handlers.get("session_tree")({}, legacyHarness.ctx);
+  const pendingResume = legacyHarness.commands.get("ima:cycle").handler("resume", legacyHarness.ctx);
+  await editorStarted.promise;
+  await legacyHarness.commands.get("ima:cycle").handler("stop", legacyHarness.ctx);
+  editor.resolve(legacy.content);
+  await pendingResume;
+  assert.equal(legacyHarness.wasAborted(), true);
+  assert.equal(approvalWrites, 0);
+  assert.deepEqual(legacyHarness.messages, []);
+
+  const directState = { ...createCycleState(jira, { timestamp: at }), status: "awaiting-resume" };
+  const direct = directPlanRecord(directState, "APPROVED", { id: reviewUuid(974), recordKey: `${directState.lifecycleKey}:plan:guided-stop` });
+  const guidedHarness = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: directState }]);
+  registerCycleExtension(guidedHarness.pi, cycleDependencies({
+    recall: async (query) => query.endsWith(" plan") ? vestigeSearch([direct]) : vestigeSearch([]),
+    applyRoute: async () => ({ ok: true }),
+    expandPrompt: async () => "expanded prompt",
+  }));
+  await guidedHarness.handlers.get("session_tree")({}, guidedHarness.ctx);
+  const sent = guidedHarness.waitForSend();
+  const guidedResume = guidedHarness.commands.get("ima:cycle").handler("resume", guidedHarness.ctx);
+  await sent;
+  await guidedHarness.commands.get("ima:cycle").handler("stop", guidedHarness.ctx);
+  assert.equal(guidedHarness.wasAborted(), false);
+  assert.ok(guidedHarness.notifications.some(({ level, message }) => level === "warning" && /cycle_stop_ack_required/.test(message)));
+  await guidedHarness.commands.get("ima:cycle").handler("stop --ack", guidedHarness.ctx);
+  await guidedResume;
+  assert.equal(guidedHarness.wasAborted(), true);
+  const stopped = guidedHarness.entries.at(-1).data;
+  assert.deepEqual({ status: stopped.status, phase: stopped.phase, stoppedPhase: stopped.stoppedPhase }, {
+    status: "stopped",
+    phase: "implementation",
+    stoppedPhase: "implementation",
+  });
+});
+
+test("serializes stale adoption publication behind a newer stopped snapshot", async () => {
+  const initial = { ...createCycleState(jira, { timestamp: at }), status: "awaiting-resume" };
+  const direct = directPlanRecord(initial, "APPROVED", { id: reviewUuid(977), recordKey: `${initial.lifecycleKey}:plan:publication` });
+  const dispatchWriteStarted = deferred();
+  const releaseDispatchWrite = deferred();
+  let writes = 0;
+  let durable = null;
+  const harness = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: initial }]);
+  registerCycleExtension(harness.pi, cycleDependencies({
+    recall: async (query) => query.endsWith(" plan") ? vestigeSearch([direct]) : vestigeSearch([]),
+    persistDurableState: async (_cwd, next) => {
+      writes += 1;
+      if (writes === 2) {
+        dispatchWriteStarted.resolve();
+        await releaseDispatchWrite.promise;
+      }
+      durable = next;
+    },
+    applyRoute: async () => ({ ok: true }),
+    expandPrompt: async () => "expanded prompt",
+  }));
+  await harness.handlers.get("session_tree")({}, harness.ctx);
+  const resumed = harness.commands.get("ima:cycle").handler("resume", harness.ctx);
+  await dispatchWriteStarted.promise;
+  const stopped = harness.commands.get("ima:cycle").handler("stop --ack", harness.ctx);
+  releaseDispatchWrite.resolve();
+  await Promise.all([resumed, stopped]);
+  assert.equal(harness.messages.length, 0);
+  assert.deepEqual({ status: durable.status, phase: durable.phase, stoppedPhase: durable.stoppedPhase }, {
+    status: "stopped",
+    phase: "implementation",
+    stoppedPhase: "implementation",
+  });
+  assert.deepEqual(harness.entries.at(-1).data, durable);
+});
+
+test("invalidates adoption across session replacement and idle planning recovery", async () => {
+  const initial = { ...createCycleState(jira, { timestamp: at }), status: "awaiting-resume" };
+  const legacy = directPlanRecord(initial, "APPROVED", {
+    id: reviewUuid(975),
+    recordKey: `${initial.lifecycleKey}:plan:session-legacy`,
+    artifact: "# Legacy Plan",
+  });
+  const editorStarted = deferred();
+  const editor = deferred();
+  let lifecycleCalls = 0;
+  const harness = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: initial }]);
+  harness.ctx.ui.editor = async () => {
+    editorStarted.resolve();
+    return editor.promise;
+  };
+  registerCycleExtension(harness.pi, cycleDependencies({
+    recall: async () => vestigeSearch([legacy]),
+    lifecycle: async () => { lifecycleCalls += 1; return {}; },
+    applyRoute: async () => ({ ok: true }),
+    expandPrompt: async () => "expanded prompt",
+  }));
+  await harness.handlers.get("session_tree")({}, harness.ctx);
+  const resumed = harness.commands.get("ima:cycle").handler("resume", harness.ctx);
+  await editorStarted.promise;
+  await harness.handlers.get("session_tree")({}, harness.ctx);
+  editor.resolve(legacy.content);
+  await resumed;
+  assert.equal(lifecycleCalls, 0);
+  assert.deepEqual(harness.messages, []);
+
+  const shutdownStarted = deferred();
+  const shutdownEditor = deferred();
+  const shutdownHarness = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: initial }]);
+  shutdownHarness.ctx.ui.editor = async () => {
+    shutdownStarted.resolve();
+    return shutdownEditor.promise;
+  };
+  registerCycleExtension(shutdownHarness.pi, cycleDependencies({
+    recall: async () => vestigeSearch([legacy]),
+    lifecycle: async () => { lifecycleCalls += 1; return {}; },
+    applyRoute: async () => ({ ok: true }),
+    expandPrompt: async () => "expanded prompt",
+  }));
+  await shutdownHarness.handlers.get("session_tree")({}, shutdownHarness.ctx);
+  const shutdownResume = shutdownHarness.commands.get("ima:cycle").handler("resume", shutdownHarness.ctx);
+  await shutdownStarted.promise;
+  await shutdownHarness.handlers.get("session_shutdown")({}, shutdownHarness.ctx);
+  shutdownEditor.resolve(legacy.content);
+  await shutdownResume;
+  assert.equal(lifecycleCalls, 0);
+  assert.deepEqual(shutdownHarness.messages, []);
+
+  const idle = createCycleState(jira, { timestamp: at });
+  const approved = directPlanRecord(idle, "APPROVED", { id: reviewUuid(976), recordKey: `${idle.lifecycleKey}:plan:idle` });
+  const idleHarness = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: idle }]);
+  registerCycleExtension(idleHarness.pi, cycleDependencies({
+    recall: async (query) => query.endsWith(" plan") ? vestigeSearch([approved]) : vestigeSearch([]),
+    applyRoute: async () => ({ ok: true }),
+    expandPrompt: async () => "expanded prompt",
+  }));
+  await idleHarness.handlers.get("session_start")({}, idleHarness.ctx);
+  const adopted = idleHarness.entries.at(-1).data;
+  assert.deepEqual({ phase: adopted.phase, status: adopted.status }, { phase: "implementation", status: "awaiting-resume" });
+  assert.equal(adopted.evidence.at(-1).approvedPlan.artifactId, approved.id);
+  assert.deepEqual(idleHarness.messages, []);
+
+  const saturated = Array.from({ length: 20 }, (_, index) => directDownstreamRecord(idle, "implementation", "COMPLETED", approved.id, {
+    id: reviewUuid(980 + index),
+    recordKey: `${idle.lifecycleKey}:implementation:saturated-${index}`,
+  }));
+  const saturatedHarness = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: idle }]);
+  registerCycleExtension(saturatedHarness.pi, cycleDependencies({
+    recall: async (query) => query.endsWith(" plan")
+      ? vestigeSearch([approved])
+      : query.endsWith(" implementation")
+        ? vestigeSearch(saturated)
+        : vestigeSearch([]),
+    applyRoute: async () => ({ ok: true }),
+    expandPrompt: async () => "expanded prompt",
+  }));
+  await saturatedHarness.handlers.get("session_start")({}, saturatedHarness.ctx);
+  assert.deepEqual(saturatedHarness.messages, []);
+  assert.equal(saturatedHarness.entries.at(-1).data.phase, "implementation");
+  assert.ok(saturatedHarness.notifications.some(({ level, message }) => level === "warning" && /plan_lineage_recall_invalid/.test(message)));
 });
 
 test("closes exactly one tracker after confirmation and blocks after lifecycle failure", async () => {
@@ -1149,12 +1892,11 @@ test("autonomously chains verified phases and leaves close human-gated", async (
   assert.ok(durableStates.every((next) => next.mode === "autonomous"));
 });
 
-test("autonomous tail stops for blockers, defects, and review-cap excess", async () => {
+test("autonomous tail stops for blockers and review-cap excess", async () => {
   const testAwaitingResume = () => evidence(awaitingEvidence(implementationAwaitingResumeState()), "implementation", "COMPLETED");
   const reviewAwaitingResume = () => evidence(awaitingEvidence(testAwaitingResume()), "test", "PASSED");
   const cases = [
     { state: { ...implementationAwaitingResumeState(), mode: "autonomous" }, phase: "implementation", outcome: "BLOCKED", blocker: "implementation:BLOCKED" },
-    { state: { ...testAwaitingResume(), mode: "autonomous" }, phase: "test", outcome: "DEFECTS", blocker: "test:DEFECTS" },
     { state: { ...reviewAwaitingResume(), mode: "autonomous", reviewCap: 0 }, phase: "review", outcome: "REQUEST_CHANGES", blocker: "review_cap_exceeded" },
   ];
 
@@ -1178,8 +1920,55 @@ test("autonomous tail stops for blockers, defects, and review-cap excess", async
     assert.equal(harness.messages.length, 1);
     assert.equal(final.status, "blocked");
     assert.deepEqual(final.blockers, [blocker]);
-    assert.ok(harness.notifications.some(({ level, message }) => level === "warning" && /Autonomous cycle stopped/.test(message)));
+    const guidance = harness.notifications.find(({ level, message }) => level === "warning" && /Autonomous cycle stopped/.test(message));
+    assert.ok(guidance);
+    assert.match(guidance.message, new RegExp(`${blocker} \\((retriable|terminal)\\)`));
   }
+});
+
+test("autonomous tail repairs test defects before dispatching review", async () => {
+  const testAwaitingResume = () => evidence(awaitingEvidence(implementationAwaitingResumeState()), "implementation", "COMPLETED");
+  const harness = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: { ...testAwaitingResume(), mode: "autonomous" } }]);
+  const routed = [];
+  registerCycleExtension(harness.pi, cycleDependencies({
+    applyRoute: async (_pi, _ctx, phase) => { routed.push(phase); return { ok: true }; },
+    expandPrompt: async () => "expanded prompt",
+  }));
+  await harness.handlers.get("session_start")({}, harness.ctx);
+
+  const sent = harness.waitForSend();
+  const run = harness.commands.get("ima:cycle").handler("resume", harness.ctx);
+  await sent;
+  await settleHarnessDispatch(harness, "test", "DEFECTS", true, "test-defects");
+  await settleHarnessDispatch(harness, "implementation", "COMPLETED", true, "implementation-repair");
+  await settleHarnessDispatch(harness, "test", "PASSED", true, "test-passed");
+  await settleHarnessDispatch(harness, "review", "APPROVED", true, "review-approved");
+  await settleHarnessDispatch(harness, "document", "READY", false, "document-ready");
+  await run;
+
+  assert.deepEqual(routed, ["test", "implementation", "test", "review", "document"]);
+  assert.equal(harness.entries.at(-1).data.status, "closeout-ready");
+});
+
+test("guided blocked stops provide retriable guidance", async () => {
+  const state = implementationAwaitingResumeState();
+  const harness = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: state }]);
+  registerCycleExtension(harness.pi, cycleDependencies({
+    applyRoute: async () => ({ ok: true }),
+    expandPrompt: async () => "expanded prompt",
+  }));
+  await harness.handlers.get("session_start")({}, harness.ctx);
+
+  const sent = harness.waitForSend();
+  const run = harness.commands.get("ima:cycle").handler("resume", harness.ctx);
+  await sent;
+  await settleHarnessDispatch(harness, "implementation", "BLOCKED");
+  await run;
+
+  const guidance = harness.notifications.find(({ level, message }) => level === "warning" && message.startsWith("Cycle blocked:"));
+  assert.ok(guidance);
+  assert.match(guidance.message, /implementation:BLOCKED \(retriable\)/);
+  assert.match(guidance.message, /persisted phase artifact/);
 });
 
 test("autonomous stop during first resume dispatch preserves stopped state", async () => {
@@ -1471,11 +2260,12 @@ test("default durable store rejects unsafe cache paths without touching external
 
 test("session start restores durable state and reconciles it before reporting status", async () => {
   const durable = createCycleState(jira, { timestamp: at });
+  const direct = directPlanRecord(durable, "APPROVED", { id: reviewUuid(701), recordKey: `${durable.lifecycleKey}:plan:durable` });
   const calls = [];
   const persisted = [];
   const recall = async (query) => {
     calls.push(query);
-    return vestigeSearch([persistedRecord(durable, "plan", "APPROVED", { id: "durable-plan" })]);
+    return query.endsWith(" plan") ? vestigeSearch([direct]) : vestigeSearch([]);
   };
   const harness = createCycleExtensionHarness([]);
   registerCycleExtension(harness.pi, cycleDependencies({
@@ -1489,6 +2279,7 @@ test("session start restores durable state and reconciles it before reporting st
   await harness.handlers.get("session_start")({}, harness.ctx);
 
   assert.deepEqual(calls, [
+    `${durable.lifecycleKey} plan`,
     `${durable.lifecycleKey} plan`,
     `${durable.lifecycleKey} implementation`,
   ]);
@@ -1631,7 +2422,7 @@ test("reconciles verified lifecycle records through the existing phase transitio
   const defectsParsed = parseLifecycleSearchRecords({ data: { results: [persistedRecord(defects, "test", "DEFECTS")] } }, { lifecycleKey: defects.lifecycleKey, phase: "test", jiraKey: defects.source.key, taskwarriorUuid: "" });
   const defectsResult = reconcileCycleFromLifecycle(defects, defectsParsed.records, { timestamp: at });
   assert.equal(defectsResult.ok, true);
-  assert.deepEqual(defectsResult.state.blockers, ["test:DEFECTS"]);
+  assert.deepEqual({ phase: defectsResult.state.phase, status: defectsResult.state.status, blockers: defectsResult.state.blockers }, { phase: "implementation", status: "awaiting-resume", blockers: [] });
 });
 
 test("keeps reconciliation idempotent and fails loudly for verified unresolved or conflicting evidence", () => {
@@ -1928,9 +2719,10 @@ test("preserves awaiting-evidence state when reconciliation reads fail", async (
 
 test("status and resume self-heal from persisted lifecycle evidence", async () => {
   const stuck = createCycleState(jira, { timestamp: at });
+  const direct = directPlanRecord(stuck, "APPROVED", { id: reviewUuid(702), recordKey: `${stuck.lifecycleKey}:plan:self-heal` });
   const search = async (query) => {
     assert.match(query, new RegExp(`^${stuck.lifecycleKey} (plan|implementation)$`));
-    return vestigeSearch([persistedRecord(stuck, "plan", "APPROVED", { id: "plan-proof" })]);
+    return query.endsWith(" plan") ? vestigeSearch([direct]) : vestigeSearch([]);
   };
   const statusHarness = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: stuck }]);
   registerCycleExtension(statusHarness.pi, cycleDependencies({ recall: search, applyRoute: async () => ({ ok: true }), expandPrompt: async () => "expanded prompt" }));
@@ -1953,7 +2745,9 @@ test("status and resume self-heal from persisted lifecycle evidence", async () =
   resumeHarness.handlers.get("input")({ source: "extension", text: "expanded prompt" });
   resumeHarness.handlers.get("before_agent_start")({ prompt: "expanded prompt" });
   resumeHarness.handlers.get("agent_start")();
-  await resumeHarness.handlers.get("tool_result")(lifecycleToolResult(awaitingEvidence(recovered), "implementation", "COMPLETED"), resumeHarness.ctx);
+  const implementationResult = lifecycleToolResult(awaitingEvidence(recovered), "implementation", "COMPLETED");
+  implementationResult.input.identity.priorArtifactIds = [direct.id];
+  await resumeHarness.handlers.get("tool_result")(implementationResult, resumeHarness.ctx);
   resumeHarness.handlers.get("agent_end")({ messages: [{ role: "assistant", stopReason: "stop" }] });
   resumeHarness.handlers.get("agent_settled")();
   await resumed;
@@ -1961,9 +2755,14 @@ test("status and resume self-heal from persisted lifecycle evidence", async () =
   assert.equal(resumeHarness.entries.at(-1).data.status, "awaiting-resume");
 });
 
-test("keeps status and resume non-advancing for unresolved persisted evidence", async () => {
+test("keeps marker-free persisted planning evidence non-advancing until interactive confirmation", async () => {
   const stuck = createCycleState(jira, { timestamp: at });
-  const search = async () => vestigeSearch([persistedRecord(stuck, "plan", "APPROVED", { id: "unclear", artifact: "Saved artifact without a cycle outcome." })]);
+  const legacy = directPlanRecord(stuck, "APPROVED", {
+    id: reviewUuid(703),
+    recordKey: `${stuck.lifecycleKey}:plan:legacy`,
+    artifact: "Saved artifact without a cycle outcome.",
+  });
+  const search = async () => vestigeSearch([legacy]);
 
   const statusHarness = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: stuck }]);
   registerCycleExtension(statusHarness.pi, cycleDependencies({ recall: search, applyRoute: async () => ({ ok: true }), expandPrompt: async () => "expanded prompt" }));
@@ -1971,23 +2770,17 @@ test("keeps status and resume non-advancing for unresolved persisted evidence", 
   await statusHarness.commands.get("ima:cycle").handler("status", statusHarness.ctx);
   assert.deepEqual(statusHarness.entries, []);
   assert.match(statusHarness.statuses.at(-1).value, /awaiting-evidence/);
-  const statusWarning = statusHarness.notifications.find(({ level }) => level === "warning");
-  assert.ok(statusWarning);
-  assert.match(statusWarning.message, /outcome is unresolved/);
-  assert.match(statusWarning.message, /unclear/);
+  assert.deepEqual(statusHarness.notifications.filter(({ level }) => level === "warning"), []);
 
   const routed = [];
   const resumeHarness = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: stuck }]);
+  resumeHarness.ctx.ui.editor = async () => undefined;
   registerCycleExtension(resumeHarness.pi, cycleDependencies({ recall: search, applyRoute: async (_pi, _ctx, phase) => { routed.push(phase); return { ok: true }; }, expandPrompt: async () => "expanded prompt" }));
   await resumeHarness.handlers.get("session_start")({}, resumeHarness.ctx);
   await resumeHarness.commands.get("ima:cycle").handler("resume", resumeHarness.ctx);
   assert.deepEqual(routed, []);
   assert.deepEqual(resumeHarness.messages, []);
   assert.deepEqual(resumeHarness.entries, []);
-  const resumeWarning = resumeHarness.notifications.find(({ level }) => level === "warning");
-  assert.ok(resumeWarning);
-  assert.match(resumeWarning.message, /outcome is unresolved/);
-  assert.match(resumeWarning.message, /unclear/);
 });
 
 test("warns instead of silently discarding a verified unresolved live write", async () => {
