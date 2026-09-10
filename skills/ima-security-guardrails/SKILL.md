@@ -44,6 +44,25 @@ Use the native safe API for the actual sink. Validate and allowlist dynamic stru
 
 Do not interpolate external input into SQL, shell commands, paths, HTML, URLs, or other interpreters. Missing, malformed, ambiguous, unauthorized, or unverifiable input must **fail closed** where practical. Return a bounded error; do not continue with a guessed default or partial privileged action.
 
+## Control placement
+
+“Never trust your inputs” applies to data an operation actually receives or directly consumes: its arguments, request or event payload, required configuration, and responses from services it directly calls. Treat that data as hostile and validate or parameterize it as appropriate.
+
+It does not mean “never trust the environment you run in.” An operation does not audit deployment posture, global configuration, other services’ settings, or system-wide policy that it neither receives as input nor consumes. A validator is a function validator: it validates what is provided to the function and what the function directly consumes, and enforces the authorization, invariants, and sink controls needed by that function. It is not a Story validator or an environment validator.
+
+Fail closed for an operation-local input or invariant, not every fact named in a Story. Do not add hot-path control-plane reads or blockers for global posture, provisioning, schema administration, public or private exposure, or unrelated policy unless every runtime check question below is answered yes. Otherwise, assign deployment, preflight, environment administration, startup, observability, test, or operator evidence to the responsible owner.
+
+A criterion may become a runtime check only when all of these are true:
+
+1. The operation directly receives or consumes the fact.
+2. The fact is necessary for the operation’s narrow direct execution.
+3. The component is authoritative and permitted to verify the fact.
+4. The operation must legitimately stop when the fact cannot be established.
+
+Any no makes the criterion environmental. If the answer is ambiguous, ask or block; never default to runtime.
+
+This control-placement rule preserves validation of consumed inputs; operation and resource authorization; required configuration and secret presence and shape; responses from APIs the operation calls; sink controls for SQL, shell, paths, URLs, and HTML; timeouts; and secret handling.
+
 ## Lifecycle evidence
 
 - **Plan:** identify trust boundaries, protected operations, sinks, and non-goals.

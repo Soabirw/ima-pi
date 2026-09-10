@@ -4,6 +4,12 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ## [Unreleased]
 
+## [1.20.1] - 2026-09-10
+
+### Fixed
+
+- Clarified acceptance-owner control placement so environmental and deployment criteria do not become unrelated per-operation runtime checks, while retaining operation-local security controls.
+
 ## [1.20.0] - 2026-09-09
 
 Notable upgrade to the `cycle` system. It can now be reliably triggered in three ways:

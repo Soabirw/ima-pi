@@ -28,6 +28,20 @@ Use `vision-handoff` for accessible visual sources. Use browser evidence only wh
 
 Ask two or three focused questions at a time only when product, architecture, security, rollout, or verification decisions remain unresolved. Cover pure/effect boundaries, data and API contracts, error paths, security, test strategy, rollout, and rollback where applicable.
 
+## Acceptance owner classification
+
+Before mapping an acceptance criterion to files, runtime behavior, or tests, classify it into exactly one of these mandatory sections in every persisted plan. Include both sections and write `None.` when a section has no entries.
+
+## Code-Execution Acceptance Criteria
+
+These are owned by the function or operation: validating received arguments, request or event data, directly consumed configuration, and responses from APIs it directly calls; authenticating and authorizing the exact operation and resource; enforcing operation business invariants; controlling sinks; and handling its own errors and timeouts. These criteria may become runtime code and runtime tests.
+
+## Environmental Acceptance Criteria
+
+These are owned outside the function’s narrow execution: deployment posture, public or private endpoint setup, guest-access policy, provisioning, infrastructure schema or index setup, global role or permission administration, unrelated platform bindings, monitoring or dashboards, and human deployment verification. Every entry must name its owner and evidence source, and must be recorded as an explicit runtime non-goal.
+
+Before mapping a criterion to production files, runtime control flow, or runtime tests, apply the four-question runtime tiebreaker from `ima-security-guardrails`: the operation directly receives or consumes the fact; the fact is necessary for narrow direct execution; the component is authoritative and permitted to verify it; and failure to establish it must legitimately stop the operation. Any no makes the criterion environmental. Ambiguity requires clarification or a block, never a runtime default.
+
 ## Implementation-grade plan
 
 Before requesting approval, show one self-contained contract with:
@@ -42,7 +56,7 @@ Before requesting approval, show one self-contained contract with:
 
 The handoff MUST state approved decisions concretely, name known implementation surfaces, and give checkable acceptance criteria. It MUST NOT leave settled product or architecture choices to the implementation agent, invite redesign, use vague directives, omit known constraints, or broaden scope.
 
-These lifecycle-complete headings are recommended for persisted artifacts; equivalent organization is acceptable, and persistence requires only a non-empty bounded artifact with valid lifecycle identity: Source and Approved Outcome, Scope and Non Goals, Phase Result, Changed Files, Decisions, Verification Commands and Results, Blockers, Residual Risk, Standards Impact, Prior Artifacts, and Recommended Next Phase. Add Problem, Prior Work, Context, Approach, Boundaries, API Contracts, Detailed Code Instructions, Test Strategy, Acceptance Criteria, Implementation Order, Security Checklist, Risk Register, Open Questions, Files to Update, and Memory & Docs Hits when applicable.
+These lifecycle-complete headings are recommended for persisted artifacts; equivalent organization is acceptable, and persistence requires only a non-empty bounded artifact with valid lifecycle identity: Source and Approved Outcome, Scope and Non Goals, Code-Execution Acceptance Criteria, Environmental Acceptance Criteria, Phase Result, Changed Files, Decisions, Verification Commands and Results, Blockers, Residual Risk, Standards Impact, Prior Artifacts, and Recommended Next Phase. Add Problem, Prior Work, Context, Approach, Boundaries, API Contracts, Detailed Code Instructions, Test Strategy, Acceptance Criteria, Implementation Order, Security Checklist, Risk Register, Open Questions, Files to Update, and Memory & Docs Hits when applicable.
 
 ## Autonomous plan self-approval
 
