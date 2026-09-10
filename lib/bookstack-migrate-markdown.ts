@@ -1,62 +1,85 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { resolve, relative, sep } from "node:path";
+import { lstat, readdir, readFile } from "node:fs/promises";
+import { relative, resolve, sep } from "node:path";
 import { parseFrontMatter, sourceHash, type MigrationSource } from "./bookstack-migrate-source.ts";
 
-const run = promisify(execFile);
-const COMMIT = /^[0-9a-f]{40}$/i;
-const EXCLUDED = new Set(["README.md", "CONTRIBUTING.md", "CLAUDE.md"]);
-const blockedPath = (path: string) => path.startsWith("scripts/") || path.startsWith(".serena/") || path.startsWith(".claude/");
-const SYSTEM_GIT_PATH = "/usr/local/bin:/usr/bin:/bin";
+const EXCLUDED_NAMES = new Set(["README.md", "CONTRIBUTING.md", "CLAUDE.md"]);
+const EXCLUDED_DIRECTORIES = new Set(["scripts", ".serena", ".claude"]);
 
-const git = async (root: string, args: string[], signal?: AbortSignal) => {
-  try {
-    const result = await run("git", args, {
-      cwd: root,
-      encoding: "utf8",
-      signal,
-      maxBuffer: 4 * 1024 * 1024,
-      shell: false,
-      env: { PATH: SYSTEM_GIT_PATH },
-    });
-    return result.stdout;
-  } catch (error) {
-    if (signal?.aborted) throw error;
-    const code = error && typeof error === "object" && "code" in error ? error.code : "";
-    throw new Error(code === "ENOENT" ? "git_unavailable" : "git_command_failed");
-  }
+const within = (root: string, path: string) => path === root || path.startsWith(`${root}${sep}`);
+const relativePath = (root: string, path: string) => relative(root, path).split(sep).join("/");
+const isExcluded = (path: string) => path.split("/").some((part) => EXCLUDED_DIRECTORIES.has(part));
+
+const checkedRoot = async (root: string) => {
+  const resolved = resolve(root);
+  const info = await lstat(resolved);
+  if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("markdown_root_invalid");
+  return resolved;
 };
 
-export type MarkdownGitInput = { root: string; commit: string; signal?: AbortSignal };
+const readMarkdownFiles = async (root: string, directory: string, signal?: AbortSignal): Promise<string[]> => {
+  signal?.throwIfAborted();
+  const entries = await readdir(directory, { withFileTypes: true });
+  const files: string[] = [];
+  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+    signal?.throwIfAborted();
+    if (!entry.name || entry.name === "." || entry.name === "..") throw new Error("markdown_path_invalid");
+    const path = resolve(directory, entry.name);
+    if (!within(root, path)) throw new Error("markdown_path_escape");
+    const sourcePath = relativePath(root, path);
+    if (isExcluded(sourcePath)) continue;
+    if (entry.isSymbolicLink()) throw new Error("markdown_symlink_invalid");
+    if (entry.isDirectory()) {
+      files.push(...await readMarkdownFiles(root, path, signal));
+      continue;
+    }
+    if (!entry.name.endsWith(".md") || EXCLUDED_NAMES.has(entry.name)) continue;
+    if (!entry.isFile()) throw new Error("markdown_file_invalid");
+    files.push(path);
+  }
+  return files;
+};
 
-export async function enumerateMarkdownGit(input: MarkdownGitInput): Promise<MigrationSource[]> {
-  if (!COMMIT.test(input.commit)) throw new Error("git_commit_invalid");
-  const root = resolve(input.root);
-  const revision = (await git(root, ["rev-parse", "--verify", `${input.commit}^{commit}`], input.signal)).trim();
-  if (revision.toLowerCase() !== input.commit.toLowerCase()) throw new Error("git_commit_mismatch");
-  if ((await git(root, ["status", "--porcelain"], input.signal)).trim()) throw new Error("git_tree_dirty");
-  const tracked = await git(root, ["ls-tree", "-r", "--name-only", input.commit], input.signal);
-  const paths = tracked.split("\n").filter((path) => path.endsWith(".md") && !EXCLUDED.has(path.split("/").at(-1)!) && !blockedPath(path));
+export type MarkdownWorkingTreeInput = { root: string; signal?: AbortSignal };
+
+export async function enumerateMarkdownWorkingTree(input: MarkdownWorkingTreeInput): Promise<MigrationSource[]> {
+  const root = await checkedRoot(input.root);
   const sources: MigrationSource[] = [];
-  for (const path of paths.sort()) {
-    if (path.includes("\\") || path.split("/").some((part) => part === ".." || !part)) throw new Error("git_path_invalid");
-    const absolute = resolve(root, path);
-    if (!(absolute === root || absolute.startsWith(`${root}${sep}`)) || relative(root, absolute).startsWith("..")) throw new Error("git_path_escape");
-    const markdown = await git(root, ["show", `${input.commit}:${path}`], input.signal);
+  for (const path of await readMarkdownFiles(root, root, input.signal)) {
+    input.signal?.throwIfAborted();
+    const before = await lstat(path);
+    if (!before.isFile() || before.isSymbolicLink()) throw new Error("markdown_file_invalid");
+    const markdown = await readFile(path, "utf8");
+    const after = await lstat(path);
+    if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs) {
+      throw new Error("markdown_source_changed");
+    }
     const { attributes } = parseFrontMatter(markdown);
+    const sourcePath = relativePath(root, path);
     sources.push({
       kind: "knowledge",
-      sourceId: `git:${input.commit}:${path}`,
+      sourceOrigin: "filesystem",
+      sourceId: `filesystem:${sourcePath}`,
       project: "ima-rag",
       artifactType: attributes.type || "knowledge",
-      sourceRefs: [`git:${input.commit}`, `path:${path}`],
-      createdAt: attributes.created_at || "legacy-unknown",
+      sourceRefs: [`path:${sourcePath}`],
+      createdAt: before.mtime.toISOString(),
       author: attributes.author || "legacy-unknown",
       body: markdown,
       sourceHash: sourceHash(markdown),
-      path,
-      commit: input.commit.toLowerCase(),
+      path: sourcePath,
     });
   }
-  return sources;
+  return sources.sort((left, right) => left.sourceId.localeCompare(right.sourceId));
+}
+
+const fingerprint = (sources: MigrationSource[]) => sourceHash(
+  sources.map((source) => `${source.sourceId}\0${source.sourceHash}`).join("\n"),
+);
+
+export async function stableMarkdownSnapshot(input: MarkdownWorkingTreeInput) {
+  const first = await enumerateMarkdownWorkingTree(input);
+  const second = await enumerateMarkdownWorkingTree(input);
+  const sourceFingerprint = fingerprint(first);
+  if (sourceFingerprint !== fingerprint(second)) throw new Error("markdown_snapshot_unstable");
+  return { sources: first, fingerprint: sourceFingerprint };
 }

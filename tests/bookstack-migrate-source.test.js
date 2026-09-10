@@ -21,9 +21,10 @@ test("maps lifecycle and knowledge sources to deterministic BookStack leaves wit
   const knowledgePage = targetPage({
     kind: "knowledge", sourceId: "git:abc:architecture/records/one.md", project: "ima-rag", artifactType: "decision",
     sourceRefs: ["git:abc"], createdAt: "legacy-unknown", author: "legacy-unknown", body, sourceHash: sourceHash(body),
-    path: "architecture/records/one.md", commit: "a".repeat(40),
+    sourceOrigin: "filesystem", path: "architecture/records/one.md",
   });
   assert.deepEqual([knowledgePage.shelfName, knowledgePage.bookName, knowledgePage.chapterName, knowledgePage.pageName], ["Institutional Knowledge", "architecture", "records", "one"]);
+  assert.match(knowledgePage.markdown, /source_kind: filesystem/);
 });
 
 test("fails closed for changed source bytes and target identity collisions", () => {

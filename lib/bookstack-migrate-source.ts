@@ -6,6 +6,7 @@ const SHA256 = /^[a-f0-9]{64}$/i;
 
 export type MigrationSource = {
   kind: "lifecycle" | "knowledge";
+  sourceOrigin?: "filesystem" | "qdrant";
   sourceId: string;
   recordKey?: string;
   lifecycleKey?: string;
@@ -17,7 +18,6 @@ export type MigrationSource = {
   body: string;
   sourceHash: string;
   path?: string;
-  commit?: string;
   phase?: string;
 };
 
@@ -75,6 +75,7 @@ export function validSource(source: MigrationSource): boolean {
     && bounded(source.artifactType, 128)
     && bounded(source.createdAt, 128)
     && bounded(source.author, 256)
+    && (source.sourceOrigin === undefined || source.sourceOrigin === "filesystem" || source.sourceOrigin === "qdrant")
     && typeof source.body === "string"
     && source.body.length > 0
     && SHA256.test(source.sourceHash)
@@ -90,11 +91,10 @@ export function renderPage(source: MigrationSource, target: Omit<TargetPage, key
     : ["---", "schema: ima-memory/v1", `project: ${source.project}`, `artifact_type: ${source.artifactType}`, "---"];
   const provenance = [
     "## Migration provenance",
-    `- source_kind: ${source.kind}`,
+    `- source_kind: ${source.sourceOrigin ?? source.kind}`,
     `- source_id: ${source.sourceId}`,
     ...(source.recordKey ? [`- record_key: ${source.recordKey}`] : []),
     ...(source.path ? [`- source_path: ${source.path}`] : []),
-    ...(source.commit ? [`- source_commit: ${source.commit}`] : []),
     ...(source.lifecycleKey ? [`- lifecycle_key: ${source.lifecycleKey}`] : []),
     `- source_created_at: ${source.createdAt}`,
     `- source_author: ${source.author}`,

@@ -19,4 +19,4 @@ Otherwise print exactly:
 
 `Usage: /ima:bookstack-migrate <dry-run <spec>|apply <report> confirm|verify <report>|cleanup <report> confirm>`
 
-The local-only `IMA_RAG_ROOT` binding selects the clean canonical Git checkout. `IMA_QDRANT_URL` and `BOOKSTACK_ORIGIN` are non-secret variables. `BOOKSTACK_TOKEN_ID` and `BOOKSTACK_TOKEN_SECRET` are secrets supplied outside Git and never printed. The command never deploys Cloudflare, changes Qdrant, deletes sources, or changes normal lifecycle persistence.
+The local-only `IMA_RAG_ROOT` binding selects the current canonical Markdown tree. The command snapshots eligible current files by path and SHA-256, then rejects a changed source set before readiness or apply; it does not require Git status or a commit. Optional `IMA_QDRANT_URL` and `BOOKSTACK_ORIGIN` are non-secret variables. `BOOKSTACK_TOKEN_ID` and `BOOKSTACK_TOKEN_SECRET` are secrets supplied outside Git and never printed. The command never deploys Cloudflare, changes Qdrant, deletes sources, or changes normal lifecycle persistence.

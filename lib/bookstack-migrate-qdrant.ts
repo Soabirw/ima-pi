@@ -27,7 +27,7 @@ const lifecycleSource = (id: string, payload: Record<string, unknown>, detail: s
   const createdAt = typeof payload.created_at === "string" ? payload.created_at : "legacy-unknown";
   if (!recordKey || !project || !lifecycleKey || !phase || !detail) return null;
   return {
-    kind: "lifecycle", sourceId: `qdrant:${id}`, recordKey, lifecycleKey, project,
+    kind: "lifecycle", sourceOrigin: "qdrant", sourceId: `qdrant:${id}`, recordKey, lifecycleKey, project,
     artifactType: phase, phase, sourceRefs, createdAt, author: "legacy-unknown", body: detail,
     sourceHash: sourceHash(detail),
   };

@@ -2,15 +2,16 @@ import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { createBookStackArtifactRun, readProjectArtifact, writeImmutableArtifact, type BookStackArtifactRun } from "./bookstack-migrate-artifacts.ts";
 import { createBookStackClient, type BookStackClient } from "./bookstack-migrate-client.ts";
-import { enumerateMarkdownGit } from "./bookstack-migrate-markdown.ts";
+import { stableMarkdownSnapshot } from "./bookstack-migrate-markdown.ts";
 import { stableLifecycleSnapshot } from "./bookstack-migrate-qdrant.ts";
+import { DEFAULT_QDRANT_URL, resolveCorpusEndpoint } from "./qdrant-http-boundary.ts";
 import { buildBookStackMigrationReport, parseBookStackMigrationReport, serializeBookStackMigrationReport, type BookStackMigrationReport } from "./bookstack-migrate-report.ts";
 import { deterministicPages, extractSourceBody, sourceHash, type TargetPage } from "./bookstack-migrate-source.ts";
 
 export type BookStackMigrationSpec = {
   schemaVersion: 1;
   lifecycle: { collection: string; qdrantOrigin?: string; shelfName: "Lifecycle Artifacts" };
-  knowledge: { root?: string; commit: string; shelfName: "Institutional Knowledge" };
+  knowledge: { root?: string; shelfName: "Institutional Knowledge" };
 };
 const hash = (value: string) => createHash("sha256").update(value, "utf8").digest("hex");
 const itemParent = (item: Record<string, unknown>, name: string) => typeof item[name] === "number" ? item[name] : null;
@@ -21,22 +22,33 @@ export async function readBookStackMigrationSpec(path: string): Promise<BookStac
   return parsed;
 }
 
-export async function dryRunBookStackMigration(input: { projectRoot: string; specPath: string; signal?: AbortSignal }) {
-  const specText = await readFile(input.specPath, "utf8");
-  const spec = await readBookStackMigrationSpec(input.specPath);
-  const qdrantOrigin = spec.lifecycle.qdrantOrigin || process.env.IMA_QDRANT_URL;
+const sourceFingerprint = (pages: TargetPage[]) => sourceHash(
+  pages.map((page) => `${page.sourceId}\0${page.sourceHash}`).sort().join("\n"),
+);
+
+const migrationPages = async (spec: BookStackMigrationSpec, signal?: AbortSignal) => {
+  const qdrantOrigin = resolveCorpusEndpoint(
+    spec.lifecycle.qdrantOrigin || process.env.IMA_QDRANT_URL,
+    DEFAULT_QDRANT_URL,
+  );
   const knowledgeRoot = spec.knowledge.root || process.env.IMA_RAG_ROOT;
   if (!qdrantOrigin || !knowledgeRoot) throw new Error("migration_binding_missing");
   const [lifecycle, knowledge] = await Promise.all([
-    stableLifecycleSnapshot({ origin: qdrantOrigin, collection: spec.lifecycle.collection, signal: input.signal }),
-    enumerateMarkdownGit({ root: knowledgeRoot, commit: spec.knowledge.commit, signal: input.signal }),
+    stableLifecycleSnapshot({ origin: qdrantOrigin, collection: spec.lifecycle.collection, signal }),
+    stableMarkdownSnapshot({ root: knowledgeRoot, signal }),
   ]);
-  const pages = deterministicPages([...lifecycle.sources, ...knowledge]);
+  return deterministicPages([...lifecycle.sources, ...knowledge.sources]);
+};
+
+export async function dryRunBookStackMigration(input: { projectRoot: string; specPath: string; signal?: AbortSignal }) {
+  const specText = await readFile(input.specPath, "utf8");
+  const spec = await readBookStackMigrationSpec(input.specPath);
+  const pages = await migrationPages(spec, input.signal);
   const run = await createBookStackArtifactRun(input.projectRoot);
   await writeImmutableArtifact(run, "spec.json", specText);
   await writeImmutableArtifact(run, "inventory.json", `${JSON.stringify(pages, null, 2)}\n`);
   const report = buildBookStackMigrationReport({
-    runId: run.runId, specHash: hash(specText), sourceFingerprint: sourceHash(pages.map((page) => `${page.sourceId}\0${page.sourceHash}`).sort().join("\n")),
+    runId: run.runId, specHash: hash(specText), sourceFingerprint: sourceFingerprint(pages),
     outcomes: pages.map((page) => ({ sourceId: page.sourceId, sourceHash: page.sourceHash, status: "unverified" as const })),
   });
   const artifact = await writeImmutableArtifact(run, "dry-run-report.json", serializeBookStackMigrationReport(report));
@@ -77,6 +89,8 @@ export async function applyBookStackMigration(input: { projectRoot: string; dryR
   if (!report || report.outcomes.some((outcome) => outcome.status !== "unverified")) throw new Error("migration_report_not_ready");
   const runDirectory = input.dryRunReportPath.replace(/\/dry-run-report\.json$/, "");
   const inventory = JSON.parse(await readProjectArtifact(input.projectRoot, `${runDirectory}/inventory.json`)) as TargetPage[];
+  const spec = await readBookStackMigrationSpec(`${input.projectRoot}/${runDirectory}/spec.json`);
+  if (sourceFingerprint(await migrationPages(spec)) !== report.sourceFingerprint) throw new Error("migration_source_changed");
   const client = createBookStackClient(input.bookStack);
   const shelves = new Map<string, number>();
   for (const name of ["Lifecycle Artifacts", "Institutional Knowledge"] as const) shelves.set(name, (await client.resolveShelf(name)).id);
