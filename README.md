@@ -4,11 +4,17 @@ Pi-native IMA agent harness, packaged through Pi's standard Git/npm package mode
 
 ## Features
 
-- **57 packaged skills and 35 `/ima:*` prompt templates** for engineering, web, WordPress, IMA, MCP, research, and operational workflows.
+- **58 packaged skills and 36 `/ima:*` prompt templates** for engineering, web, WordPress, IMA, MCP, research, and operational workflows.
 - **Pi-native package resources**—prompts, skills, agents, extensions, policies, and configuration guidance—distributed through Pi's normal Git/npm package model.
 - **Memory-aware project work:** Pi's active global `AGENTS.md` carries current user preferences, Serena provides stable project context, Vestige retains only cited legacy evidence and T7 migration sources, and package-native Tier-1 Qdrant/Ollama corpus tools store formal lifecycle artifacts and durable reference knowledge. None are bundled services.
 - **A guided development lifecycle with bounded autonomy:** use the manual phases or the explicit, user-gated `/ima:cycle`; autonomous progression requires an approved bounded, conflict-free, low-risk plan and verified evidence, and it stops at `document`.
 - **Bounded specialist delegation** keeps work scoped while parent-owned lifecycle gates preserve accountability.
+
+## BookStack migration (SKYNET-149)
+
+`/ima:bookstack-migrate dry-run config/bookstack-migrations/shared-dev-memory.json` prepares a local, immutable migration report for the approved Qdrant lifecycle and pinned `ima-rag` Markdown sources. Applying a report requires a second explicit confirmation and BookStack secrets outside Git. The tool does not alter normal Pi lifecycle persistence (which remains Qdrant), deploy the Worker, delete sources, or perform the separately owned `ima-memory-search` catalog/indexer work.
+
+Configuration: `IMA_QDRANT_URL` and `BOOKSTACK_ORIGIN` are **non-secret variables**; `BOOKSTACK_TOKEN_ID` and `BOOKSTACK_TOKEN_SECRET` are **secrets**; `SYNC_COORDINATOR` is a Worker **platform binding**; `IMA_RAG_ROOT` and `.ima/bookstack-migrate/` report paths are **local-only values**.
 
 ## Text-to-speech command and engine (S1–S4, S6)
 

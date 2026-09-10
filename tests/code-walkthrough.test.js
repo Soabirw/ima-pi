@@ -121,8 +121,8 @@ test("README documents the walkthrough entry point and current package inventory
     countResources("prompts", (path) => path.endsWith(".md")),
   ]);
 
-  assert.equal(skillCount, 57);
-  assert.equal(promptCount, 35);
+  assert.equal(skillCount, 58);
+  assert.equal(promptCount, 36);
   has(content, `${skillCount} packaged skills and ${promptCount} \`/ima:*\` prompt templates`);
 
   for (const marker of [
