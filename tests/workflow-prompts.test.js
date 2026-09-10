@@ -530,6 +530,19 @@ test("FNR-3025 support prompts encode gateway, safety, and terminal contracts", 
   for (const value of ["Pi-native", "external through the package MCP adapter", "Serena and Vestige remain external", "Qdrant corpus support is Pi-native", "qdrant-memory", "ima_corpus_*", "~/.pi/agent/ima/config.json", "trusted `.pi/ima/config.json`", "exact redacted preview", "explicit approval", "atomically", "secret", "Validate JSON", "Stop after"]) has(migrate, value);
 });
 
+test("BookStack migration prompt retains its exact untrusted invocation arguments", async () => {
+  const migrate = await prompt("bookstack-migrate");
+  for (const value of [
+    "$@",
+    "<invocation-arguments>",
+    "dry-run <spec-path>",
+    "apply <report-path> confirm",
+    "verify <report-path>",
+    "cleanup <report-path> confirm",
+    "Usage: /ima:bookstack-migrate",
+  ]) has(migrate, value);
+});
+
 test("Vestige migration prompt separates dry-run readiness from actual migration", async () => {
   const migrate = await prompt("vestige-migrate");
   for (const value of [
