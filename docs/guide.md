@@ -43,6 +43,8 @@ The packaged `/ima:*` prompts provide phase or bounded-operation entry points. U
 
 When Pi's precedence permits the supported lower-case layout, global `AGENTS.md` holds current cross-project user preferences and explicit decisions. Serena holds stable project context and instructions. Vestige retains only explicitly cited legacy evidence and the separate T7 migration source. Tier-1 Qdrant is the package-native institutional corpus for formal lifecycle artifacts and durable reference knowledge: use read-only `ima_corpus_status`, bounded manifest-summary `ima_corpus_find`/`ima_corpus_recall`, selected verified `ima_corpus_get`, and explicitly authorized `ima_corpus_store`. `ima_lifecycle` stores formal artifacts as an embedded manifest plus deterministic vectorless detail chunks and completes only after direct lossless reassembly. Lifecycle results expose both the manifest point `artifactId` and logical `recordKey`; pass either value to `ima_corpus_get` through its compatible `recordKey` argument. Qdrant is not a package MCP server. Governance records currently remain Git-tracked under `docs/decisions/`; later indexing is optional. Jira, Taskwarrior, browser, brokered MCP services, and other integration executables remain external boundaries. See [`foundation/FNR-3032.md`](foundation/FNR-3032.md) for the integration inventory.
 
+For private BookStack discovery and authoring, use `/ima:bookstack-search` and the [`ima-bookstack` tool contract](../skills/ima-bookstack/SKILL.md); see the [developer setup runbook](bookstack-knowledge.md).
+
 ## User preference management
 
 Pi resolves global context files at startup and after `/reload`. `/ima:memorize` supports the

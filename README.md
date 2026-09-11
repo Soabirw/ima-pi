@@ -4,7 +4,7 @@ Pi-native IMA agent harness, packaged through Pi's standard Git/npm package mode
 
 ## Features
 
-- **58 packaged skills and 36 `/ima:*` prompt templates** for engineering, web, WordPress, IMA, MCP, research, and operational workflows.
+- **59 packaged skills and 37 `/ima:*` prompt templates** for engineering, web, WordPress, IMA, MCP, research, and operational workflows.
 - **Pi-native package resources**—prompts, skills, agents, extensions, policies, and configuration guidance—distributed through Pi's normal Git/npm package model.
 - **Memory-aware project work:** Pi's active global `AGENTS.md` carries current user preferences, Serena provides stable project context, Vestige retains only cited legacy evidence and T7 migration sources, and package-native Tier-1 Qdrant/Ollama corpus tools store formal lifecycle artifacts and durable reference knowledge. None are bundled services.
 - **A guided development lifecycle with bounded autonomy:** use the manual phases or the explicit, user-gated `/ima:cycle`; autonomous progression requires an approved bounded, conflict-free, low-risk plan and verified evidence, and it stops at `document`.
@@ -15,6 +15,12 @@ Pi-native IMA agent harness, packaged through Pi's standard Git/npm package mode
 `/ima:bookstack-migrate dry-run config/bookstack-migrations/shared-dev-memory.json` prepares a local, immutable itemized report for the approved Qdrant lifecycle and current eligible `ima-rag` Markdown tree. Its `inventory.json` is a deterministic manifest referencing bounded immutable local parts. Record-level source problems are quarantined and reported without aborting the dry-run; filesystem security-boundary failures still fail closed. Run `preflight <report>` before any write: it validates the report, current approved sources, configuration, exact shelves, and the membership data needed to preserve existing Shelf assignments without BookStack writes. New append-only lifecycle records are reported as a deferred delta instead of invalidating the approved snapshot; Markdown drift still fails closed. A separately confirmed `canary <report> confirm` applies at most ten deterministic records and never escalates to full apply. Bulk apply requires its own explicit confirmation, uses one bounded target catalog, and stops further writes after systemic failures. The tool does not alter normal Pi lifecycle persistence, deploy the Worker, delete sources, or perform the separately owned `ima-memory-search` catalog/indexer work.
 
 Configuration: optional `IMA_QDRANT_URL`, primary `BOOKSTACK_BASE_URL`, and backward-compatible `BOOKSTACK_ORIGIN` are **non-secret variables**; unequal BookStack URL values fail closed. `BOOKSTACK_TOKEN_ID` and `BOOKSTACK_TOKEN_SECRET` are **secrets**; `SYNC_COORDINATOR` is a Worker **platform binding**; `IMA_RAG_ROOT`, `.ima/bookstack-migrate/` report paths, inventory manifests/parts, and preflight/canary/delta reports are **local-only values**.
+
+## BookStack shared-memory tools (SKYNET-84)
+
+`/ima:bookstack-search <question>` discovers candidates through the private Cloudflare AI Search index and returns bounded excerpts with BookStack provenance. Use `ima_bookstack_read` for authoritative current content and `ima_bookstack_write` for explicit BookStack authoring with optimistic-concurrency proof. These BookStack-specific tools do not replace Qdrant lifecycle persistence, require no local Qdrant/Ollama, and never enable public Cloudflare endpoints. See [BookStack shared-memory setup](docs/bookstack-knowledge.md).
+
+Configuration: `CLOUDFLARE_ACCOUNT_ID`, `BOOKSTACK_BASE_URL` (or compatible `BOOKSTACK_ORIGIN`), `BOOKSTACK_LIFECYCLE_BOOK_ID`, and `BOOKSTACK_KNOWLEDGE_BOOK_ID` are **non-secret variables**. `CLOUDFLARE_API_MEMORY`, `BOOKSTACK_TOKEN_ID`, and `BOOKSTACK_TOKEN_SECRET` are **secrets**. There is no Pi-tool **platform binding**; `SYNC_COORDINATOR` belongs only to the separate Worker. The invoking shell environment is a **local-only value**.
 
 ## Text-to-speech command and engine (S1–S4, S6)
 

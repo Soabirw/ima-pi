@@ -6,6 +6,7 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ### Added
 
+- Added BookStack-specific Pi search, authoritative-read, and guarded-write tools with the `/ima:bookstack-search` UX, provenance, fail-closed boundaries, and no local Qdrant/Ollama requirement.
 - Added the `ima-pi` BookStack migration producer's verified read-only `dry-run` workflow, with itemized quarantine reporting and bounded immutable inventory manifests and parts.
 - Added a read-only BookStack apply preflight and an explicitly confirmed deterministic ten-record canary, with provider-free coverage and no automatic bulk apply.
 - Added a sanitized local BookStack v25.12.3 `/api/docs.json` reference to the migration skill for installed-version request and response contracts.
