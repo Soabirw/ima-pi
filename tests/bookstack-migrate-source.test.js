@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { deterministicPages, extractSourceBody, lifecycleChapterName, sourceHash, targetPage } from "../lib/bookstack-migrate-source.ts";
+import { deterministicPages, extractSourceBody, lifecycleChapterName, sourceBodyMatches, sourceHash, targetPage } from "../lib/bookstack-migrate-source.ts";
 
 const lifecycle = (overrides = {}) => ({
   kind: "lifecycle", sourceId: "qdrant:one", recordKey: "ima-pi:plane:ima:SKYNET-149:plan:abcdef123456",
@@ -25,6 +25,20 @@ test("maps lifecycle and knowledge sources to deterministic BookStack leaves wit
   });
   assert.deepEqual([knowledgePage.shelfName, knowledgePage.bookName, knowledgePage.chapterName, knowledgePage.pageName], ["Institutional Knowledge", "architecture", "records", "one"]);
   assert.match(knowledgePage.markdown, /source_kind: filesystem/);
+});
+
+test("sourceBodyMatches tolerates BookStack trailing-newline normalization but detects real edits", () => {
+  const page = targetPage(lifecycle({ body: "# Approved plan\n", sourceHash: sourceHash("# Approved plan\n") }));
+  // BookStack strips the trailing newline from stored markdown on read-back.
+  const readBackTrimmed = page.markdown.replace(/\n+$/, "");
+  assert.equal(extractSourceBody(readBackTrimmed) === page.body, false, "exact compare regresses on trimmed newline");
+  assert.equal(sourceBodyMatches(readBackTrimmed, page.body), true, "normalized compare tolerates trailing newline");
+  assert.equal(sourceBodyMatches(page.markdown, page.body), true, "exact round-trip still matches");
+
+  // A genuine content change must still be rejected.
+  assert.equal(sourceBodyMatches(page.markdown.replace("Approved plan", "Rejected plan"), page.body), false);
+  // Missing migration marker fails closed.
+  assert.equal(sourceBodyMatches("no marker here", page.body), false);
 });
 
 test("quarantines target identity collisions while targetPage still fails closed", () => {

@@ -136,6 +136,17 @@ export function extractSourceBody(markdown: string): string | null {
   return position < 0 ? null : markdown.slice(position + marker.length);
 }
 
+// BookStack trims trailing newlines from stored page markdown on save, so a body
+// ending in "\n" reads back one newline short. Normalize only trailing newlines
+// (not internal or leading whitespace) so this benign round-trip is not a false
+// mismatch, while any real content change is still detected.
+const stripTrailingNewlines = (text: string) => text.replace(/\n+$/, "");
+
+export function sourceBodyMatches(storedMarkdown: string, expectedBody: string): boolean {
+  const extracted = extractSourceBody(storedMarkdown);
+  return extracted !== null && stripTrailingNewlines(extracted) === stripTrailingNewlines(expectedBody);
+}
+
 const quarantineCode = (error: unknown) => error instanceof Error && /^[a-z0-9_]+$/.test(error.message)
   ? error.message
   : "target_page_invalid";

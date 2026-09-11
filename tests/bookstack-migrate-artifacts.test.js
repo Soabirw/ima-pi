@@ -9,7 +9,9 @@ import {
   createBookStackArtifactRun,
   partitionBookStackInventory,
   readBookStackInventory,
+  readProjectArtifact,
   writeBookStackInventory,
+  writeReplaceableArtifact,
 } from "../lib/bookstack-migrate-artifacts.ts";
 
 const inventoryPage = (index, body = "body") => ({
@@ -89,6 +91,29 @@ test("inventory collection fails closed on modified, missing, or reordered parts
     await writeFile(manifestPath, JSON.stringify({ ...manifest, parts: [{ ...manifest.parts[0], name: "inventory.part-0001.json", sha256: manifest.parts[0].sha256 }] }), "utf8");
     await rm(partPath);
     await assert.rejects(readBookStackInventory(projectRoot, inventory.path), /inventory_part_invalid/);
+  });
+});
+
+test("replaceable run reports remain private and support idempotent reruns", async () => {
+  await withProjectRoot(async (projectRoot) => {
+    const run = await createBookStackArtifactRun(projectRoot);
+    const first = await writeReplaceableArtifact(run, "final-report.json", "first\n");
+    const second = await writeReplaceableArtifact(run, "final-report.json", "second\n");
+    assert.equal(first.path, second.path);
+    assert.equal(await readProjectArtifact(projectRoot, second.path), "second\n");
+    assert.equal((await stat(inventoryPath(projectRoot, second))).mode & 0o777, 0o600);
+  });
+});
+
+test("replaceable reports reject run directories outside the migration artifact root", async () => {
+  await withProjectRoot(async (projectRoot) => {
+    const directory = join(projectRoot, ".ima", "outside");
+    await mkdir(directory, { recursive: true });
+    await assert.rejects(writeReplaceableArtifact(
+      { projectRoot, directory, runId: "outside" },
+      "apply-preflight-report.json",
+      "{}",
+    ), /artifact_path_invalid/);
   });
 });
 

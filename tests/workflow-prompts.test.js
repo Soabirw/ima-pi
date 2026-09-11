@@ -536,6 +536,8 @@ test("BookStack migration prompt retains its exact untrusted invocation argument
     "$@",
     "<invocation-arguments>",
     "dry-run <spec-path>",
+    "preflight <report-path>",
+    "canary <report-path> confirm",
     "apply <report-path> confirm",
     "verify <report-path>",
     "cleanup <report-path> confirm",

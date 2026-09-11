@@ -7,14 +7,17 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 ### Added
 
 - Added the `ima-pi` BookStack migration producer's verified read-only `dry-run` workflow, with itemized quarantine reporting and bounded immutable inventory manifests and parts.
+- Added a read-only BookStack apply preflight and an explicitly confirmed deterministic ten-record canary, with provider-free coverage and no automatic bulk apply.
+- Added a sanitized local BookStack v25.12.3 `/api/docs.json` reference to the migration skill for installed-version request and response contracts.
 
 ### Fixed
 
 - Preserved quarantined dry-run outcomes when an apply report is constructed, retaining migration provenance in the final report.
+- Reused the established `BOOKSTACK_BASE_URL`, tolerated append-only lifecycle deltas without weakening approved-source checks, replaced repeated catalog scans with one bounded catalog, and stopped further writes on systemic apply failures without assuming ownership of administrator-managed guest/public policy.
 
 ### Known limitations
 
-- `apply`, `verify`, and cleanup have not been exercised against live BookStack. Qdrant/BookStack migration, Worker indexing/deployment, discovery, source deletion, and `ima-rag` disposition remain separately operator-gated.
+- An operator completed a Qdrant-to-BookStack `apply` and a separate BookStack-to-Cloudflare AI Search ingestion. The canary, report `verify`, cleanup, discovery/cutover, source deletion, and `ima-rag` disposition remain separately operator-gated.
 
 ## [1.20.0] - 2026-09-09
 

@@ -1,4 +1,4 @@
-import { lstat, mkdir, open, readFile, unlink } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { dirname, relative, resolve } from "node:path";
 import type { TargetPage } from "./bookstack-migrate-source.ts";
@@ -17,6 +17,17 @@ const hasExactKeys = (value: Record<string, unknown>, keys: string[]) =>
   Object.keys(value).length === keys.length && keys.every((key) => key in value);
 
 export type BookStackArtifactRun = { projectRoot: string; directory: string; runId: string };
+
+const checkedRunDirectory = async (run: BookStackArtifactRun) => {
+  const projectRoot = resolve(run.projectRoot);
+  const artifactRoot = resolve(projectRoot, ROOT);
+  const directory = resolve(run.directory);
+  if (!inside(artifactRoot, directory)) throw new Error("artifact_path_invalid");
+  const stats = await lstat(directory);
+  if (stats.isSymbolicLink() || !stats.isDirectory()) throw new Error("artifact_path_invalid");
+  return directory;
+};
+
 type InventoryPart = { name: string; count: number; sha256: string };
 type InventoryManifest = {
   schemaVersion: 1;
@@ -42,13 +53,47 @@ export async function writeImmutableArtifact(
   if (!/^[A-Za-z0-9._-]{1,128}$/.test(name) || Buffer.byteLength(content, "utf8") > MAX_ARTIFACT_BYTES) {
     throw new Error("artifact_invalid");
   }
-  const path = resolve(run.directory, name);
-  if (!inside(run.directory, path)) throw new Error("artifact_path_invalid");
+  const directory = await checkedRunDirectory(run);
+  const path = resolve(directory, name);
+  if (!inside(directory, path)) throw new Error("artifact_path_invalid");
   const handle = await open(path, "wx", 0o600);
   try {
     await handle.writeFile(content, "utf8");
   } finally {
     await handle.close();
+  }
+  return { path: relative(run.projectRoot, path), sha256: hash(content) };
+}
+
+export async function writeReplaceableArtifact(
+  run: BookStackArtifactRun,
+  name: string,
+  content: string,
+): Promise<{ path: string; sha256: string }> {
+  if (!/^[A-Za-z0-9._-]{1,128}$/.test(name) || Buffer.byteLength(content, "utf8") > MAX_ARTIFACT_BYTES) {
+    throw new Error("artifact_invalid");
+  }
+  const directory = await checkedRunDirectory(run);
+  const path = resolve(directory, name);
+  const temporary = resolve(directory, `.${name}.${randomUUID()}.tmp`);
+  if (!inside(directory, path) || !inside(directory, temporary)) throw new Error("artifact_path_invalid");
+  try {
+    const existing = await lstat(path);
+    if (existing.isSymbolicLink() || !existing.isFile()) throw new Error("artifact_path_invalid");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  const handle = await open(temporary, "wx", 0o600);
+  try {
+    await handle.writeFile(content, "utf8");
+  } finally {
+    await handle.close();
+  }
+  try {
+    await rename(temporary, path);
+  } catch (error) {
+    await unlink(temporary).catch(() => undefined);
+    throw error;
   }
   return { path: relative(run.projectRoot, path), sha256: hash(content) };
 }

@@ -1,22 +1,44 @@
-import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
+import { dirname, resolve } from "node:path";
+import { readFile } from "node:fs/promises";
 import {
   createBookStackArtifactRun,
   readBookStackInventory,
   readProjectArtifact,
   writeBookStackInventory,
   writeImmutableArtifact,
+  writeReplaceableArtifact,
   type BookStackArtifactRun,
 } from "./bookstack-migrate-artifacts.ts";
-import { createBookStackClient, type BookStackClient } from "./bookstack-migrate-client.ts";
+import {
+  applyBookStackPages,
+  buildBookStackCatalog,
+  emptyBookStackCatalog,
+} from "./bookstack-migrate-apply.ts";
+import { selectBookStackCanaryPages } from "./bookstack-migrate-canary.ts";
+import { createBookStackClient } from "./bookstack-migrate-client.ts";
 import { stableMarkdownSnapshot } from "./bookstack-migrate-markdown.ts";
+import {
+  boundedErrorCode,
+  buildApplyPreflightReport,
+  buildApplySourceDelta,
+  inventoryFingerprint,
+  parseApplySourceDelta,
+  preflightFailureStatus,
+  revalidateMigrationSources,
+  type PreflightCheck,
+} from "./bookstack-migrate-preflight.ts";
 import { lifecycleSnapshot } from "./bookstack-migrate-qdrant.ts";
 import { DEFAULT_QDRANT_URL, resolveCorpusEndpoint } from "./qdrant-http-boundary.ts";
-import { buildBookStackMigrationReport, parseBookStackMigrationReport, serializeBookStackMigrationReport, type BookStackMigrationReport } from "./bookstack-migrate-report.ts";
+import {
+  buildBookStackMigrationReport,
+  parseBookStackMigrationReport,
+  serializeBookStackMigrationReport,
+  type BookStackMigrationReport,
+} from "./bookstack-migrate-report.ts";
 import {
   deterministicPages,
-  extractSourceBody,
-  sourceHash,
+  sourceBodyMatches,
   type QuarantineOutcome,
   type TargetPage,
 } from "./bookstack-migrate-source.ts";
@@ -26,24 +48,42 @@ export type BookStackMigrationSpec = {
   lifecycle: { collection: string; qdrantOrigin?: string; shelfName: "Lifecycle Artifacts" };
   knowledge: { root?: string; shelfName: "Institutional Knowledge" };
 };
-const hash = (value: string) => createHash("sha256").update(value, "utf8").digest("hex");
-const itemParent = (item: Record<string, unknown>, name: string) => typeof item[name] === "number" ? item[name] : null;
 
-export async function readBookStackMigrationSpec(path: string): Promise<BookStackMigrationSpec> {
-  const parsed = JSON.parse(await readFile(path, "utf8")) as BookStackMigrationSpec;
-  if (parsed?.schemaVersion !== 1 || !parsed.lifecycle || !parsed.knowledge || parsed.lifecycle.shelfName !== "Lifecycle Artifacts" || parsed.knowledge.shelfName !== "Institutional Knowledge") throw new Error("migration_spec_invalid");
-  return parsed;
-}
-
-const sourceFingerprint = (pages: TargetPage[]) => sourceHash(
-  pages.map((page) => `${page.sourceId}\0${page.sourceHash}`).sort().join("\n"),
-);
-
-const migrationSnapshot = async (spec: BookStackMigrationSpec, signal?: AbortSignal): Promise<{
+type MigrationSnapshot = {
   pages: TargetPage[];
   quarantined: QuarantineOutcome[];
   fingerprint: string;
-}> => {
+};
+type MigrationClientInput = Parameters<typeof createBookStackClient>[0];
+type PreparedApply = {
+  run: BookStackArtifactRun;
+  report: BookStackMigrationReport;
+  inventory: TargetPage[];
+  validation: ReturnType<typeof revalidateMigrationSources>;
+  client: ReturnType<typeof createBookStackClient>;
+  catalog: Awaited<ReturnType<typeof buildBookStackCatalog>>;
+};
+
+const hash = (value: string) => createHash("sha256").update(value, "utf8").digest("hex");
+
+const parseBookStackMigrationSpec = (value: unknown): BookStackMigrationSpec => {
+  const parsed = value as BookStackMigrationSpec;
+  if (parsed?.schemaVersion !== 1 || !parsed.lifecycle || !parsed.knowledge
+    || parsed.lifecycle.shelfName !== "Lifecycle Artifacts"
+    || parsed.knowledge.shelfName !== "Institutional Knowledge") {
+    throw new Error("migration_spec_invalid");
+  }
+  return parsed;
+};
+
+export async function readBookStackMigrationSpec(path: string): Promise<BookStackMigrationSpec> {
+  return parseBookStackMigrationSpec(JSON.parse(await readFile(path, "utf8")));
+}
+
+export async function migrationSnapshot(
+  spec: BookStackMigrationSpec,
+  signal?: AbortSignal,
+): Promise<MigrationSnapshot> {
   const qdrantOrigin = resolveCorpusEndpoint(
     spec.lifecycle.qdrantOrigin || process.env.IMA_QDRANT_URL,
     DEFAULT_QDRANT_URL,
@@ -59,13 +99,17 @@ const migrationSnapshot = async (spec: BookStackMigrationSpec, signal?: AbortSig
     ...pages,
     quarantined: [...lifecycle.quarantined, ...pages.quarantined]
       .sort((left, right) => left.sourceId.localeCompare(right.sourceId)),
-    fingerprint: sourceFingerprint(pages.pages),
+    fingerprint: inventoryFingerprint(pages.pages),
   };
-};
+}
 
-export async function dryRunBookStackMigration(input: { projectRoot: string; specPath: string; signal?: AbortSignal }) {
+export async function dryRunBookStackMigration(input: {
+  projectRoot: string;
+  specPath: string;
+  signal?: AbortSignal;
+}) {
   const specText = await readFile(input.specPath, "utf8");
-  const spec = await readBookStackMigrationSpec(input.specPath);
+  const spec = parseBookStackMigrationSpec(JSON.parse(specText));
   const snapshot = await migrationSnapshot(spec, input.signal);
   const run = await createBookStackArtifactRun(input.projectRoot);
   await writeImmutableArtifact(run, "spec.json", specText);
@@ -84,73 +128,188 @@ export async function dryRunBookStackMigration(input: { projectRoot: string; spe
       ...snapshot.quarantined,
     ].sort((left, right) => left.sourceId.localeCompare(right.sourceId)),
   });
-  const artifact = await writeImmutableArtifact(run, "dry-run-report.json", serializeBookStackMigrationReport(report));
+  const artifact = await writeImmutableArtifact(
+    run,
+    "dry-run-report.json",
+    serializeBookStackMigrationReport(report),
+  );
   return { run, ...snapshot, report, artifact };
 }
 
-const existing = (items: Array<Record<string, unknown>>, name: string, parent: string, parentId: number) =>
-  items.filter((item) => item.name === name && itemParent(item, parent) === parentId);
+const runFromReport = (projectRoot: string, reportPath: string): BookStackArtifactRun => {
+  const match = reportPath.match(/^\.ima\/bookstack-migrate\/([A-Za-z0-9._-]{1,128})\/dry-run-report\.json$/);
+  if (!match) throw new Error("migration_report_path_invalid");
+  const directory = dirname(reportPath);
+  return { projectRoot: resolve(projectRoot), directory: resolve(projectRoot, directory), runId: match[1] };
+};
 
-async function ensurePage(client: BookStackClient, page: TargetPage, shelves: Map<string, number>) {
-  const shelfId = shelves.get(page.shelfName);
-  if (!shelfId) throw new Error("bookstack_shelf_missing");
-  const books = await client.listBooks();
-  const bookMatches = books.filter((book) => book.name === page.bookName);
-  const book = bookMatches.length === 1 ? bookMatches[0] : bookMatches.length === 0 ? await client.createBook(page.bookName) : (() => { throw new Error("bookstack_identity_ambiguous"); })();
-  await client.addBookToShelf(shelfId, book.id);
-  const chapters = await client.listChapters();
-  const chapterMatches = existing(chapters, page.chapterName, "book_id", book.id);
-  const chapter = chapterMatches.length === 1 ? chapterMatches[0] : chapterMatches.length === 0
-    ? await client.createChapter(page.chapterName, book.id, `lifecycle/source grouping for ${page.chapterName}`)
-    : (() => { throw new Error("bookstack_identity_ambiguous"); })();
-  const pages = await client.listPages();
-  const matches = existing(pages, page.pageName, "chapter_id", chapter.id);
-  if (matches.length > 1) throw new Error("bookstack_identity_ambiguous");
-  if (matches.length === 1) {
-    const read = await client.readPage(matches[0].id);
-    const markdown = typeof read.markdown === "string" ? read.markdown : "";
-    return extractSourceBody(markdown) === page.body ? { status: "unchanged" as const, targetId: read.id } : { status: "conflict" as const, targetId: read.id };
+const parseJson = (text: string, code: string) => {
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(code);
   }
-  const created = await client.createPage(page.pageName, chapter.id, page.markdown);
-  const read = await client.readPage(created.id);
-  const markdown = typeof read.markdown === "string" ? read.markdown : "";
-  return extractSourceBody(markdown) === page.body ? { status: "created" as const, targetId: created.id } : { status: "unverified" as const, targetId: created.id };
-}
+};
 
-export async function applyBookStackMigration(input: { projectRoot: string; dryRunReportPath: string; bookStack: Parameters<typeof createBookStackClient>[0] }) {
-  const report = parseBookStackMigrationReport(JSON.parse(await readProjectArtifact(input.projectRoot, input.dryRunReportPath)));
-  if (!report || report.outcomes.some((outcome) => outcome.status !== "unverified" && outcome.status !== "quarantined")) {
+async function prepareApply(input: {
+  projectRoot: string;
+  dryRunReportPath: string;
+  bookStack: MigrationClientInput;
+  signal?: AbortSignal;
+  checks?: PreflightCheck[];
+}): Promise<PreparedApply> {
+  const run = runFromReport(input.projectRoot, input.dryRunReportPath);
+  const report = parseBookStackMigrationReport(parseJson(
+    await readProjectArtifact(input.projectRoot, input.dryRunReportPath),
+    "migration_report_invalid",
+  ));
+  if (!report || report.outcomes.some((outcome) =>
+    outcome.status !== "unverified" && outcome.status !== "quarantined")) {
     throw new Error("migration_report_not_ready");
   }
-  const runDirectory = input.dryRunReportPath.replace(/\/dry-run-report\.json$/, "");
-  const inventory = await readBookStackInventory(input.projectRoot, `${runDirectory}/inventory.json`);
-  const spec = await readBookStackMigrationSpec(`${input.projectRoot}/${runDirectory}/spec.json`);
-  if ((await migrationSnapshot(spec)).fingerprint !== report.sourceFingerprint) throw new Error("migration_source_changed");
-  const client = createBookStackClient(input.bookStack);
-  const shelves = new Map<string, number>();
-  for (const name of ["Lifecycle Artifacts", "Institutional Knowledge"] as const) shelves.set(name, (await client.resolveShelf(name)).id);
-  const outcomes: BookStackMigrationReport["outcomes"] = report.outcomes.filter(
-    (outcome) => outcome.status === "quarantined",
+  input.checks?.push({ name: "report", status: "PASS" });
+
+  const inventory = await readBookStackInventory(input.projectRoot, `${dirname(input.dryRunReportPath)}/inventory.json`);
+  input.checks?.push({ name: "inventory", status: "PASS" });
+
+  const specText = await readProjectArtifact(input.projectRoot, `${dirname(input.dryRunReportPath)}/spec.json`);
+  if (hash(specText) !== report.specHash) throw new Error("migration_spec_changed");
+  const spec = parseBookStackMigrationSpec(parseJson(specText, "migration_spec_invalid"));
+  const fresh = await migrationSnapshot(spec, input.signal);
+  const validation = revalidateMigrationSources({
+    inventory,
+    reportFingerprint: report.sourceFingerprint,
+    freshPages: fresh.pages,
+    approvedQuarantined: report.outcomes.filter((outcome) => outcome.status === "quarantined"),
+    freshQuarantined: fresh.quarantined,
+  });
+  input.checks?.push({ name: "sources", status: "PASS" });
+
+  const client = createBookStackClient({ ...input.bookStack, signal: input.signal });
+  input.checks?.push({ name: "configuration", status: "PASS" });
+  const catalog = inventory.length > 0
+    ? await buildBookStackCatalog(client)
+    : emptyBookStackCatalog();
+  input.checks?.push({ name: "catalog", status: "PASS" });
+  return { run, report, inventory, validation, client, catalog };
+}
+
+async function persistSourceDelta(prepared: PreparedApply) {
+  const delta = buildApplySourceDelta(prepared.run.runId, prepared.validation.appendedLifecycle);
+  const artifact = await writeReplaceableArtifact(
+    prepared.run,
+    "apply-source-delta.json",
+    `${JSON.stringify(delta, null, 2)}\n`,
   );
-  for (const page of inventory) {
-    const result = await ensurePage(client, page, shelves);
-    outcomes.push({ sourceId: page.sourceId, sourceHash: page.sourceHash, ...result });
+  const stored = parseApplySourceDelta(parseJson(
+    await readProjectArtifact(prepared.run.projectRoot, artifact.path),
+    "apply_source_delta_invalid",
+  ));
+  if (!stored || stored.runId !== prepared.run.runId || stored.appendedCount !== delta.appendedCount) {
+    throw new Error("apply_source_delta_invalid");
   }
-  const finalReport = buildBookStackMigrationReport({ ...report, outcomes });
-  const run: BookStackArtifactRun = { projectRoot: input.projectRoot, directory: `${input.projectRoot}/${runDirectory}`, runId: report.runId };
-  return { report: finalReport, artifact: await writeImmutableArtifact(run, "final-report.json", serializeBookStackMigrationReport(finalReport)) };
+  return { delta, artifact };
+}
+
+export async function preflightBookStackMigration(input: {
+  projectRoot: string;
+  dryRunReportPath: string;
+  bookStack?: MigrationClientInput;
+  configurationError?: unknown;
+  signal?: AbortSignal;
+}) {
+  const run = runFromReport(input.projectRoot, input.dryRunReportPath);
+  const checks: PreflightCheck[] = [];
+  let prepared: PreparedApply | null = null;
+  try {
+    if (input.configurationError) throw input.configurationError;
+    if (!input.bookStack) throw new Error("bookstack_base_url_required");
+    prepared = await prepareApply({ ...input, bookStack: input.bookStack, checks });
+    await persistSourceDelta(prepared);
+    checks.push({ name: "source-delta", status: "PASS" });
+  } catch (error) {
+    const code = boundedErrorCode(error);
+    checks.push({ name: "blocked", status: preflightFailureStatus(code), code });
+  }
+  const report = buildApplyPreflightReport(run.runId, checks);
+  const artifact = await writeReplaceableArtifact(
+    run,
+    "apply-preflight-report.json",
+    `${JSON.stringify(report, null, 2)}\n`,
+  );
+  return { report, artifact, prepared };
+}
+
+export async function applyBookStackMigration(input: {
+  projectRoot: string;
+  dryRunReportPath: string;
+  bookStack: MigrationClientInput;
+  signal?: AbortSignal;
+}) {
+  const prepared = await prepareApply(input);
+  await persistSourceDelta(prepared);
+  const outcomes = await applyBookStackPages({
+    client: prepared.client,
+    catalog: prepared.catalog,
+    pages: prepared.inventory,
+    initialOutcomes: prepared.report.outcomes.filter((outcome) => outcome.status === "quarantined"),
+  });
+  const finalReport = buildBookStackMigrationReport({ ...prepared.report, outcomes });
+  const artifact = await writeReplaceableArtifact(
+    prepared.run,
+    "final-report.json",
+    serializeBookStackMigrationReport(finalReport),
+  );
+  return { report: finalReport, artifact };
+}
+
+export async function canaryBookStackMigration(input: {
+  projectRoot: string;
+  dryRunReportPath: string;
+  bookStack: MigrationClientInput;
+  signal?: AbortSignal;
+}) {
+  const prepared = await prepareApply(input);
+  await persistSourceDelta(prepared);
+  const selected = selectBookStackCanaryPages(prepared.inventory);
+  const outcomes = await applyBookStackPages({
+    client: prepared.client,
+    catalog: prepared.catalog,
+    pages: selected,
+  });
+  const report = buildBookStackMigrationReport({ ...prepared.report, outcomes });
+  const artifact = await writeReplaceableArtifact(
+    prepared.run,
+    "canary-report.json",
+    serializeBookStackMigrationReport(report),
+  );
+  return { report, artifact, selected: selected.map((page) => page.sourceId) };
 }
 
 export async function verifyBookStackMigration(input: { projectRoot: string; reportPath: string }) {
-  const report = parseBookStackMigrationReport(JSON.parse(await readProjectArtifact(input.projectRoot, input.reportPath)));
+  const report = parseBookStackMigrationReport(parseJson(
+    await readProjectArtifact(input.projectRoot, input.reportPath),
+    "migration_report_invalid",
+  ));
   if (!report) throw new Error("migration_report_invalid");
-  return { verified: report.summary.conflict === 0 && report.summary.failed === 0 && report.summary.unverified === 0, report };
+  return {
+    verified: report.summary.conflict === 0 && report.summary.failed === 0 && report.summary.unverified === 0,
+    report,
+  };
 }
 
-export async function cleanupBookStackMigration(input: { projectRoot: string; reportPath: string; bookStack: Parameters<typeof createBookStackClient>[0] }) {
-  const report = parseBookStackMigrationReport(JSON.parse(await readProjectArtifact(input.projectRoot, input.reportPath)));
+export async function cleanupBookStackMigration(input: {
+  projectRoot: string;
+  reportPath: string;
+  bookStack: MigrationClientInput;
+}) {
+  const report = parseBookStackMigrationReport(parseJson(
+    await readProjectArtifact(input.projectRoot, input.reportPath),
+    "migration_report_invalid",
+  ));
   if (!report) throw new Error("migration_report_invalid");
-  const runDirectory = input.reportPath.replace(/\/(?:dry-run|final)-report\.json$/, "");
+  const runDirectory = input.reportPath.replace(/\/(?:dry-run|final|canary)-report\.json$/, "");
+  if (runDirectory === input.reportPath) throw new Error("migration_report_path_invalid");
   const inventory = await readBookStackInventory(input.projectRoot, `${runDirectory}/inventory.json`);
   const bySourceId = new Map(inventory.map((page) => [page.sourceId, page]));
   const client = createBookStackClient(input.bookStack);
@@ -160,7 +319,7 @@ export async function cleanupBookStackMigration(input: { projectRoot: string; re
     const page = bySourceId.get(outcome.sourceId);
     if (!page || page.sourceHash !== outcome.sourceHash) throw new Error("cleanup_inventory_invalid");
     const current = await client.readPage(outcome.targetId);
-    if (extractSourceBody(typeof current.markdown === "string" ? current.markdown : "") !== page.body) {
+    if (!sourceBodyMatches(typeof current.markdown === "string" ? current.markdown : "", page.body)) {
       throw new Error("cleanup_page_human_edited");
     }
     await client.deletePage(outcome.targetId);
