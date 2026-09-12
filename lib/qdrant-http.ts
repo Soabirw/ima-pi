@@ -1,3 +1,4 @@
+import { LIFECYCLE_PHASES } from "./ima-lifecycle.ts";
 import {
   CORPUS_SCHEMA_VERSION,
   CORPUS_SCHEMA_VERSION_V2,
@@ -62,6 +63,7 @@ export const MAX_LOGICAL_RECORD_OUTPUT_BYTES = (MAX_STORED_ARTIFACT_BYTES * 6) +
 const MAX_QDRANT_VERSION_LENGTH = 32;
 const QDRANT_VERSION = /^(\d{1,9})\.(\d{1,9})\.(\d{1,9})$/;
 const LEGACY_KNOWLEDGE_COLLECTION = "ima-knowledge";
+const LIFECYCLE_PHASE_SET = new Set<string>(LIFECYCLE_PHASES);
 const REQUIRED_INDEXES = [
   "lifecycle_key",
   "phase",
@@ -137,6 +139,7 @@ export type QdrantCorpusClient = {
   insertPoints: (input: { points: LogicalCorpusPoint[] }, signal?: AbortSignal) => Promise<CorpusResult<undefined>>;
   findInstitutional: (input: { query: string; limit: number; filters?: CorpusFilters }, signal?: AbortSignal) => Promise<CorpusResult<CorpusSummary[]>>;
   recallInstitutional: (input: { lifecycleKey: string; limit: number; phase?: string }, signal?: AbortSignal) => Promise<CorpusResult<CorpusSummary[]>>;
+  recallLifecycleInstitutional: (input: { lifecycleKey: string; limit: number; phase?: string }, signal?: AbortSignal) => Promise<CorpusResult<FullInstitutionalRecord[]>>;
   getInstitutional: (recordKey: string, signal?: AbortSignal) => Promise<CorpusResult<FullInstitutionalRecord>>;
   findKnowledge: (input: { query: string; collection: string; limit: number }, signal?: AbortSignal) => Promise<CorpusResult<Array<{ summary: string; score: number }>>>;
 };
@@ -218,6 +221,61 @@ const normalizedLimit = (value: unknown) => {
   return Number.isInteger(limit) && limit >= 1 && limit <= 20 ? limit : 0;
 };
 
+const lifecycleRecallSelection = (
+  value: unknown,
+): { lifecycleKey: string; limit: number; phase?: string } | null => {
+  try {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const keys = Reflect.ownKeys(value);
+    if (
+      keys.some((key) => typeof key !== "string")
+      || (keys.length !== 2 && keys.length !== 3)
+      || !keys.includes("lifecycleKey")
+      || !keys.includes("limit")
+      || keys.some((key) => !["lifecycleKey", "limit", "phase"].includes(key as string))
+    ) return null;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    if (keys.some((key) => {
+      const descriptor = descriptors[key as string];
+      return !descriptor
+        || descriptor.get
+        || descriptor.set
+        || !descriptor.enumerable
+        || !Object.hasOwn(descriptor, "value");
+    })) return null;
+
+    const lifecycleKey = descriptors.lifecycleKey.value;
+    const limit = descriptors.limit.value;
+    const hasPhase = Object.hasOwn(descriptors, "phase");
+    const phase = hasPhase ? descriptors.phase.value : undefined;
+    if (
+      typeof lifecycleKey !== "string"
+      || lifecycleKey !== lifecycleKey.trim()
+      || !lifecycleKey
+      || utf8ByteLength(lifecycleKey) > 512
+      || /[\u0000-\u001f\u007f-\u009f]/.test(lifecycleKey)
+      || !Number.isInteger(limit)
+      || limit < 1
+      || limit > 20
+      || (hasPhase && (
+        typeof phase !== "string"
+        || phase !== phase.trim()
+        || !phase
+        || utf8ByteLength(phase) > 128
+        || /[\u0000-\u001f\u007f-\u009f]/.test(phase)
+        || !LIFECYCLE_PHASE_SET.has(phase)
+      ))
+    ) return null;
+    return {
+      lifecycleKey,
+      limit,
+      ...(hasPhase ? { phase: phase as string } : {}),
+    };
+  } catch {
+    return null;
+  }
+};
+
 const directPointIds = (value: unknown): string[] | null => {
   if (
     !Array.isArray(value)
@@ -227,6 +285,33 @@ const directPointIds = (value: unknown): string[] | null => {
   ) return null;
   const ids = [...value];
   return new Set(ids).size === ids.length ? ids : null;
+};
+
+const ownDataField = (value: unknown, key: string): { value: unknown } | null => {
+  try {
+    const source = object(value);
+    const descriptor = source && Object.getOwnPropertyDescriptor(source, key);
+    return descriptor
+      && !descriptor.get
+      && !descriptor.set
+      && Object.hasOwn(descriptor, "value")
+      ? { value: descriptor.value }
+      : null;
+  } catch {
+    return null;
+  }
+};
+
+const terminalLifecycleScroll = (value: unknown): CorpusResult<JsonObject> => {
+  const result = ownDataField(value, "result");
+  const scroll = object(result?.value);
+  const nextPageOffset = ownDataField(scroll, "next_page_offset");
+  if (!scroll || !nextPageOffset) return failure("response_invalid");
+  if (nextPageOffset.value === null) return success(scroll);
+  return typeof nextPageOffset.value === "string"
+    || (typeof nextPageOffset.value === "number" && Number.isFinite(nextPageOffset.value))
+    ? failure("record_incomplete")
+    : failure("response_invalid");
 };
 
 const resolveInstitutionalPointId = (reference: string): CorpusResult<string> => {
@@ -753,6 +838,79 @@ export function createQdrantCorpusClient(
       : response;
   };
 
+  const recallLifecycleInstitutional = async (
+    input: { lifecycleKey: string; limit: number; phase?: string },
+    signal?: AbortSignal,
+  ): Promise<CorpusResult<FullInstitutionalRecord[]>> => {
+    const selection = lifecycleRecallSelection(input);
+    if (!selection) return failure("record_invalid");
+    if (aborted(signal)) return failure("aborted");
+
+    try {
+      const state = await institutionalState(signal);
+      if (aborted(signal)) return failure("aborted");
+      if (!state.success || state.data.collection === "absent") {
+        return state.success ? failure("query_failed") : state;
+      }
+      const must = [
+        { key: "lifecycle_key", match: { value: selection.lifecycleKey } },
+        ...(selection.phase ? [{ key: "phase", match: { value: selection.phase } }] : []),
+      ];
+      const response = bodyOrFailure(await qdrant(
+        `collections/${encodeURIComponent(INSTITUTIONAL_COLLECTION)}/points/scroll`,
+        signal,
+        "POST",
+        {
+          filter: { must, ...detailChunkFilter() },
+          limit: selection.limit,
+          with_payload: { exclude: ["detail", "detail_chunk"] },
+          with_vector: false,
+        },
+      ), "query_failed");
+      if (aborted(signal)) return failure("aborted");
+      if (!response.success) return response;
+
+      const scroll = terminalLifecycleScroll(response.data);
+      if (!scroll.success) return scroll;
+      const summariesResult = summaries(scroll.data.points, false);
+      if (!summariesResult.success) return summariesResult;
+      if (summariesResult.data.length > selection.limit) return failure("response_invalid");
+
+      const records: FullInstitutionalRecord[] = [];
+      const ids = new Set<string>();
+      const recordKeys = new Set<string>();
+      for (const summary of summariesResult.data) {
+        if (
+          ids.has(summary.id)
+          || recordKeys.has(summary.recordKey)
+          || summary.lifecycleKey !== selection.lifecycleKey
+          || (selection.phase !== undefined && summary.phase !== selection.phase)
+        ) return failure("response_invalid");
+        ids.add(summary.id);
+        recordKeys.add(summary.recordKey);
+
+        if (aborted(signal)) return failure("aborted");
+        const full = await getInstitutional(summary.recordKey, signal);
+        if (aborted(signal)) return failure("aborted");
+        if (!full.success) return full;
+        if (
+          full.data.id !== summary.id
+          || full.data.recordKey !== summary.recordKey
+          || full.data.project !== summary.project
+          || full.data.site !== summary.site
+          || full.data.repo !== summary.repo
+          || full.data.lifecycleKey !== summary.lifecycleKey
+          || full.data.phase !== summary.phase
+          || full.data.summary !== summary.summary
+        ) return failure("response_invalid");
+        records.push({ ...full.data, sourceRefs: [...full.data.sourceRefs] });
+      }
+      return success(records);
+    } catch {
+      return aborted(signal) ? failure("aborted") : failure("query_failed");
+    }
+  };
+
   const getInstitutional = async (
     recordKey: string,
     signal?: AbortSignal,
@@ -873,6 +1031,7 @@ export function createQdrantCorpusClient(
     insertPoints,
     findInstitutional,
     recallInstitutional,
+    recallLifecycleInstitutional,
     getInstitutional,
     findKnowledge,
   };

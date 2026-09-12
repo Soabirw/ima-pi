@@ -2,7 +2,7 @@
 
 > **Additive provider capability:** This module is not live lifecycle routing. T9 owns provider selection, durable pins, `/ima:new` continuity, and presentation. Current lifecycle persistence continues to use Qdrant until that work is separately accepted.
 
-`lib/bookstack-lifecycle.ts` provides a BookStack-native lifecycle store for a caller that has already selected BookStack and supplied a caller-approved artifact. It never selects a provider, changes a pin, falls back to another provider, or changes BookStack accounts, roles, permissions, or server configuration.
+`lib/bookstack-lifecycle.ts` provides a BookStack-native lifecycle store for a caller that has already selected BookStack and supplied a caller-approved artifact. It never selects a provider, changes a pin, falls back to another provider, or changes BookStack accounts, roles, permissions, or server configuration. The parallel [Qdrant lifecycle provider contract](qdrant-lifecycle-provider.md) has the same T9 selection and routing boundary.
 
 ## Topology and approval
 

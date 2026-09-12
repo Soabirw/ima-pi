@@ -39,6 +39,35 @@ Do not store credentials, endpoint values, raw provider responses, stack traces,
 logs, or unreviewed personal data. The package owns endpoint defaults and operator environment
 configuration; tool arguments never select endpoints, models, or collections.
 
+## Reviewed internal lifecycle provider (T14)
+
+The reviewed Qdrant lifecycle provider is an internal additive capability, not an agent-facing
+tool or alternate workflow. `ima_corpus_*` remains the public corpus boundary, and
+`ima_lifecycle` remains the authoritative lifecycle workflow.
+
+For internal lifecycle-provider routing only, it can:
+
+- `persist` a validated detached lifecycle request and direct-read-back verify it;
+- `get` a validated reference;
+- `recall` complete records for an exact, bounded lifecycle selection; and
+- `reconcile` through the same read-only exact-reference verification as `get`.
+
+Requests, selections, and references are strictly detached and validated. Results are either
+verified or blocked; verification checks exact identity across schema-v1 and schema-v2 records.
+Invalid, unavailable, incomplete, corrupt, or mismatched data fails closed. It never falls back,
+repairs, or migrates records.
+
+T14 adds no provider selection, preferences, initial fallback, durable pins, or live
+provider-aware routing; T9 owns all of those decisions.
+
+## Configuration classification
+
+- `IMA_QDRANT_URL` and `IMA_OLLAMA_URL` are **non-secret variables**.
+- Qdrant and Ollama credentials are **secrets**; never place them in tool arguments or
+  source-controlled configuration.
+- Local Qdrant data is a **local-only value**.
+- This capability adds no **platform binding**.
+
 ## Boundaries
 
 - `ima_context.durableKnowledge` keeps its documented public contract while using the direct

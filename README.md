@@ -22,6 +22,12 @@ Configuration: optional `IMA_QDRANT_URL`, primary `BOOKSTACK_BASE_URL`, and back
 
 Configuration: `CLOUDFLARE_ACCOUNT_ID`, `BOOKSTACK_BASE_URL` (or compatible `BOOKSTACK_ORIGIN`), `BOOKSTACK_LIFECYCLE_BOOK_ID`, and `BOOKSTACK_KNOWLEDGE_BOOK_ID` are **non-secret variables**. `CLOUDFLARE_API_MEMORY`, `BOOKSTACK_TOKEN_ID`, and `BOOKSTACK_TOKEN_SECRET` are **secrets**. There is no Pi-tool **platform binding**; `SYNC_COORDINATOR` belongs only to the separate Worker. The invoking shell environment is a **local-only value**.
 
+## Qdrant lifecycle provider (T14)
+
+The reviewed additive Qdrant lifecycle provider can persist immutable evidence only after an exact direct read-back, retrieve or read-only reconcile exact references, and recall up to 20 exact verified records. It supports exact schema-v1/v2 verification, immutable unchanged retries, strict detached projections, cancellation, and bounded blocked failures; it never falls back, repairs, migrates, or treats partial evidence as authoritative. This is not activation or live lifecycle routing: T9 separately owns provider selection, preferences, initial fallback, durable pins, and provider-aware `ima_lifecycle`, `ima_context`, `/ima:cycle`, and `/ima:new` routing. See the [provider contract and live-integration boundary](docs/qdrant-lifecycle-provider.md).
+
+`IMA_QDRANT_URL` and `IMA_OLLAMA_URL` are **non-secret variables**; Qdrant/Ollama credentials are **secrets**. Local Qdrant data and synthetic fixtures are **local-only values**. This provider adds no **platform binding**. No external Qdrant/Ollama service or live remote persistence was tested.
+
 ## BookStack lifecycle provider (T13)
 
 The additive BookStack lifecycle provider can provision approved placement, persist immutable verified artifacts, and recover exact evidence without Qdrant or Cloudflare. It performs local locator-shape and origin checks before HTTP, then uses authoritative reads to detect stale revision/hash proof or moved/missing resources; it never writes or falls back on either failure. It is not live lifecycle routing: T9 separately owns provider selection, pins, lifecycle integration, and user presentation. See the [provider contract and operational prerequisites](docs/bookstack-lifecycle-provider.md).
