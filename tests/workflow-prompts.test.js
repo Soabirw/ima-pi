@@ -76,6 +76,9 @@ test("cycle resolution prompts expose exact phase markers and bounded handoffs",
     rereview,
     /Preserve each original `REVIEW-NNN` ID;[^\n]*append an implementation-grade corrective handoff[^\n]*rather than merely restating the failure without corrective instructions[^\n]*exact files\/symbols[^\n]*control\/data\/error behavior[^\n]*tests and acceptance checks[^\n]*constraints[^\n]*rejected alternatives[^\n]*resolution dependencies[^\n]*Assign the next unused ID only to an independently verified regression caused by the resolution[^\n]*same complete corrective handoff[^\n]*Do not edit code, reopen unrelated scope, or redesign;[^\n]*must never suppress[^\n]*Apply the `code-review` request-changes gate/,
   );
+  has(rereview, "even when rereview runs in a new Pi session");
+  const review = await prompt("review");
+  has(review, "including when the next phase runs in a new Pi session");
   assert.doesNotMatch(resolution, /remediation brief is `SUFFICIENT`/i);
 });
 test("implementation prompts expose a MID current-session, plan-bound terminal contract", async () => {

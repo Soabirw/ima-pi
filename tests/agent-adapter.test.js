@@ -1,10 +1,23 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { lstat, mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { coordinateDelegation, createScopedTools, resolveProjectTrust } from "../extensions/agents.ts";
+import {
+  coordinateDelegation,
+  createScopedTools,
+  createSessionPersistence,
+  resolveProjectTrust,
+  restoreSessionRecord,
+  runAgentFollowUp,
+} from "../extensions/agents.ts";
+import {
+  CYCLE_AGENT_SESSION_SCHEMA_VERSION,
+  CYCLE_PHASE_CONTEXT_ENTRY,
+  storeCycleOwnedSessionRecord,
+  storeDirectSessionRecord,
+} from "../lib/ima-agent-sessions.ts";
 
 const agent = {
   schemaVersion: 1, name: "implementer", description: "Implement", tier: "MID", authority: "write",
@@ -50,32 +63,42 @@ const run = ({ assignments = [assignment("a")], sessions, signal, onActivity, se
   });
 };
 
-test("scoped write and edit permit owned targets and deny sibling, parent, traversal, symlink, and ambiguous bash effects", async () => {
+test("TEST-004 scoped write and edit permit one native @ prefix but deny outside and doubled prefixes", async () => {
   const root = await mkdtemp(join(tmpdir(), "ima-agent-adapter-"));
   const outside = await mkdtemp(join(tmpdir(), "ima-agent-outside-"));
   await mkdir(join(root, "owned"));
   await mkdir(join(root, "sibling"));
   await writeFile(join(root, "owned", "edit.txt"), "before\n");
+  await writeFile(join(root, "sibling", "edit.txt"), "before\n");
   await symlink(outside, join(root, "owned", "escape"));
   const tools = createScopedTools({ cwd: root, assignment: assignment("a"), agent });
   const byName = new Map(tools.map((tool) => [tool.name, tool]));
   const invoke = (name, args) => byName.get(name).execute("call", args, undefined, undefined, {});
 
-  await invoke("write", { path: "owned/new.txt", content: "owned" });
-  await invoke("edit", { path: "owned/edit.txt", edits: [{ oldText: "before", newText: "after" }] });
+  await invoke("write", { path: "@owned/new.txt", content: "owned" });
+  await invoke("edit", { path: `@${join(root, "owned", "edit.txt")}`, edits: [{ oldText: "before", newText: "after" }] });
   assert.equal(await readFile(join(root, "owned", "new.txt"), "utf8"), "owned");
   assert.equal(await readFile(join(root, "owned", "edit.txt"), "utf8"), "after\n");
 
   const denied = [
     ["write", { path: "sibling/no.txt", content: "no" }],
+    ["write", { path: "@sibling/no-at-prefix.txt", content: "no" }],
+    ["write", { path: `@${join(root, "sibling", "no-absolute-at-prefix.txt")}`, content: "no" }],
+    ["write", { path: "@@owned/double-prefix.txt", content: "no" }],
+    ["edit", { path: "@sibling/edit.txt", edits: [{ oldText: "before", newText: "after" }] }],
     ["write", { path: "../parent-no.txt", content: "no" }],
     ["write", { path: "owned/../sibling/no.txt", content: "no" }],
     ["write", { path: "owned/escape/no.txt", content: "no" }],
     ["bash", { command: "rm owned/edit.txt" }],
     ["bash", { command: "echo pwn>sibling/no-space.txt" }],
+    ["bash", { command: "git status --short && printf diagnostics" }],
   ];
   for (const [name, args] of denied) await assert.rejects(invoke(name, args));
   assert.equal(existsSync(join(root, "sibling", "no.txt")), false);
+  assert.equal(existsSync(join(root, "sibling", "no-at-prefix.txt")), false);
+  assert.equal(existsSync(join(root, "sibling", "no-absolute-at-prefix.txt")), false);
+  assert.equal(existsSync(join(root, "owned", "double-prefix.txt")), false);
+  assert.equal(await readFile(join(root, "sibling", "edit.txt"), "utf8"), "before\n");
   assert.equal(existsSync(join(root, "sibling", "no-space.txt")), false);
   assert.equal(existsSync(join(root, "..", "parent-no.txt")), false);
   assert.equal(existsSync(join(outside, "no.txt")), false);
@@ -87,6 +110,142 @@ test("uses Pi trust as authoritative and only falls back to the environment deci
   assert.equal(resolveProjectTrust({ isProjectTrusted: () => false }, true), false);
   assert.equal(resolveProjectTrust({}, true), true);
   assert.equal(resolveProjectTrust(undefined, false), false);
+});
+
+test("restores a direct reviewer record after in-memory phase state is gone", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ima-agent-direct-continuation-"));
+  const persistence = createSessionPersistence(root, null);
+  const reference = persistence.sessionReference();
+  const reviewerSession = join(root, "reviewer.jsonl");
+  const record = {
+    reference,
+    agent: "reviewer",
+    role: "review-read",
+    resultKind: "review",
+    provider: "p",
+    model: "review-model",
+    thinking: "high",
+    sessionId: "review-session",
+    sessionFile: reviewerSession,
+    writeScope: [],
+    contractFingerprint: "review-contract",
+    status: "succeeded",
+    fresh: true,
+    followUpAllowed: true,
+    createdAt: "2026-09-11T12:00:00.000Z",
+    updatedAt: "2026-09-11T12:00:00.000Z",
+  };
+  try {
+    await writeFile(reviewerSession, "review session\n");
+    await persistence.onSessionRecord(record);
+    assert.deepEqual(await restoreSessionRecord({
+      cwd: root,
+      sessionManager: { getBranch: () => [] },
+    }, reference), {
+      record,
+      owner: null,
+      storage: "direct",
+    });
+    const nonReusableReference = persistence.sessionReference();
+    await persistence.onSessionRecord({
+      ...record,
+      reference: nonReusableReference,
+      followUpAllowed: false,
+    });
+    assert.equal(await restoreSessionRecord({
+      cwd: root,
+      sessionManager: { getBranch: () => [] },
+    }, nonReusableReference), null);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("TEST-001 keeps warmed cycle-owned references bound to their lifecycle and out of direct storage", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ima-agent-cycle-provenance-"));
+  const ownerA = {
+    schemaVersion: CYCLE_AGENT_SESSION_SCHEMA_VERSION,
+    project: "ima-pi",
+    lifecycleKey: "ima-pi:jira:WT-001-A",
+    source: "jira:WT-001-A",
+    phase: "review",
+    dispatchId: "review-a",
+  };
+  const ownerB = {
+    ...ownerA,
+    lifecycleKey: "ima-pi:jira:WT-001-B",
+    source: "jira:WT-001-B",
+    dispatchId: "review-b",
+  };
+  const context = (owner) => ({
+    cwd: root,
+    isProjectTrusted: () => false,
+    sessionManager: {
+      getBranch: () => owner ? [{ type: "custom", customType: CYCLE_PHASE_CONTEXT_ENTRY, data: owner }] : [],
+    },
+  });
+  const record = (reference) => ({
+    reference,
+    agent: "reviewer",
+    role: "review-read",
+    resultKind: "review",
+    provider: "p",
+    model: "m",
+    thinking: "high",
+    sessionId: `${reference}-session`,
+    sessionFile: join(root, `${reference.replace(/[^a-z0-9]/gi, "-")}.jsonl`),
+    writeScope: [],
+    contractFingerprint: "review-contract",
+    status: "succeeded",
+    fresh: true,
+    followUpAllowed: true,
+    createdAt: "2026-09-11T12:00:00.000Z",
+    updatedAt: "2026-09-11T12:00:00.000Z",
+  });
+  const refusedPublicFollowUp = async (owner, reference) => {
+    const result = await runAgentFollowUp({
+      ctx: context(owner),
+      reference,
+      brief: "Confirm the cached record remains lifecycle-bound.",
+    });
+    assert.deepEqual(
+      { status: result.status, error: result.error },
+      { status: "refused", error: "session_not_reusable" },
+    );
+  };
+  try {
+    const cycle = record("cycle:wt-001-reviewer");
+    await storeCycleOwnedSessionRecord({ cwd: root, owner: ownerA, record: cycle });
+    assert.equal((await restoreSessionRecord(context(ownerA), cycle.reference))?.storage, "cycle");
+    assert.equal(await restoreSessionRecord(context(ownerB), cycle.reference), null);
+    assert.equal(await restoreSessionRecord(context(null), cycle.reference), null);
+    await refusedPublicFollowUp(ownerB, cycle.reference);
+    await refusedPublicFollowUp(null, cycle.reference);
+    await assert.rejects(
+      storeDirectSessionRecord({ cwd: root, record: cycle }),
+      /direct_agent_session_invalid/,
+    );
+
+    const legacyCycle = record("t13-cycle-owned-review");
+    await storeCycleOwnedSessionRecord({ cwd: root, owner: ownerA, record: legacyCycle });
+    assert.equal((await restoreSessionRecord(context(ownerA), legacyCycle.reference))?.storage, "cycle");
+    assert.equal(await restoreSessionRecord(context(ownerB), legacyCycle.reference), null);
+    assert.equal(await restoreSessionRecord(context(null), legacyCycle.reference), null);
+    await refusedPublicFollowUp(ownerB, legacyCycle.reference);
+    await refusedPublicFollowUp(null, legacyCycle.reference);
+    await assert.rejects(
+      storeDirectSessionRecord({ cwd: root, record: legacyCycle }),
+      /direct_agent_session_cycle_owned/,
+    );
+    assert.equal(existsSync(join(root, ".ima-cycle", "direct-agent-sessions.json")), false);
+
+    const legacyDirect = record("t13-initial-review");
+    await storeDirectSessionRecord({ cwd: root, record: legacyDirect });
+    assert.equal((await restoreSessionRecord(context(null), legacyDirect.reference))?.storage, "direct");
+    assert.equal((await restoreSessionRecord(context(ownerA), legacyDirect.reference))?.storage, "memory");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("routes a phase-tagged delegated agent through the parent phase matrix", async () => {
@@ -177,6 +336,57 @@ test("unexpected mutation marks unsafe partial state and aborts settled siblings
   assert.ok(sibling.state.aborts >= 1);
   assert.equal(sibling.state.disposes, 1);
   assert.equal(unsafeChild.state.disposes, 1);
+});
+
+test("blocked ambiguous bash does not claim partial state or abort sibling work", async () => {
+  const diagnostic = "git status --short && printf '\\n-- candidates --\\n' && rg -l 'REVIEW-001|REVIEW-002' . | head -80";
+  const inspectingChild = fakeSession({ prompt: ({ listeners }) => {
+    for (const listener of listeners) {
+      listener({ type: "tool_execution_start", toolName: "bash", args: { command: diagnostic } });
+      listener({ type: "tool_execution_end", toolName: "bash", isError: true });
+    }
+  } });
+  const sibling = fakeSession();
+  const result = await run({
+    assignments: [assignment("inspect", ["owned/a"]), assignment("sibling", ["owned/b"])],
+    sessions: [{ session: inspectingChild.session }, { session: sibling.session }],
+  });
+  assert.equal(result.status, "succeeded");
+  assert.equal(result.partialEffects, false);
+  assert.deepEqual(result.unsafeEvidence, []);
+  assert.equal(sibling.state.aborts, 0);
+});
+
+test("absolute paths and failed edits inside declared ownership remain recoverable", async () => {
+  const child = fakeSession({ prompt: ({ listeners }) => {
+    for (const listener of listeners) {
+      listener({ type: "tool_execution_start", toolName: "edit", args: { path: "/repo/owned/file.txt" } });
+      listener({ type: "tool_execution_end", toolName: "edit", isError: true });
+    }
+  } });
+  const result = await run({ sessions: [{ session: child.session }] });
+  assert.equal(result.status, "succeeded");
+  assert.equal(result.partialEffects, false);
+  assert.deepEqual(result.unsafeEvidence, []);
+});
+
+test("normalizes native @ mutation paths in fresh delegated-agent observers", async () => {
+  const cases = [
+    { path: "@owned/file.txt", status: "succeeded", partialEffects: false },
+    { path: "@/repo/owned/file.txt", status: "succeeded", partialEffects: false },
+    { path: "@@owned/file.txt", status: "failed", partialEffects: true },
+    { path: "@outside/file.txt", status: "failed", partialEffects: true },
+  ];
+  for (const scenario of cases) {
+    const child = fakeSession({ prompt: ({ listeners }) => {
+      for (const listener of listeners) {
+        listener({ type: "tool_execution_start", toolName: "write", args: { path: scenario.path } });
+      }
+    } });
+    const result = await run({ sessions: [{ session: child.session }] });
+    assert.equal(result.status, scenario.status, scenario.path);
+    assert.equal(result.partialEffects, scenario.partialEffects, scenario.path);
+  }
 });
 
 test("retries one transient provider failure in a fresh session and never retries contract failures", async () => {

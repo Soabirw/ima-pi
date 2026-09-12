@@ -6,6 +6,7 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ### Added
 
+- Added an additive, fail-closed BookStack lifecycle provider that can provision approved placement, persist and read-back verify immutable lifecycle evidence, and exactly recall or reconcile interrupted operations; it does not select providers or enable live lifecycle routing.
 - Added BookStack-specific Pi search, authoritative-read, and guarded-write tools with the `/ima:bookstack-search` UX, provenance, fail-closed boundaries, and no local Qdrant/Ollama requirement.
 - Added the `ima-pi` BookStack migration producer's verified read-only `dry-run` workflow, with itemized quarantine reporting and bounded immutable inventory manifests and parts.
 - Added a read-only BookStack apply preflight and an explicitly confirmed deterministic ten-record canary, with provider-free coverage and no automatic bulk apply.
@@ -13,6 +14,9 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ### Fixed
 
+- Hardened BookStack lifecycle placement and persistence: normal persistence globally discovers one visible canonical page slug before POST, stale locator proof is rejected after authoritative reads, and a reused-shelf failure returns no speculative recovery descriptor.
+- Persisted follow-up-eligible direct/manual specialist sessions so original reviewers and implementers can resume safely when lifecycle phases run in new Pi sessions; cycle-owned references remain owner-bound.
+- Added exclusive native local-only sidecar leases for session registries and focused continuations, returning busy results without stale-lock theft; `session_cleanup_unverified` retains the lease and blocks retry. Ambiguous or unrecognized commands rejected before effects and failed owned edits do not alone imply partial writes; definite out-of-scope intent remains an interception, with native `@` target normalization preserving owned paths.
 - Preserved quarantined dry-run outcomes when an apply report is constructed, retaining migration provenance in the final report.
 - Reused the established `BOOKSTACK_BASE_URL`, tolerated append-only lifecycle deltas without weakening approved-source checks, replaced repeated catalog scans with one bounded catalog, and stopped further writes on systemic apply failures without assuming ownership of administrator-managed guest/public policy.
 

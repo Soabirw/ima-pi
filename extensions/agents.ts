@@ -57,16 +57,24 @@ import {
 import { loadImaConfig } from "../lib/ima-config.ts";
 import { admitVisionImages, publicVisionSource } from "../lib/ima-vision.ts";
 import { runFocusedAgentContinuation } from "../lib/ima-agent-continuation.ts";
+import type { NativeFileLease } from "../lib/ima-agent-session-lock.ts";
 import {
   createCycleSessionReference,
+  createDirectSessionReference,
   cycleSessionOwnerFromEntries,
+  findCycleOwnedSession,
+  isCycleSessionReference,
   loadCycleOwnedSession,
+  loadDirectSessionRecord,
+  sameCycleSessionLifecycle,
   storeCycleOwnedSessionRecord,
+  storeDirectSessionRecord,
   type CycleSessionOwner,
 } from "../lib/ima-agent-sessions.ts";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const sessions = new Map<string, SessionRecord>();
+const cycleSessionOwners = new Map<string, CycleSessionOwner>();
 const continuingSessions = new Set<string>();
 const agentDir = getAgentDir();
 export function resolveProjectTrust(ctx: Partial<Pick<ExtensionContext, "isProjectTrusted">> | undefined, fallback = process.env.IMA_PI_PROJECT_TRUSTED === "true"): boolean {
@@ -198,11 +206,32 @@ const observedIdentity = (session: any) => ({
   sessionFile: session.sessionFile ?? "",
 });
 
-const mutationAttemptUnsafe = (event: any, assignment: DelegationAssignment) => {
+const eventOwnershipTarget = (cwd: string, target: unknown) => {
+  const nativeTarget = typeof target === "string" && target.startsWith("@")
+    ? target.slice(1)
+    : target;
+  if (typeof nativeTarget !== "string" || !isAbsolute(nativeTarget)) return nativeTarget;
+  const projectRoot = resolve(cwd);
+  const relativeTarget = relative(projectRoot, resolve(nativeTarget));
+  return withinRoot(projectRoot, resolve(nativeTarget)) ? relativeTarget : nativeTarget;
+};
+
+const mutationAttemptUnsafe = (
+  event: any,
+  assignment: DelegationAssignment,
+  cwd: string,
+) => {
   if (event?.type !== "tool_execution_start") return false;
-  if (event.toolName === "write" || event.toolName === "edit") return !isOwnedTarget(event.args?.path, assignment.writeScope);
-  if (event.toolName === "bash") return classifyBashCommand(event.args?.command, assignment.writeScope).kind === "unsafe-ambiguous";
-  return false;
+  if (event.toolName === "write" || event.toolName === "edit") {
+    return !isOwnedTarget(
+      eventOwnershipTarget(cwd, event.args?.path),
+      assignment.writeScope,
+    );
+  }
+  if (event.toolName !== "bash") return false;
+  const classification = classifyBashCommand(event.args?.command, assignment.writeScope);
+  return classification.kind === "unsafe-ambiguous"
+    && classification.reason === "target_out_of_scope";
 };
 
 type CoordinatorDependencies = {
@@ -360,7 +389,7 @@ export async function coordinateDelegation(input: CoordinatorInput) {
           if (event?.type === "agent_start") emit({ type: "child-running", id: assignment.id, at: deps.activityClock(), attempt });
           if (event?.type === "agent_settled") emit({ type: "child-settled", id: assignment.id, at: deps.activityClock() });
           if (event?.type === "tool_execution_start") emit({ type: "child-activity", id: assignment.id, at: deps.activityClock(), category: classifyDelegationActivity(event.toolName, event.args) });
-          if (mutationAttemptUnsafe(event, assignment) || (event?.type === "tool_execution_end" && event.isError && ["write", "edit", "bash"].includes(event.toolName))) markUnsafe(assignment);
+          if (mutationAttemptUnsafe(event, assignment, input.cwd)) markUnsafe(assignment);
         }) ?? unsubscribe;
         if (cancelled || unsafe) { await session.abort?.(); throw new Error(cancelled ? "cancelled" : "unsafe-partial-state"); }
         const brief = buildChildBrief({ projectRoot: input.cwd, assignment, agent, images: admitted.value.map(({ source }) => publicVisionSource(source)) });
@@ -475,7 +504,11 @@ type ContinuationInput = {
   signal?: AbortSignal;
   sessionStore?: Map<string, SessionRecord>;
   onSessionRecord?: (record: SessionRecord) => Promise<void> | void;
-  dependencies?: CoordinatorDependencies & { openManager?: (path: string) => unknown; fileExists?: (path: string) => boolean };
+  dependencies?: CoordinatorDependencies & {
+    openManager?: (path: string) => unknown;
+    fileExists?: (path: string) => boolean;
+    acquireSessionLock?: (path: string) => Promise<NativeFileLease | null>;
+  };
 };
 
 // REVIEW-004: reopen and execute the exact persisted session after status, independence,
@@ -493,10 +526,12 @@ export async function runFocusedContinuation(input: ContinuationInput) {
     dependencies: {
       createSession: input.dependencies?.createSession,
       openManager: input.dependencies?.openManager,
+      acquireSessionLock: input.dependencies?.acquireSessionLock,
       scopedTools: input.dependencies?.scopedTools ?? createScopedTools,
       toolNames: agentToolNames,
       finalAssistant,
-      mutationAttemptUnsafe,
+      mutationAttemptUnsafe: (event, assignment, cwd) =>
+        mutationAttemptUnsafe(event, assignment, cwd),
       clock: input.dependencies?.clock ?? now,
       fileExists: input.dependencies?.fileExists,
     },
@@ -506,41 +541,87 @@ export async function runFocusedContinuation(input: ContinuationInput) {
 const cycleOwner = (ctx: Pick<ExtensionContext, "sessionManager">): CycleSessionOwner | null =>
   cycleSessionOwnerFromEntries(ctx.sessionManager.getBranch?.() ?? []);
 
-const restoreCycleSessionRecord = async (ctx: Pick<ExtensionContext, "cwd" | "sessionManager">, reference: string) => {
-  const owner = cycleOwner(ctx);
-  if (!owner) {
-    const record = sessions.get(reference) ?? null;
-    return record ? { record, owner: null } : null;
-  }
-  const persisted = await loadCycleOwnedSession({ cwd: ctx.cwd, owner, reference });
-  if (persisted) sessions.set(persisted.record.reference, persisted.record);
-  return persisted ? { record: persisted.record, owner: persisted.owner } : null;
+const cacheCycleOwnedSession = (record: SessionRecord, owner: CycleSessionOwner) => {
+  sessions.set(record.reference, structuredClone(record));
+  cycleSessionOwners.set(record.reference, structuredClone(owner));
 };
 
-const validCycleContinuationSession = async (cwd: string, record: SessionRecord) => {
-  try {
-    const [root, fileDetails, file] = await Promise.all([
-      realpath(cwd),
-      lstat(record.sessionFile),
-      realpath(record.sessionFile),
-    ]);
-    if (!fileDetails.isFile() || fileDetails.isSymbolicLink()) return false;
-    const manager = SessionManager.open(file);
-    const header = manager.getHeader();
-    const managerFile = manager.getSessionFile();
-    return Boolean(header)
-      && header.id === record.sessionId
-      && resolve(header.cwd) === root
-      && manager.getSessionId() === record.sessionId
-      && typeof managerFile === "string"
-      && resolve(managerFile) === file
-      && resolve(manager.getCwd()) === root;
-  } catch {
-    return false;
-  }
+export const createSessionPersistence = (cwd: string, owner: CycleSessionOwner | null) => {
+  if (owner) return {
+    sessionReference: () => createCycleSessionReference(),
+    onSessionRecord: async (record: SessionRecord) => {
+      await storeCycleOwnedSessionRecord({ cwd, owner, record });
+      cacheCycleOwnedSession(record, owner);
+    },
+  };
+  return {
+    sessionReference: () => createDirectSessionReference(),
+    onSessionRecord: (record: SessionRecord) => record.followUpAllowed
+      ? storeDirectSessionRecord({ cwd, record })
+      : undefined,
+  };
 };
 
-const runAgentFollowUp = async (input: {
+type RestoredSessionRecord = {
+  record: SessionRecord;
+  owner: CycleSessionOwner | null;
+  storage: "cycle" | "direct" | "memory";
+};
+
+const restoredCycleSession = (record: SessionRecord, owner: CycleSessionOwner): RestoredSessionRecord => ({
+  record: structuredClone(record),
+  owner: structuredClone(owner),
+  storage: "cycle",
+});
+
+export const restoreSessionRecord = async (
+  ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+  reference: string,
+  capturedOwner: CycleSessionOwner | null = cycleOwner(ctx),
+): Promise<RestoredSessionRecord | null> => {
+  const normalizedReference = text(reference);
+  if (!normalizedReference) return null;
+  if (capturedOwner) {
+    const persisted = await loadCycleOwnedSession({
+      cwd: ctx.cwd,
+      owner: capturedOwner,
+      reference: normalizedReference,
+    });
+    if (persisted) {
+      cacheCycleOwnedSession(persisted.record, persisted.owner);
+      return restoredCycleSession(persisted.record, persisted.owner);
+    }
+    const cachedOwner = cycleSessionOwners.get(normalizedReference);
+    const cachedRecord = sessions.get(normalizedReference);
+    if (cachedOwner && cachedRecord && sameCycleSessionLifecycle(cachedOwner, capturedOwner)) {
+      return restoredCycleSession(cachedRecord, cachedOwner);
+    }
+  }
+
+  const cachedOwner = cycleSessionOwners.get(normalizedReference);
+  const cachedRecord = sessions.get(normalizedReference);
+  if (cachedOwner && cachedRecord) return null;
+  if (isCycleSessionReference(normalizedReference)) return null;
+
+  const knownCycleRecord = await findCycleOwnedSession({
+    cwd: ctx.cwd,
+    reference: normalizedReference,
+  });
+  if (knownCycleRecord) {
+    cacheCycleOwnedSession(knownCycleRecord.record, knownCycleRecord.owner);
+    return capturedOwner && sameCycleSessionLifecycle(knownCycleRecord.owner, capturedOwner)
+      ? restoredCycleSession(knownCycleRecord.record, knownCycleRecord.owner)
+      : null;
+  }
+
+  if (cachedRecord) return { record: structuredClone(cachedRecord), owner: null, storage: "memory" };
+  const direct = await loadDirectSessionRecord({ cwd: ctx.cwd, reference: normalizedReference });
+  if (!direct) return null;
+  sessions.set(direct.reference, structuredClone(direct));
+  return { record: direct, owner: null, storage: "direct" };
+};
+
+export const runAgentFollowUp = async (input: {
   ctx: ExtensionContext;
   reference: string;
   brief: string;
@@ -550,29 +631,37 @@ const runAgentFollowUp = async (input: {
   const brief = typeof input.brief === "string" && input.brief.trim().length <= 16_000
     ? input.brief.trim()
     : "";
+  const cwd = input.ctx.cwd;
+  const owner = cycleOwner(input.ctx);
+  const trusted = resolveProjectTrust(input.ctx);
   if (!reference || !brief) return createDelegationResult({ id: reference || "unknown", status: "refused", attempts: 0, error: "session_follow_up_invalid", session: null });
   if (continuingSessions.has(reference)) return createDelegationResult({ id: reference, status: "refused", attempts: 0, error: "session_follow_up_busy", session: null });
   continuingSessions.add(reference);
   try {
-    const restored = await restoreCycleSessionRecord(input.ctx, reference);
+    const restored = await restoreSessionRecord({ cwd, sessionManager: input.ctx.sessionManager }, reference, owner);
     const record = restored?.record;
-    const loaded = await definitions(input.ctx.cwd, resolveProjectTrust(input.ctx));
+    const loaded = await definitions(cwd, trusted);
     const agent = loaded.definitions.find((item) => item.name === record?.agent);
-    if (!record || !agent) return createDelegationResult({ id: reference, status: "refused", attempts: 0, error: "session_not_reusable", session: null });
-    if (restored?.owner && !await validCycleContinuationSession(input.ctx.cwd, record)) {
+    if (!record || !agent) {
       return createDelegationResult({ id: reference, status: "refused", attempts: 0, error: "session_not_reusable", session: null });
     }
-    const owner = restored?.owner ?? cycleOwner(input.ctx);
+    const canonicalCwd = await realpath(cwd);
     const runtime = await ModelRuntime.create();
+    const onSessionRecord = restored.storage === "cycle" && restored.owner
+      ? async (updated: SessionRecord) => {
+        await storeCycleOwnedSessionRecord({ cwd: canonicalCwd, owner: restored.owner!, record: updated });
+        cacheCycleOwnedSession(updated, restored.owner!);
+      }
+      : (updated: SessionRecord) => storeDirectSessionRecord({ cwd: canonicalCwd, record: updated });
     return await runFocusedContinuation({
       record,
       agent,
       brief,
       runtime,
-      cwd: input.ctx.cwd,
+      cwd: canonicalCwd,
       signal: input.signal,
       sessionStore: sessions,
-      ...(owner ? { onSessionRecord: (updated: SessionRecord) => storeCycleOwnedSessionRecord({ cwd: input.ctx.cwd, owner, record: updated }) } : {}),
+      onSessionRecord,
     });
   } catch {
     return createDelegationResult({ id: reference, status: "refused", attempts: 0, error: "session_record_unavailable", session: null });
@@ -610,7 +699,7 @@ export default function agents(pi: ExtensionAPI) {
         if (!config || loaded.diagnostics.length) return { content: [{ type: "text", text: JSON.stringify({ status: "blocked", errors: [...config?.diagnostics ?? [], ...loaded.diagnostics] }) }], details: { status: "blocked" } };
         const valid = validateDelegationRequest(request, loaded.definitions);
         if (!valid.valid) return { content: [{ type: "text", text: JSON.stringify({ status: "blocked", errors: valid.errors }) }], details: { status: "blocked" } };
-        const owner = cycleOwner(ctx);
+        const persistence = createSessionPersistence(ctx.cwd, cycleOwner(ctx));
         result = await coordinateDelegation({
           cwd: ctx.cwd,
           request,
@@ -621,12 +710,7 @@ export default function agents(pi: ExtensionAPI) {
           onActivity: project,
           signal,
           sessionStore: sessions,
-          ...(owner
-            ? {
-              sessionReference: () => createCycleSessionReference(),
-              onSessionRecord: (record: SessionRecord) => storeCycleOwnedSessionRecord({ cwd: ctx.cwd, owner, record }),
-            }
-            : {}),
+          ...persistence,
         });
       } finally {
         if (ctx.mode === "tui") {

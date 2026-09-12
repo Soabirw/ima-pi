@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { resolve } from "node:path";
 import test from "node:test";
 import { runFocusedContinuation } from "../extensions/agents.ts";
 import { agentContractFingerprint, canResumeSession } from "../lib/ima-delegation.ts";
@@ -22,20 +23,23 @@ const report = "## Files\nlib/a/file.ts\n\n## Verification\npassed";
 
 const fakeSession = (overrides = {}) => {
   const reportText = overrides.text ?? report;
-  const state = { prompts: [], disposes: 0, unsubscribes: 0 };
-  return {
-    state,
-    session: {
-      messages: overrides.messages ?? [{ role: "assistant", stopReason: "stop", content: reportText ? [{ type: "text", text: reportText }] : [] }],
-      model: overrides.model ?? { provider: "p", id: "m" }, thinkingLevel: overrides.thinking ?? "high",
-      sessionId: overrides.sessionId ?? "s", sessionFile: overrides.sessionFile ?? "/sessions/a.jsonl",
-      subscribe: () => () => { state.unsubscribes += 1; },
-      prompt: async (brief) => { state.prompts.push(brief); await overrides.prompt?.(); },
-      waitForIdle: async () => overrides.waitForIdle?.(),
-      getLastAssistantText: () => reportText,
-      dispose: () => { state.disposes += 1; }, abort: async () => undefined,
+  const state = { prompts: [], aborts: 0, waits: 0, disposes: 0, unsubscribes: 0 };
+  const listeners = [];
+  const session = {
+    messages: overrides.messages ?? [{ role: "assistant", stopReason: "stop", content: reportText ? [{ type: "text", text: reportText }] : [] }],
+    model: overrides.model ?? { provider: "p", id: "m" }, thinkingLevel: overrides.thinking ?? "high",
+    sessionId: overrides.sessionId ?? "s", sessionFile: overrides.sessionFile ?? "/sessions/a.jsonl",
+    subscribe: (listener) => {
+      listeners.push(listener);
+      return () => { state.unsubscribes += 1; };
     },
+    prompt: async (brief) => { state.prompts.push(brief); await overrides.prompt?.({ listeners, session }); },
+    waitForIdle: () => { state.waits += 1; return overrides.waitForIdle?.({ listeners, session, state }); },
+    getLastAssistantText: () => reportText,
+    dispose: () => { state.disposes += 1; return overrides.dispose?.({ listeners, session, state }); },
+    abort: () => { state.aborts += 1; return overrides.abort?.({ listeners, session, state }); },
   };
+  return { state, session };
 };
 
 const continuation = ({
@@ -45,24 +49,27 @@ const continuation = ({
   modelRuntime = runtime,
   exists = true,
   manager = {},
+  acquireSessionLock = async (path) => ({ target: path, release: async () => undefined }),
+  onSessionRecord,
 } = {}) => {
   const store = new Map([[record.reference, record]]);
   let opened = 0;
   let created = 0;
   const promise = runFocusedContinuation({
-    record, agent: definition, brief: "Fix the retained finding", runtime: modelRuntime, cwd: "/repo", sessionStore: store,
+    record, agent: definition, brief: "Fix the retained finding", runtime: modelRuntime, cwd: "/repo", sessionStore: store, onSessionRecord,
     dependencies: {
       fileExists: () => exists,
       openManager: (path) => {
         opened += 1;
-        assert.equal(path, record.sessionFile);
+        assert.equal(path, resolve(record.sessionFile));
         return {
           getSessionId: () => manager.sessionId ?? record.sessionId,
-          getSessionFile: () => manager.sessionFile ?? record.sessionFile,
+          getSessionFile: () => manager.sessionFile ?? path,
           getCwd: () => manager.cwd ?? "/repo",
         };
       },
       createSession: async () => { created += 1; return { session: fake.session }; },
+      acquireSessionLock,
       scopedTools: () => [], clock: () => "new",
     },
   });
@@ -147,6 +154,126 @@ test("refuses manager, model, thinking, session ID, and session-file drift befor
     assert.equal(run.store.get("a").updatedAt, "old", scenario.name);
     assert.equal(run.fake.state.disposes, scenario.created, scenario.name);
   }
+});
+
+test("normalizes native @ mutation paths in continued-agent observers", async () => {
+  const cases = [
+    { path: "@lib/a/file.ts", status: "succeeded" },
+    { path: "@/repo/lib/a/file.ts", status: "succeeded" },
+    { path: "@@lib/a/file.ts", status: "failed" },
+    { path: "@outside/file.ts", status: "failed" },
+  ];
+  for (const scenario of cases) {
+    const fake = fakeSession({ prompt: ({ listeners }) => {
+      for (const listener of listeners) {
+        listener({ type: "tool_execution_start", toolName: "edit", args: { path: scenario.path } });
+      }
+    } });
+    const run = continuation({ fake });
+    const result = await run.promise;
+    assert.equal(result.status, scenario.status, scenario.path);
+    assert.equal(fake.state.prompts.length, 1, scenario.path);
+  }
+});
+
+const trackedLease = () => {
+  const held = new Set();
+  let releases = 0;
+  return {
+    acquireSessionLock: async (path) => {
+      const key = resolve(path);
+      if (held.has(key)) return null;
+      held.add(key);
+      return {
+        target: key,
+        release: async () => {
+          releases += 1;
+          held.delete(key);
+        },
+      };
+    },
+    releases: () => releases,
+  };
+};
+
+const aliasedRecord = () => makeRecord({ sessionFile: "/sessions/./a.jsonl" });
+
+test("fails closed and retains the lease when owned cleanup cannot be verified", async () => {
+  const cases = [
+    {
+      name: "synchronous abort failure",
+      fake: () => fakeSession({
+        prompt: () => { throw new Error("provider timeout"); },
+        abort: () => { throw new Error("native abort failed"); },
+      }),
+    },
+    {
+      name: "rejected abort failure",
+      fake: () => fakeSession({
+        prompt: () => { throw new Error("provider timeout"); },
+        abort: () => Promise.reject(new Error("native abort rejected")),
+      }),
+    },
+    {
+      name: "synchronous idle failure",
+      fake: () => fakeSession({
+        waitForIdle: () => { throw new Error("provider timeout"); },
+      }),
+    },
+    {
+      name: "rejected idle failure",
+      fake: () => fakeSession({
+        waitForIdle: () => Promise.reject(new Error("provider timeout")),
+      }),
+    },
+    {
+      name: "synchronous disposal failure",
+      fake: () => fakeSession({
+        dispose: () => { throw new Error("native dispose failed"); },
+      }),
+    },
+    {
+      name: "rejected disposal failure",
+      fake: () => fakeSession({
+        dispose: () => Promise.reject(new Error("native dispose rejected")),
+      }),
+    },
+  ];
+  for (const scenario of cases) {
+    const lease = trackedLease();
+    const fake = scenario.fake();
+    const first = continuation({ fake, acquireSessionLock: lease.acquireSessionLock });
+    const result = await first.promise;
+    assert.equal(result.status, "failed", scenario.name);
+    assert.equal(result.error, "session_cleanup_unverified", scenario.name);
+    assert.equal(result.attempts, 1, scenario.name);
+    assert.deepEqual(first.counts(), { opened: 1, created: 1 }, scenario.name);
+    assert.equal(fake.state.prompts.length, 1, scenario.name);
+    assert.equal(lease.releases(), 0, scenario.name);
+
+    const alias = continuation({
+      record: aliasedRecord(),
+      acquireSessionLock: lease.acquireSessionLock,
+    });
+    const blocked = await alias.promise;
+    assert.equal(blocked.status, "refused", scenario.name);
+    assert.equal(blocked.error, "session_follow_up_busy", scenario.name);
+    assert.deepEqual(alias.counts(), { opened: 0, created: 0 }, scenario.name);
+  }
+});
+
+test("releases the lease after verified cleanup so an alias can continue", async () => {
+  const lease = trackedLease();
+  const first = continuation({ acquireSessionLock: lease.acquireSessionLock });
+  assert.equal((await first.promise).status, "succeeded");
+  assert.equal(lease.releases(), 1);
+
+  const alias = continuation({
+    record: aliasedRecord(),
+    acquireSessionLock: lease.acquireSessionLock,
+  });
+  assert.equal((await alias.promise).status, "succeeded");
+  assert.equal(lease.releases(), 2);
 });
 
 test("does not relabel prior session text after an empty aborted continuation", async () => {

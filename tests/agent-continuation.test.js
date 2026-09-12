@@ -6,10 +6,13 @@ import test from "node:test";
 import {
   CYCLE_AGENT_SESSION_SCHEMA_VERSION,
   CYCLE_PHASE_CONTEXT_ENTRY,
+  createDirectSessionReference,
   cycleSessionOwnerFromEntries,
   loadCycleOwnedSession,
   loadCycleOwnedSessionRecord,
+  loadDirectSessionRecord,
   storeCycleOwnedSessionRecord,
+  storeDirectSessionRecord,
   validateCycleOwnedSessionRecord,
   validateCycleSessionOwner,
 } from "../lib/ima-agent-sessions.ts";
@@ -18,6 +21,7 @@ const TIMESTAMP = "2026-08-04T18:00:00.000Z";
 const UPDATED_TIMESTAMP = "2026-08-04T18:01:00.000Z";
 const sessionFile = (root) => join(root, "sessions", "reviewer-session.jsonl");
 const sessionsFile = (root) => join(root, ".ima-cycle", "agent-sessions.json");
+const directSessionsFile = (root) => join(root, ".ima-cycle", "direct-agent-sessions.json");
 const cycleOwner = (overrides = {}) => ({
   schemaVersion: CYCLE_AGENT_SESSION_SCHEMA_VERSION,
   project: "ima-pi",
@@ -140,6 +144,44 @@ test("stores records under the project .ima-cycle directory and safely updates a
   }
 });
 
+test("persists direct follow-up sessions across fresh phase processes", async () => {
+  const root = await createProject();
+  try {
+    const reference = createDirectSessionReference();
+    const initial = specialistRecord(root, { reference });
+    const updated = specialistRecord(root, { reference, updatedAt: UPDATED_TIMESTAMP });
+
+    await storeDirectSessionRecord({ cwd: root, record: initial });
+    await storeDirectSessionRecord({ cwd: root, record: updated });
+
+    const persisted = JSON.parse(await readFile(directSessionsFile(root), "utf8"));
+    assert.match(reference, /^direct:[0-9a-f-]{36}$/);
+    assert.deepEqual((await readdir(join(root, ".ima-cycle"))).sort(), [".gitignore", "direct-agent-sessions.json"]);
+    assert.deepEqual(persisted, {
+      schemaVersion: CYCLE_AGENT_SESSION_SCHEMA_VERSION,
+      records: [updated],
+    });
+    assert.deepEqual(await loadDirectSessionRecord({ cwd: root, reference }), updated);
+    assert.equal(await loadDirectSessionRecord({ cwd: root, reference: "direct:missing" }), null);
+    assert.equal(await readFile(join(root, ".ima-cycle", ".gitignore"), "utf8"), "*\n");
+
+    await assert.rejects(
+      storeDirectSessionRecord({ cwd: root, record: { ...updated, sessionId: "replacement" } }),
+      /direct_agent_session_conflict/,
+    );
+    await assert.rejects(
+      storeDirectSessionRecord({ cwd: root, record: { ...updated, reference: "direct:no-follow-up", followUpAllowed: false } }),
+      /direct_agent_session_invalid/,
+    );
+    await assert.rejects(
+      storeDirectSessionRecord({ cwd: root, record: { ...updated, reference: "direct:failed", status: "failed" } }),
+      /direct_agent_session_invalid/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("serializes concurrent cycle-owned specialist records without losing either reference", async () => {
   const root = await createProject();
   try {
@@ -243,7 +285,11 @@ test("fails closed rather than writing through a .ima-cycle symlink", async () =
     await assert.rejects(
       storeCycleOwnedSessionRecord({ cwd: root, owner: cycleOwner(), record: specialistRecord(root) }),
     );
+    await assert.rejects(
+      storeDirectSessionRecord({ cwd: root, record: specialistRecord(root, { reference: "direct:reviewer" }) }),
+    );
     await assert.rejects(readFile(join(outside, "agent-sessions.json"), "utf8"));
+    await assert.rejects(readFile(join(outside, "direct-agent-sessions.json"), "utf8"));
   } finally {
     await Promise.all([
       rm(root, { recursive: true, force: true }),
