@@ -15,6 +15,10 @@ import {
   reassembleInstitutionalManifest,
   storeInstitutionalManifest,
 } from "../lib/qdrant-corpus.ts";
+import {
+  prepareLifecycleArtifact,
+  validateLifecycleRequest,
+} from "../lib/ima-lifecycle.ts";
 
 const success = (data) => ({ success: true, data });
 const failure = (code) => corpusFailure(code);
@@ -158,6 +162,42 @@ const seedLifecycleRecord = async (corpus, detail, phase = "plan", suffix = "see
       sourceRefs: identity.sourceRefs,
     },
     createdAt: "2026-08-27T00:00:00.000Z",
+    operations: corpus,
+  });
+  assert.equal(stored.success, true);
+  return stored.data;
+};
+
+const seedHistoricalCloseoutDocument = async (corpus, outcome = "READY") => {
+  const request = {
+    type: "closeout",
+    identity,
+    summary: "Historical documentation evidence predates the document lifecycle phase.",
+    artifact: [
+      "# Historical documentation",
+      "",
+      "This immutable closeout record predates first-class document persistence.",
+      "",
+      `<!-- ima-cycle outcome: phase=document; outcome=${outcome} -->`,
+    ].join("\n"),
+  };
+  const valid = validateLifecycleRequest(request);
+  assert.equal(valid.valid, true);
+  const prepared = prepareLifecycleArtifact(valid);
+  assert.equal(prepared.valid, true);
+  const stored = await storeInstitutionalManifest({
+    record: {
+      recordKey: prepared.data.recordKey,
+      project: identity.project,
+      site: "",
+      repo: "ima-pi",
+      lifecycleKey,
+      phase: "closeout",
+      summary: valid.summary,
+      detail: prepared.data.artifact,
+      sourceRefs: identity.sourceRefs,
+    },
+    createdAt: "2026-09-21T00:00:00.000Z",
     operations: corpus,
   });
   assert.equal(stored.success, true);
@@ -536,6 +576,55 @@ test("corpus lifecycle reconciliation adapts verified direct detail to the exist
   assert.equal(await recallCorpusLifecycle("malformed", corpus), null);
 });
 
+test("document recall combines canonical records with bounded historical closeout compatibility", async () => {
+  const corpus = createCorpus();
+  const canonical = await coordinateLifecycle({
+    type: "document",
+    identity,
+    summary: "READY: canonical documentation evidence is stored separately from closeout.",
+    artifact: "# Documentation\n\nREADY: canonical documentation evidence is complete.",
+  }, { corpus, now: () => new Date("2026-09-22T00:00:00.000Z") });
+  const historical = await seedHistoricalCloseoutDocument(corpus);
+  const calls = [];
+  const recallInstitutional = corpus.recallInstitutional;
+  corpus.recallInstitutional = async (selection) => {
+    calls.push(selection);
+    return recallInstitutional(selection);
+  };
+
+  const recalled = await recallCorpusLifecycle(`${lifecycleKey} document`, corpus);
+  assert.deepEqual(calls, [
+    { lifecycleKey, phase: "document", limit: 10 },
+    { lifecycleKey, phase: "closeout", limit: 10 },
+  ]);
+  assert.deepEqual(recalled.structuredContent.results.map(({ id, phase }) => ({ id, phase })), [
+    { id: canonical.artifactId, phase: "document" },
+    { id: historical.id, phase: "closeout" },
+  ]);
+  assert.equal(recalled.structuredContent.results.every(({ lifecycleKey: key }) => key === lifecycleKey), true);
+});
+
+test("document recall fails closed when mixed historical detail is incomplete", async () => {
+  const corpus = createCorpus();
+  const canonical = await coordinateLifecycle({
+    type: "document",
+    identity,
+    summary: "READY: canonical documentation evidence for mixed-history validation.",
+    artifact: "# Documentation\n\nREADY: canonical evidence.",
+  }, { corpus, now: () => new Date("2026-09-22T00:00:00.000Z") });
+  assert.equal(canonical.status, "completed");
+  await seedHistoricalCloseoutDocument(corpus);
+  const getInstitutional = corpus.getInstitutional;
+  corpus.getInstitutional = async (recordKey) => {
+    const result = await getInstitutional(recordKey);
+    if (!result.success || result.data.phase !== "closeout") return result;
+    const { detail: _detail, ...incomplete } = result.data;
+    return success(incomplete);
+  };
+
+  assert.equal(await recallCorpusLifecycle(`${lifecycleKey} document`, corpus), null);
+});
+
 test("corpus lifecycle reconciliation rejects C1 and trim-sensitive C0 record keys", async () => {
   const marker = `<!-- ima-lifecycle verification: lifecycle_key=${lifecycleKey}; nonce=01234567-89ab-cdef-0123-456789abcdef; phase=plan; jira_key=; taskwarrior_uuid=${identity.taskwarriorUuid}; outcome=completed -->`;
   const malformedRecordKeys = [
@@ -758,6 +847,54 @@ test("lifecycle stores artifacts over 44 KB as multiple vectorless chunks and re
   const full = await corpus.getInstitutional(manifests[0].payload.record_key);
   assert.equal(full.success, true);
   assert.match(full.data.detail, /é{100}/);
+});
+
+test("persists markerless manual documentation outcomes without treating persistence as readiness", async () => {
+  for (const outcome of ["READY", "BLOCKED"]) {
+    const corpus = createCorpus();
+    const summary = `${outcome}: manual documentation assessment.`;
+    const artifact = `# Documentation\n\n${outcome}: manual documentation assessment.`;
+    const result = await coordinateLifecycle({
+      type: "document",
+      identity,
+      summary,
+      artifact,
+    }, { corpus, now: () => new Date("2026-09-23T00:00:00.000Z") });
+
+    assert.equal(result.status, "completed", outcome);
+    assert.notEqual(result.status, outcome, outcome);
+    assert.equal(result.phase, "document", outcome);
+    assert.equal(result.receiptAccepted, true, outcome);
+    assert.equal(result.semanticRecall.matched, true, outcome);
+    const stored = await corpus.getInstitutional(result.recordKey);
+    assert.equal(stored.success, true, outcome);
+    assert.equal(stored.data.phase, "document", outcome);
+    assert.equal(stored.data.summary, summary, outcome);
+    assert.equal(stored.data.detail.includes(artifact), true, outcome);
+    assert.equal(stored.data.detail.includes("ima-cycle outcome:"), false, outcome);
+  }
+});
+
+test("rejects a new closeout write carrying document evidence before corpus access", async () => {
+  let corpusAccesses = 0;
+  const corpus = new Proxy({}, {
+    get: () => {
+      corpusAccesses += 1;
+      return undefined;
+    },
+  });
+  const result = await coordinateLifecycle({
+    type: "closeout",
+    identity,
+    summary: "Historical-style documentation must not be written as closeout.",
+    artifact: "# Documentation\n\n<!-- ima-cycle outcome: phase=document; outcome=READY -->",
+  }, { corpus });
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.artifactId, null);
+  assert.equal(result.recordKey, null);
+  assert.equal(result.error.code, "closeout_document_phase_forbidden");
+  assert.equal(corpusAccesses, 0);
 });
 
 test("lifecycle rejects missing summaries and request-bound violations before corpus effects", async () => {

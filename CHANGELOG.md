@@ -6,6 +6,7 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ### Added
 
+- Added a first-class closed `document` lifecycle phase for manual and soft-cycle documentation, with verified persistence and exact recall/reassembly; closeout remains separate and human-authorized, while explicitly verified historical document evidence retains bounded fail-closed compatibility.
 - Added an additive Qdrant lifecycle provider with strict detached projections, immutable persistence verified by direct read-back, exact get/reconcile, and bounded complete recall for schema-v1/v2 evidence; live selection, pinning, routing, fallback, repair, migration, and external-service validation remain out of scope.
 - Added an additive, fail-closed BookStack lifecycle provider that can provision approved placement, persist and read-back verify immutable lifecycle evidence, and exactly recall or reconcile interrupted operations; it does not select providers or enable live lifecycle routing.
 - Added BookStack-specific Pi search, authoritative-read, and guarded-write tools with the `/ima:bookstack-search` UX, provenance, fail-closed boundaries, and no local Qdrant/Ollama requirement.

@@ -28,7 +28,16 @@ import {
   validateCycleState,
 } from "../lib/ima-cycle.ts";
 import { parseCycleRecord, serializeCycleRecord } from "../lib/ima-cycle-store.ts";
-import { buildLifecycleArtifact } from "../lib/ima-lifecycle.ts";
+import {
+  buildLifecycleArtifact,
+  prepareLifecycleArtifact,
+  validateLifecycleRequest,
+} from "../lib/ima-lifecycle.ts";
+import {
+  normalizeInstitutionalManifest,
+  normalizeInstitutionalRecord,
+} from "../lib/qdrant-corpus.ts";
+import { filterImportedPlanLineage } from "../lib/ima-cycle-plan.ts";
 import {
   coordinateCycleClose,
   coordinateCycleReconcile,
@@ -80,7 +89,10 @@ const lifecycleObservation = (state, phase, outcome, toolCallId = `${phase}-tool
 const lifecycleVerification = (state, phase, options = {}) => {
   const jiraKey = state.source.type === "jira" ? state.source.key : "";
   const taskwarriorUuid = state.source.type === "taskwarrior" ? state.source.uuid : "";
-  return `<!-- ima-lifecycle verification: lifecycle_key=${options.lifecycleKey ?? state.lifecycleKey}; nonce=test-nonce; phase=${options.lifecyclePhase ?? lifecycleTypeForPhase(phase)}; jira_key=${options.jiraKey ?? jiraKey}; taskwarrior_uuid=${options.taskwarriorUuid ?? taskwarriorUuid}; outcome=${options.lifecycleOutcome ?? "completed"} -->`;
+  const planeIdentity = state.source.type === "plane"
+    ? `; plane_workspace=${options.planeWorkspace ?? state.source.workspace}; plane_work_item=${options.planeWorkItem ?? `${state.source.project}-${state.source.sequenceId}`}`
+    : "";
+  return `<!-- ima-lifecycle verification: lifecycle_key=${options.lifecycleKey ?? state.lifecycleKey}; nonce=test-nonce; phase=${options.lifecyclePhase ?? lifecycleTypeForPhase(phase)}; jira_key=${options.jiraKey ?? jiraKey}; taskwarrior_uuid=${options.taskwarriorUuid ?? taskwarriorUuid}${planeIdentity}; outcome=${options.lifecycleOutcome ?? "completed"} -->`;
 };
 
 const persistedRecord = (state, phase, outcome, options = {}) => ({
@@ -92,6 +104,147 @@ const persistedRecord = (state, phase, outcome, options = {}) => ({
 const vestigeSearch = (results = []) => ({ structuredContent: { results } });
 
 const reviewUuid = (number) => `00000000-0000-4000-8000-${String(number).padStart(12, "0")}`;
+
+const lifecycleIdentityForState = (state, priorArtifactIds, overrides = {}) => ({
+  project: IMA_PROJECT,
+  lifecycleKey: state.lifecycleKey,
+  lifecycleRootMemoryId: "",
+  taskwarriorProject: state.source.type === "taskwarrior" ? state.source.project : "",
+  taskwarriorTask: state.source.type === "taskwarrior" ? state.source.uuid : "",
+  taskwarriorUuid: state.source.type === "taskwarrior" ? state.source.uuid : "",
+  jiraKey: state.source.type === "jira" ? state.source.key : "",
+  ...(state.source.type === "plane"
+    ? {
+      planeWorkspace: state.source.workspace,
+      planeWorkItem: `${state.source.project}-${state.source.sequenceId}`,
+    }
+    : {}),
+  sourceRefs: [
+    state.source.type === "jira"
+      ? `Jira:${state.source.key}`
+      : state.source.type === "taskwarrior"
+        ? `Taskwarrior:${state.source.project}:${state.source.uuid}`
+        : `Plane:${state.source.workspace}:${state.source.project}-${state.source.sequenceId}`,
+  ],
+  priorArtifactIds,
+  ...overrides,
+});
+
+const documentSelection = (state) => ({
+  lifecycleKey: state.lifecycleKey,
+  phase: "document",
+  jiraKey: state.source.type === "jira" ? state.source.key : "",
+  taskwarriorProject: state.source.type === "taskwarrior" ? state.source.project : "",
+  taskwarriorUuid: state.source.type === "taskwarrior" ? state.source.uuid : "",
+  planeWorkspace: state.source.type === "plane" ? state.source.workspace : "",
+  planeWorkItem: state.source.type === "plane" ? `${state.source.project}-${state.source.sequenceId}` : "",
+});
+
+const qdrantLifecycleRecord = (input, schemaVersion, createdAt) => {
+  const normalized = schemaVersion === 1
+    ? normalizeInstitutionalRecord(input, createdAt)
+    : normalizeInstitutionalManifest(input, createdAt);
+  assert.equal(normalized.success, true);
+  return {
+    id: normalized.data.id,
+    recordKey: normalized.data.recordKey,
+    project: normalized.data.payload.project,
+    site: normalized.data.payload.site,
+    repo: normalized.data.payload.repo,
+    lifecycleKey: normalized.data.payload.lifecycle_key,
+    phase: normalized.data.payload.phase,
+    summary: normalized.data.payload.summary,
+    detail: schemaVersion === 1
+      ? normalized.data.payload.detail
+      : input.detail,
+    sourceRefs: [...normalized.data.payload.source_refs],
+    contentHash: normalized.data.payload.content_hash,
+    createdAt: normalized.data.payload.created_at,
+  };
+};
+
+const awaitingDocumentHistory = (source) => {
+  let state = createCycleState(source, { timestamp: at });
+  state = evidence(state, "plan", "APPROVED", "history-plan", "history-plan-artifact");
+  state = evidence(awaitingEvidence(state), "implementation", "COMPLETED", "history-implementation", "history-implementation-artifact");
+  state = evidence(awaitingEvidence(state), "test", "PASSED", "history-test", "history-test-artifact");
+  state = evidence(awaitingEvidence(state), "review", "APPROVED", "history-review", "history-review-artifact");
+  return awaitingEvidence(state);
+};
+
+const awaitingImportedDocumentHistory = (source) => {
+  const state = awaitingDocumentHistory(source);
+  const approvedPlan = {
+    artifactId: reviewUuid(996),
+    recordKey: `${state.lifecycleKey}:plan:imported`,
+    contentHash: "a".repeat(64),
+    approvedAt: at,
+  };
+  return {
+    ...state,
+    evidence: state.evidence.map((item) => item.phase === "plan"
+      ? { ...item, approvedPlan }
+      : item),
+  };
+};
+
+const replayableDocumentState = (state, record) => {
+  const blocked = evidence(
+    state,
+    "document",
+    "BLOCKED",
+    "consumed-document-blocked",
+    record.id,
+    record.recordKey,
+  );
+  const resumed = prepareCycleResume(blocked);
+  assert.equal(resumed.ok, true);
+  return awaitingEvidence(resumed.state);
+};
+
+const historicalCloseoutDocumentRecord = (state, options = {}) => {
+  const priorArtifactIds = options.priorArtifactIds ?? state.evidence.flatMap((item) => [
+    ...(item.artifactId ? [item.artifactId] : []),
+    ...(item.approvedPlan ? [item.approvedPlan.artifactId] : []),
+  ]);
+  const lifecycleIdentity = lifecycleIdentityForState(
+    state,
+    priorArtifactIds,
+    options.identity ?? {},
+  );
+  const outcome = options.outcome ?? "READY";
+  const type = options.type ?? "closeout";
+  const request = {
+    type,
+    identity: lifecycleIdentity,
+    summary: options.summary ?? "Historical documentation evidence predates first-class document persistence.",
+    artifact: options.artifact ?? [
+      "# Historical documentation",
+      "",
+      "This immutable closeout record is documentation compatibility evidence.",
+      "",
+      buildCycleOutcomeMarker({ phase: "document", outcome }),
+    ].join("\n"),
+  };
+  const valid = validateLifecycleRequest(request);
+  assert.equal(valid.valid, true);
+  const preparation = prepareLifecycleArtifact(valid);
+  assert.equal(preparation.valid, true);
+  const createdAt = options.createdAt ?? "2026-09-24T00:00:00.000Z";
+  const input = {
+    recordKey: preparation.data.recordKey,
+    project: lifecycleIdentity.project,
+    site: "",
+    repo: "ima-pi",
+    lifecycleKey: lifecycleIdentity.lifecycleKey,
+    phase: type,
+    summary: valid.summary,
+    detail: preparation.data.artifact,
+    sourceRefs: lifecycleIdentity.sourceRefs,
+  };
+  return qdrantLifecycleRecord(input, options.schemaVersion, createdAt);
+};
+
 const directPlanRecord = (state, outcome = "APPROVED", options = {}) => {
   const id = options.id ?? reviewUuid(700);
   const recordKey = options.recordKey ?? `${state.lifecycleKey}:plan:direct-${id.slice(-4)}`;
@@ -807,18 +960,21 @@ test("enforces literal ima-pi identity for custom lifecycle keys", () => {
   assert.equal(canonical.matched, true);
 });
 
-test("accepts closeout lifecycle evidence for the document phase", () => {
-  let state = createCycleState(jira, { timestamp: at });
-  state = evidence(state, "plan", "APPROVED");
-  state = awaitingEvidence(state);
-  state = evidence(state, "implementation", "COMPLETED");
-  state = awaitingEvidence(state);
-  state = evidence(state, "test", "PASSED");
-  state = awaitingEvidence(state);
-  state = evidence(state, "review", "APPROVED");
-  state = awaitingEvidence(state);
+test("requires canonical document evidence for cycle dispatch while markerless manual evidence remains non-advancing", () => {
+  const state = awaitingPhaseState("document");
   const artifact = marker("document", "READY");
-  const result = observeLifecycleResult({
+  const canonical = observeLifecycleResult({
+    state,
+    toolName: "ima_lifecycle",
+    toolCallId: "tool-document",
+    input: { type: "document", identity, artifact },
+    result: { details: { status: "completed", phase: "document", lifecycleKey: state.lifecycleKey, receiptAccepted: true, semanticRecall: { matched: true } }, content: [], isError: false },
+    timestamp: at,
+  });
+  assert.equal(canonical.matched, true);
+  assert.equal(canonical.state.status, "closeout-ready");
+
+  const legacyCloseout = observeLifecycleResult({
     state,
     toolName: "ima_lifecycle",
     toolCallId: "tool-closeout",
@@ -826,8 +982,19 @@ test("accepts closeout lifecycle evidence for the document phase", () => {
     result: { details: { status: "completed", phase: "closeout", lifecycleKey: state.lifecycleKey, receiptAccepted: true, semanticRecall: { matched: true } }, content: [], isError: false },
     timestamp: at,
   });
-  assert.equal(result.matched, true);
-  assert.equal(result.state.status, "closeout-ready");
+  assert.equal(legacyCloseout.matched, false);
+  assert.equal(legacyCloseout.error.code, "lifecycle_identity_mismatch");
+
+  const markerless = observeLifecycleResult({
+    state,
+    toolName: "ima_lifecycle",
+    toolCallId: "tool-markerless-document",
+    input: { type: "document", identity, artifact: "# Documentation\n\nREADY: manual documentation evidence." },
+    result: { details: { status: "completed", phase: "document", lifecycleKey: state.lifecycleKey, receiptAccepted: true, semanticRecall: { matched: true } }, content: [], isError: false },
+    timestamp: at,
+  });
+  assert.equal(markerless.matched, false);
+  assert.equal(markerless.error.code, "phase_marker_missing");
 });
 
 test("restores the latest valid branch snapshot", () => {
@@ -2354,10 +2521,577 @@ test("parses only persisted lifecycle records with exact identity, phase, and co
   assert.equal(keyed.records[0].recordKey, "ima-pi:jira:FNR-3036:plan:keyed");
 
   const documentState = awaitingPhaseState("document");
-  const documentSelection = { lifecycleKey: documentState.lifecycleKey, phase: "document", jiraKey: documentState.source.key, taskwarriorUuid: "" };
-  const document = parseLifecycleSearchRecords({ data: { results: [persistedRecord(documentState, "document", "READY")] } }, documentSelection);
+  const canonicalDocument = historicalCloseoutDocumentRecord(documentState, {
+    type: "document",
+    schemaVersion: 2,
+  });
+  const document = parseLifecycleSearchRecords({ data: { results: [canonicalDocument] } }, documentSelection(documentState));
   assert.equal(document.valid, true);
   assert.equal(document.records[0].verified, true);
+});
+
+test("reconciles exact lineaged canonical and historical documents across Qdrant schemas", () => {
+  const plane = normalizeCycleSource({ type: "plane", workspace: "ima", project: "SKYNET", sequenceId: 220 });
+  const state = awaitingDocumentHistory(plane);
+  const selection = documentSelection(state);
+  assert.equal(state.lifecycleKey, "ima-pi:plane:ima:SKYNET-220");
+
+  for (const [kind, type] of [["canonical", "document"], ["historical", "closeout"]]) {
+    for (const schemaVersion of [1, 2]) {
+      const document = historicalCloseoutDocumentRecord(state, {
+        type,
+        schemaVersion,
+        createdAt: `2026-09-2${schemaVersion}T00:00:00.000Z`,
+      });
+      const label = `${kind} schema-v${schemaVersion}`;
+      const parsed = parseLifecycleSearchRecords({ results: [document] }, selection);
+      assert.equal(parsed.valid, true, label);
+      assert.equal(parsed.records[0].verified, true, label);
+      assert.equal(parsed.records[0].createdAt, document.createdAt, label);
+      assert.equal(parsed.records[0].documentEvidence.phase, type, label);
+      if (type === "closeout") {
+        assert.equal(parsed.records[0].historicalDocument.identity.planeWorkspace, "ima", label);
+        assert.equal(parsed.records[0].historicalDocument.identity.planeWorkItem, "SKYNET-220", label);
+      } else {
+        assert.equal(parsed.records[0].historicalDocument, undefined, label);
+      }
+
+      const reconciled = reconcileCycleFromLifecycle(state, parsed.records, { timestamp: at });
+      assert.equal(reconciled.ok, true, label);
+      assert.equal(reconciled.reconciled, true, label);
+      assert.equal(reconciled.state.status, "closeout-ready", label);
+      assert.equal(reconciled.state.evidence.at(-1).outcome, "READY", label);
+    }
+  }
+
+  const missingLineage = parseLifecycleSearchRecords({
+    results: [historicalCloseoutDocumentRecord(state, { priorArtifactIds: [] })],
+  }, selection);
+  assert.equal(missingLineage.records[0].verified, true);
+  const lineageResult = reconcileCycleFromLifecycle(state, missingLineage.records, { timestamp: at });
+  assert.equal(lineageResult.ok, false);
+  assert.equal(lineageResult.error.code, "lifecycle_outcome_undetermined");
+
+  const wrongSource = parseLifecycleSearchRecords({
+    results: [historicalCloseoutDocumentRecord(state, {
+      identity: { planeWorkspace: "other", planeWorkItem: "SKYNET-220" },
+    })],
+  }, selection);
+  assert.equal(wrongSource.records[0].verified, false);
+  assert.equal(wrongSource.records[0].documentEvidenceInvalid, true);
+  const sourceResult = reconcileCycleFromLifecycle(state, wrongSource.records, { timestamp: at });
+  assert.equal(sourceResult.ok, false);
+  assert.equal(sourceResult.error.code, "lifecycle_outcome_undetermined");
+
+  const wrongLifecycleKey = parseLifecycleSearchRecords({
+    results: [historicalCloseoutDocumentRecord(state, {
+      identity: { lifecycleKey: "ima-pi:plane:ima:OTHER-220" },
+    })],
+  }, selection);
+  assert.equal(wrongLifecycleKey.records[0].verified, false);
+  assert.equal(wrongLifecycleKey.records[0].documentEvidenceInvalid, true);
+  assert.equal(reconcileCycleFromLifecycle(state, wrongLifecycleKey.records, { timestamp: at }).ok, false);
+
+  const wrongLineage = parseLifecycleSearchRecords({
+    results: [historicalCloseoutDocumentRecord(state, { priorArtifactIds: ["wrong-lineage"] })],
+  }, selection);
+  assert.equal(wrongLineage.records[0].verified, true);
+  const wrongLineageResult = reconcileCycleFromLifecycle(state, wrongLineage.records, { timestamp: at });
+  assert.equal(wrongLineageResult.ok, false);
+  assert.equal(wrongLineageResult.error.code, "lifecycle_outcome_undetermined");
+});
+
+test("blocks corpus-valid forged and incomplete document candidates before state append", async () => {
+  const plane = normalizeCycleSource({ type: "plane", workspace: "ima", project: "SKYNET", sequenceId: 220 });
+  const state = awaitingDocumentHistory(plane);
+  const validCanonical = historicalCloseoutDocumentRecord(state, {
+    type: "document",
+    schemaVersion: 2,
+    createdAt: "2026-09-24T00:00:00.000Z",
+  });
+  const forgedComment = qdrantLifecycleRecord({
+    recordKey: `${state.lifecycleKey}:closeout:forged`,
+    project: IMA_PROJECT,
+    site: "",
+    repo: "ima-pi",
+    lifecycleKey: state.lifecycleKey,
+    phase: "closeout",
+    summary: "Forged corpus-valid closeout comment must not select documentation.",
+    detail: "# Forged closeout\n\n<!-- ima-cycle outcome: phase=document; outcome=READY -->",
+    sourceRefs: ["Plane:ima:SKYNET-220"],
+  }, 2, "2026-09-25T00:00:00.000Z");
+  const missingDetail = { ...validCanonical };
+  delete missingDetail.detail;
+
+  for (const [label, candidate] of [
+    ["forged corpus-valid closeout comment", forgedComment],
+    ["missing detail", missingDetail],
+  ]) {
+    const parsed = parseLifecycleSearchRecords({ results: [validCanonical, candidate] }, documentSelection(state));
+    assert.equal(parsed.valid, true, label);
+    assert.equal(parsed.records[0].verified, true, label);
+    assert.equal(parsed.records[1].verified, false, label);
+    assert.equal(parsed.records[1].documentEvidenceInvalid, true, label);
+
+    const entries = [];
+    const reconciled = await coordinateCycleReconcile({
+      state,
+      recall: async () => vestigeSearch([validCanonical, candidate]),
+      appendState: (next) => entries.push(next),
+      timestamp: at,
+    });
+    assert.equal(reconciled.ok, false, label);
+    assert.equal(reconciled.error.code, "lifecycle_outcome_undetermined", label);
+    assert.deepEqual(reconciled.state, state, label);
+    assert.deepEqual(entries, [], label);
+  }
+});
+
+test("fails closed on hostile historical documentation claims while ignoring fenced or quoted examples", () => {
+  const plane = normalizeCycleSource({ type: "plane", workspace: "ima", project: "SKYNET", sequenceId: 220 });
+  const state = awaitingDocumentHistory(plane);
+  const selection = documentSelection(state);
+  const documentMarker = buildCycleOutcomeMarker({ phase: "document", outcome: "READY" });
+  const hostileCases = [
+    ["LF multiline claim", { artifact: "# Documentation\n\n<!-- ima-cycle outcome:\nphase=document; outcome=READY -->" }],
+    ["CRLF multiline claim", { artifact: "# Documentation\r\n\r\n<!-- ima-cycle outcome:\r\nphase=document; outcome=READY -->" }],
+    ["split-prefix claim", { artifact: "# Documentation\n\n<!-- ima-cycle out\ncome: phase=document; outcome=READY -->" }],
+    ["unfinished claim", { artifact: "# Documentation\n\n<!-- ima-cycle outcome: phase=document; outcome=READY" }],
+    ["duplicate document marker", { artifact: `# Documentation\n\n${documentMarker}\n${documentMarker}` }],
+    ["competing document-first marker", { artifact: `# Documentation\n\n${documentMarker}\n${buildCycleOutcomeMarker({ phase: "plan", outcome: "APPROVED" })}` }],
+    ["competing plan-first marker", { artifact: `# Documentation\n\n${buildCycleOutcomeMarker({ phase: "plan", outcome: "APPROVED" })}\n${documentMarker}` }],
+    ["nonterminal document marker", { artifact: `# Documentation\n\n${documentMarker}\nTrailing prose.` }],
+    ["noncanonical outcome", { artifact: "# Documentation\n\n<!-- ima-cycle outcome: phase=document; outcome=ready -->" }],
+    ["terminal closeout summary", { summary: "Final lifecycle closeout: documentation is complete." }],
+    ["terminal closeout heading", { artifact: `## Final Closeout\n\n${documentMarker}` }],
+    ["terminal closeout completion statement", { artifact: `# Documentation\n\nCloseout complete; no automatic follow-up phase.\n\n${documentMarker}` }],
+  ];
+
+  for (const schemaVersion of [1, 2]) {
+    for (const [label, options] of hostileCases) {
+      const hostile = historicalCloseoutDocumentRecord(state, { ...options, schemaVersion });
+      const validCanonical = historicalCloseoutDocumentRecord(state, {
+        type: "document",
+        schemaVersion,
+      });
+      for (const [ordering, records] of [
+        ["canonical-first", [validCanonical, hostile]],
+        ["hostile-first", [hostile, validCanonical]],
+      ]) {
+        const caseLabel = `${label}; schema-v${schemaVersion}; ${ordering}`;
+        const parsed = parseLifecycleSearchRecords({ results: records }, selection);
+        const hostileRecord = parsed.records.find(({ recordKey }) => recordKey === hostile.recordKey);
+        assert.ok(hostileRecord, caseLabel);
+        assert.equal(hostileRecord.verified, false, caseLabel);
+        assert.equal(hostileRecord.documentEvidenceInvalid, true, caseLabel);
+        const reconciled = reconcileCycleFromLifecycle(state, parsed.records, { timestamp: at });
+        assert.equal(reconciled.ok, false, caseLabel);
+        assert.equal(reconciled.error.code, "lifecycle_outcome_undetermined", caseLabel);
+      }
+    }
+  }
+
+  const corrupt = historicalCloseoutDocumentRecord(state);
+  const corruptParsed = parseLifecycleSearchRecords({
+    results: [{ ...corrupt, contentHash: "a".repeat(64) }],
+  }, selection);
+  assert.equal(corruptParsed.records[0].verified, false);
+  assert.equal(corruptParsed.records[0].documentEvidenceInvalid, true);
+  assert.equal(reconcileCycleFromLifecycle(state, corruptParsed.records, { timestamp: at }).ok, false);
+
+  for (const schemaVersion of [1, 2]) {
+    for (const [label, artifact] of [
+      ["ordinary closeout", "# Historical closeout\n\nNo documentation outcome is claimed."],
+      ["fenced marker", `# Documentation\n\n\`\`\`html\n${documentMarker}\n\`\`\``],
+      ["quoted marker", `# Documentation\n\n> ${documentMarker}`],
+    ]) {
+      const parsed = parseLifecycleSearchRecords({
+        results: [historicalCloseoutDocumentRecord(state, { artifact, schemaVersion })],
+      }, selection);
+      const caseLabel = `${label}; schema-v${schemaVersion}`;
+      assert.equal(parsed.records[0].verified, false, caseLabel);
+      assert.equal(parsed.records[0].documentEvidence.phase, "closeout", caseLabel);
+      assert.equal(parsed.records[0].documentEvidenceInvalid, undefined, caseLabel);
+      const reconciled = reconcileCycleFromLifecycle(state, parsed.records, { timestamp: at });
+      assert.equal(reconciled.ok, true, caseLabel);
+      assert.equal(reconciled.reconciled, false, caseLabel);
+    }
+  }
+});
+
+test("keeps markerless documents non-advancing and fails closed through imported-plan recovery", async () => {
+  const plane = normalizeCycleSource({ type: "plane", workspace: "ima", project: "SKYNET", sequenceId: 220 });
+  const state = awaitingDocumentHistory(plane);
+  const markerlessArtifact = "# Documentation\n\nREADY: manual documentation evidence remains markerless.";
+
+  for (const schemaVersion of [1, 2]) {
+    const markerless = historicalCloseoutDocumentRecord(state, {
+      type: "document",
+      schemaVersion,
+      artifact: markerlessArtifact,
+    });
+    const entries = [];
+    const result = await coordinateCycleReconcile({
+      state,
+      recall: async () => vestigeSearch([markerless]),
+      appendState: (next) => entries.push(next),
+      timestamp: at,
+    });
+    const label = `markerless canonical schema-v${schemaVersion}`;
+    assert.equal(result.ok, false, label);
+    assert.equal(result.error.code, "lifecycle_outcome_undetermined", label);
+    assert.deepEqual(result.state, state, label);
+    assert.deepEqual(entries, [], label);
+  }
+
+  const importedState = awaitingImportedDocumentHistory(plane);
+  const importedApproval = importedState.evidence.find((item) => item.phase === "plan")?.approvedPlan;
+  assert.ok(importedApproval);
+  const validateImportedDocumentRecall = (candidate, payload) => filterImportedPlanLineage(payload, {
+    lifecycleKey: candidate.lifecycleKey,
+    source: candidate.source,
+    phase: candidate.phase,
+    lineage: {
+      approvalArtifactId: importedApproval.artifactId,
+      approvedAt: importedApproval.approvedAt,
+    },
+  });
+
+  for (const schemaVersion of [1, 2]) {
+    const legacy = historicalCloseoutDocumentRecord(importedState, { schemaVersion });
+    const entries = [];
+    const result = await coordinateCycleRecovery({
+      state: importedState,
+      recall: async () => vestigeSearch([legacy]),
+      appendState: (next) => entries.push(next),
+      validateRecall: validateImportedDocumentRecall,
+      timestamp: at,
+    });
+    const label = `imported historical schema-v${schemaVersion}`;
+    assert.equal(result.ok, true, label);
+    assert.equal(result.reconciled, true, label);
+    assert.equal(result.state.status, "closeout-ready", label);
+    assert.equal(entries.length, 1, label);
+  }
+
+  const documentMarker = buildCycleOutcomeMarker({ phase: "document", outcome: "READY" });
+  const malformedArtifacts = [
+    ["LF multiline", "# Documentation\n\n<!-- ima-cycle outcome:\nphase=document; outcome=READY -->"],
+    ["CRLF multiline", "# Documentation\r\n\r\n<!-- ima-cycle outcome:\r\nphase=document; outcome=READY -->"],
+    ["split prefix", "# Documentation\n\n<!-- ima-cycle out\ncome: phase=document; outcome=READY -->"],
+    ["unfinished", "# Documentation\n\n<!-- ima-cycle outcome: phase=document; outcome=READY"],
+    ["duplicate", `# Documentation\n\n${documentMarker}\n${documentMarker}`],
+    ["competing", `# Documentation\n\n${buildCycleOutcomeMarker({ phase: "plan", outcome: "APPROVED" })}\n${documentMarker}`],
+    ["nonterminal", `# Documentation\n\n${documentMarker}\nTrailing prose.`],
+  ];
+
+  for (const schemaVersion of [1, 2]) {
+    for (const [kind, artifact] of malformedArtifacts) {
+      const validLegacy = historicalCloseoutDocumentRecord(importedState, { schemaVersion });
+      const malformed = historicalCloseoutDocumentRecord(importedState, { schemaVersion, artifact });
+      for (const [ordering, records] of [
+        ["legacy-first", [validLegacy, malformed]],
+        ["malformed-first", [malformed, validLegacy]],
+      ]) {
+        const entries = [];
+        const result = await coordinateCycleRecovery({
+          state: importedState,
+          recall: async () => vestigeSearch(records),
+          appendState: (next) => entries.push(next),
+          validateRecall: validateImportedDocumentRecall,
+          timestamp: at,
+        });
+        const label = `imported ${kind}; schema-v${schemaVersion}; ${ordering}`;
+        assert.equal(result.ok, false, label);
+        assert.equal(result.error.code, "lifecycle_outcome_undetermined", label);
+        assert.deepEqual(result.state, importedState, label);
+        assert.deepEqual(entries, [], label);
+      }
+    }
+  }
+});
+
+test("uses the newest unambiguous document outcome and fails closed on mixed history ambiguity", () => {
+  const plane = normalizeCycleSource({ type: "plane", workspace: "ima", project: "SKYNET", sequenceId: 220 });
+  const state = awaitingDocumentHistory(plane);
+  const selection = documentSelection(state);
+  const historicalReady = historicalCloseoutDocumentRecord(state, {
+    createdAt: "2026-09-24T00:00:00.000Z",
+  });
+  const canonicalBlocked = historicalCloseoutDocumentRecord(state, {
+    type: "document",
+    outcome: "BLOCKED",
+    schemaVersion: 2,
+    createdAt: "2026-09-25T00:00:00.000Z",
+  });
+  const mixed = parseLifecycleSearchRecords({
+    results: [historicalReady, canonicalBlocked],
+  }, selection);
+  assert.deepEqual(mixed.records.map(({ verified }) => verified), [true, true]);
+  const newest = reconcileCycleFromLifecycle(state, mixed.records, { timestamp: at });
+  assert.equal(newest.ok, true);
+  assert.equal(newest.reconciled, true);
+  assert.equal(newest.state.status, "blocked");
+  assert.equal(newest.state.evidence.at(-1).outcome, "BLOCKED");
+
+  const tied = parseLifecycleSearchRecords({
+    results: [
+      historicalCloseoutDocumentRecord(state, {
+        type: "document",
+        outcome: "READY",
+        schemaVersion: 1,
+        createdAt: "2026-09-26T00:00:00.000Z",
+      }),
+      historicalCloseoutDocumentRecord(state, {
+        type: "document",
+        outcome: "BLOCKED",
+        schemaVersion: 2,
+        createdAt: "2026-09-26T00:00:00.000Z",
+      }),
+    ],
+  }, selection);
+  const tieResult = reconcileCycleFromLifecycle(state, tied.records, { timestamp: at });
+  assert.equal(tieResult.ok, false);
+  assert.equal(tieResult.error.code, "lifecycle_outcome_undetermined");
+
+  const unclear = structuredClone(mixed.records);
+  delete unclear[1].documentEvidence.createdAt;
+  const unclearResult = reconcileCycleFromLifecycle(state, unclear, { timestamp: at });
+  assert.equal(unclearResult.ok, false);
+  assert.equal(unclearResult.error.code, "lifecycle_outcome_undetermined");
+
+  const corruptMixed = parseLifecycleSearchRecords({
+    results: [{ ...historicalReady, contentHash: "a".repeat(64) }, canonicalBlocked],
+  }, selection);
+  const corruptResult = reconcileCycleFromLifecycle(state, corruptMixed.records, { timestamp: at });
+  assert.equal(corruptResult.ok, false);
+  assert.equal(corruptResult.error.code, "lifecycle_outcome_undetermined");
+
+});
+
+test("treats a consumed canonical document replay as a no-op before selecting fresh lineaged evidence", async () => {
+  const plane = normalizeCycleSource({ type: "plane", workspace: "ima", project: "SKYNET", sequenceId: 220 });
+  const initial = awaitingDocumentHistory(plane);
+  const blocked = historicalCloseoutDocumentRecord(initial, {
+    type: "document",
+    outcome: "BLOCKED",
+    schemaVersion: 2,
+    createdAt: "2026-09-24T00:00:00.000Z",
+  });
+  const replayState = replayableDocumentState(initial, blocked);
+
+  const replayEntries = [];
+  const replay = await coordinateCycleReconcile({
+    state: replayState,
+    recall: async () => vestigeSearch([blocked]),
+    appendState: (next) => replayEntries.push(next),
+    timestamp: at,
+  });
+  assert.equal(replay.ok, true);
+  assert.equal(replay.reconciled, false);
+  assert.deepEqual(replay.state, replayState);
+  assert.deepEqual(replayEntries, []);
+
+  const ready = historicalCloseoutDocumentRecord(replayState, {
+    type: "document",
+    outcome: "READY",
+    schemaVersion: 2,
+    createdAt: "2026-09-25T00:00:00.000Z",
+  });
+  const readyEntries = [];
+  const recovered = await coordinateCycleReconcile({
+    state: replayState,
+    recall: async () => vestigeSearch([blocked, ready]),
+    appendState: (next) => readyEntries.push(next),
+    timestamp: at,
+  });
+  assert.equal(recovered.ok, true);
+  assert.equal(recovered.reconciled, true);
+  assert.equal(recovered.state.status, "closeout-ready");
+  assert.equal(recovered.state.evidence.at(-1).artifactId, ready.id);
+  assert.equal(readyEntries.length, 1);
+  assert.deepEqual(readyEntries[0], recovered.state);
+});
+
+test("replays eligible historical closeout blocks across schemas and recall order without blocking fresh evidence", async () => {
+  const plane = normalizeCycleSource({ type: "plane", workspace: "ima", project: "SKYNET", sequenceId: 220 });
+
+  for (const schemaVersion of [1, 2]) {
+    const initial = awaitingDocumentHistory(plane);
+    const blocked = historicalCloseoutDocumentRecord(initial, {
+      outcome: "BLOCKED",
+      schemaVersion,
+      createdAt: `2026-09-2${schemaVersion}T00:00:00.000Z`,
+    });
+    const replayState = replayableDocumentState(initial, blocked);
+    const parsed = parseLifecycleSearchRecords({ results: [blocked] }, documentSelection(replayState));
+    assert.equal(parsed.records[0].verified, true, `schema-v${schemaVersion}`);
+    assert.ok(parsed.records[0].historicalDocument, `schema-v${schemaVersion}`);
+
+    const ready = historicalCloseoutDocumentRecord(replayState, {
+      type: "document",
+      outcome: "READY",
+      schemaVersion: 2,
+      createdAt: "2026-09-26T00:00:00.000Z",
+    });
+    for (const [ordering, records] of [
+      ["blocked-first", [blocked, ready]],
+      ["ready-first", [ready, blocked]],
+    ]) {
+      const entries = [];
+      const result = await coordinateCycleReconcile({
+        state: replayState,
+        recall: async () => vestigeSearch(records),
+        appendState: (next) => entries.push(next),
+        timestamp: at,
+      });
+      const label = `historical schema-v${schemaVersion}; ${ordering}`;
+      assert.equal(result.ok, true, label);
+      assert.equal(result.reconciled, true, label);
+      assert.equal(result.state.status, "closeout-ready", label);
+      assert.equal(result.state.evidence.at(-1).artifactId, ready.id, label);
+      assert.equal(entries.length, 1, label);
+    }
+  }
+});
+
+test("preserves imported-plan and dispatch-settlement reconciliation after consumed document replays", async () => {
+  const plane = normalizeCycleSource({ type: "plane", workspace: "ima", project: "SKYNET", sequenceId: 220 });
+  const importedInitial = awaitingImportedDocumentHistory(plane);
+  const importedBlocked = historicalCloseoutDocumentRecord(importedInitial, {
+    type: "document",
+    outcome: "BLOCKED",
+    schemaVersion: 2,
+  });
+  const importedReplayState = replayableDocumentState(importedInitial, importedBlocked);
+  const importedReady = historicalCloseoutDocumentRecord(importedReplayState, {
+    type: "document",
+    outcome: "READY",
+    schemaVersion: 2,
+    createdAt: "2026-09-25T00:00:00.000Z",
+  });
+  const importedApproval = importedReplayState.evidence.find((item) => item.phase === "plan")?.approvedPlan;
+  assert.ok(importedApproval);
+  const importedEntries = [];
+  const imported = await coordinateCycleReconcile({
+    state: importedReplayState,
+    recall: async () => vestigeSearch([importedBlocked, importedReady]),
+    appendState: (next) => importedEntries.push(next),
+    validateRecall: (candidate, payload) => filterImportedPlanLineage(payload, {
+      lifecycleKey: candidate.lifecycleKey,
+      source: candidate.source,
+      phase: candidate.phase,
+      lineage: {
+        approvalArtifactId: importedApproval.artifactId,
+        approvedAt: importedApproval.approvedAt,
+      },
+    }),
+    timestamp: at,
+  });
+  assert.equal(imported.ok, true);
+  assert.equal(imported.reconciled, true);
+  assert.equal(imported.state.status, "closeout-ready");
+  assert.equal(importedEntries.length, 1);
+
+  const dispatchedInitial = awaitingDocumentHistory(plane);
+  const dispatchedBlocked = historicalCloseoutDocumentRecord(dispatchedInitial, {
+    type: "document",
+    outcome: "BLOCKED",
+    schemaVersion: 2,
+  });
+  const dispatchedReplayState = replayableDocumentState(dispatchedInitial, dispatchedBlocked);
+  const dispatchedReady = historicalCloseoutDocumentRecord(dispatchedReplayState, {
+    type: "document",
+    outcome: "READY",
+    schemaVersion: 2,
+    createdAt: "2026-09-25T00:00:00.000Z",
+  });
+  const dispatchId = "document-replay-dispatch";
+  const dispatchedState = {
+    ...dispatchedReplayState,
+    execution: {
+      schemaVersion: 1,
+      dispatchId,
+      phase: "document",
+      route: { provider: "test-provider", model: "test-model", thinking: "low", profile: null, source: "parent" },
+      parentSessionId: "parent-session",
+      childSessionId: "child-session",
+      childSessionFile: "/tmp/child-session.jsonl",
+      childSessionDir: "/tmp",
+      status: "settled",
+      possiblePartialWrite: false,
+      startedAt: at,
+      updatedAt: at,
+    },
+  };
+  const settlement = {
+    schemaVersion: 1,
+    project: IMA_PROJECT,
+    lifecycleKey: dispatchedState.lifecycleKey,
+    source: "plane:ima:SKYNET-220",
+    phase: "document",
+    dispatchId,
+    childSessionId: "child-session",
+    actual: { provider: "test-provider", model: "test-model", thinking: "low" },
+    artifacts: [{ artifactId: dispatchedReady.id, recordKey: dispatchedReady.recordKey }],
+  };
+  const dispatchedEntries = [];
+  let settlementReads = 0;
+  const dispatched = await coordinateCycleReconcile({
+    state: dispatchedState,
+    recall: async () => vestigeSearch([dispatchedBlocked, dispatchedReady]),
+    appendState: (next) => dispatchedEntries.push(next),
+    readExecutionSettlement: async () => {
+      settlementReads += 1;
+      return settlement;
+    },
+    timestamp: at,
+  });
+  assert.equal(dispatched.ok, true);
+  assert.equal(dispatched.reconciled, true);
+  assert.equal(dispatched.state.status, "closeout-ready");
+  assert.equal(dispatched.state.evidence.at(-1).artifactId, dispatchedReady.id);
+  assert.equal(settlementReads, 1);
+  assert.equal(dispatchedEntries.length, 1);
+});
+
+test("keeps corrupt consumed and fresh invalid document candidates fail-closed", async () => {
+  const plane = normalizeCycleSource({ type: "plane", workspace: "ima", project: "SKYNET", sequenceId: 220 });
+  const initial = awaitingDocumentHistory(plane);
+  const blocked = historicalCloseoutDocumentRecord(initial, {
+    type: "document",
+    outcome: "BLOCKED",
+    schemaVersion: 2,
+  });
+  const replayState = replayableDocumentState(initial, blocked);
+  const wrongSource = historicalCloseoutDocumentRecord(replayState, {
+    type: "document",
+    outcome: "READY",
+    identity: { planeWorkspace: "other", planeWorkItem: "SKYNET-220" },
+  });
+  const missingLineage = historicalCloseoutDocumentRecord(replayState, {
+    type: "document",
+    outcome: "READY",
+    priorArtifactIds: [],
+  });
+
+  for (const [label, records] of [
+    ["corrupt consumed block", [{ ...blocked, contentHash: "a".repeat(64) }]],
+    ["fresh wrong source", [blocked, wrongSource]],
+    ["fresh missing lineage", [blocked, missingLineage]],
+  ]) {
+    const entries = [];
+    const result = await coordinateCycleReconcile({
+      state: replayState,
+      recall: async () => vestigeSearch(records),
+      appendState: (next) => entries.push(next),
+      timestamp: at,
+    });
+    assert.equal(result.ok, false, label);
+    assert.equal(result.error.code, "lifecycle_outcome_undetermined", label);
+    assert.deepEqual(result.state, replayState, label);
+    assert.deepEqual(entries, [], label);
+  }
 });
 
 test("requires an authoritative terminal lifecycle verification marker", () => {
@@ -2404,7 +3138,13 @@ test("reconciles verified lifecycle records through the existing phase transitio
   ];
   for (const [phase, outcome, nextPhase, status] of transitions) {
     const state = awaitingPhaseState(phase);
-    const parsed = parseLifecycleSearchRecords({ data: { results: [persistedRecord(state, phase, outcome)] } }, { lifecycleKey: state.lifecycleKey, phase, jiraKey: state.source.key, taskwarriorUuid: "" });
+    const record = phase === "document"
+      ? historicalCloseoutDocumentRecord(state, { type: "document", outcome, schemaVersion: 2 })
+      : persistedRecord(state, phase, outcome);
+    const selection = phase === "document"
+      ? documentSelection(state)
+      : { lifecycleKey: state.lifecycleKey, phase, jiraKey: state.source.key, taskwarriorUuid: "" };
+    const parsed = parseLifecycleSearchRecords({ data: { results: [record] } }, selection);
     assert.equal(parsed.valid, true);
     const reconciled = reconcileCycleFromLifecycle(state, parsed.records, { timestamp: at });
     assert.equal(reconciled.ok, true, JSON.stringify(reconciled));

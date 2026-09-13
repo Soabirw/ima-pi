@@ -33,7 +33,7 @@ State when evidence is partial, stale, or absent.
 
 ## Preserve in order
 
-1. When the current lifecycle phase explicitly authorizes persistence, persist a formal plan, implementation, test, review, resolution, rereview, decision, or closeout through `ima_lifecycle`. It requires an explicit one-line `summary`, writes a Qdrant manifest plus deterministic vectorless detail chunks, and completes only after direct reassembly/read-back. Do not bypass it with direct storage or a Vestige fallback.
+1. When the current lifecycle phase explicitly authorizes persistence, persist a formal plan, implementation, test, review, resolution, rereview, document, decision, or closeout through `ima_lifecycle`. Documentation uses canonical type `document`; terminal human-authorized work remains separate type `closeout`. It requires an explicit one-line `summary`, writes a Qdrant manifest plus deterministic vectorless detail chunks, and completes only after direct reassembly/read-back. Do not bypass it with direct storage or a Vestige fallback.
 2. Current preference persistence routes through `/ima:memorize`, which owns active-global-`AGENTS.md` preview, approval, one native update, and verification. T7 alone owns any Vestige-to-Markdown migration work.
 3. Update Serena only for concise, stable project instructions or commands that belong to project memory. Use `ima_corpus_store` for an explicitly authorized non-lifecycle institutional record.
 

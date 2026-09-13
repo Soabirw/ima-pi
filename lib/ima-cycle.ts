@@ -6,7 +6,12 @@ import {
   type CyclePhaseExecution,
   type CyclePhaseSettlement,
 } from "./ima-cycle-phase.ts";
-import { normalizeLifecycleRecordKey } from "./ima-lifecycle.ts";
+import {
+  normalizeLifecycleIdentity,
+  normalizeLifecycleRecordKey,
+  type LifecycleIdentity,
+} from "./ima-lifecycle.ts";
+import { verifyQdrantLifecycleRecord } from "./qdrant-lifecycle-record.ts";
 
 export const CYCLE_SCHEMA_VERSION = 1;
 export const CYCLE_ENTRY = "ima-cycle-state";
@@ -64,9 +69,24 @@ export type LifecycleSearchSelection = {
   lifecycleKey: string;
   phase: CyclePhase;
   jiraKey: string;
+  taskwarriorProject?: string;
   taskwarriorUuid: string;
   planeWorkspace?: string;
   planeWorkItem?: string;
+};
+
+type DocumentLifecycleEvidence = {
+  artifactId: string;
+  recordKey: string;
+  artifact: string;
+  phase: "document" | "closeout";
+  identity: LifecycleIdentity;
+  createdAt: string;
+};
+
+type HistoricalDocumentEvidence = {
+  identity: LifecycleIdentity;
+  createdAt: string;
 };
 
 export type LifecycleSearchRecord = {
@@ -74,6 +94,10 @@ export type LifecycleSearchRecord = {
   recordKey: string | null;
   artifact: string;
   verified: boolean;
+  createdAt?: string;
+  documentEvidence?: DocumentLifecycleEvidence;
+  historicalDocument?: HistoricalDocumentEvidence;
+  documentEvidenceInvalid?: boolean;
 };
 
 export type LifecycleSearchParse =
@@ -133,6 +157,9 @@ const LIFECYCLE_KEY = /^[^\r\n]{1,512}$/;
 const DISALLOWED_REPLY_CONTROL = /[\u0000-\u0009\u000b\u000c\u000e-\u001f\u007f]/;
 const JIRA_URL = /^https:\/\/flccc\.atlassian\.net\/browse\/([A-Z][A-Z0-9]+-\d+)$/;
 const CYCLE_MARKER = /<!--\s*ima-cycle outcome:\s*phase=(plan|implementation|test|review|resolution|rereview|document);\s*outcome=([A-Z_]+)\s*-->/g;
+const HISTORICAL_CYCLE_MARKER_PREFIX = "ima-cycleoutcome:";
+const HISTORICAL_DOCUMENT_MARKER = /^ {0,3}<!-- ima-cycle outcome: phase=document; outcome=(READY|BLOCKED) -->[ \t]*$/;
+const MARKDOWN_FENCE = /^ {0,3}(`{3,}|~{3,})[^\r\n]*$/;
 const LIFECYCLE_VERIFICATION = /<!--\s*ima-lifecycle verification:\s*([\s\S]*?)\s*-->/g;
 const LEGACY_LIFECYCLE_MARKER_FIELDS = [
   "lifecycle_key",
@@ -406,8 +433,8 @@ export function extractPhaseOutcome(artifact: unknown): { ok: true; phase: Cycle
   return { ok: true, phase, outcome, marker: matches[0][0] };
 }
 
-export function lifecycleTypeForPhase(phase: CyclePhase): Exclude<CyclePhase, "document"> | "closeout" {
-  return phase === "document" ? "closeout" : phase;
+export function lifecycleTypeForPhase(phase: CyclePhase): CyclePhase {
+  return phase;
 }
 
 export function resolvePhaseOutcome(artifact: unknown, expectedPhase: CyclePhase): { ok: true; phase: CyclePhase; outcome: string; marker: string } | { ok: false; error: ReturnType<typeof sanitizeCycleError> } {
@@ -443,7 +470,7 @@ const persistedContentValues = (value: unknown): string[] => {
     const entry = object(candidate);
     if (!entry || seen.has(entry)) return;
     seen.add(entry);
-    for (const key of ["content", "artifact", "text", "body", "markdown"]) if (key in entry) visit(entry[key], depth + 1);
+    for (const key of ["content", "detail", "artifact", "text", "body", "markdown"]) if (key in entry) visit(entry[key], depth + 1);
     for (const key of ["memory", "node", "document", "result", "data"]) if (key in entry) visit(entry[key], depth + 1);
   };
   visit(value, 0);
@@ -523,6 +550,8 @@ const validLifecycleSearchSelection = (value: unknown): value is LifecycleSearch
     && LIFECYCLE_KEY.test(text(selection.lifecycleKey))
     && validPhase(selection.phase)
     && text(selection.jiraKey).length <= 128
+    && text(selection.taskwarriorProject).length <= 256
+    && (!text(selection.taskwarriorProject) || PROJECT.test(text(selection.taskwarriorProject)))
     && text(selection.taskwarriorUuid).length <= 128
     && validPlaneLifecycleIdentity(selection.planeWorkspace, selection.planeWorkItem),
   );
@@ -567,19 +596,308 @@ const phaseArtifact = (content: string) => {
   return artifact.trim().slice(0, MAX_PHASE_ARTIFACT_LENGTH + 1);
 };
 
+const ownDataValue = (value: unknown, key: string): { value: unknown } | null => {
+  try {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return descriptor
+      && !descriptor.get
+      && !descriptor.set
+      && descriptor.enumerable
+      && Object.hasOwn(descriptor, "value")
+      ? { value: descriptor.value }
+      : null;
+  } catch {
+    return null;
+  }
+};
+
+const HISTORICAL_QDRANT_RECORD_FIELDS = [
+  "id",
+  "recordKey",
+  "project",
+  "site",
+  "repo",
+  "lifecycleKey",
+  "phase",
+  "summary",
+  "sourceRefs",
+  "contentHash",
+  "createdAt",
+] as const;
+
+const historicalQdrantRecord = (value: unknown): Record<string, unknown> | null => {
+  const projected: Record<string, unknown> = {};
+  for (const field of HISTORICAL_QDRANT_RECORD_FIELDS) {
+    const entry = ownDataValue(value, field);
+    if (!entry) return null;
+    projected[field] = entry.value;
+  }
+  const detail = ownDataValue(value, "detail") ?? ownDataValue(value, "content");
+  if (!detail) return null;
+  return { ...projected, detail: detail.value };
+};
+
+const exactCreatedAt = (value: unknown) => {
+  const createdAt = ownDataValue(value, "createdAt")?.value;
+  return typeof createdAt === "string"
+    && createdAt === text(createdAt)
+    && validTimestamp(createdAt)
+    && !Number.isNaN(Date.parse(createdAt))
+    ? createdAt
+    : null;
+};
+
+const historicalDocumentMarker = (artifact: string): {
+  hasDocumentClaim: boolean;
+  outcome: "READY" | "BLOCKED" | null;
+} => {
+  const claims: Array<{ index: number; document: boolean }> = [];
+  const lines = artifact.split(/\r?\n/);
+  let fence: { character: string; length: number } | null = null;
+  let openComment: { index: number; content: string } | null = null;
+
+  const claim = (index: number, content: string) => {
+    const compact = content.replace(/\s+/g, "").toLowerCase();
+    if (!compact.startsWith(HISTORICAL_CYCLE_MARKER_PREFIX)) return;
+    claims.push({
+      index,
+      document: /\bphase=document(?:;|$)/.test(compact),
+    });
+  };
+  const scan = (line: string, index: number, start = 0) => {
+    let cursor = start;
+    while (cursor < line.length) {
+      const opening = line.indexOf("<!--", cursor);
+      if (opening < 0) return;
+      const closing = line.indexOf("-->", opening + 4);
+      if (closing < 0) {
+        openComment = { index, content: line.slice(opening + 4) };
+        return;
+      }
+      claim(index, line.slice(opening + 4, closing));
+      cursor = closing + 3;
+    }
+  };
+
+  for (const [index, line] of lines.entries()) {
+    if (openComment) {
+      const closing = line.indexOf("-->");
+      if (closing < 0) {
+        openComment = { ...openComment, content: `${openComment.content}\n${line}` };
+        continue;
+      }
+      claim(openComment.index, `${openComment.content}\n${line.slice(0, closing)}`);
+      openComment = null;
+      scan(line, index, closing + 3);
+      continue;
+    }
+    if (fence) {
+      const delimiter = MARKDOWN_FENCE.exec(line)?.[1] ?? "";
+      if (
+        delimiter.charAt(0) === fence.character
+        && delimiter.length >= fence.length
+        && line.trim().slice(delimiter.length).trim() === ""
+      ) fence = null;
+      continue;
+    }
+    if (/^ {0,3}>/.test(line)) continue;
+    const opening = MARKDOWN_FENCE.exec(line)?.[1];
+    if (opening) {
+      fence = { character: opening.charAt(0), length: opening.length };
+      continue;
+    }
+    if (!/^ {0,3}(?:\S|$)/.test(line)) continue;
+    scan(line, index);
+  }
+  if (openComment) claim(openComment.index, openComment.content);
+
+  const strict = claims.filter(({ index }) => HISTORICAL_DOCUMENT_MARKER.test(lines[index]));
+  const lastNonBlank = lines.reduce(
+    (last, line, index) => line.trim() ? index : last,
+    -1,
+  );
+  const candidate = strict.length === 1 && claims.length === 1 && strict[0].index === lastNonBlank
+    ? strict[0]
+    : null;
+  const outcome = candidate
+    ? (HISTORICAL_DOCUMENT_MARKER.exec(lines[candidate.index])?.[1] as "READY" | "BLOCKED" | undefined)
+    : undefined;
+  return {
+    hasDocumentClaim: claims.some((claim) => claim.document),
+    outcome: outcome ?? null,
+  };
+};
+
+const detachedLifecycleIdentity = (identity: LifecycleIdentity): LifecycleIdentity => ({
+  project: identity.project,
+  lifecycleKey: identity.lifecycleKey,
+  lifecycleRootMemoryId: identity.lifecycleRootMemoryId,
+  taskwarriorProject: identity.taskwarriorProject,
+  taskwarriorTask: identity.taskwarriorTask,
+  taskwarriorUuid: identity.taskwarriorUuid,
+  jiraKey: identity.jiraKey,
+  ...(identity.planeWorkspace && identity.planeWorkItem
+    ? {
+      planeWorkspace: identity.planeWorkspace,
+      planeWorkItem: identity.planeWorkItem,
+    }
+    : {}),
+  sourceRefs: [...identity.sourceRefs],
+  priorArtifactIds: [...identity.priorArtifactIds],
+});
+
+const matchesDocumentLifecycleSelection = (
+  identity: LifecycleIdentity,
+  selection: LifecycleSearchSelection,
+) => {
+  if (identity.project !== IMA_PROJECT || identity.lifecycleKey !== selection.lifecycleKey) return false;
+  const planeWorkspace = text(selection.planeWorkspace);
+  const planeWorkItem = text(selection.planeWorkItem);
+  if (planeWorkspace || planeWorkItem) {
+    return identity.jiraKey === ""
+      && identity.taskwarriorProject === ""
+      && identity.taskwarriorTask === ""
+      && identity.taskwarriorUuid === ""
+      && identity.planeWorkspace === planeWorkspace
+      && identity.planeWorkItem === planeWorkItem;
+  }
+  if (selection.jiraKey) {
+    return identity.jiraKey === selection.jiraKey
+      && identity.taskwarriorProject === ""
+      && identity.taskwarriorTask === ""
+      && identity.taskwarriorUuid === ""
+      && !("planeWorkspace" in identity);
+  }
+  if (selection.taskwarriorUuid) {
+    return identity.jiraKey === ""
+      && identity.taskwarriorTask === selection.taskwarriorUuid
+      && identity.taskwarriorUuid === selection.taskwarriorUuid
+      && (!selection.taskwarriorProject || identity.taskwarriorProject === selection.taskwarriorProject)
+      && !("planeWorkspace" in identity);
+  }
+  return false;
+};
+
+const isTrueFinalCloseout = (summary: string, artifact: string) =>
+  summary.startsWith("Final lifecycle closeout:")
+  || summary === "Cycle closeout verified after tracker completion."
+  || /(?:^|\n)## Final Closeout(?:\r?\n|$)/.test(artifact)
+  || /(?:^|\n)Closeout complete; no automatic follow-up phase\.(?:\r?\n|$)/.test(artifact);
+
+const verifiedDocumentLifecycleEvidence = (
+  verified: ReturnType<typeof verifyQdrantLifecycleRecord>,
+): DocumentLifecycleEvidence | null => {
+  const recordKey = normalizeLifecycleRecordKey(verified?.recordKey);
+  const identity = normalizeLifecycleIdentity(verified?.identity);
+  const createdAt = typeof verified?.createdAt === "string" && verified.createdAt === text(verified.createdAt)
+    && validTimestamp(verified.createdAt)
+    && !Number.isNaN(Date.parse(verified.createdAt))
+    ? verified.createdAt
+    : null;
+  if (
+    !verified
+    || !UUID.test(verified.artifactId)
+    || verified.artifactId !== verified.artifactId.toLowerCase()
+    || !recordKey
+    || recordKey !== verified.recordKey
+    || !identity
+    || !createdAt
+    || (verified.phase !== "document" && verified.phase !== "closeout")
+  ) return null;
+  return {
+    artifactId: verified.artifactId,
+    recordKey,
+    artifact: phaseArtifact(verified.artifact),
+    phase: verified.phase,
+    identity: detachedLifecycleIdentity(identity),
+    createdAt,
+  };
+};
+
+const invalidDocumentSearchRecord = (
+  evidence: DocumentLifecycleEvidence | null = null,
+): LifecycleSearchRecord => ({
+  artifactId: evidence?.artifactId ?? null,
+  recordKey: evidence?.recordKey ?? null,
+  artifact: evidence?.artifact ?? "",
+  verified: false,
+  ...(evidence
+    ? { createdAt: evidence.createdAt, documentEvidence: evidence }
+    : {}),
+  documentEvidenceInvalid: true,
+});
+
+const documentLifecycleSearchRecord = (
+  record: unknown,
+  selection: LifecycleSearchSelection,
+): LifecycleSearchRecord => {
+  const projected = historicalQdrantRecord(record);
+  const verified = projected ? verifyQdrantLifecycleRecord({ record: projected }) : null;
+  const evidence = verifiedDocumentLifecycleEvidence(verified);
+  if (!verified || !evidence || !matchesDocumentLifecycleSelection(evidence.identity, selection)) {
+    return invalidDocumentSearchRecord(evidence);
+  }
+  if (evidence.phase === "document") {
+    return {
+      artifactId: evidence.artifactId,
+      recordKey: evidence.recordKey,
+      artifact: evidence.artifact,
+      verified: true,
+      createdAt: evidence.createdAt,
+      documentEvidence: evidence,
+    };
+  }
+
+  const marker = historicalDocumentMarker(evidence.artifact);
+  if (!marker.hasDocumentClaim) {
+    return {
+      artifactId: evidence.artifactId,
+      recordKey: evidence.recordKey,
+      artifact: evidence.artifact,
+      verified: false,
+      createdAt: evidence.createdAt,
+      documentEvidence: evidence,
+    };
+  }
+  if (marker.outcome === null || isTrueFinalCloseout(verified.summary, evidence.artifact)) {
+    return invalidDocumentSearchRecord(evidence);
+  }
+  return {
+    artifactId: evidence.artifactId,
+    recordKey: evidence.recordKey,
+    artifact: evidence.artifact,
+    verified: true,
+    createdAt: evidence.createdAt,
+    documentEvidence: evidence,
+    historicalDocument: {
+      identity: detachedLifecycleIdentity(evidence.identity),
+      createdAt: evidence.createdAt,
+    },
+  };
+};
+
 export function parseLifecycleSearchRecords(envelope: unknown, selectionValue: LifecycleSearchSelection): LifecycleSearchParse {
   const records = searchResults(envelope);
   if (!records || !validLifecycleSearchSelection(selectionValue)) return { valid: false, records: [] };
+  if (selectionValue.phase === "document") {
+    return {
+      valid: true,
+      records: records.map((record) => documentLifecycleSearchRecord(record, selectionValue)),
+    };
+  }
   return {
     valid: true,
     records: records.flatMap((record) => {
       const content = boundedJoined(persistedContentValues(record), MAX_PERSISTED_ARTIFACT_LENGTH);
       if (!content) return [];
+      const createdAt = exactCreatedAt(record);
       return [{
         artifactId: searchArtifactId(record),
         recordKey: searchRecordKey(record),
         artifact: phaseArtifact(content),
         verified: verifiedLifecycleContent(content, selectionValue),
+        ...(createdAt ? { createdAt } : {}),
       }];
     }),
   };
@@ -596,21 +914,183 @@ const reconciliationToolCallId = (record: LifecycleSearchRecord) => {
   return `reconcile:${(hash >>> 0).toString(36)}`;
 };
 
+const normalizedDocumentLifecycleEvidence = (
+  value: unknown,
+): DocumentLifecycleEvidence | null => {
+  try {
+    const evidence = object(value);
+    const fields = ["artifactId", "recordKey", "artifact", "phase", "identity", "createdAt"];
+    const keys = evidence ? Reflect.ownKeys(evidence) : [];
+    if (
+      !evidence
+      || keys.length !== fields.length
+      || keys.some((key) => typeof key !== "string" || !fields.includes(key))
+      || !fields.every((field) => keys.includes(field))
+    ) return null;
+
+    const artifactId = ownDataValue(evidence, "artifactId")?.value;
+    const recordKeyValue = ownDataValue(evidence, "recordKey")?.value;
+    const artifact = ownDataValue(evidence, "artifact")?.value;
+    const phase = ownDataValue(evidence, "phase")?.value;
+    const identity = normalizeLifecycleIdentity(ownDataValue(evidence, "identity")?.value);
+    const createdAt = ownDataValue(evidence, "createdAt")?.value;
+    const recordKey = normalizeLifecycleRecordKey(recordKeyValue);
+    if (
+      typeof artifactId !== "string"
+      || !UUID.test(artifactId)
+      || artifactId !== artifactId.toLowerCase()
+      || !recordKey
+      || recordKey !== recordKeyValue
+      || typeof artifact !== "string"
+      || artifact !== artifact.trim()
+      || artifact.length > MAX_PHASE_ARTIFACT_LENGTH + 1
+      || (phase !== "document" && phase !== "closeout")
+      || !identity
+      || typeof createdAt !== "string"
+      || createdAt !== text(createdAt)
+      || !validTimestamp(createdAt)
+      || Number.isNaN(Date.parse(createdAt))
+    ) return null;
+    return {
+      artifactId,
+      recordKey,
+      artifact,
+      phase,
+      identity: detachedLifecycleIdentity(identity),
+      createdAt,
+    };
+  } catch {
+    return null;
+  }
+};
+
+const matchesDocumentLifecycleSource = (
+  identity: LifecycleIdentity,
+  state: CycleState,
+) => {
+  if (identity.project !== IMA_PROJECT || identity.lifecycleKey !== state.lifecycleKey) return false;
+  if (state.source.type === "jira") {
+    return identity.jiraKey === state.source.key
+      && identity.taskwarriorProject === ""
+      && identity.taskwarriorTask === ""
+      && identity.taskwarriorUuid === ""
+      && !("planeWorkspace" in identity);
+  }
+  if (state.source.type === "taskwarrior") {
+    return identity.jiraKey === ""
+      && identity.taskwarriorProject === state.source.project
+      && identity.taskwarriorTask === state.source.uuid
+      && identity.taskwarriorUuid === state.source.uuid
+      && !("planeWorkspace" in identity);
+  }
+  return identity.jiraKey === ""
+    && identity.taskwarriorProject === ""
+    && identity.taskwarriorTask === ""
+    && identity.taskwarriorUuid === ""
+    && identity.planeWorkspace === state.source.workspace
+    && identity.planeWorkItem === planeWorkItemIdentifier(state.source);
+};
+
+const hasDocumentLifecycleLineage = (
+  state: CycleState,
+  evidence: DocumentLifecycleEvidence,
+) => {
+  if (!matchesDocumentLifecycleSource(evidence.identity, state)) return false;
+  const requiredArtifactIds = new Set(state.evidence.flatMap((item) => [
+    ...(item.artifactId ? [item.artifactId] : []),
+    ...(item.approvedPlan ? [item.approvedPlan.artifactId] : []),
+  ]));
+  if (![...requiredArtifactIds].every((artifactId) => evidence.identity.priorArtifactIds.includes(artifactId))) {
+    return false;
+  }
+  const approvedPlan = [...state.evidence]
+    .reverse()
+    .find((item) => item.phase === "plan" && item.outcome === "APPROVED" && item.approvedPlan)
+    ?.approvedPlan;
+  return !approvedPlan || Date.parse(evidence.createdAt) >= Date.parse(approvedPlan.approvedAt);
+};
+
+const newestDocumentRecord = <Record extends { record: LifecycleSearchRecord }>(
+  records: readonly Record[],
+): Record | null => {
+  if (records.length === 0) return null;
+  if (records.length === 1) return records[0];
+  const dated = records.map((record) => ({
+    record,
+    createdAt: record.record.createdAt,
+  }));
+  if (dated.some(({ createdAt }) => !createdAt || !validTimestamp(createdAt) || Number.isNaN(Date.parse(createdAt)))) {
+    return null;
+  }
+  const newest = Math.max(...dated.map(({ createdAt }) => Date.parse(createdAt!)));
+  const newestRecords = dated.filter(({ createdAt }) => Date.parse(createdAt!) === newest);
+  return newestRecords.length === 1 ? newestRecords[0].record : null;
+};
+
 export function reconcileCycleFromLifecycle(stateValue: unknown, recordsValue: unknown, options: CycleLifecycleReconciliationOptions = {}): CycleLifecycleReconciliation {
   const valid = validateCycleState(stateValue);
   if (!valid.valid) return { ok: false, state: null, error: valid.error, artifactId: null, recordKey: null };
   const state = valid.state;
   if (state.status !== "awaiting-evidence") return { ok: true, state, reconciled: false, artifactId: null, recordKey: null };
-  let records = (Array.isArray(recordsValue) ? recordsValue : []).flatMap((value) => {
+  const parsedRecords = (Array.isArray(recordsValue) ? recordsValue : []).flatMap((value) => {
     const record = object(value);
-    if (record?.verified !== true) return [];
+    if (state.phase === "document") {
+      if (!record) return [invalidDocumentSearchRecord()];
+      const documentEvidence = normalizedDocumentLifecycleEvidence(
+        ownDataValue(record, "documentEvidence")?.value,
+      );
+      const verified = ownDataValue(record, "verified")?.value === true;
+      const documentEvidenceInvalid = ownDataValue(record, "documentEvidenceInvalid")?.value === true
+        || !documentEvidence
+        || (!verified && documentEvidence.phase !== "closeout");
+      return [{
+        artifactId: documentEvidence?.artifactId ?? null,
+        recordKey: documentEvidence?.recordKey ?? null,
+        artifact: documentEvidence?.artifact ?? "",
+        verified,
+        ...(documentEvidence
+          ? { createdAt: documentEvidence.createdAt, documentEvidence }
+          : {}),
+        ...(documentEvidenceInvalid ? { documentEvidenceInvalid: true } : {}),
+      } satisfies LifecycleSearchRecord];
+    }
+    if (!record) return [];
+    const createdAt = exactCreatedAt(record);
     return [{
       artifactId: searchArtifactId(record),
       recordKey: searchRecordKey(record),
       artifact: typeof record.artifact === "string" ? record.artifact.slice(0, MAX_PHASE_ARTIFACT_LENGTH + 1) : "",
-      verified: true,
+      verified: record.verified === true,
+      ...(createdAt ? { createdAt } : {}),
+      ...(record.documentEvidenceInvalid === true ? { documentEvidenceInvalid: true } : {}),
     } satisfies LifecycleSearchRecord];
   });
+  const malformedDocumentEvidence = state.phase === "document"
+    ? parsedRecords.find((record) => record.documentEvidenceInvalid)
+    : null;
+  if (malformedDocumentEvidence) {
+    return {
+      ok: false,
+      state,
+      error: sanitizeCycleError("lifecycle_outcome_undetermined"),
+      artifactId: malformedDocumentEvidence.artifactId,
+      recordKey: malformedDocumentEvidence.recordKey,
+    };
+  }
+  const invalidDocumentSource = state.phase === "document"
+    ? parsedRecords.find((record) => record.documentEvidence
+      && !matchesDocumentLifecycleSource(record.documentEvidence.identity, state))
+    : null;
+  if (invalidDocumentSource) {
+    return {
+      ok: false,
+      state,
+      error: sanitizeCycleError("lifecycle_outcome_undetermined"),
+      artifactId: invalidDocumentSource.artifactId,
+      recordKey: invalidDocumentSource.recordKey,
+    };
+  }
+  let records = parsedRecords.filter((record) => record.verified);
   if (!records.length) return { ok: true, state, reconciled: false, artifactId: null, recordKey: null };
   if (state.execution) {
     if (state.execution.phase !== state.phase) return { ok: true, state, reconciled: false, artifactId: null, recordKey: null };
@@ -670,13 +1150,36 @@ export function reconcileCycleFromLifecycle(stateValue: unknown, recordsValue: u
   }
   if (unidentified) return { ok: false, state, error: sanitizeCycleError("lifecycle_outcome_undetermined"), artifactId: unidentified.artifactId, recordKey: unidentified.recordKey };
   if (!freshRecords.length) return { ok: true, state, reconciled: false, artifactId: null, recordKey: null };
+  const invalidDocumentLineage = state.phase === "document"
+    ? freshRecords.find((record) => record.documentEvidence
+      && !hasDocumentLifecycleLineage(state, record.documentEvidence))
+    : null;
+  if (invalidDocumentLineage) {
+    return {
+      ok: false,
+      state,
+      error: sanitizeCycleError("lifecycle_outcome_undetermined"),
+      artifactId: invalidDocumentLineage.artifactId,
+      recordKey: invalidDocumentLineage.recordKey,
+    };
+  }
   const resolved = freshRecords.map((record) => ({ record, outcome: resolvePhaseOutcome(record.artifact, state.phase) }));
   const unresolved = resolved.find((value) => !value.outcome.ok);
   if (unresolved) return { ok: false, state, error: sanitizeCycleError("lifecycle_outcome_undetermined"), artifactId: unresolved.record.artifactId, recordKey: unresolved.record.recordKey };
   const outcomes = new Set(resolved.map(({ outcome }) => outcome.ok ? outcome.outcome : ""));
-  if (outcomes.size !== 1) return { ok: false, state, error: sanitizeCycleError("lifecycle_outcome_undetermined"), artifactId: resolved[0].record.artifactId, recordKey: resolved[0].record.recordKey };
-  const selected = resolved[0];
-  if (!selected.outcome.ok) return { ok: false, state, error: sanitizeCycleError("lifecycle_outcome_undetermined"), artifactId: selected.record.artifactId, recordKey: selected.record.recordKey };
+  const selected = state.phase === "document"
+    ? newestDocumentRecord(resolved)
+    : outcomes.size === 1 ? resolved[0] : null;
+  if (!selected || !selected.outcome.ok) {
+    const diagnostic = selected ?? resolved[0];
+    return {
+      ok: false,
+      state,
+      error: sanitizeCycleError("lifecycle_outcome_undetermined"),
+      artifactId: diagnostic.record.artifactId,
+      recordKey: diagnostic.record.recordKey,
+    };
+  }
   const reduced = reduceCycleState(state, {
     phase: selected.outcome.phase,
     outcome: selected.outcome.outcome,

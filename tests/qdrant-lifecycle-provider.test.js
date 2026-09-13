@@ -221,6 +221,64 @@ test("blocks invalid and cancelled persistence before later effects", async () =
   assert.deepEqual(cancelledCorpus.calls.insertPoints, []);
 });
 
+test("blocks tab- and code-indented closeout document claims before direct provider effects", async () => {
+  for (const [indent, outcome] of [
+    ["\t", "READY"],
+    ["\t", "BLOCKED"],
+    ["    ", "READY"],
+    ["    ", "BLOCKED"],
+  ]) {
+    const corpus = createCorpus();
+    let clockCalls = 0;
+    const provider = createQdrantLifecycleProvider({
+      client: corpus.client,
+      now: () => {
+        clockCalls += 1;
+        return new Date(createdAt);
+      },
+    });
+    const result = await provider.persist(lifecycleRequest({
+      type: "closeout",
+      artifact: `# Historical documentation\n\n${indent}<!-- ima-cycle outcome: phase=document; outcome=${outcome} -->`,
+    }));
+
+    assert.equal(result.status, "blocked", `${JSON.stringify(indent)} ${outcome}`);
+    assert.equal(result.code, "invalid_lifecycle_request", `${JSON.stringify(indent)} ${outcome}`);
+    assert.equal(clockCalls, 0, `${JSON.stringify(indent)} ${outcome}`);
+    assert.deepEqual(corpus.calls, {
+      getPoints: [],
+      ensureCollection: 0,
+      embedSummary: [],
+      insertPoints: [],
+      getInstitutional: [],
+      recallLifecycleInstitutional: [],
+    }, `${JSON.stringify(indent)} ${outcome}`);
+  }
+});
+
+test("keeps ordinary closeouts and canonical documents writable through the direct provider", async () => {
+  const requests = [
+    ["ordinary closeout", lifecycleRequest({
+      type: "closeout",
+      artifact: "# Final Closeout\n\nTracker completion is recorded without a document outcome claim.",
+    })],
+    ["canonical document", lifecycleRequest({
+      type: "document",
+      artifact: "# Documentation\n\n<!-- ima-cycle outcome: phase=document; outcome=READY -->",
+    })],
+  ];
+
+  for (const [label, request] of requests) {
+    const corpus = createCorpus();
+    const result = await createQdrantLifecycleProvider({
+      client: corpus.client,
+      now: () => new Date(createdAt),
+    }).persist(request);
+    assert.equal(result.status, "verified", label);
+    assert.equal(corpus.calls.insertPoints.length, 2, label);
+  }
+});
+
 test("blocks strict lifecycle request projection failures before clocks or client effects", async () => {
   const corpus = createCorpus();
   let clockCalls = 0;

@@ -8,6 +8,7 @@ export const LIFECYCLE_PHASES = [
   "review",
   "resolution",
   "rereview",
+  "document",
   "decision",
   "closeout",
 ] as const;
@@ -106,8 +107,10 @@ const CONTROL_CHARACTER = /[\u0000-\u001f\u007f-\u009f]/;
 const UUID_PATTERN = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 const EMBEDDED_LIFECYCLE_FRONT_MATTER =
   /(?:^|\r?\n)---\r?\nlifecycle:\r?\n  project: '[^\r\n]*'\r?\n  lifecycle_key: '[^\r\n]*'/;
+const DOCUMENT_CYCLE_OUTCOME_MARKER = /^[ \t]*<!-- ima-cycle outcome: phase=document; outcome=(?:READY|BLOCKED) -->[ \t]*\r?$/m;
 const LIFECYCLE_ERROR_MESSAGES: Record<string, string> = {
   lifecycle_artifact_embeds_prior_artifact: "Lifecycle artifact embeds a prior artifact. Reference prior IDs in prior_artifact_ids or source_refs instead of pasting content.",
+  closeout_document_phase_forbidden: "Documentation artifacts must use lifecycle phase document; closeout remains reserved for final closeout.",
   invalid_lifecycle_summary: "Lifecycle summary must be non-empty, control-character-safe, and at most 2,000 UTF-8 bytes.",
   lifecycle_artifact_too_large: "Serialized lifecycle artifact exceeds the approved 160,000 UTF-8-byte limit.",
 };
@@ -268,6 +271,23 @@ export function validateLifecycleRequest(value: unknown): ValidLifecycleRequest 
   }
   return { valid: true, type: type as LifecyclePhase, identity, summary, artifact };
 }
+
+export const isCloseoutDocumentCycleArtifact = (
+  type: unknown,
+  artifact: unknown,
+) => typeof type === "string"
+  && type.trim() === "closeout"
+  && typeof artifact === "string"
+  && DOCUMENT_CYCLE_OUTCOME_MARKER.test(artifact);
+
+export const validateLifecycleWriteRequest = (value: unknown):
+  | ValidLifecycleRequest
+  | LifecycleRequestFailure => {
+  const request = validateLifecycleRequest(value);
+  return request.valid && isCloseoutDocumentCycleArtifact(request.type, request.artifact)
+    ? { valid: false, error: sanitizeLifecycleError("closeout_document_phase_forbidden", value) }
+    : request;
+};
 
 export function buildLifecycleNonceMarker(input: {
   lifecycleKey: string;

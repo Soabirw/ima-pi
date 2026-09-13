@@ -262,6 +262,38 @@ test("revalidates imported plans and filters downstream recovery to bound lineag
   }), { valid: false, code: "plan_lineage_unbound" });
 });
 
+test("defers imported-plan document candidates to strict document verification without reordering", () => {
+  const direct = planRecord({ id: uuid(36), key: recordKey("document-lineage") });
+  const historicalCloseout = {
+    phase: "closeout",
+    unverified: "final document reconciliation must verify this independently",
+  };
+  const canonicalDocument = {
+    phase: "document",
+    unverified: "canonical document reconciliation must verify this independently",
+  };
+  const documentContext = {
+    lifecycleKey,
+    source: planeSource,
+    phase: "document",
+    lineage: { approvalArtifactId: direct.id, approvedAt: direct.createdAt },
+  };
+
+  for (const candidates of [
+    [historicalCloseout, canonicalDocument],
+    [canonicalDocument, historicalCloseout],
+  ]) {
+    assert.deepEqual(filterImportedPlanLineage(recallPayload(candidates), documentContext), {
+      valid: true,
+      payload: { results: candidates },
+    });
+  }
+  assert.deepEqual(filterImportedPlanLineage(recallPayload([historicalCloseout]), {
+    ...documentContext,
+    phase: "implementation",
+  }), { valid: false, code: "plan_lineage_invalid" });
+});
+
 test("requires imported approval lineage on live implementation persistence", async () => {
   const direct = planRecord({ id: uuid(34), key: recordKey("live-lineage") });
   const adoption = await coordinateCyclePlanAdoption({

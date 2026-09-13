@@ -1,6 +1,6 @@
 ---
 name: ima-lifecycle-contract
-description: IMA lifecycle phase handoff and Qdrant persistence contract; use when producing or saving a plan, implementation, test, review, resolution, rereview, or closeout artifact.
+description: IMA lifecycle phase handoff and Qdrant persistence contract; use when producing or saving a plan, implementation, test, review, resolution, rereview, document, or closeout artifact.
 ---
 
 # IMA lifecycle contract
@@ -45,7 +45,7 @@ rather than invented values; pass phase separately as `type`.
 
 ```json
 {
-  "type": "plan|implementation|test|review|resolution|rereview|decision|closeout",
+  "type": "plan|implementation|test|review|resolution|rereview|document|decision|closeout",
   "identity": {
     "project": "",
     "lifecycleKey": "",
@@ -84,7 +84,7 @@ lifecycle:
   taskwarrior_uuid: ""
   jira_key: ""
   source_refs: []
-  phase: "plan|implementation|test|review|resolution|rereview|closeout"
+  phase: "plan|implementation|test|review|resolution|rereview|document|closeout"
   prior_artifact_ids: []
 ```
 
@@ -122,6 +122,10 @@ and lossless.
 When a concrete next phase is appropriate, emit a compact pointer containing only the next command,
 one-line outcome, lifecycle key, and the latest `artifactId` plus `recordKey`. Do not duplicate the
 detailed artifact or prescribe the destination phase's work.
+
+## Document and closeout boundary
+
+Persist documentation and learning evidence with lifecycle type `document`; human-authorized terminal work uses the separate `closeout` type. Manual and `/ima:soft-cycle` non-plan artifacts state their approved outcome explicitly in their summary and detail and do not add an `ima-cycle` marker. Storage verification and direct read-back do not by themselves establish a document `READY` outcome.
 
 ## Cycle outcome marker
 

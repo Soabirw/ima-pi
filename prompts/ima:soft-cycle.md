@@ -123,7 +123,7 @@ An unresolved Critical or Warning finding after the bounded loop, any contradict
 
 ## Document and stop
 
-After reviewer approval, delegate documentation work to `documenter` or evidence assessment to `document-assessor`, with exact approved local documentation targets. The orchestrator persists the document artifact through `ima_lifecycle`.
+After reviewer approval, delegate documentation work to `documenter` or evidence assessment to `document-assessor`, with exact approved local documentation targets. The orchestrator persists the document artifact through `ima_lifecycle` with lifecycle type `document`.
 
 Document only approved, current project material. Do not treat an external tracker update as
 implicit closeout authority. Report documentation that remains human-owned or was intentionally
@@ -132,4 +132,4 @@ blocks completion rather than silently narrowing the record.
 
 After `document`, stop. The user performs final verification and explicitly issues closeout. Never auto-close a tracker or invoke `/ima:cycle`.
 
-For non-plan phases, use the correct `ima_lifecycle` phase type and do not add a cycle-outcome marker. Report the canonical source, lifecycle key, latest artifact ID and record key, outcome, blockers, and the next human gate.
+For manual `/ima:soft-cycle` non-plan phases, state the approved outcome explicitly in the summary and detailed phase result and do not add a cycle-outcome marker. In particular, document uses `READY` or `BLOCKED` with type `document`; persistence success alone is not documentation readiness. Report the canonical source, lifecycle key, latest artifact ID and record key, outcome, blockers, and the next human gate.

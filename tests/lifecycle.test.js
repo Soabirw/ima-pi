@@ -19,6 +19,7 @@ import {
   sanitizeLifecycleError,
   validateLifecycleRequest,
   validateLifecycleStoreReceipt,
+  validateLifecycleWriteRequest,
 } from "../lib/ima-lifecycle.ts";
 
 const identity = {
@@ -75,6 +76,39 @@ test("validates every supported phase with an explicit summary and identity", ()
   assert.equal(validateLifecycleRequest({ type: "other", identity, summary, artifact }).valid, false);
   assert.equal(validateLifecycleRequest({ type: "plan", identity: { ...standalone, project: "" }, summary, artifact }).valid, false);
   assert.equal(validateLifecycleRequest({ type: "plan", identity: { ...standalone, jiraKey: 3 }, summary, artifact }).valid, false);
+});
+
+test("uses document for new documentation writes while preserving closeout as a separate terminal type", () => {
+  const documentMarker = "<!-- ima-cycle outcome: phase=document; outcome=READY -->";
+  const markerlessDocument = {
+    type: "document",
+    identity,
+    summary: "READY: documentation evidence is complete.",
+    artifact: "# Documentation\n\nREADY: documentation evidence is complete.",
+  };
+  const legacyCloseoutDocument = {
+    type: "closeout",
+    identity,
+    summary: "Historical documentation outcome.",
+    artifact: `${artifact}\n${documentMarker}`,
+  };
+
+  assert.equal(validateLifecycleWriteRequest(markerlessDocument).valid, true);
+  assert.equal(validateLifecycleWriteRequest({
+    ...markerlessDocument,
+    artifact: `${markerlessDocument.artifact}\n${documentMarker}`,
+  }).valid, true);
+  assert.equal(validateLifecycleRequest(legacyCloseoutDocument).valid, true);
+
+  const rejected = validateLifecycleWriteRequest(legacyCloseoutDocument);
+  assert.equal(rejected.valid, false);
+  assert.equal(rejected.error.code, "closeout_document_phase_forbidden");
+  assert.equal(validateLifecycleWriteRequest({
+    type: "closeout",
+    identity,
+    summary: "Final lifecycle closeout: human-authorized terminal work.",
+    artifact: "# Final Closeout\n\nTerminal work remains separate from documentation.",
+  }).valid, true);
 });
 
 test("requires a bounded control-character-safe UTF-8 summary", () => {

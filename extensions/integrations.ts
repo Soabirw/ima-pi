@@ -24,11 +24,12 @@ import {
 import {
   deriveLifecycleResult,
   evaluateLifecycleArtifact,
+  LIFECYCLE_PHASES,
   PLANE_WORK_ITEM_PATTERN,
   PLANE_WORKSPACE_PATTERN,
   normalizeLifecycleRecordKey,
   prepareLifecycleArtifact,
-  validateLifecycleRequest,
+  validateLifecycleWriteRequest,
   validateLifecycleStoreReceipt,
 } from "../lib/ima-lifecycle.ts";
 import { storeInstitutionalManifest } from "../lib/qdrant-corpus.ts";
@@ -101,15 +102,114 @@ export const withConfiguredMcpSession: McpSession = async (
   }
 };
 
+const LIFECYCLE_PHASE_SET = new Set<string>(LIFECYCLE_PHASES);
+const DOCUMENT_COMPATIBILITY_RECALL_LIMIT = LIFECYCLE_RECALL_LIMIT / 2;
+
+type RecalledLifecycleRecord = {
+  id: string;
+  recordKey: string;
+  project: string;
+  site: string;
+  repo: string;
+  lifecycleKey: string;
+  phase: string;
+  summary: string;
+  sourceRefs: string[];
+  contentHash: string;
+  createdAt: string;
+  content: string;
+};
+
 const lifecycleRecallQuery = (value: string) => {
   const trimmed = value.trim();
   const separator = trimmed.lastIndexOf(" ");
   if (separator < 1) return null;
   const lifecycleKey = trimmed.slice(0, separator);
   const phase = trimmed.slice(separator + 1);
-  return lifecycleKey && ["plan", "implementation", "test", "review", "resolution", "rereview", "decision", "closeout"].includes(phase)
+  return lifecycleKey && LIFECYCLE_PHASE_SET.has(phase)
     ? { lifecycleKey, phase }
     : null;
+};
+
+const recalledLifecycleRecord = (value: unknown): RecalledLifecycleRecord | null => {
+  const record = object(value);
+  const id = typeof record?.id === "string" ? record.id : "";
+  const rawRecordKey = record?.recordKey;
+  const recordKey = normalizeLifecycleRecordKey(rawRecordKey);
+  const project = typeof record?.project === "string" ? record.project : "";
+  const site = typeof record?.site === "string" ? record.site : "";
+  const repo = typeof record?.repo === "string" ? record.repo : "";
+  const lifecycleKey = typeof record?.lifecycleKey === "string" ? record.lifecycleKey : "";
+  const phase = typeof record?.phase === "string" ? record.phase : "";
+  const summary = typeof record?.summary === "string" ? record.summary : "";
+  const sourceRefs = Array.isArray(record?.sourceRefs)
+    && record.sourceRefs.every((reference) => typeof reference === "string")
+    ? [...record.sourceRefs]
+    : null;
+  const contentHash = typeof record?.contentHash === "string" ? record.contentHash : "";
+  const createdAt = typeof record?.createdAt === "string" ? record.createdAt : "";
+  const content = typeof record?.detail === "string" ? record.detail : "";
+  return id && recordKey && rawRecordKey === recordKey && project && repo && lifecycleKey && LIFECYCLE_PHASE_SET.has(phase)
+    && summary && sourceRefs && contentHash && createdAt && content
+    ? {
+      id,
+      recordKey,
+      project,
+      site,
+      repo,
+      lifecycleKey,
+      phase,
+      summary,
+      sourceRefs,
+      contentHash,
+      createdAt,
+      content,
+    }
+    : null;
+};
+
+const recallCorpusLifecyclePhase = async (
+  selection: { lifecycleKey: string; phase: string },
+  corpus: QdrantCorpusClient,
+  limit: number,
+  signal?: AbortSignal,
+): Promise<RecalledLifecycleRecord[] | null> => {
+  const directRecall = corpus.recallLifecycleInstitutional;
+  if (typeof directRecall === "function") {
+    const recalled = await directRecall({ ...selection, limit }, signal);
+    throwIfAborted(signal);
+    if (!recalled.success || !Array.isArray(recalled.data) || recalled.data.length > limit) return null;
+    const records = recalled.data.map(recalledLifecycleRecord);
+    return records.every((record) => record !== null
+      && record.lifecycleKey === selection.lifecycleKey
+      && record.phase === selection.phase)
+      ? records as RecalledLifecycleRecord[]
+      : null;
+  }
+
+  const recalled = await corpus.recallInstitutional({ ...selection, limit }, signal);
+  throwIfAborted(signal);
+  if (!recalled.success || recalled.data.length >= limit) return null;
+
+  const records: RecalledLifecycleRecord[] = [];
+  const recordKeys = new Set<string>();
+  for (const summary of recalled.data) {
+    const summaryRecordKey = normalizeLifecycleRecordKey(summary.recordKey);
+    if (!summaryRecordKey || summary.recordKey !== summaryRecordKey || recordKeys.has(summaryRecordKey)) return null;
+    const full = await corpus.getInstitutional(summaryRecordKey, signal);
+    throwIfAborted(signal);
+    if (!full.success) return null;
+    const record = recalledLifecycleRecord(full.data);
+    if (
+      !record
+      || record.recordKey !== summaryRecordKey
+      || record.lifecycleKey !== selection.lifecycleKey
+      || record.phase !== selection.phase
+    ) return null;
+    recordKeys.add(record.recordKey);
+    records.push(record);
+  }
+  return records;
 };
 
 export const recallCorpusLifecycle = async (
@@ -121,42 +221,27 @@ export const recallCorpusLifecycle = async (
   if (!selection) return null;
 
   try {
-    const recalled = await corpus.recallInstitutional({
-      lifecycleKey: selection.lifecycleKey,
-      phase: selection.phase,
-      limit: LIFECYCLE_RECALL_LIMIT,
-    }, signal);
-    throwIfAborted(signal);
-    if (!recalled.success) return null;
-
-    const records: Array<{
-      id: string;
-      recordKey: string;
-      project: string;
-      lifecycleKey: string;
-      phase: string;
-      sourceRefs: string[];
-      contentHash: string;
-      createdAt: string;
-      content: string;
-    }> = [];
-    for (const summary of recalled.data) {
-      const full = await corpus.getInstitutional(summary.recordKey, signal);
-      throwIfAborted(signal);
-      if (!full.success) return null;
-      const recordKey = normalizeLifecycleRecordKey(full.data.recordKey);
-      if (!recordKey) return null;
-      records.push({
-        id: full.data.id,
-        recordKey,
-        project: full.data.project,
-        lifecycleKey: full.data.lifecycleKey,
-        phase: full.data.phase,
-        sourceRefs: [...full.data.sourceRefs],
-        contentHash: full.data.contentHash,
-        createdAt: full.data.createdAt,
-        content: full.data.detail,
-      });
+    const phases = selection.phase === "document"
+      ? ["document", "closeout"]
+      : [selection.phase];
+    const limit = phases.length === 1
+      ? LIFECYCLE_RECALL_LIMIT
+      : DOCUMENT_COMPATIBILITY_RECALL_LIMIT;
+    const records: RecalledLifecycleRecord[] = [];
+    const recordKeys = new Set<string>();
+    for (const phase of phases) {
+      const recalled = await recallCorpusLifecyclePhase(
+        { lifecycleKey: selection.lifecycleKey, phase },
+        corpus,
+        limit,
+        signal,
+      );
+      if (!recalled) return null;
+      for (const record of recalled) {
+        if (recordKeys.has(record.recordKey)) return null;
+        recordKeys.add(record.recordKey);
+        records.push(record);
+      }
     }
     return { structuredContent: { results: records } };
   } catch {
@@ -594,7 +679,7 @@ export async function coordinateLifecycle(
   supplied?: IntegrationDependencies,
   signal?: AbortSignal,
 ) {
-  const valid = validateLifecycleRequest(request);
+  const valid = validateLifecycleWriteRequest(request);
   if (!valid.valid) {
     return {
       status: "failed",

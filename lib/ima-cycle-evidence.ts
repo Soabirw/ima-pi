@@ -190,6 +190,7 @@ export async function coordinateCycleReconcile(input: CycleReconcileInput): Prom
     lifecycleKey: state.lifecycleKey,
     phase: state.phase,
     jiraKey: state.source.type === "jira" ? state.source.key : "",
+    taskwarriorProject: state.source.type === "taskwarrior" ? state.source.project : "",
     taskwarriorUuid: state.source.type === "taskwarrior" ? state.source.uuid : "",
     planeWorkspace: state.source.type === "plane" ? state.source.workspace : "",
     planeWorkItem: state.source.type === "plane" ? `${state.source.project}-${state.source.sequenceId}` : "",

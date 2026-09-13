@@ -119,6 +119,35 @@ test("manual lifecycle prompts normalize shared source identifiers before declar
   assert.ok(planning.indexOf("ima_context") < planning.indexOf("ima-memory-workflow"));
 });
 
+test("documentation prompts reserve canonical document persistence and cycle markers for their respective routes", async () => {
+  const document = await prompt("document");
+  for (const value of [
+    "Persist complete documentation evidence with lifecycle type `document`",
+    "distinct from human-authorized `closeout`",
+    "manual or `/ima:soft-cycle` document phase",
+    "state `READY` or `BLOCKED` explicitly in the summary and detailed phase result",
+    "do not add an `ima-cycle` marker",
+    "Storage verification confirms persistence and direct read-back, not documentation readiness",
+    "Only when the existing `/ima:cycle` coordinator dispatched this phase",
+    "exactly one marker",
+    "phase=document; outcome=READY",
+  ]) has(document, value);
+
+  const softCycle = await prompt("soft-cycle");
+  for (const value of [
+    "lifecycle type `document`",
+    "manual `/ima:soft-cycle` non-plan phases",
+    "persistence success alone is not documentation readiness",
+  ]) has(softCycle, value);
+
+  const closeout = await prompt("closeout");
+  for (const value of [
+    "canonical `document` artifacts",
+    "A `closeout` artifact is never relabeled as documentation",
+    "narrowly verified historical compatibility",
+  ]) has(closeout, value);
+});
+
 test("manual closeout best-effort matches its source and uses one aggregate approval for an idempotent terminal contract", async () => {
   const text = await prompt("closeout");
 
@@ -143,7 +172,7 @@ test("manual closeout best-effort matches its source and uses one aggregate appr
     "Do not fuzzy-match titles",
     "exact Tier-1 Qdrant manifest recall",
     "selected direct detail retrieval",
-    "approved plan, implementation, test, final review or rereview, and `document` artifacts",
+    "approved plan, implementation, test, final review or rereview, and canonical `document` artifacts",
     "Closeout is available only after `/ima:document` has completed",
     "do not invoke `/ima:cycle`, auto-dispatch from document, call a next lifecycle phase, or create a cycle-outcome marker",
     "Read-only source hydration and exact tracker or lifecycle evidence reads are allowed before the final action overview",

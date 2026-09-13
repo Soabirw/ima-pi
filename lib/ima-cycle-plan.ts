@@ -80,8 +80,11 @@ const LIFECYCLE_RECORD_KEYS = new Set([
   "id",
   "recordKey",
   "project",
+  "site",
+  "repo",
   "lifecycleKey",
   "phase",
+  "summary",
   "sourceRefs",
   "contentHash",
   "createdAt",
@@ -369,6 +372,10 @@ export const filterImportedPlanLineage = (
 
   const filtered: unknown[] = [];
   for (const record of records) {
+    if (context.phase === "document") {
+      filtered.push(record);
+      continue;
+    }
     const metadata = lineagedRecord(record, context, context.phase);
     if (!metadata) return { valid: false, code: "plan_lineage_invalid" };
     if (Date.parse(metadata.createdAt) < Date.parse(approvalAt)) continue;

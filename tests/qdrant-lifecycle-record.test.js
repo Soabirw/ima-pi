@@ -56,18 +56,18 @@ const prepared = (request) => {
   return result.data;
 };
 
-const storedRecord = (request, schemaVersion) => {
+const storedRecord = (request, schemaVersion, stored = {}) => {
   const preparation = prepared(request);
   const input = {
-    recordKey: preparation.recordKey,
-    project: request.identity.project,
-    site: "",
-    repo: "ima-pi",
-    lifecycleKey: request.identity.lifecycleKey,
-    phase: request.type,
-    summary: request.summary,
-    detail: preparation.artifact,
-    sourceRefs: request.identity.sourceRefs,
+    recordKey: stored.recordKey ?? preparation.recordKey,
+    project: stored.project ?? request.identity.project,
+    site: stored.site ?? "",
+    repo: stored.repo ?? "ima-pi",
+    lifecycleKey: stored.lifecycleKey ?? request.identity.lifecycleKey,
+    phase: stored.phase ?? request.type,
+    summary: stored.summary ?? request.summary,
+    detail: stored.detail ?? preparation.artifact,
+    sourceRefs: stored.sourceRefs ?? request.identity.sourceRefs,
   };
   const normalized = schemaVersion === 1
     ? normalizeInstitutionalRecord(input, createdAt)
@@ -87,7 +87,7 @@ const storedRecord = (request, schemaVersion) => {
       summary: normalized.data.payload.summary,
       detail: schemaVersion === 1
         ? normalized.data.payload.detail
-        : preparation.artifact,
+        : input.detail,
       sourceRefs: [...normalized.data.payload.source_refs],
       contentHash: normalized.data.payload.content_hash,
       createdAt: normalized.data.payload.created_at,
@@ -115,6 +115,11 @@ test("verifies exact Plane and non-Plane records in both Qdrant storage schemas"
     ["non-Plane", requestFor({
       identity: nonPlaneIdentity,
       artifact: "# Implementation\n\nStandalone provider contract.",
+    })],
+    ["document", requestFor({
+      identity: nonPlaneIdentity,
+      type: "document",
+      artifact: "# Documentation\n\nREADY: manual documentation evidence remains markerless.",
     })],
   ];
 
@@ -162,6 +167,126 @@ test("verifies exact Plane and non-Plane records in both Qdrant storage schemas"
         assert.doesNotMatch(verified.artifact, /plane_workspace/, label);
       }
     }
+  }
+});
+
+test("keeps historical closeout documentation verifiable without projecting it as a new write", () => {
+  const historical = requestFor({
+    identity: nonPlaneIdentity,
+    type: "closeout",
+    artifact: [
+      "# Historical documentation",
+      "",
+      "Immutable compatibility evidence.",
+      "",
+      "<!-- ima-cycle outcome: phase=document; outcome=READY -->",
+    ].join("\n"),
+  });
+
+  assert.equal(projectQdrantLifecycleRequest(historical), null);
+  for (const schemaVersion of [1, 2]) {
+    const fixture = storedRecord(historical, schemaVersion);
+    const verified = verifyQdrantLifecycleRecord({
+      record: fixture.record,
+      selection: {
+        lifecycleKey: historical.identity.lifecycleKey,
+        phase: "closeout",
+        limit: 1,
+      },
+      request: historical,
+    });
+    assert.ok(verified, `schema-v${schemaVersion}`);
+    assert.equal(verified.phase, "closeout", `schema-v${schemaVersion}`);
+    assert.deepEqual(verified.identity, historical.identity, `schema-v${schemaVersion}`);
+  }
+});
+
+test("preserves ordinary closeout and canonical document write projections", () => {
+  const ordinaryCloseout = requestFor({
+    identity: nonPlaneIdentity,
+    type: "closeout",
+    artifact: "# Final Closeout\n\nTracker completion is recorded without a document outcome claim.",
+  });
+  const canonicalDocument = requestFor({
+    identity: nonPlaneIdentity,
+    type: "document",
+    artifact: "# Documentation\n\n<!-- ima-cycle outcome: phase=document; outcome=READY -->",
+  });
+
+  assert.deepEqual(projectQdrantLifecycleRequest(ordinaryCloseout), ordinaryCloseout);
+  assert.deepEqual(projectQdrantLifecycleRequest(canonicalDocument), canonicalDocument);
+});
+
+test("rejects corpus-valid records with divergent lifecycle proof across storage schemas", () => {
+  const request = requestFor({
+    identity: planeIdentity,
+    type: "closeout",
+    artifact: "# Historical documentation\n\n<!-- ima-cycle outcome: phase=document; outcome=READY -->",
+  });
+  const alternateNonce = "00000000-0000-4000-8000-000000000099";
+
+  for (const schemaVersion of [1, 2]) {
+    const fixture = storedRecord(request, schemaVersion);
+    assert.ok(verifyQdrantLifecycleRecord({ record: fixture.record, request }), `schema-v${schemaVersion} control`);
+
+    const coherentWrongIdentity = storedRecord({
+      ...request,
+      identity: {
+        ...planeIdentity,
+        planeWorkspace: "other",
+        sourceRefs: ["plane:other:SKYNET-211"],
+      },
+    }, schemaVersion);
+    const coherentWrongLifecycleKey = storedRecord({
+      ...request,
+      identity: {
+        ...planeIdentity,
+        lifecycleKey: "ima-pi:plane:ima:OTHER-211",
+      },
+    }, schemaVersion);
+    const coherentWrongLineage = storedRecord({
+      ...request,
+      identity: {
+        ...planeIdentity,
+        priorArtifactIds: ["wrong-lineage"],
+      },
+    }, schemaVersion);
+    const variants = [
+      ["serialized phase", storedRecord(request, schemaVersion, {
+        detail: fixture.preparation.artifact.replace("phase: 'closeout'", "phase: 'document'"),
+      }).record],
+      ["serialized nonce", storedRecord(request, schemaVersion, {
+        detail: fixture.preparation.artifact.replace(`nonce=${fixture.preparation.nonce}`, `nonce=${alternateNonce}`),
+      }).record],
+      ["stored phase", storedRecord(request, schemaVersion, { phase: "document" }).record],
+      ["stored lifecycle key", storedRecord(request, schemaVersion, {
+        lifecycleKey: "ima-pi:plane:ima:OTHER-211",
+      }).record],
+      ["stored record key", storedRecord(request, schemaVersion, {
+        recordKey: "ima-pi:plane:ima:SKYNET-211:closeout:forged",
+      }).record],
+      ["stored source identity", storedRecord(request, schemaVersion, {
+        sourceRefs: ["plane:other:SKYNET-211"],
+      }).record],
+      ["serialized identity", coherentWrongIdentity.record],
+      ["serialized lifecycle key", coherentWrongLifecycleKey.record],
+      ["serialized lineage", coherentWrongLineage.record],
+      ["incomplete serialized detail", storedRecord(request, schemaVersion, {
+        detail: "# Forged closeout\n\n<!-- ima-cycle outcome: phase=document; outcome=READY -->",
+      }).record],
+    ];
+
+    for (const [label, record] of variants) {
+      assert.equal(
+        verifyQdrantLifecycleRecord({ record, request }),
+        null,
+        `schema-v${schemaVersion} ${label}`,
+      );
+    }
+
+    const missingDetail = { ...fixture.record };
+    delete missingDetail.detail;
+    assert.equal(verifyQdrantLifecycleRecord({ record: missingDetail, request }), null, `schema-v${schemaVersion} missing detail`);
   }
 });
 

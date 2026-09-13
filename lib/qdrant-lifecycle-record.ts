@@ -4,8 +4,10 @@ import {
   MAX_LIFECYCLE_RECORD_KEY_BYTES,
   MAX_LIFECYCLE_REFERENCES,
   MAX_SERIALIZED_LIFECYCLE_ARTIFACT_BYTES,
+  isCloseoutDocumentCycleArtifact,
   prepareLifecycleArtifact,
   validateLifecycleRequest,
+  type LifecycleIdentity,
   type LifecyclePhase,
   type ValidLifecycleRequest,
 } from "./ima-lifecycle.ts";
@@ -57,6 +59,7 @@ export type QdrantLifecycleVerifiedRecord = {
   summary: string;
   artifact: string;
   sourceRefs: string[];
+  identity: LifecycleIdentity;
   createdAt: string;
   storageSchemaVersion: 1 | 2;
   reference: QdrantLifecycleReference;
@@ -510,9 +513,17 @@ const sameRequest = (left: ValidLifecycleRequest, right: ValidLifecycleRequest) 
 
 export const projectQdrantLifecycleRequest = (
   value: unknown,
+  options: { allowHistoricalCloseoutDocumentMarker?: boolean } = {},
 ): QdrantLifecycleRequestProjection | null => {
   const request = ownDataRecord(value, REQUEST_FIELDS);
-  if (!request) return null;
+  if (
+    !request
+    || (!options.allowHistoricalCloseoutDocumentMarker
+      && isCloseoutDocumentCycleArtifact(
+        request.type,
+        typeof request.artifact === "string" ? request.artifact.trim() : request.artifact,
+      ))
+  ) return null;
 
   const identity = ownDataRecord(
     request.identity,
@@ -634,7 +645,7 @@ export const verifyQdrantLifecycleRecord = (
       ? projectQdrantLifecycleReference(input.reference)
       : null;
     const expectedRequestInput = Object.hasOwn(input, "request")
-      ? projectQdrantLifecycleRequest(input.request)
+      ? projectQdrantLifecycleRequest(input.request, { allowHistoricalCloseoutDocumentMarker: true })
       : null;
     const expectedRequest = expectedRequestInput
       ? validateLifecycleRequest(expectedRequestInput)
@@ -712,6 +723,7 @@ export const verifyQdrantLifecycleRecord = (
       summary: record.summary,
       artifact: record.detail,
       sourceRefs: [...record.sourceRefs],
+      identity: detachedRequest(parsed.request).identity,
       createdAt: record.createdAt,
       storageSchemaVersion: schemaVersion,
       reference: resolvedReference,
