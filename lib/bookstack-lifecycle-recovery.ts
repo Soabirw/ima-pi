@@ -55,7 +55,7 @@ const RECOVERY_FIELDS = [
   "membershipAfter", "artifactId", "recordKey", "contentHash", "pageHash",
 ] as const;
 const PHASES = new Set([
-  "plan", "implementation", "test", "review", "resolution", "rereview", "decision", "closeout",
+  "plan", "implementation", "test", "review", "resolution", "rereview", "document", "decision", "closeout",
 ]);
 
 const ownDataRecord = (value: unknown, fields: readonly string[]): Record<string, unknown> | null => {

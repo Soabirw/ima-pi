@@ -24,6 +24,7 @@ const MAX_PLANE_HELPER_OUTPUT_BYTES = 128 * 1024;
 
 export type CycleCloseInput = {
   state: CycleState;
+  cwd?: string;
   mode: string;
   commitPrep: boolean;
   confirmed?: boolean;

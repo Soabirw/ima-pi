@@ -6,19 +6,25 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ### Added
 
-- Added a first-class closed `document` lifecycle phase for manual and soft-cycle documentation, with verified persistence and exact recall/reassembly; closeout remains separate and human-authorized, while explicitly verified historical document evidence retains bounded fail-closed compatibility.
-- Added an additive Qdrant lifecycle provider with strict detached projections, immutable persistence verified by direct read-back, exact get/reconcile, and bounded complete recall for schema-v1/v2 evidence; live selection, pinning, routing, fallback, repair, migration, and external-service validation remain out of scope.
-- Added an additive Serena lifecycle provider for immutable persistence with direct read-back, exact get/read-only reconcile, and bounded recall in an existing registered project; T9-owned selection, pins, fallback, and routing remain out of scope, and live synthetic Serena acceptance is unperformed.
-- Added an additive, unregistered, fail-closed Markdown lifecycle adapter for checkout-local immutable canonical UTF-8 artifacts, with artifact-first exact read-back and receipt-last publication, exact read-only get, and bounded committed-only recall; T9-owned selection, pins, routing, and consumers remain out of scope.
-- Added an additive, fail-closed BookStack lifecycle provider that can provision approved placement, persist and read-back verify immutable lifecycle evidence, and exactly recall or reconcile interrupted operations; it does not select providers or enable live lifecycle routing.
+- Integrated BookStack, Qdrant, Serena, and Markdown as the four sole lifecycle authorities. User-confirmed pre-pin selection follows explicit session, project, Serena, and global `AGENTS.md` preferences before the BookStack → Qdrant → Serena → Markdown default; recommendations identify their source, and selecting BookStack implies approved evidence sharing through BookStack. A verified first write creates a checkout-local pin; later and fresh operations use that pin only, with no fallback, migration, or mixing. No live-provider or cross-device acceptance is claimed.
+- Added a first-class closed `document` lifecycle phase for manual and soft-cycle documentation, with verified persistence and exact recall/reassembly. Closeout remains separate and human-authorized; new closeout-document writes are rejected, while explicitly verified historical document evidence remains readable through bounded fail-closed compatibility.
+- Added Qdrant lifecycle-provider groundwork, now consumed by the integrated authority layer: strict detached request projection, immutable persistence verified by direct read-back, exact get/reconcile, and bounded complete recall for schema-v1/v2 evidence.
+- Added Serena lifecycle-provider groundwork, now consumed by the integrated authority layer: immutable persistence with direct read-back, exact get/read-only reconcile, and bounded recall in an existing registered project. Live synthetic Serena acceptance is unperformed.
+- Added Markdown lifecycle-provider groundwork, now consumed by the integrated authority layer: an unregistered, fail-closed adapter for checkout-local immutable canonical UTF-8 artifacts with artifact-first exact read-back and receipt-last publication, exact read-only get, and bounded committed-only recall.
+- Added BookStack lifecycle-provider groundwork, now consumed by the integrated authority layer: a fail-closed provider that can provision approved placement, persist and read-back verify immutable lifecycle evidence, and exactly recall or reconcile interrupted operations, including document evidence.
 - Added BookStack-specific Pi search, authoritative-read, and guarded-write tools with the `/ima:bookstack-search` UX, provenance, fail-closed boundaries, and no local Qdrant/Ollama requirement.
 - Added the `ima-pi` BookStack migration producer's verified read-only `dry-run` workflow, with itemized quarantine reporting and bounded immutable inventory manifests and parts.
 - Added a read-only BookStack apply preflight and an explicitly confirmed deterministic ten-record canary, with provider-free coverage and no automatic bulk apply.
 - Added a sanitized local BookStack v25.12.3 `/api/docs.json` reference to the migration skill for installed-version request and response contracts.
 
+### Changed
+
+- Updated lifecycle prompts, skills, README, provider documentation, guide, and Serena memories for the integrated four-authority model.
+
 ### Fixed
 
-- Hardened Qdrant lifecycle provider boundaries with strict closed request projection before effects and explicit terminal `next_page_offset: null` before detail reads, so incomplete paginated recall cannot be treated as authoritative.
+- Made provider selection fail closed: only a proven no-write state permits a new user-confirmed pre-pin evaluation; uncertain writes block. Any historical Qdrant phase establishes Qdrant authority, authorized plan discovery is read-only and race-checked, and valid pins skip reselection.
+- Hardened lifecycle provider boundaries with a strict four-key provider request projection before effects; Qdrant recall also requires an explicit terminal `next_page_offset: null` before detail reads, so incomplete paginated recall cannot be treated as authoritative.
 - Hardened BookStack lifecycle placement and persistence: normal persistence globally discovers one visible canonical page slug before POST, stale locator proof is rejected after authoritative reads, and a reused-shelf failure returns no speculative recovery descriptor.
 - Persisted follow-up-eligible direct/manual specialist sessions so original reviewers and implementers can resume safely when lifecycle phases run in new Pi sessions; cycle-owned references remain owner-bound.
 - Added exclusive native local-only sidecar leases for session registries and focused continuations, returning busy results without stale-lock theft; `session_cleanup_unverified` retains the lease and blocks retry. Ambiguous or unrecognized commands rejected before effects and failed owned edits do not alone imply partial writes; definite out-of-scope intent remains an interception, with native `@` target normalization preserving owned paths.

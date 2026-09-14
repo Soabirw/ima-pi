@@ -308,9 +308,10 @@ export function evaluateSerenaBootstrap(input: { activated: boolean; instruction
   return { activated: input.activated, instructionsLoaded: input.instructionsLoaded, memoryListLoaded: input.memoryListLoaded, memories, missingRequiredMemories };
 }
 
-export function derivePhaseContext(input: { cwd: string; serenaProjectPath: string | null; source: ReturnType<typeof normalizeSourcePayload>; serena: ReturnType<typeof evaluateSerenaBootstrap>; durableKnowledge?: { requested: boolean; status: "loaded" | "empty" | "failed"; references: Array<{ summary: string; score: number | null }> }; diagnostics?: Array<{ code: string; stage: string; message: string }> }) {
-  const sourceReady = Boolean(input.source); const blocking = !input.serena.activated || !input.serena.instructionsLoaded || !input.serena.memoryListLoaded || !sourceReady;
+export function derivePhaseContext(input: { cwd: string; serenaProjectPath: string | null; source: ReturnType<typeof normalizeSourcePayload>; serena: ReturnType<typeof evaluateSerenaBootstrap>; allowSerenaFailure?: boolean; durableKnowledge?: { requested: boolean; status: "loaded" | "empty" | "failed"; references: Array<{ summary: string; score: number | null }> }; diagnostics?: Array<{ code: string; stage: string; message: string }> }) {
+  const sourceReady = Boolean(input.source); const serenaReady = input.serena.activated && input.serena.instructionsLoaded && input.serena.memoryListLoaded;
+  const blocking = !sourceReady || (!serenaReady && input.allowSerenaFailure !== true);
   const durableKnowledge = input.durableKnowledge ?? { requested: false, status: "not-requested" as const, references: [] };
-  const status = blocking ? "failed" : input.serena.missingRequiredMemories.length || durableKnowledge.status === "failed" ? "degraded" : "ready";
+  const status = blocking ? "failed" : !serenaReady || input.serena.missingRequiredMemories.length || durableKnowledge.status === "failed" ? "degraded" : "ready";
   return { schemaVersion: CONTEXT_SCHEMA_VERSION, status, project: { cwd: clean(input.cwd, 2_048), serenaProjectPath: input.serenaProjectPath }, source: input.source, serena: input.serena, durableKnowledge, diagnostics: input.diagnostics ?? [] };
 }

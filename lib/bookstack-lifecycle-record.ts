@@ -4,6 +4,7 @@ import {
   buildLifecycleNonceMarker,
   prepareLifecycleArtifact,
   validateLifecycleRequest,
+  validateLifecycleWriteRequest,
   type LifecycleIdentity,
   type LifecyclePhase,
   type ValidLifecycleRequest,
@@ -231,7 +232,7 @@ export const createLifecycleRecord = (input: {
   request: unknown;
   placement: LifecyclePlacement;
 }): BookStackLifecycleRecord => {
-  const request = validateLifecycleRequest(input.request);
+  const request = validateLifecycleWriteRequest(input.request);
   if (!request.valid) throw new Error(request.error.code);
   return createPreparedRecord(request, input.placement);
 };

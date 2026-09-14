@@ -34,10 +34,23 @@ import {
   validateLifecycleRequest,
 } from "../lib/ima-lifecycle.ts";
 import {
+  deriveRecordId,
   normalizeInstitutionalManifest,
   normalizeInstitutionalRecord,
 } from "../lib/qdrant-corpus.ts";
+import {
+  createLifecycleProviderPin,
+  createLifecycleProviderPinAttempt,
+} from "../lib/ima-lifecycle-pin.ts";
+import {
+  beginLifecyclePinWith,
+  confirmLifecyclePinWith,
+  loadLifecyclePinStateWith,
+  markLifecyclePinAttemptWritingWith,
+} from "../lib/ima-lifecycle-pin-store.ts";
 import { filterImportedPlanLineage } from "../lib/ima-cycle-plan.ts";
+import { coordinateCyclePlanAdoption } from "../lib/ima-cycle-plan-adoption.ts";
+import { mcpResultData, recallLifecycle } from "../extensions/integrations.ts";
 import {
   coordinateCycleClose,
   coordinateCycleReconcile,
@@ -403,6 +416,55 @@ const cycleDependencies = (overrides = {}) => ({
 
 const temporaryDirectory = () => mkdtemp(join(tmpdir(), "ima-cycle-"));
 
+const beginCycleProviderAttempt = async (
+  root,
+  state,
+  provider,
+  attemptId = "00000000-0000-4000-8000-000000000001",
+) => {
+  const attempt = createLifecycleProviderPinAttempt({
+    lifecycleKey: state.lifecycleKey,
+    provider,
+    attemptId,
+    startedAt: at,
+  });
+  assert.ok(attempt);
+  const started = await beginLifecyclePinWith(async () => root)(root, attempt);
+  assert.equal(started.status, "started");
+  return attempt;
+};
+
+const pinCycleProvider = async (root, state) => {
+  const attempt = await beginCycleProviderAttempt(root, state, "qdrant");
+  const writing = await markLifecyclePinAttemptWritingWith(async () => root)(root, attempt);
+  assert.equal(writing.status, "writing");
+  const recordKey = `${state.lifecycleKey}:plan:pinned`;
+  const artifactId = deriveRecordId(recordKey);
+  assert.equal(artifactId.success, true);
+  if (!artifactId.success) throw new Error("test lifecycle pin record ID was not derived");
+  const pin = createLifecycleProviderPin({
+    lifecycleKey: state.lifecycleKey,
+    provider: "qdrant",
+    initialReference: {
+      schemaVersion: 1,
+      provider: "qdrant",
+      artifactId: artifactId.data,
+      recordKey,
+      contentHash: "a".repeat(64),
+      lifecycleKey: state.lifecycleKey,
+      phase: "plan",
+      nonce: "00000000-0000-4000-8000-000000000002",
+    },
+    artifactId: artifactId.data,
+    recordKey,
+    pinnedAt: at,
+  });
+  assert.ok(pin);
+  const confirmed = await confirmLifecyclePinWith(async () => root)(root, writing.attempt, pin);
+  assert.equal(confirmed.status, "pinned");
+  return pin;
+};
+
 const dispatchWithDefaultStore = async (root, branch = implementationAwaitingResumeState()) => {
   const harness = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: branch }]);
   harness.ctx.cwd = root;
@@ -733,7 +795,7 @@ test("renders ordered sanitized evidence with both lifecycle references", () => 
   );
   const packet = buildResumeSource(state);
   const lines = packet.split("\n");
-  assert.deepEqual(lines.slice(0, 15), [
+  assert.deepEqual(lines.slice(0, 17), [
     "/ima:test FNR-3036",
     "Lifecycle evidence packet:",
     `project: ${IMA_PROJECT}`,
@@ -747,6 +809,8 @@ test("renders ordered sanitized evidence with both lifecycle references", () => 
     "planeWorkItem: none",
     "reviewCap: 5",
     "implementationMode: generic",
+    "lifecycleProvider: none",
+    "lifecycleProviderAttemptId: none",
     "orderedPhaseEvidence:",
     "phase: plan",
   ]);
@@ -1398,6 +1462,197 @@ test("recovers adopted progress before dispatch and rejects conflicting retained
       if (!result.ok) assert.equal(result.error.code, "cycle_active_settings_conflict");
       assert.deepEqual(calls, []);
     }
+  }
+});
+
+test("guided resume loads a valid durable provider pin before selector or confirmation", async () => {
+  const root = await temporaryDirectory();
+  try {
+    const initial = implementationAwaitingResumeState();
+    await pinCycleProvider(root, initial);
+    const harness = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: initial }]);
+    harness.ctx.cwd = root;
+    let selections = 0;
+    let confirmations = 0;
+    harness.ctx.ui.select = async () => {
+      selections += 1;
+      return "markdown";
+    };
+    harness.ctx.ui.confirm = async () => {
+      confirmations += 1;
+      return true;
+    };
+    const routed = [];
+    registerCycleExtension(harness.pi, cycleDependencies({
+      resolveProjectRoot: async () => root,
+      recall: async () => vestigeSearch(),
+      applyRoute: async (_pi, _ctx, phase) => {
+        routed.push(phase);
+        return { ok: true };
+      },
+      expandPrompt: async () => "expanded prompt",
+    }));
+
+    await harness.handlers.get("session_tree")({}, harness.ctx);
+    const sent = harness.waitForSend();
+    const resumed = harness.commands.get("ima:cycle").handler("resume", harness.ctx);
+    await sent;
+
+    assert.equal(selections, 0);
+    assert.equal(confirmations, 0);
+    assert.deepEqual(routed, ["implementation"]);
+    const provisional = harness.entries.at(-1).data;
+    assert.equal(provisional.lifecycleProvider, "qdrant");
+    assert.equal(provisional.lifecycleProviderAttemptId, undefined);
+
+    harness.handlers.get("input")({ source: "extension", text: "expanded prompt" });
+    harness.handlers.get("before_agent_start")({ prompt: "expanded prompt" });
+    harness.handlers.get("agent_start")();
+    harness.handlers.get("agent_end")({ messages: [{ role: "assistant", stopReason: "stop" }] });
+    harness.handlers.get("agent_settled")();
+    await resumed;
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("guided resume blocks an explicit provider conflict with durable authority", async () => {
+  const root = await temporaryDirectory();
+  try {
+    const initial = {
+      ...implementationAwaitingResumeState(),
+      lifecycleProvider: "markdown",
+    };
+    await pinCycleProvider(root, initial);
+    const harness = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: initial }]);
+    harness.ctx.cwd = root;
+    let selections = 0;
+    let confirmations = 0;
+    harness.ctx.ui.select = async () => {
+      selections += 1;
+      return "qdrant";
+    };
+    harness.ctx.ui.confirm = async () => {
+      confirmations += 1;
+      return true;
+    };
+    const routed = [];
+    registerCycleExtension(harness.pi, cycleDependencies({
+      resolveProjectRoot: async () => root,
+      recall: async () => vestigeSearch(),
+      applyRoute: async (_pi, _ctx, phase) => {
+        routed.push(phase);
+        return { ok: true };
+      },
+      expandPrompt: async () => "expanded prompt",
+    }));
+
+    await harness.handlers.get("session_tree")({}, harness.ctx);
+    await harness.commands.get("ima:cycle").handler("resume", harness.ctx);
+
+    assert.equal(selections, 0);
+    assert.equal(confirmations, 0);
+    assert.deepEqual(routed, []);
+    assert.deepEqual(harness.messages, []);
+    assert.ok(harness.notifications.some(({ level, message }) => level === "warning" && /Lifecycle provider selection/.test(message)));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("guided resume does not select an alternative while provider authority is unresolved", async () => {
+  const root = await temporaryDirectory();
+  try {
+    const initial = implementationAwaitingResumeState();
+    await beginCycleProviderAttempt(root, initial, "markdown");
+    const harness = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: initial }]);
+    harness.ctx.cwd = root;
+    let selections = 0;
+    let confirmations = 0;
+    harness.ctx.ui.select = async () => {
+      selections += 1;
+      return "qdrant";
+    };
+    harness.ctx.ui.confirm = async () => {
+      confirmations += 1;
+      return true;
+    };
+    const routed = [];
+    registerCycleExtension(harness.pi, cycleDependencies({
+      resolveProjectRoot: async () => root,
+      recall: async () => vestigeSearch(),
+      applyRoute: async (_pi, _ctx, phase) => {
+        routed.push(phase);
+        return { ok: true };
+      },
+      expandPrompt: async () => "expanded prompt",
+    }));
+
+    await harness.handlers.get("session_tree")({}, harness.ctx);
+    await harness.commands.get("ima:cycle").handler("resume", harness.ctx);
+
+    assert.equal(selections, 0);
+    assert.equal(confirmations, 0);
+    assert.deepEqual(routed, []);
+    assert.deepEqual(harness.messages, []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("cycle start adopts through authorized read-only recall and dispatches verified empty plan history", async () => {
+  const root = await temporaryDirectory();
+  try {
+    const initial = createCycleState(jira, { timestamp: at });
+    const attempt = await beginCycleProviderAttempt(root, initial, "qdrant");
+    const corpusCalls = [];
+    const corpus = {
+      recallLifecycleInstitutional: async (selection) => {
+        corpusCalls.push(structuredClone(selection));
+        return { success: true, data: [] };
+      },
+    };
+    const routed = [];
+    const entries = [];
+    const messages = [];
+    const result = await coordinateCycleStart({
+      source: jira,
+      cwd: root,
+      lifecycleProvider: attempt.provider,
+      lifecycleProviderAttemptId: attempt.attemptId,
+      context: async () => ({ status: "ready" }),
+      adoptPlan: (state) => coordinateCyclePlanAdoption({
+        state,
+        recall: async (query) => mcpResultData(await recallLifecycle(query, root, {
+          corpus,
+          resolveProjectRoot: async () => root,
+        })),
+        interactive: false,
+      }),
+      applyRoute: async (phase) => {
+        routed.push(phase);
+        return { ok: true };
+      },
+      appendState: (state) => entries.push(state),
+      expandPrompt: async () => "expanded prompt",
+      sendUserMessage: async (message, provisional) => {
+        messages.push(message);
+        return provisional;
+      },
+      timestamp: at,
+    });
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(corpusCalls, [{ lifecycleKey: initial.lifecycleKey, phase: "plan", limit: 20 }]);
+    assert.deepEqual(routed, ["plan"]);
+    assert.deepEqual(messages, ["expanded prompt"]);
+    assert.equal(entries.length, 2);
+    assert.deepEqual({ phase: result.state.phase, status: result.state.status }, { phase: "plan", status: "awaiting-evidence" });
+    const authority = await loadLifecyclePinStateWith(async () => root)(root, initial.lifecycleKey);
+    assert.equal(authority.status, "pending");
+    if (authority.status === "pending") assert.deepEqual(authority.attempt, attempt);
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
 

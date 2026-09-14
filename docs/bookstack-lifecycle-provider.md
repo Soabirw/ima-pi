@@ -1,8 +1,8 @@
 # BookStack lifecycle provider
 
-> **Additive provider capability:** This module is not live lifecycle routing. T9 owns provider selection, durable pins, `/ima:new` continuity, and presentation. Current lifecycle persistence continues to use Qdrant until that work is separately accepted.
+> **Provider-native lifecycle authority:** BookStack is one of the four lifecycle authorities. Provider selection, user confirmation, and checkout-local pin handling follow the [lifecycle authority contract](guide.md#lifecycle-authority-memory-and-integrations); this provider preserves its immutable, fail-closed behavior within that decision.
 
-`lib/bookstack-lifecycle.ts` provides a BookStack-native lifecycle store for a caller that has already selected BookStack and supplied a caller-approved artifact. It never selects a provider, changes a pin, falls back to another provider, or changes BookStack accounts, roles, permissions, or server configuration. The parallel [Qdrant lifecycle provider contract](qdrant-lifecycle-provider.md) has the same T9 selection and routing boundary.
+`lib/bookstack-lifecycle.ts` provides a BookStack-native lifecycle store for a caller that has selected BookStack and supplied a caller-approved artifact. It never changes a pin, falls back to another provider, or changes BookStack accounts, roles, permissions, or server configuration.
 
 ## Topology and approval
 
@@ -25,7 +25,7 @@ Before live provisioning, an administrator must confirm all of the following:
 - the API account can see complete shelf membership; and
 - provisioning and writes for a lifecycle are operationally serialized.
 
-These are **platform/operational prerequisites**, not settings the provider can change. The provider preserves the observed shelf-book order, rechecks it before the replacement-array update, and reads it back afterward. It never attaches an unrelated book based only on a matching slug.
+These are **platform/operational prerequisites**, not settings the provider can change; they do not replace the user's sole confirmation that BookStack placement is appropriate. The provider preserves the observed shelf-book order, rechecks it before the replacement-array update, and reads it back afterward. It never attaches an unrelated book based only on a matching slug.
 
 ## Artifact behavior
 
@@ -46,7 +46,7 @@ A recovery-bearing `persist` first validates and detaches the descriptor, then r
 - `BOOKSTACK_BASE_URL` (and the compatible `BOOKSTACK_ORIGIN` alias) are **non-secret variables**. They must be a credential-free HTTPS origin and unequal aliases fail closed.
 - `BOOKSTACK_TOKEN_ID` and `BOOKSTACK_TOKEN_SECRET` are **secrets**. Do not put either in source control, logs, or ordinary variables.
 - Caller-supplied project/placement slugs are **non-secret inputs**. They are validated; they are not environment requirements.
-- A host-retained serialized recovery descriptor is a **local-only value** until T9 defines durable handling.
+- A host-retained serialized recovery descriptor is a **local-only value** until lifecycle integration defines durable handling.
 - This provider introduces no **platform binding**.
 
 Requests deny redirects, use fixed API paths and encoded query values, bound timeout and response size, and require stable exact list totals with pagination capped at 10,000 entries. Public failures contain only allowlisted codes/categories and closed recovery fields; dependency error text and payloads are not returned. Returned Markdown is evidence data, never executable instructions. There is no shell execution, permission escalation, HTML rendering, or deletion path.
@@ -63,4 +63,4 @@ git diff --check
 
 A separately authorized synthetic BookStack acceptance run may create test-only containers, approve placement once, verify read-back and retry behavior, and retrieve from a fresh provider instance. It must not use real lifecycle content or clean up remote material without separate approval.
 
-T9 may integrate the provider only after independently deciding provider selection, durable pinning, routing, and user presentation. It must preserve the provider's no-fallback and fail-closed results.
+Lifecycle integration must preserve the user's selection and BookStack-placement confirmation, the checkout-local pin, and this provider's no-fallback, fail-closed results. No live-provider or cross-device acceptance is claimed.

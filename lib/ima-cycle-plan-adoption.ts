@@ -20,11 +20,14 @@ export type PlanApprovalPersistenceRequest = {
   identity: LifecycleIdentity;
   summary: string;
   artifact: string;
+  provider?: "bookstack" | "qdrant" | "serena" | "markdown";
+  pinAttemptId?: string;
 };
 
 export type PlanAdoptionResult =
   | { kind: "no-plan" }
   | { kind: "confirmation-required"; plan: VerifiedPlanRecord }
+  | { kind: "selection-required"; plans: VerifiedPlanRecord[] }
   | { kind: "cancelled" }
   | { kind: "approved"; approval: VerifiedPlanRecord; contract: VerifiedPlanRecord }
   | { kind: "blocked"; code: string };
@@ -38,8 +41,11 @@ export type CyclePlanAdoptionInput = {
   recall: (query: string) => Promise<Record<string, unknown> | null>;
   interactive: boolean;
   confirm?: (plan: VerifiedPlanRecord) => Promise<boolean>;
+  select?: (plans: VerifiedPlanRecord[]) => Promise<VerifiedPlanRecord | null>;
   persistApproval?: (request: PlanApprovalPersistenceRequest) => Promise<unknown>;
   identity?: LifecycleIdentity;
+  provider?: PlanApprovalPersistenceRequest["provider"];
+  pinAttemptId?: string;
   isCurrent?: () => boolean;
   signal?: AbortSignal;
 };
@@ -78,7 +84,9 @@ const persistedApproval = (value: unknown): { artifactId: string; recordKey: str
 const sameContract = (left: VerifiedPlanRecord, right: VerifiedPlanRecord) =>
   left.artifactId === right.artifactId
   && left.recordKey === right.recordKey
-  && left.contentHash === right.contentHash;
+  && left.contentHash === right.contentHash
+  && left.provider === right.provider
+  && JSON.stringify(left.reference) === JSON.stringify(right.reference);
 
 const approvalIdentity = (identity: LifecycleIdentity, plan: VerifiedPlanRecord) => {
   const normalized = normalizeLifecycleIdentity({
@@ -116,6 +124,9 @@ const fromSelection = (selection: ReusablePlanSelection): PlanAdoptionResult => 
   if (selection.kind === "confirmation-required") {
     return { kind: "confirmation-required", plan: selection.plan };
   }
+  if (selection.kind === "selection-required") {
+    return { kind: "selection-required", plans: selection.plans };
+  }
   if (selection.kind === "no-plan") return selection;
   return selection;
 };
@@ -149,7 +160,7 @@ export function adoptedPlanState(
       artifactId: adoption.contract.artifactId,
       recordKey: adoption.contract.recordKey,
       contentHash: adoption.contract.contentHash,
-      approvedAt: adoption.approval.createdAt,
+      approvedAt: adoption.approval.createdAt ?? options.timestamp ?? state.updatedAt,
     },
   }, options);
   return reduced.ok
@@ -162,6 +173,32 @@ export async function coordinateCyclePlanAdoption(input: CyclePlanAdoptionInput)
   const first = await readSelection(input);
   if (!current(input)) return { kind: "cancelled" };
   if (!first) return { kind: "blocked", code: "plan_recall_failed" };
+  if (first.kind === "selection-required") {
+    if (!input.interactive || !input.select) return fromSelection(first);
+    let selected: VerifiedPlanRecord | null;
+    try {
+      selected = await input.select(first.plans.map((plan) => structuredClone(plan)));
+    } catch {
+      return { kind: "blocked", code: "plan_selection_failed" };
+    }
+    if (!current(input)) return { kind: "cancelled" };
+    if (!selected) return { kind: "cancelled" };
+    const chosen = first.plans.find((plan) => sameContract(plan, selected!));
+    if (!chosen) return { kind: "blocked", code: "plan_selection_changed" };
+    const rechecked = await readSelection(input);
+    if (!current(input)) return { kind: "cancelled" };
+    if (!rechecked || rechecked.kind !== "selection-required") {
+      return { kind: "blocked", code: "plan_selection_changed" };
+    }
+    const verified = rechecked.plans.find((plan) => sameContract(plan, chosen));
+    if (!verified) return { kind: "blocked", code: "plan_selection_changed" };
+    if (verified.outcome === "BLOCKED") return { kind: "blocked", code: "plan_latest_blocked" };
+    if (verified.outcome === "LEGACY") return { kind: "confirmation-required", plan: verified };
+    if (verified.approvalReference === null) {
+      return { kind: "approved", approval: verified, contract: verified };
+    }
+    return { kind: "blocked", code: "plan_approval_reference_invalid" };
+  }
   if (first.kind !== "confirmation-required") return fromSelection(first);
   if (!input.interactive) return fromSelection(first);
   if (!input.confirm || !input.persistApproval || !input.identity) {
@@ -198,6 +235,8 @@ export async function coordinateCyclePlanAdoption(input: CyclePlanAdoptionInput)
       identity,
       summary: approval.summary,
       artifact: approval.artifact,
+      ...(input.provider ? { provider: input.provider } : {}),
+      ...(input.pinAttemptId ? { pinAttemptId: input.pinAttemptId } : {}),
     }));
   } catch {
     persisted = null;
@@ -243,7 +282,7 @@ export async function revalidateImportedPlanReference(
   const approvedPlan = evidence.approvedPlan;
   const matched = selection.approval.artifactId === evidence.artifactId
     && selection.approval.recordKey === evidence.recordKey
-    && selection.approval.createdAt === approvedPlan.approvedAt
+    && (selection.approval.createdAt === null || selection.approval.createdAt === approvedPlan.approvedAt)
     && selection.contract.artifactId === approvedPlan.artifactId
     && selection.contract.recordKey === approvedPlan.recordKey
     && selection.contract.contentHash === approvedPlan.contentHash;

@@ -4,6 +4,6 @@
 - Run `git diff --check`; expected signal is no output and exit 0.
 - For package discovery work, verify local package loading and correct package/user/project `sourceInfo` provenance.
 - Human-only TUI behavior must be reported explicitly if not exercised, including the exact acceptance command.
-- Before closing a Jira/Taskwarrior lifecycle unit, persist final outcome, changed files, verification, review resolution, remaining risk, and follow-up references through `ima_lifecycle`; completion requires verified Tier-1 Qdrant manifest/detail reassembly.
+- Before closing a Jira/Taskwarrior lifecycle unit, persist final outcome, changed files, verification, review resolution, remaining risk, and follow-up references through `ima_lifecycle`; completion requires provider-native verified persistence and direct read-back through the lifecycle's durable authority.
 - Completion requires no unresolved Critical or Warning review findings and user-facing entry-point documentation.
 - Summarize changed files, tests run, and unverified paths at handoff.

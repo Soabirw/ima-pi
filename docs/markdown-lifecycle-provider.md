@@ -1,10 +1,10 @@
 # Markdown lifecycle provider
 
-> **Additive, unregistered local adapter:** `lib/markdown-lifecycle-record.ts` and `lib/markdown-lifecycle.ts` provide a standalone Markdown lifecycle adapter for a caller that has already selected it. It is **not live-selected or routed**. It does not activate lifecycle persistence, change an existing provider, or supply fallback, migration, adoption, closeout, or recovery tooling.
+> **Provider-native lifecycle authority:** `lib/markdown-lifecycle-record.ts` and `lib/markdown-lifecycle.ts` provide the local Markdown provider, one of the four lifecycle authorities. Provider selection, user confirmation, and checkout-local pin handling follow the [lifecycle authority contract](guide.md#lifecycle-authority-memory-and-integrations). Markdown remains local-only and has no distributed guarantee.
 
-## T9 boundary
+## Lifecycle integration boundary
 
-T9 exclusively owns user confirmation, provider selection, durable pins, lifecycle routing, and consumers. That includes any integration with `ima_lifecycle`, `ima_context`, `/ima:cycle`, `/ima:new`, or other user-facing lifecycle flow. The adapter accepts no preference, pin, route, command, or configuration that makes that decision. A T9 consumer must preserve every blocked result and the no-fallback boundary; this document neither implements nor authorizes integration.
+Lifecycle integration preserves user confirmation, provider selection, the checkout-local pin, and every blocked/no-fallback result. That includes integrations with `ima_lifecycle`, `ima_context`, `/ima:cycle`, `/ima:new`, or other user-facing lifecycle flow. The adapter accepts no preference, pin, route, command, or configuration that makes that decision. It supplies no fallback, migration, adoption, closeout, or recovery tooling; this document claims no live-provider or cross-device acceptance.
 
 ## API and value contracts
 
@@ -112,7 +112,7 @@ The lease is cooperative local serialization, not a retry protocol. A present lo
 
 This is a local ordinary-filesystem adapter, not a shared-service durability or distributed-lock guarantee. It checks checkout and child-directory containment, canonical paths, directory/file identity around operations, exact UTF-8 decoding, no-follow file access, symlinks, hard links, substitutions, file growth, and changes observed during reads. It does not follow symlinks and treats unsafe or unstable evidence as blocked.
 
-Those controls do not make a checkout trustworthy against a privileged or concurrently malicious local actor, filesystem/kernel defects, a crashed process after a write, lost local storage, or coordinated writers outside this protocol. The receipt establishes locally verified evidence only; it does not establish T9 selection, routing, lifecycle readiness, remote replication, migration, or tracker closeout. Ordinary non-lifecycle files in the checkout and lifecycle scope are not adopted, altered, or deleted.
+Those controls do not make a checkout trustworthy against a privileged or concurrently malicious local actor, filesystem/kernel defects, a crashed process after a write, lost local storage, or coordinated writers outside this protocol. The receipt establishes locally verified evidence only; it does not establish provider selection, routing, lifecycle readiness, remote replication, migration, or tracker closeout. Ordinary non-lifecycle files in the checkout and lifecycle scope are not adopted, altered, or deleted.
 
 ## Configuration and data classification
 
@@ -124,8 +124,8 @@ Those controls do not make a checkout trustworthy against a privileged or concur
 
 The approved canonical source is `plane:ima:SKYNET-209`, with lifecycle `ima-pi:plane:ima:SKYNET-209`. Reviewed lifecycle evidence is: approved plan `91a1b8d8-d065-5fb1-837d-c03a909ca522` / `ima-pi:plane:ima:SKYNET-209:plan:0c4fd96129ac`; implementation `fd0b30ef-d554-5f66-bf04-f795180dfa6b` / `ima-pi:plane:ima:SKYNET-209:implementation:fb82ecb88d75`; PASS test `14445b9e-a34d-5f44-87b7-78cb37b19f0e` / `ima-pi:plane:ima:SKYNET-209:test:41c43bf5a43f`; review `REQUEST_CHANGES` `8bc53e2a-b083-5b18-95ce-1ec2c94935d9`; resolution `e187c181-d4c2-5168-a2ce-9063d8d849bf`; and same-reviewer approval `db760b9d-4d07-5da3-8109-a96079af04ff` / `ima-pi:plane:ima:SKYNET-209:rereview:20e5041030ff`.
 
-The reviewed focused coverage is `tests/markdown-lifecycle-record.test.js` and `tests/markdown-lifecycle.test.js`. It exercises canonical artifact/receipt/reference construction; strict input and recognized-secret rejection; artifact-first read-back; immutable retries and conflicts; partial evidence; exact fresh-adapter `get`; bounded recall; ordinary-file preservation; containment and symlink/hard-link resistance; lease contention; cancellation; and bounded non-reflecting failures. These local tests do not prove live T9 integration, distributed coordination, crash recovery, or activation.
+The reviewed focused coverage is `tests/markdown-lifecycle-record.test.js` and `tests/markdown-lifecycle.test.js`. It exercises canonical artifact/receipt/reference construction; strict input and recognized-secret rejection; artifact-first read-back; immutable retries and conflicts; partial evidence; exact fresh-adapter `get`; bounded recall; ordinary-file preservation; containment and symlink/hard-link resistance; lease contention; cancellation; and bounded non-reflecting failures. These local tests do not prove live-provider integration, distributed coordination, crash recovery, or activation.
 
-## T9 integration requirements
+## Lifecycle integration requirements
 
-Before any live use, T9 must separately accept and implement user confirmation, provider selection, durable pins, provider-aware routing, and consumer behavior. It must supply an existing canonical checkout root, pass only caller-prepared canonical artifact data, retain and use exact references, surface blocked outcomes without fallback, and leave recovery to an operator. This standalone contract does not authorize T9 work or claim that it has occurred.
+Lifecycle integration must supply an existing canonical checkout root, pass only caller-prepared canonical artifact data, retain and use exact references, surface blocked outcomes without fallback, and leave recovery to an operator. When unordered selection reaches Markdown, it is exact rather than inferred. This local-only contract does not provide migration, distributed coordination, or cross-device acceptance.

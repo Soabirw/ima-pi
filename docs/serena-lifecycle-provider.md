@@ -1,6 +1,6 @@
 # Serena lifecycle provider (T15)
 
-> **Additive provider capability:** This function-based Serena lifecycle record, client, and provider is independently usable only by a caller that has already selected Serena. It is not live lifecycle selection or routing. T9 exclusively owns preferences, user confirmation, provider selection, fallback, durable pins, live routing, and dedicated-session construction.
+> **Provider-native lifecycle authority:** Serena is one of the four lifecycle authorities. Provider selection, user confirmation, and checkout-local pin handling follow the [lifecycle authority contract](guide.md#lifecycle-authority-memory-and-integrations); this provider preserves its immutable, fail-closed behavior within that decision.
 
 The provider persists an immutable lifecycle record, gets an exact reference, recalls a bounded exact lifecycle selection, and read-only reconciles an exact reference. It reserves the versioned `ima-serena-lifecycle-v1` memory-name namespace. It does not create or select a Serena project, use a Taskwarrior project as Serena identity, alter preferences or pins, fall back to another provider, repair or migrate evidence, delete memories or locks, retry an uncertain write, or activate live routing.
 
@@ -92,6 +92,6 @@ git diff --check
 
 Live synthetic Serena acceptance is unperformed and separately authorized. Synthetic tests do not prove real MCP transport timing, server protocol variation, project registration behavior, or resistance to privileged external mutation between filesystem checks and remote writes. They also do not authorize live writes, routing, selection, fallback, pins, or cleanup of retained exclusions.
 
-## T9 integration boundary
+## Lifecycle integration boundary
 
-T9 may only consume this provider after independently implementing and accepting user confirmation, preference and provider selection, fallback policy, durable pins, live provider-aware routing, and dedicated-session construction. It must preserve the provider's strict existing-project prerequisites, no-fallback behavior, bounded blocked outcomes, immutable semantics, operator-authorized uncertain-write recovery, and read-only `get`/`reconcile`. This document does not implement or authorize any of those T9 responsibilities.
+Lifecycle integration must preserve the user's selection, checkout-local pin, strict existing-project prerequisites, no-fallback behavior, bounded blocked outcomes, immutable semantics, operator-authorized uncertain-write recovery, and read-only `get`/`reconcile`. An uncertain Serena write blocks rather than permitting reevaluation, fallback, migration, or provider mixing. This document does not claim live-provider or cross-device acceptance.

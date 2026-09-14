@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { Check } from "typebox/value";
 import integrations, {
   coordinateContext,
   coordinateLifecycle,
   recallCorpusLifecycle,
+  recallLifecycle,
 } from "../extensions/integrations.ts";
 import {
   VECTOR_SIZE,
@@ -19,6 +24,18 @@ import {
   prepareLifecycleArtifact,
   validateLifecycleRequest,
 } from "../lib/ima-lifecycle.ts";
+import {
+  abandonLifecyclePinAttemptWith,
+  beginLifecyclePinWith,
+  confirmLifecyclePinWith,
+  loadLifecyclePinStateWith,
+  markLifecyclePinAttemptWritingWith,
+} from "../lib/ima-lifecycle-pin-store.ts";
+import {
+  createLifecycleProviderPin,
+  createLifecycleProviderPinAttempt,
+} from "../lib/ima-lifecycle-pin.ts";
+import { createLifecycleRouting } from "../lib/ima-lifecycle-routing.ts";
 
 const success = (data) => ({ success: true, data });
 const failure = (code) => corpusFailure(code);
@@ -501,7 +518,8 @@ test("context forwards mid-flight cancellation to the Plane helper runner", asyn
   assert.equal(signalSeen, controller.signal);
 });
 
-test("context hydrates an exact lifecycle source through corpus summary recall and direct detail retrieval", async () => {
+test("context hydrates an exact lifecycle source through corpus summary recall and direct detail retrieval", async (t) => {
+  const root = await pinTestRoot(t);
   const corpus = createCorpus();
   const marker = `<!-- ima-lifecycle verification: lifecycle_key=${lifecycleKey}; nonce=01234567-89ab-cdef-0123-456789abcdef; phase=plan; jira_key=; taskwarrior_uuid=${identity.taskwarriorUuid}; outcome=completed -->`;
   const detail = `# Plan\n\n${marker}\n`;
@@ -510,8 +528,13 @@ test("context hydrates an exact lifecycle source through corpus summary recall a
 
   const result = await coordinateContext(
     { source: { type: "lifecycle", key: lifecycleKey } },
-    "/repo",
-    { canonical: async (path) => path, session: serenaSession(calls), corpus },
+    root,
+    {
+      canonical: async (path) => path,
+      session: serenaSession(calls),
+      corpus,
+      resolveProjectRoot: async () => root,
+    },
   );
 
   assert.equal(result.status, "ready");
@@ -529,7 +552,8 @@ test("context hydrates an exact lifecycle source through corpus summary recall a
   assert.equal(calls.every(([server]) => server === "serena"), true);
 });
 
-test("context hydrates a persisted canonical Plane lifecycle marker", async () => {
+test("context hydrates a persisted canonical Plane lifecycle marker", async (t) => {
+  const root = await pinTestRoot(t);
   const planeLifecycleKey = "ima-pi:plane:ima:SKYNET-61";
   const planeIdentity = {
     ...identity,
@@ -554,8 +578,13 @@ test("context hydrates a persisted canonical Plane lifecycle marker", async () =
 
   const result = await coordinateContext(
     { source: { type: "lifecycle", key: planeLifecycleKey } },
-    "/repo",
-    { canonical: async (path) => path, session: serenaSession(), corpus },
+    root,
+    {
+      canonical: async (path) => path,
+      session: serenaSession(),
+      corpus,
+      resolveProjectRoot: async () => root,
+    },
   );
   assert.equal(result.status, "ready");
   assert.equal(result.source.type, "lifecycle");
@@ -962,4 +991,1100 @@ test("lifecycle fails closed on chunk-store errors without a Vestige fallback", 
   assert.equal(result.error.code, "chunk_store_failed");
   assert.equal(result.receiptAccepted, false);
   assert.equal(result.recordKey, null);
+});
+
+const pinTestRoot = async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "ima-lifecycle-routing-"));
+  t.after(async () => rm(root, { recursive: true, force: true }));
+  return root;
+};
+
+const localLifecycleRequest = (type = "plan") => ({
+  type,
+  identity,
+  summary: `${type} evidence is exact before lifecycle provider pinning.`,
+  artifact: `# ${type}\n\nSynthetic lifecycle provider evidence.`,
+});
+
+const routedQdrantRecord = (request, overrides = {}) => {
+  const prepared = prepareLifecycleArtifact(request);
+  assert.equal(prepared.valid, true);
+  if (!prepared.valid) throw new Error("fixture lifecycle artifact is invalid");
+  const id = deriveRecordId(prepared.data.recordKey);
+  assert.equal(id.success, true);
+  if (!id.success) throw new Error("fixture lifecycle record ID was not derived");
+  const reference = {
+    schemaVersion: 1,
+    provider: "qdrant",
+    artifactId: id.data,
+    recordKey: prepared.data.recordKey,
+    contentHash: createHash("sha256").update(prepared.data.artifact, "utf8").digest("hex"),
+    lifecycleKey: request.identity.lifecycleKey,
+    phase: request.type,
+    nonce: prepared.data.nonce,
+  };
+  return {
+    provider: "qdrant",
+    artifactId: id.data,
+    recordKey: prepared.data.recordKey,
+    lifecycleKey: request.identity.lifecycleKey,
+    phase: request.type,
+    summary: request.summary,
+    artifact: prepared.data.artifact,
+    reference,
+    createdAt: null,
+    ...overrides,
+  };
+};
+
+const localRouting = (overrides = {}) => {
+  const records = new Map();
+  const calls = { qdrant: [], markdown: [] };
+  const qdrant = {
+    provider: "qdrant",
+    persist: async (request) => {
+      calls.qdrant.push({ operation: "persist", type: request.type });
+      const defaultResult = { status: "verified", record: routedQdrantRecord(request) };
+      const result = overrides.persist
+        ? await overrides.persist(request, defaultResult)
+        : defaultResult;
+      if (result.status === "verified") records.set(result.record.recordKey, result.record);
+      return result;
+    },
+    reconcile: async (reference) => {
+      calls.qdrant.push({ operation: "reconcile", reference: structuredClone(reference) });
+      if (overrides.reconcile) return overrides.reconcile(reference, records.get(reference.recordKey) ?? null);
+      const record = records.get(reference.recordKey);
+      return record
+        ? { status: "verified", record }
+        : { status: "blocked", provider: "qdrant", code: "pinned_reference_missing", writeState: "no-write" };
+    },
+    recall: async (selection) => {
+      calls.qdrant.push({ operation: "recall", selection: structuredClone(selection) });
+      const result = [...records.values()]
+        .filter((record) => record.lifecycleKey === selection.lifecycleKey
+          && (selection.phase === undefined || record.phase === selection.phase))
+        .slice(0, selection.limit);
+      return { status: "verified", provider: "qdrant", records: result };
+    },
+  };
+  const markdown = {
+    provider: "markdown",
+    persist: async () => {
+      calls.markdown.push("persist");
+      return { status: "blocked", provider: "markdown", code: "must_not_fallback", writeState: "no-write" };
+    },
+    reconcile: async () => {
+      calls.markdown.push("reconcile");
+      return { status: "blocked", provider: "markdown", code: "must_not_fallback", writeState: "no-write" };
+    },
+    recall: async () => {
+      calls.markdown.push("recall");
+      return { status: "blocked", provider: "markdown", code: "must_not_fallback" };
+    },
+  };
+  return { routing: createLifecycleRouting([qdrant, markdown]), calls };
+};
+
+const noHistoricalLifecycleCorpus = {
+  recallLifecycleInstitutional: async () => success([]),
+};
+
+const corpusAccessCounter = () => {
+  let calls = 0;
+  return {
+    corpus: new Proxy({}, {
+      get: () => {
+        calls += 1;
+        throw new Error("historical corpus must not be accessed");
+      },
+    }),
+    calls: () => calls,
+  };
+};
+
+const localRoutingOptions = (root, routing, overrides = {}) => ({
+  cwd: root,
+  routing,
+  corpus: noHistoricalLifecycleCorpus,
+  resolveProjectRoot: async () => root,
+  now: () => new Date("2026-08-31T12:00:00.000Z"),
+  confirmProvider: async () => true,
+  ...overrides,
+});
+
+const authorizedPinAttempt = async (root, provider = "qdrant") => {
+  const attempt = createLifecycleProviderPinAttempt({
+    lifecycleKey,
+    provider,
+    attemptId: "00000000-0000-4000-8000-000000000001",
+    startedAt: "2026-08-31T12:00:00.000Z",
+  });
+  assert.ok(attempt);
+  const started = await beginLifecyclePinWith(async () => root)(root, attempt);
+  assert.equal(started.status, "started");
+  return attempt;
+};
+
+const pinQdrantAttempt = async (root, attempt) => {
+  const writing = await markLifecyclePinAttemptWritingWith(async () => root)(root, attempt);
+  assert.equal(writing.status, "writing");
+  const record = routedQdrantRecord(localLifecycleRequest());
+  const pin = createLifecycleProviderPin({
+    lifecycleKey,
+    provider: "qdrant",
+    initialReference: record.reference,
+    artifactId: record.artifactId,
+    recordKey: record.recordKey,
+    pinnedAt: attempt.startedAt,
+  });
+  assert.ok(pin);
+  const confirmed = await confirmLifecyclePinWith(async () => root)(root, writing.attempt, pin);
+  assert.equal(confirmed.status, "pinned");
+  return pin;
+};
+
+const pinMarkdownLifecycleAuthority = async (root) => {
+  const attempt = await authorizedPinAttempt(root, "markdown");
+  const writing = await markLifecyclePinAttemptWritingWith(async () => root)(root, attempt);
+  assert.equal(writing.status, "writing");
+  const recordKey = `${lifecycleKey}:plan:markdown-authority`;
+  const artifactId = deriveRecordId(recordKey);
+  assert.equal(artifactId.success, true);
+  if (!artifactId.success) throw new Error("test Markdown lifecycle ID was not derived");
+  const pin = createLifecycleProviderPin({
+    lifecycleKey,
+    provider: "markdown",
+    initialReference: {
+      schemaVersion: 1,
+      provider: "markdown",
+      checkoutRoot: root,
+      lifecycleKey,
+      phase: "plan",
+      artifactId: artifactId.data,
+      contentHash: "a".repeat(64),
+      receiptHash: "b".repeat(64),
+    },
+    artifactId: artifactId.data,
+    recordKey,
+    pinnedAt: "2026-08-31T12:00:00.000Z",
+  });
+  assert.ok(pin);
+  const confirmed = await confirmLifecyclePinWith(async () => root)(root, writing.attempt, pin);
+  assert.equal(confirmed.status, "pinned");
+};
+
+test("registered lifecycle execution loads a valid pin before provider selection", async (t) => {
+  const root = await pinTestRoot(t);
+  await mkdir(join(root, ".serena"), { recursive: true });
+  await pinMarkdownLifecycleAuthority(root);
+  const tools = [];
+  integrations({ registerTool: (tool) => tools.push(tool) });
+  const lifecycle = tools.find((tool) => tool.name === "ima_lifecycle");
+  assert.ok(lifecycle);
+  let selections = 0;
+  let confirmations = 0;
+  const output = await lifecycle.execute("test", localLifecycleRequest(), undefined, undefined, {
+    cwd: root,
+    mode: "tui",
+    hasUI: true,
+    ui: {
+      select: async () => {
+        selections += 1;
+        return "qdrant";
+      },
+      confirm: async () => {
+        confirmations += 1;
+        return true;
+      },
+    },
+  });
+
+  assert.equal(selections, 0);
+  assert.equal(confirmations, 0);
+  assert.equal(output.details.provider, "markdown");
+  assert.equal(output.details.status, "failed");
+});
+
+test("does not reinterpret inaccessible lifecycle pin authority as historical corpus absence", async () => {
+  const access = corpusAccessCounter();
+  const result = await coordinateContext({
+    source: { type: "lifecycle", key: lifecycleKey },
+  }, "/unavailable", {
+    canonical: async (path) => path,
+    session: serenaSession(),
+    corpus: access.corpus,
+    resolveProjectRoot: async () => "relative-root",
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.source, null);
+  assert.equal(access.calls(), 0);
+});
+
+test("does not reinterpret symlink-rejected lifecycle pin authority as historical corpus absence", async (t) => {
+  const root = await pinTestRoot(t);
+  const outside = await pinTestRoot(t);
+  await symlink(outside, join(root, ".ima-cycle"), "dir");
+  const access = corpusAccessCounter();
+  const result = await coordinateContext({
+    source: { type: "lifecycle", key: lifecycleKey },
+  }, root, {
+    canonical: async (path) => path,
+    session: serenaSession(),
+    corpus: access.corpus,
+    resolveProjectRoot: async () => root,
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.source, null);
+  assert.equal(access.calls(), 0);
+});
+
+test("requires explicit user confirmation before BookStack selection and preserves an exact durable pin", async (t) => {
+  const root = await pinTestRoot(t);
+  const { routing, calls } = localRouting();
+  let confirmation;
+  const denied = await coordinateLifecycle({
+    ...localLifecycleRequest(),
+    provider: "bookstack",
+  }, localRoutingOptions(root, routing, {
+    confirmProvider: async (input) => {
+      confirmation = input;
+      return false;
+    },
+  }));
+  assert.equal(denied.status, "failed");
+  assert.equal(denied.error.code, "lifecycle_provider_confirmation_required");
+  assert.equal(confirmation.provider, "bookstack");
+  assert.equal(confirmation.recommendation.source, "session");
+  assert.deepEqual(calls, { qdrant: [], markdown: [] });
+  assert.deepEqual(
+    await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey),
+    { status: "absent" },
+  );
+
+  const first = await coordinateLifecycle({
+    ...localLifecycleRequest(),
+    provider: "qdrant",
+  }, localRoutingOptions(root, routing));
+  assert.equal(first.status, "completed");
+  const pin = await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey);
+  assert.equal(pin.status, "pinned");
+  if (pin.status !== "pinned") return;
+  assert.equal(pin.pin.provider, "qdrant");
+
+  await writeFile(
+    join(root, ".ima-cycle", "active.json"),
+    JSON.stringify({ lifecycleProvider: "markdown", lifecycleProviderAttemptId: "not-authoritative" }),
+    "utf8",
+  );
+  const continued = await coordinateLifecycle(localLifecycleRequest("implementation"), localRoutingOptions(root, routing));
+  assert.equal(continued.status, "completed");
+  assert.equal(calls.qdrant.filter(({ operation }) => operation === "persist").length, 2);
+  assert.deepEqual(calls.markdown, []);
+
+  const conflict = await coordinateLifecycle({
+    ...localLifecycleRequest("test"),
+    provider: "markdown",
+  }, localRoutingOptions(root, routing));
+  assert.equal(conflict.status, "failed");
+  assert.equal(conflict.error.code, "lifecycle_provider_pin_conflict");
+  assert.equal(calls.qdrant.filter(({ operation }) => operation === "persist").length, 2);
+  assert.deepEqual(calls.markdown, []);
+});
+
+test("does not pin mismatched lifecycle identity or uncertain first persistence", async (t) => {
+  const mismatchedRoot = await pinTestRoot(t);
+  const mismatch = localRouting({
+    persist: async (request) => ({
+      status: "verified",
+      record: routedQdrantRecord(request, { lifecycleKey: "other-lifecycle" }),
+    }),
+  });
+  const mismatched = await coordinateLifecycle({
+    ...localLifecycleRequest(),
+    provider: "qdrant",
+  }, localRoutingOptions(mismatchedRoot, mismatch.routing));
+  assert.equal(mismatched.status, "failed");
+  assert.equal(mismatched.error.code, "lifecycle_provider_verification_failed");
+  const mismatchPin = await loadLifecyclePinStateWith(async () => mismatchedRoot)(mismatchedRoot, lifecycleKey);
+  assert.equal(mismatchPin.status, "pending");
+  if (mismatchPin.status !== "pending") return;
+  assert.equal(mismatchPin.attempt.status, "writing");
+
+  const uncertainRoot = await pinTestRoot(t);
+  const uncertain = localRouting({
+    persist: async () => ({
+      status: "blocked",
+      provider: "qdrant",
+      code: "synthetic_possible_write",
+      writeState: "possible-write",
+    }),
+  });
+  const first = await coordinateLifecycle({
+    ...localLifecycleRequest(),
+    provider: "qdrant",
+  }, localRoutingOptions(uncertainRoot, uncertain.routing));
+  assert.equal(first.status, "failed");
+  assert.equal(first.error.code, "synthetic_possible_write");
+  const pending = await loadLifecyclePinStateWith(async () => uncertainRoot)(uncertainRoot, lifecycleKey);
+  assert.equal(pending.status, "pending");
+  if (pending.status !== "pending") return;
+  assert.equal(pending.attempt.status, "writing");
+
+  const retry = await coordinateLifecycle({
+    ...localLifecycleRequest("implementation"),
+    provider: "markdown",
+  }, localRoutingOptions(uncertainRoot, uncertain.routing));
+  assert.equal(retry.status, "failed");
+  assert.equal(retry.error.code, "lifecycle_pin_write_unresolved");
+  assert.equal(uncertain.calls.qdrant.filter(({ operation }) => operation === "persist").length, 1);
+  assert.deepEqual(uncertain.calls.markdown, []);
+});
+
+test("routes a provider-neutral four-key request into native Qdrant persistence", async (t) => {
+  const root = await pinTestRoot(t);
+  const corpus = createCorpus();
+  const result = await coordinateLifecycle({
+    ...localLifecycleRequest(),
+    provider: "qdrant",
+  }, {
+    cwd: root,
+    corpus,
+    environment: {},
+    resolveProjectRoot: async () => root,
+    now: () => new Date("2026-08-31T12:00:00.000Z"),
+    confirmProvider: async () => true,
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.provider, "qdrant");
+  assert.equal((await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey)).status, "pinned");
+});
+
+test("routes a provider-neutral four-key request into native BookStack persistence", async (t) => {
+  const root = await pinTestRoot(t);
+  const originalFetch = globalThis.fetch;
+  const shelf = { id: 1, name: "Lifecycle artifacts", slug: "lifecycle-artifacts", books: [2] };
+  const book = { id: 2, name: "ima-pi", slug: "ima-pi" };
+  const chapter = {
+    id: 3,
+    name: `taskwarrior-${identity.taskwarriorUuid}`,
+    slug: `taskwarrior-${identity.taskwarriorUuid}`,
+    book_id: 2,
+  };
+  const pages = [];
+  let providerConfirmations = 0;
+  let placementConfirmations = 0;
+  const json = (value) => new Response(JSON.stringify(value), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+  globalThis.fetch = async (input, init = {}) => {
+    const url = new URL(String(input));
+    const method = init.method ?? "GET";
+    const list = (data) => json({ total: data.length, data });
+    if (method === "GET" && url.pathname === "/api/shelves") return list([shelf]);
+    if (method === "GET" && url.pathname === "/api/books") return list([book]);
+    if (method === "GET" && url.pathname === "/api/chapters") return list([chapter]);
+    if (method === "GET" && url.pathname === "/api/pages") return list(pages);
+    if (method === "GET" && url.pathname === "/api/shelves/1") return json(shelf);
+    if (method === "GET" && url.pathname === "/api/books/2") return json(book);
+    if (method === "GET" && url.pathname === "/api/chapters/3") return json(chapter);
+    if (method === "GET" && url.pathname === "/api/pages/4") return json(pages[0]);
+    if (method === "POST" && url.pathname === "/api/pages") {
+      const body = JSON.parse(String(init.body));
+      const page = {
+        id: 4,
+        name: body.name,
+        slug: body.name,
+        book_id: 2,
+        chapter_id: 3,
+        markdown: body.markdown,
+        revision_count: 1,
+        updated_at: "2026-08-31T12:00:00.000Z",
+        created_by: { id: 7 },
+        updated_by: { id: 8 },
+      };
+      pages.push(page);
+      return json(page);
+    }
+    return new Response("not found", { status: 404 });
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const result = await coordinateLifecycle({
+    ...localLifecycleRequest(),
+    provider: "bookstack",
+  }, {
+    cwd: root,
+    corpus: noHistoricalLifecycleCorpus,
+    environment: {
+      BOOKSTACK_BASE_URL: "https://bookstack.test",
+      BOOKSTACK_TOKEN_ID: "test-token-id",
+      BOOKSTACK_TOKEN_SECRET: "test-token-secret",
+    },
+    resolveProjectRoot: async () => root,
+    now: () => new Date("2026-08-31T12:00:00.000Z"),
+    confirmProvider: async () => {
+      providerConfirmations += 1;
+      return true;
+    },
+    confirmBookStackPlacement: async () => {
+      placementConfirmations += 1;
+      return true;
+    },
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.provider, "bookstack");
+  assert.equal(providerConfirmations, 1);
+  assert.equal(placementConfirmations, 1);
+  assert.equal(pages.length, 1);
+  assert.equal((await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey)).status, "pinned");
+});
+
+test("routes a provider-neutral four-key request into native Serena persistence", async (t) => {
+  const root = await pinTestRoot(t);
+  await mkdir(join(root, ".serena", "memories"), { recursive: true });
+  await writeFile(join(root, ".serena", "project.yml"), "project_name: integration-serena\n", "utf8");
+  let sessionCalls = 0;
+  const result = await coordinateLifecycle({
+    ...localLifecycleRequest(),
+    provider: "serena",
+  }, {
+    cwd: root,
+    corpus: noHistoricalLifecycleCorpus,
+    environment: {},
+    resolveProjectRoot: async () => root,
+    now: () => new Date("2026-08-31T12:00:00.000Z"),
+    confirmProvider: async () => true,
+    session: async (_server, callback) => callback(async () => {
+      sessionCalls += 1;
+      throw new Error("Serena project inspection must fail before a transport call");
+    }),
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.code, "serena_project_unavailable");
+  assert.equal(sessionCalls, 0);
+  const pending = await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey);
+  assert.equal(pending.status, "pending");
+  if (pending.status === "pending") assert.equal(pending.attempt.status, "writing");
+});
+
+test("recallLifecycle returns an approved pre-pin plan without changing authorization", async (t) => {
+  const root = await pinTestRoot(t);
+  const corpus = createCorpus();
+  const historical = await coordinateLifecycle({
+    ...localLifecycleRequest(),
+    summary: "APPROVED lifecycle plan is available for read-only adoption.",
+    artifact: "# Approved plan\n\n<!-- ima-cycle outcome: phase=plan; outcome=APPROVED -->",
+  }, {
+    corpus,
+    now: () => new Date("2026-08-31T12:00:00.000Z"),
+  });
+  assert.equal(historical.status, "completed");
+
+  const attempt = await authorizedPinAttempt(root);
+  const registry = join(root, ".ima-cycle", "provider-pins.json");
+  const before = await readFile(registry, "utf8");
+  const recalled = await recallLifecycle(`${lifecycleKey} plan`, root, {
+    corpus,
+    resolveProjectRoot: async () => root,
+  });
+
+  assert.ok(recalled);
+  assert.equal(recalled.structuredContent.results.length, 1);
+  assert.equal(recalled.structuredContent.results[0].phase, "plan");
+  assert.equal(recalled.structuredContent.results[0].recordKey, historical.recordKey);
+  assert.equal(await readFile(registry, "utf8"), before);
+  const authority = await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey);
+  assert.equal(authority.status, "pending");
+  if (authority.status === "pending") assert.deepEqual(authority.attempt, attempt);
+});
+
+test("recallLifecycle returns verified empty plan history without changing authorization", async (t) => {
+  const root = await pinTestRoot(t);
+  const attempt = await authorizedPinAttempt(root);
+  const registry = join(root, ".ima-cycle", "provider-pins.json");
+  const before = await readFile(registry, "utf8");
+  const selections = [];
+  const recalled = await recallLifecycle(`${lifecycleKey} plan`, root, {
+    corpus: {
+      recallLifecycleInstitutional: async (selection) => {
+        selections.push(structuredClone(selection));
+        return success([]);
+      },
+    },
+    resolveProjectRoot: async () => root,
+  });
+
+  assert.deepEqual(recalled, { structuredContent: { results: [] } });
+  assert.deepEqual(selections, [{ lifecycleKey, phase: "plan", limit: 20 }]);
+  assert.equal(await readFile(registry, "utf8"), before);
+  const authority = await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey);
+  assert.equal(authority.status, "pending");
+  if (authority.status === "pending") assert.deepEqual(authority.attempt, attempt);
+});
+
+test("recallLifecycle blocks failed and cancelled pre-pin plan discovery without state effects", async (t) => {
+  const failedRoot = await pinTestRoot(t);
+  const failedAttempt = await authorizedPinAttempt(failedRoot);
+  const failedRegistry = join(failedRoot, ".ima-cycle", "provider-pins.json");
+  const beforeFailure = await readFile(failedRegistry, "utf8");
+  const failed = await recallLifecycle(`${lifecycleKey} plan`, failedRoot, {
+    corpus: { recallLifecycleInstitutional: async () => failure("query_failed") },
+    resolveProjectRoot: async () => failedRoot,
+  });
+  assert.equal(failed, null);
+  assert.equal(await readFile(failedRegistry, "utf8"), beforeFailure);
+  const failedAuthority = await loadLifecyclePinStateWith(async () => failedRoot)(failedRoot, lifecycleKey);
+  assert.equal(failedAuthority.status, "pending");
+  if (failedAuthority.status === "pending") assert.deepEqual(failedAuthority.attempt, failedAttempt);
+
+  const cancelledRoot = await pinTestRoot(t);
+  const cancelledAttempt = await authorizedPinAttempt(cancelledRoot);
+  const cancelledRegistry = join(cancelledRoot, ".ima-cycle", "provider-pins.json");
+  const beforeCancellation = await readFile(cancelledRegistry, "utf8");
+  const controller = new AbortController();
+  const cancelled = recallLifecycle(`${lifecycleKey} plan`, cancelledRoot, {
+    corpus: {
+      recallLifecycleInstitutional: async () => {
+        controller.abort();
+        return success([]);
+      },
+    },
+    resolveProjectRoot: async () => cancelledRoot,
+  }, controller.signal);
+  await assert.rejects(cancelled);
+  assert.equal(await readFile(cancelledRegistry, "utf8"), beforeCancellation);
+  const cancelledAuthority = await loadLifecyclePinStateWith(async () => cancelledRoot)(cancelledRoot, lifecycleKey);
+  assert.equal(cancelledAuthority.status, "pending");
+  if (cancelledAuthority.status === "pending") assert.deepEqual(cancelledAuthority.attempt, cancelledAttempt);
+});
+
+test("recallLifecycle blocks non-plan and invalid pending authority without corpus fallback", async (t) => {
+  const scenarios = [
+    { label: "non-plan query", query: `${lifecycleKey} implementation` },
+    {
+      label: "writing attempt",
+      query: `${lifecycleKey} plan`,
+      arrange: async (root, attempt) => {
+        const writing = await markLifecyclePinAttemptWritingWith(async () => root)(root, attempt);
+        assert.equal(writing.status, "writing");
+      },
+    },
+    {
+      label: "corrupt authority",
+      query: `${lifecycleKey} plan`,
+      arrange: async (root) => writeFile(join(root, ".ima-cycle", "provider-pins.json"), "{", "utf8"),
+    },
+    {
+      label: "conflicting authority",
+      query: `${lifecycleKey} plan`,
+      arrange: async (root, attempt) => writeFile(
+        join(root, ".ima-cycle", "provider-pins.json"),
+        `${JSON.stringify({
+          schemaVersion: 1,
+          entries: [
+            { status: "pending", attempt },
+            { status: "pending", attempt: { ...attempt, attemptId: "00000000-0000-4000-8000-000000000002" } },
+          ],
+        })}\n`,
+        "utf8",
+      ),
+    },
+    {
+      label: "inaccessible authority",
+      query: `${lifecycleKey} plan`,
+      arrange: async (root) => {
+        const outside = await pinTestRoot(t);
+        await rm(join(root, ".ima-cycle"), { recursive: true, force: true });
+        await symlink(outside, join(root, ".ima-cycle"), "dir");
+      },
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const root = await pinTestRoot(t);
+    const attempt = await authorizedPinAttempt(root);
+    await scenario.arrange?.(root, attempt);
+    const access = corpusAccessCounter();
+    const recalled = await recallLifecycle(scenario.query, root, {
+      corpus: access.corpus,
+      resolveProjectRoot: async () => root,
+    });
+    assert.equal(recalled, null, scenario.label);
+    assert.equal(access.calls(), 0, scenario.label);
+  }
+});
+
+test("recallLifecycle drops plan results when the snapshotted authority changes", async (t) => {
+  const transitions = [
+    {
+      label: "writing",
+      change: async (root, attempt) => {
+        const writing = await markLifecyclePinAttemptWritingWith(async () => root)(root, attempt);
+        assert.equal(writing.status, "writing");
+        return writing.attempt;
+      },
+      verify: (authority, expected) => {
+        assert.equal(authority.status, "pending");
+        if (authority.status === "pending") assert.deepEqual(authority.attempt, expected);
+      },
+    },
+    {
+      label: "removed",
+      change: async (root, attempt) => {
+        const abandoned = await abandonLifecyclePinAttemptWith(async () => root)(root, attempt);
+        assert.equal(abandoned.status, "cleared");
+        return null;
+      },
+      verify: (authority) => assert.deepEqual(authority, { status: "absent" }),
+    },
+    {
+      label: "replaced",
+      change: async (root, attempt) => {
+        const abandoned = await abandonLifecyclePinAttemptWith(async () => root)(root, attempt);
+        assert.equal(abandoned.status, "cleared");
+        const replacement = createLifecycleProviderPinAttempt({
+          lifecycleKey,
+          provider: "qdrant",
+          attemptId: "00000000-0000-4000-8000-000000000002",
+          startedAt: "2026-08-31T12:00:00.000Z",
+        });
+        assert.ok(replacement);
+        const started = await beginLifecyclePinWith(async () => root)(root, replacement);
+        assert.equal(started.status, "started");
+        return replacement;
+      },
+      verify: (authority, expected) => {
+        assert.equal(authority.status, "pending");
+        if (authority.status === "pending") assert.deepEqual(authority.attempt, expected);
+      },
+    },
+    {
+      label: "pinned",
+      change: pinQdrantAttempt,
+      verify: (authority, expected) => {
+        assert.equal(authority.status, "pinned");
+        if (authority.status === "pinned") assert.deepEqual(authority.pin, expected);
+      },
+    },
+  ];
+
+  for (const transition of transitions) {
+    const root = await pinTestRoot(t);
+    const attempt = await authorizedPinAttempt(root);
+    let startRecall;
+    const started = new Promise((resolve) => { startRecall = resolve; });
+    let finishRecall;
+    const recall = new Promise((resolve) => { finishRecall = resolve; });
+    const result = recallLifecycle(`${lifecycleKey} plan`, root, {
+      corpus: {
+        recallLifecycleInstitutional: async () => {
+          startRecall();
+          return recall;
+        },
+      },
+      resolveProjectRoot: async () => root,
+    });
+
+    await started;
+    const expected = await transition.change(root, attempt);
+    finishRecall(success([]));
+    assert.equal(await result, null, transition.label);
+    const authority = await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey);
+    transition.verify(authority, expected);
+  }
+});
+
+test("rejects non-Qdrant persistence for historical Qdrant evidence in every lifecycle phase", async (t) => {
+  for (const phase of ["implementation", "test", "review", "document"]) {
+    const root = await pinTestRoot(t);
+    const corpus = createCorpus();
+    const selections = [];
+    corpus.recallLifecycleInstitutional = async ({ lifecycleKey: expected, phase: selectedPhase, limit }) => {
+      selections.push({
+        lifecycleKey: expected,
+        ...(selectedPhase ? { phase: selectedPhase } : {}),
+        limit,
+      });
+      const recordKeys = [...corpus.points.values()]
+        .filter(({ payload }) => payload.schema_version === 2
+          && payload.record_kind === "manifest"
+          && payload.lifecycle_key === expected
+          && (selectedPhase === undefined || payload.phase === selectedPhase))
+        .map(({ payload }) => payload.record_key)
+        .slice(0, limit);
+      const records = [];
+      for (const recordKey of recordKeys) {
+        const record = await corpus.getInstitutional(recordKey);
+        if (!record.success) return record;
+        records.push(record.data);
+      }
+      return success(records);
+    };
+    const historical = await coordinateLifecycle(localLifecycleRequest(phase), {
+      corpus,
+      now: () => new Date("2026-08-31T12:00:00.000Z"),
+    });
+    assert.equal(historical.status, "completed", phase);
+
+    const attempt = await authorizedPinAttempt(root, "markdown");
+    const destination = localRouting();
+    const result = await coordinateLifecycle({
+      ...localLifecycleRequest(),
+      provider: attempt.provider,
+      pinAttemptId: attempt.attemptId,
+    }, localRoutingOptions(root, destination.routing, { corpus }));
+
+    assert.equal(result.status, "failed", phase);
+    assert.equal(result.error.code, "historical_qdrant_authority_conflict", phase);
+    assert.deepEqual(selections, [{ lifecycleKey, limit: 20 }], phase);
+    assert.deepEqual(destination.calls, { qdrant: [], markdown: [] }, phase);
+    const authority = await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey);
+    assert.equal(authority.status, "pending", phase);
+    if (authority.status === "pending") assert.deepEqual(authority.attempt, attempt, phase);
+  }
+});
+
+test("continues an authorized attempt after verified empty lifecycle-wide Qdrant history", async (t) => {
+  const root = await pinTestRoot(t);
+  const attempt = await authorizedPinAttempt(root);
+  const { routing, calls } = localRouting();
+  const selections = [];
+  const result = await coordinateLifecycle({
+    ...localLifecycleRequest(),
+    provider: attempt.provider,
+    pinAttemptId: attempt.attemptId,
+  }, localRoutingOptions(root, routing, {
+    corpus: {
+      recallLifecycleInstitutional: async (selection) => {
+        selections.push(selection);
+        return success([]);
+      },
+    },
+  }));
+
+  assert.equal(result.status, "completed");
+  assert.deepEqual(selections, [{ lifecycleKey, limit: 20 }]);
+  assert.equal(calls.qdrant.filter(({ operation }) => operation === "persist").length, 1);
+  assert.equal((await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey)).status, "pinned");
+});
+
+test("preserves an authorized attempt when lifecycle-wide authority detection fails", async (t) => {
+  const root = await pinTestRoot(t);
+  const attempt = await authorizedPinAttempt(root, "markdown");
+  const { routing, calls } = localRouting();
+  const result = await coordinateLifecycle({
+    ...localLifecycleRequest(),
+    provider: attempt.provider,
+    pinAttemptId: attempt.attemptId,
+  }, localRoutingOptions(root, routing, {
+    corpus: {
+      recallLifecycleInstitutional: async () => failure("query_failed"),
+    },
+  }));
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.code, "query_failed");
+  assert.deepEqual(calls, { qdrant: [], markdown: [] });
+  const pending = await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey);
+  assert.equal(pending.status, "pending");
+  if (pending.status === "pending") assert.equal(pending.attempt.status, "authorized");
+});
+
+test("clears a reused attempt after a proven no-write provider result", async (t) => {
+  const root = await pinTestRoot(t);
+  const attempt = await authorizedPinAttempt(root);
+  const rejected = localRouting({
+    persist: async () => ({
+      status: "blocked",
+      provider: "qdrant",
+      code: "synthetic_no_write",
+      writeState: "no-write",
+    }),
+  });
+  let reusedConfirmations = 0;
+  const result = await coordinateLifecycle({
+    ...localLifecycleRequest(),
+    provider: attempt.provider,
+    pinAttemptId: attempt.attemptId,
+  }, localRoutingOptions(root, rejected.routing, {
+    confirmProvider: async () => {
+      reusedConfirmations += 1;
+      return true;
+    },
+  }));
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.code, "synthetic_no_write");
+  assert.equal(reusedConfirmations, 0);
+  assert.equal((await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey)).status, "absent");
+  assert.equal(rejected.calls.qdrant.filter(({ operation }) => operation === "persist").length, 1);
+  assert.deepEqual(rejected.calls.markdown, []);
+
+  const recovered = localRouting();
+  let confirmations = 0;
+  const retried = await coordinateLifecycle({
+    ...localLifecycleRequest(),
+    provider: "qdrant",
+  }, localRoutingOptions(root, recovered.routing, {
+    confirmProvider: async () => {
+      confirmations += 1;
+      return true;
+    },
+  }));
+  assert.equal(retried.status, "completed");
+  assert.equal(confirmations, 1);
+  assert.equal(recovered.calls.qdrant.filter(({ operation }) => operation === "persist").length, 1);
+  assert.deepEqual(recovered.calls.markdown, []);
+  assert.equal((await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey)).status, "pinned");
+});
+
+test("surfaces reused no-write cleanup failure without clearing a replacement attempt", async (t) => {
+  const root = await pinTestRoot(t);
+  const attempt = await authorizedPinAttempt(root);
+  const replacement = createLifecycleProviderPinAttempt({
+    lifecycleKey,
+    provider: "qdrant",
+    attemptId: "00000000-0000-4000-8000-000000000002",
+    startedAt: "2026-08-31T12:00:00.000Z",
+  });
+  assert.ok(replacement);
+  const rejected = localRouting({
+    persist: async () => {
+      const abandoned = await abandonLifecyclePinAttemptWith(async () => root)(root, {
+        ...attempt,
+        status: "writing",
+      });
+      assert.equal(abandoned.status, "cleared");
+      const started = await beginLifecyclePinWith(async () => root)(root, replacement);
+      assert.equal(started.status, "started");
+      return {
+        status: "blocked",
+        provider: "qdrant",
+        code: "synthetic_no_write",
+        writeState: "no-write",
+      };
+    },
+  });
+  const result = await coordinateLifecycle({
+    ...localLifecycleRequest(),
+    provider: attempt.provider,
+    pinAttemptId: attempt.attemptId,
+  }, localRoutingOptions(root, rejected.routing, {
+    confirmProvider: async () => {
+      throw new Error("reused attempts must not request another provider confirmation");
+    },
+  }));
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.code, "lifecycle_pin_attempt_conflict");
+  assert.equal(rejected.calls.qdrant.filter(({ operation }) => operation === "persist").length, 1);
+  assert.deepEqual(rejected.calls.markdown, []);
+  const authority = await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey);
+  assert.equal(authority.status, "pending");
+  if (authority.status === "pending") assert.deepEqual(authority.attempt, replacement);
+});
+
+test("retains a reused writing attempt for uncertain provider outcomes", async (t) => {
+  const outcomes = [
+    {
+      label: "possible write",
+      code: "synthetic_possible_write",
+      persist: async () => ({
+        status: "blocked",
+        provider: "qdrant",
+        code: "synthetic_possible_write",
+        writeState: "possible-write",
+      }),
+    },
+    {
+      label: "malformed response",
+      code: "lifecycle_provider_response_invalid",
+      persist: async () => ({ malformed: true }),
+    },
+    {
+      label: "provider exception",
+      code: "lifecycle_provider_operation_failed",
+      persist: async () => { throw new Error("synthetic provider exception"); },
+    },
+    {
+      label: "failed verification",
+      code: "lifecycle_provider_verification_failed",
+      persist: async (request) => ({
+        status: "verified",
+        record: routedQdrantRecord(request, { summary: "mismatched provider response" }),
+      }),
+    },
+  ];
+
+  for (const outcome of outcomes) {
+    const root = await pinTestRoot(t);
+    const attempt = await authorizedPinAttempt(root);
+    const routed = localRouting({ persist: outcome.persist });
+    const result = await coordinateLifecycle({
+      ...localLifecycleRequest(),
+      provider: attempt.provider,
+      pinAttemptId: attempt.attemptId,
+    }, localRoutingOptions(root, routed.routing));
+
+    assert.equal(result.status, "failed", outcome.label);
+    assert.equal(result.error.code, outcome.code, outcome.label);
+    assert.equal(routed.calls.qdrant.filter(({ operation }) => operation === "persist").length, 1, outcome.label);
+    assert.deepEqual(routed.calls.markdown, [], outcome.label);
+    const authority = await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey);
+    assert.equal(authority.status, "pending", outcome.label);
+    if (authority.status === "pending") {
+      assert.equal(authority.attempt.status, "writing", outcome.label);
+      assert.equal(authority.attempt.attemptId, attempt.attemptId, outcome.label);
+    }
+  }
+});
+
+test("blocks an authorized pre-pin attempt when authority changes during plan discovery", async (t) => {
+  const root = await pinTestRoot(t);
+  const attempt = await authorizedPinAttempt(root);
+  const { routing, calls } = localRouting();
+  let markDiscoveryStarted;
+  const discoveryStarted = new Promise((resolve) => { markDiscoveryStarted = resolve; });
+  let releaseDiscovery;
+  const discovery = new Promise((resolve) => { releaseDiscovery = resolve; });
+  const result = coordinateLifecycle({
+    ...localLifecycleRequest(),
+    provider: attempt.provider,
+    pinAttemptId: attempt.attemptId,
+  }, localRoutingOptions(root, routing, {
+    corpus: {
+      recallLifecycleInstitutional: async () => {
+        markDiscoveryStarted();
+        return discovery;
+      },
+    },
+  }));
+
+  await discoveryStarted;
+  const writing = await markLifecyclePinAttemptWritingWith(async () => root)(root, attempt);
+  assert.equal(writing.status, "writing");
+  releaseDiscovery(success([]));
+  const blocked = await result;
+
+  assert.equal(blocked.status, "failed");
+  assert.equal(blocked.error.code, "lifecycle_pin_write_unresolved");
+  assert.deepEqual(calls, { qdrant: [], markdown: [] });
+  const pending = await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey);
+  assert.equal(pending.status, "pending");
+  if (pending.status === "pending") assert.equal(pending.attempt.status, "writing");
+});
+
+test("permits pre-pin reevaluation only after a proven no-write failure", async (t) => {
+  const root = await pinTestRoot(t);
+  const rejected = localRouting({
+    persist: async () => ({
+      status: "blocked",
+      provider: "qdrant",
+      code: "synthetic_no_write",
+      writeState: "no-write",
+    }),
+  });
+  const failed = await coordinateLifecycle({
+    ...localLifecycleRequest(),
+    provider: "qdrant",
+  }, localRoutingOptions(root, rejected.routing));
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.error.code, "synthetic_no_write");
+  assert.equal((await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey)).status, "absent");
+
+  const recovered = localRouting();
+  const retried = await coordinateLifecycle({
+    ...localLifecycleRequest(),
+    provider: "qdrant",
+  }, localRoutingOptions(root, recovered.routing));
+  assert.equal(retried.status, "completed");
+  assert.equal((await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey)).status, "pinned");
+});
+
+test("hydrates an independently verified non-Serena pin as degraded context without Serena fallback", async (t) => {
+  const root = await pinTestRoot(t);
+  const { routing, calls } = localRouting();
+  const persisted = await coordinateLifecycle({
+    ...localLifecycleRequest(),
+    provider: "qdrant",
+  }, localRoutingOptions(root, routing));
+  assert.equal(persisted.status, "completed");
+
+  let serenaCalls = 0;
+  const context = await coordinateContext({
+    source: { type: "lifecycle", key: lifecycleKey },
+  }, root, {
+    ...localRoutingOptions(root, routing),
+    canonical: async (path) => path,
+    session: async () => {
+      serenaCalls += 1;
+      throw new Error("Serena must not be used for a verified non-Serena pin");
+    },
+  });
+  assert.equal(context.status, "degraded");
+  assert.equal(context.source.type, "lifecycle");
+  assert.match(context.source.content, /Synthetic lifecycle provider evidence/);
+  assert.equal(context.diagnostics[0].code, "lifecycle_pinned_provider_context");
+  assert.equal(serenaCalls, 0);
+  assert.equal(calls.qdrant.some(({ operation }) => operation === "recall"), true);
+});
+
+test("retains verified historical Qdrant authority before unpinned provider selection", async (t) => {
+  const corpus = createCorpus();
+  corpus.recallLifecycleInstitutional = async ({ lifecycleKey: expected, phase, limit }) => {
+    const recordKeys = [...corpus.points.values()]
+      .filter(({ payload }) => payload.schema_version === 2
+        && payload.record_kind === "manifest"
+        && payload.lifecycle_key === expected
+        && (phase === undefined || payload.phase === phase))
+      .map(({ payload }) => payload.record_key)
+      .slice(0, limit);
+    const records = [];
+    for (const recordKey of recordKeys) {
+      const record = await corpus.getInstitutional(recordKey);
+      if (!record.success) return record;
+      records.push(record.data);
+    }
+    return success(records);
+  };
+  const historical = await coordinateLifecycle(localLifecycleRequest(), {
+    corpus,
+    now: () => new Date("2026-08-31T12:00:00.000Z"),
+  });
+  assert.equal(historical.status, "completed");
+
+  const root = await pinTestRoot(t);
+  const local = localRouting();
+  let recommendation;
+  const denied = await coordinateLifecycle(localLifecycleRequest("implementation"), {
+    ...localRoutingOptions(root, local.routing),
+    corpus,
+    confirmProvider: async (input) => {
+      recommendation = input.recommendation;
+      return false;
+    },
+  });
+  assert.equal(denied.status, "failed");
+  assert.equal(denied.error.code, "lifecycle_provider_confirmation_required");
+  assert.equal(recommendation.provider, "qdrant");
+  assert.equal(recommendation.source, "historical-qdrant");
+  assert.deepEqual(local.calls, { qdrant: [], markdown: [] });
+
+  const conflict = await coordinateLifecycle({
+    ...localLifecycleRequest("implementation"),
+    provider: "markdown",
+  }, {
+    ...localRoutingOptions(root, local.routing),
+    corpus,
+  });
+  assert.equal(conflict.status, "failed");
+  assert.equal(conflict.error.code, "historical_qdrant_authority_conflict");
+  assert.deepEqual(local.calls, { qdrant: [], markdown: [] });
 });

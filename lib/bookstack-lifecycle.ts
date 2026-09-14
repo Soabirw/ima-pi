@@ -57,6 +57,10 @@ export type VerifiedResult = {
   recordKey: string;
   contentHash: string;
   pageHash: string;
+  lifecycleKey: string;
+  phase: BookStackLifecycleRecord["phase"];
+  summary: string;
+  identity: BookStackLifecycleRecord["identity"];
   artifact: string;
   sourceId: string;
   canonicalUrl: string;
@@ -69,7 +73,7 @@ export type VerifiedResult = {
 };
 
 const VALID_PHASES = new Set([
-  "plan", "implementation", "test", "review", "resolution", "rereview", "decision", "closeout",
+  "plan", "implementation", "test", "review", "resolution", "rereview", "document", "decision", "closeout",
 ]);
 const LOCATOR_FIELDS = [
   "projectSlug", "sourceRef", "lifecycleKey", "shelfId", "shelfSlug", "bookId", "bookSlug", "chapterId", "chapterSlug",
@@ -262,6 +266,10 @@ const receipt = (input: {
     recordKey: record.recordKey,
     contentHash: record.contentHash,
     pageHash,
+    lifecycleKey: record.lifecycleKey,
+    phase: record.phase,
+    summary: record.summary,
+    identity: { ...record.identity, sourceRefs: [...record.identity.sourceRefs], priorArtifactIds: [...record.identity.priorArtifactIds] },
     artifact: record.artifact,
     sourceId: `bookstack:lifecycle:${page.id}`,
     canonicalUrl: `${origin}/link/${page.id}`,

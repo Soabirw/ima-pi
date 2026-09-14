@@ -8,7 +8,15 @@ import {
 } from "../lib/ima-cycle-plan.ts";
 import { adoptedPlanState } from "../lib/ima-cycle-plan-adoption.ts";
 import { buildCycleOutcomeMarker, buildResumeSource, createCycleState } from "../lib/ima-cycle.ts";
-import { buildLifecycleArtifact } from "../lib/ima-lifecycle.ts";
+import {
+  buildLifecycleArtifact,
+  prepareLifecycleArtifact,
+  validateLifecycleWriteRequest,
+} from "../lib/ima-lifecycle.ts";
+import {
+  createMarkdownLifecycleRecord,
+  markdownLifecycleReferenceFor,
+} from "../lib/markdown-lifecycle-record.ts";
 import {
   contentHash,
   lifecycleKey,
@@ -383,6 +391,68 @@ test("validates exact metadata and does not normalize unsafe imported plan refer
   });
   const extraField = { ...record, injected: true };
   assert.deepEqual(validatePlanRecord(extraField, planContext), {
+    valid: false,
+    code: "plan_record_invalid",
+  });
+});
+
+const markdownPlan = (artifact) => {
+  const request = validateLifecycleWriteRequest({
+    type: "plan",
+    identity: planIdentity(),
+    summary: "Approved Markdown plan must retain its exact local receipt reference.",
+    artifact,
+  });
+  assert.equal(request.valid, true);
+  if (!request.valid) throw new Error("fixture request is invalid");
+  const prepared = prepareLifecycleArtifact(request);
+  assert.equal(prepared.valid, true);
+  if (!prepared.valid) throw new Error("fixture artifact is invalid");
+  const record = createMarkdownLifecycleRecord({
+    schemaVersion: 1,
+    phase: request.type,
+    identity: request.identity,
+    summary: request.summary,
+    artifact: prepared.data.artifact,
+    expectedHash: contentHash(prepared.data.artifact),
+  });
+  assert.equal(record.valid, true);
+  if (!record.valid) throw new Error("fixture Markdown record is invalid");
+  const reference = markdownLifecycleReferenceFor({
+    checkoutRoot: "/workspace/ima-pi",
+    record: record.data,
+  });
+  assert.ok(reference);
+  return {
+    id: record.data.artifactId,
+    recordKey: prepared.data.recordKey,
+    lifecycleKey,
+    phase: "plan",
+    summary: request.summary,
+    content: record.data.artifact,
+    detail: record.data.artifact,
+    contentHash: record.data.contentHash,
+    provider: "markdown",
+    reference,
+  };
+};
+
+test("requires exact Markdown references and explicit selection when local plan order is unknowable", () => {
+  const first = markdownPlan(`${planArtifact("APPROVED")}\n\nFirst local plan.`);
+  const second = markdownPlan(`${planArtifact("APPROVED")}\n\nSecond local plan.`);
+  const selected = selectReusablePlan(recallPayload([first, second]), planContext);
+
+  assert.equal(selected.kind, "selection-required");
+  if (selected.kind !== "selection-required") return;
+  assert.deepEqual(selected.plans.map((plan) => plan.recordKey), [first.recordKey, second.recordKey]);
+  assert.equal(selected.plans.every((plan) => plan.provider === "markdown"), true);
+  assert.equal(selected.plans.every((plan) => plan.reference !== null), true);
+
+  const escaped = {
+    ...first,
+    reference: { ...first.reference, checkoutRoot: "/workspace/ima-pi/../outside" },
+  };
+  assert.deepEqual(validatePlanRecord(escaped, planContext), {
     valid: false,
     code: "plan_record_invalid",
   });

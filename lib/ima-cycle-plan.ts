@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { parseDocument } from "yaml";
 import {
   IMA_PROJECT,
@@ -14,6 +15,8 @@ import {
   normalizeLifecycleRecordKey,
   type LifecycleIdentity,
 } from "./ima-lifecycle.ts";
+import { projectLifecycleProviderReference } from "./ima-lifecycle-pin.ts";
+import { normalizeLifecycleProvider, type LifecycleProviderName } from "./ima-lifecycle-selection.ts";
 
 export const PLAN_RECALL_LIMIT = 20;
 
@@ -29,7 +32,9 @@ export type VerifiedPlanRecord = {
   artifactId: string;
   recordKey: string;
   contentHash: string;
-  createdAt: string;
+  createdAt: string | null;
+  provider: LifecycleProviderName;
+  reference: Record<string, unknown> | null;
   artifact: string;
   detail: string;
   identity: LifecycleIdentity;
@@ -41,6 +46,7 @@ export type VerifiedPlanRecord = {
 export type ReusablePlanSelection =
   | { kind: "no-plan" }
   | { kind: "confirmation-required"; plan: VerifiedPlanRecord }
+  | { kind: "selection-required"; plans: VerifiedPlanRecord[] }
   | { kind: "approved"; approval: VerifiedPlanRecord; contract: VerifiedPlanRecord }
   | { kind: "blocked"; code: string };
 
@@ -263,10 +269,122 @@ const artifactOutcome = (artifact: string): {
   return { outcome: "LEGACY", marker: null, approvalReference: null };
 };
 
+const ROUTED_LIFECYCLE_RECORD_KEYS = new Set([
+  "id",
+  "recordKey",
+  "lifecycleKey",
+  "phase",
+  "summary",
+  "content",
+  "detail",
+  "contentHash",
+  "createdAt",
+  "provider",
+  "reference",
+]);
+
+const routedDataRecord = (value: unknown): Record<string, unknown> | null => {
+  try {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const keys = Reflect.ownKeys(value);
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    if (
+      keys.some((key) => typeof key !== "string")
+      || keys.some((key) => !ROUTED_LIFECYCLE_RECORD_KEYS.has(key as string))
+      || keys.some((key) => {
+        const descriptor = descriptors[key as string];
+        return !descriptor
+          || descriptor.get
+          || descriptor.set
+          || !descriptor.enumerable
+          || !Object.hasOwn(descriptor, "value");
+      })
+    ) return null;
+    return Object.fromEntries(keys.map((key) => [key, descriptors[key as string].value]));
+  } catch {
+    return null;
+  }
+};
+
+const validateRoutedPlanRecord = (
+  value: unknown,
+  context: PlanSelectionContext,
+): { valid: true; record: VerifiedPlanRecord } | { valid: false; code: string } | null => {
+  const raw = routedDataRecord(value);
+  if (!raw || !Object.hasOwn(raw, "provider")) return null;
+  const provider = normalizeLifecycleProvider(raw.provider);
+  const reference = provider ? projectLifecycleProviderReference(provider, raw.reference) : null;
+  const artifactId = typeof raw.id === "string" && UUID.test(raw.id) ? raw.id.toLowerCase() : null;
+  const recordKey = exactRecordKey(raw.recordKey);
+  const lifecycleKey = exactText(raw.lifecycleKey, 512);
+  const phase = raw.phase === "plan" ? raw.phase : null;
+  const summary = exactText(raw.summary, 2_000);
+  const content = typeof raw.content === "string" && raw.content.length > 0 ? raw.content : null;
+  const detail = typeof raw.detail === "string" && raw.detail === content ? raw.detail : null;
+  const contentHash = typeof raw.contentHash === "string" && HASH.test(raw.contentHash)
+    ? raw.contentHash.toLowerCase()
+    : null;
+  const createdAt = Object.hasOwn(raw, "createdAt") ? exactTimestamp(raw.createdAt) : null;
+  if (
+    !provider
+    || !reference
+    || !artifactId
+    || !recordKey
+    || !lifecycleKey
+    || lifecycleKey !== context.lifecycleKey
+    || !phase
+    || !summary
+    || !content
+    || !detail
+    || !contentHash
+    || contentHash !== createHash("sha256").update(detail, "utf8").digest("hex")
+    || Object.hasOwn(raw, "createdAt") && !createdAt
+  ) return { valid: false, code: "plan_record_invalid" };
+
+  const metadata = lifecycleMetadata(detail, "plan");
+  if (
+    !metadata
+    || metadata.identity.project !== IMA_PROJECT
+    || metadata.identity.lifecycleKey !== lifecycleKey
+    || !expectedSourceIdentity(metadata.identity, context.source)
+  ) return { valid: false, code: "plan_identity_invalid" };
+  const parsed = parseLifecycleSearchRecords(
+    { results: [{ id: artifactId, recordKey, content: detail }] },
+    lifecycleSelection(context),
+  );
+  const parsedRecord = parsed.valid && parsed.records.length === 1 ? parsed.records[0] : null;
+  if (
+    !parsedRecord
+    || parsedRecord.verified !== true
+    || parsedRecord.artifactId !== artifactId
+    || parsedRecord.recordKey !== recordKey
+  ) return { valid: false, code: "plan_lifecycle_unverified" };
+  const classified = artifactOutcome(parsedRecord.artifact);
+  return classified
+    ? {
+      valid: true,
+      record: {
+        artifactId,
+        recordKey,
+        contentHash,
+        createdAt,
+        provider,
+        reference,
+        artifact: parsedRecord.artifact,
+        detail,
+        identity: metadata.identity,
+        ...classified,
+      },
+    }
+    : { valid: false, code: "plan_outcome_invalid" };
+};
+
 export const validatePlanRecord = (
   value: unknown,
   context: PlanSelectionContext,
 ): { valid: true; record: VerifiedPlanRecord } | { valid: false; code: string } => {
+  const routed = validateRoutedPlanRecord(value, context);
+  if (routed) return routed;
   const raw = object(value);
   if (!raw || Object.keys(raw).some((key) => !LIFECYCLE_RECORD_KEYS.has(key))) {
     return { valid: false, code: "plan_record_invalid" };
@@ -317,6 +435,8 @@ export const validatePlanRecord = (
       recordKey,
       contentHash,
       createdAt,
+      provider: "qdrant",
+      reference: null,
       artifact: parsedRecord.artifact,
       detail,
       identity: metadata.identity,
@@ -334,11 +454,56 @@ export type ImportedPlanLineageResult =
   | { valid: true; payload: { results: unknown[] } }
   | { valid: false; code: string };
 
+const routedLineagedRecord = (
+  value: unknown,
+  context: PlanSelectionContext,
+  phase: CyclePhase,
+): { createdAt: string | null; identity: LifecycleIdentity } | null => {
+  const raw = routedDataRecord(value);
+  if (!raw || !Object.hasOwn(raw, "provider")) return null;
+  const provider = normalizeLifecycleProvider(raw.provider);
+  const reference = provider ? projectLifecycleProviderReference(provider, raw.reference) : null;
+  const artifactId = typeof raw.id === "string" && UUID.test(raw.id) ? raw.id : null;
+  const recordKey = exactRecordKey(raw.recordKey);
+  const lifecycleKey = exactText(raw.lifecycleKey, 512);
+  const expectedPhase = lifecycleTypeForPhase(phase);
+  const summary = exactText(raw.summary, 2_000);
+  const content = typeof raw.content === "string" && raw.content.length > 0 ? raw.content : null;
+  const detail = typeof raw.detail === "string" && raw.detail === content ? raw.detail : null;
+  const contentHash = typeof raw.contentHash === "string" && HASH.test(raw.contentHash)
+    ? raw.contentHash.toLowerCase()
+    : null;
+  const createdAt = Object.hasOwn(raw, "createdAt") ? exactTimestamp(raw.createdAt) : null;
+  if (
+    !provider
+    || !reference
+    || !artifactId
+    || !recordKey
+    || lifecycleKey !== context.lifecycleKey
+    || raw.phase !== expectedPhase
+    || !summary
+    || !content
+    || !detail
+    || !contentHash
+    || contentHash !== createHash("sha256").update(detail, "utf8").digest("hex")
+    || Object.hasOwn(raw, "createdAt") && !createdAt
+  ) return null;
+  const metadata = lifecycleMetadata(detail, expectedPhase);
+  return metadata
+    && metadata.identity.lifecycleKey === lifecycleKey
+    && metadata.identity.project === IMA_PROJECT
+    && expectedSourceIdentity(metadata.identity, context.source)
+    ? { createdAt, identity: metadata.identity }
+    : null;
+};
+
 const lineagedRecord = (
   value: unknown,
   context: PlanSelectionContext,
   phase: CyclePhase,
-): { createdAt: string; identity: LifecycleIdentity } | null => {
+): { createdAt: string | null; identity: LifecycleIdentity } | null => {
+  const routed = routedLineagedRecord(value, context, phase);
+  if (routed) return routed;
   const raw = object(value);
   if (!raw || Object.keys(raw).some((key) => !LIFECYCLE_RECORD_KEYS.has(key))) return null;
   const artifactId = typeof raw.id === "string" && UUID.test(raw.id) ? raw.id : null;
@@ -378,7 +543,7 @@ export const filterImportedPlanLineage = (
     }
     const metadata = lineagedRecord(record, context, context.phase);
     if (!metadata) return { valid: false, code: "plan_lineage_invalid" };
-    if (Date.parse(metadata.createdAt) < Date.parse(approvalAt)) continue;
+    if (metadata.createdAt !== null && Date.parse(metadata.createdAt) < Date.parse(approvalAt)) continue;
     if (!metadata.identity.priorArtifactIds.includes(context.lineage.approvalArtifactId)) {
       return { valid: false, code: "plan_lineage_unbound" };
     }
@@ -392,10 +557,23 @@ const recordList = (value: unknown): unknown[] | null => {
   return payload && Array.isArray(payload.results) ? payload.results : null;
 };
 
-const newestRecord = (records: readonly VerifiedPlanRecord[]) => {
-  const ordered = [...records].sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt));
-  if (ordered.length > 1 && Date.parse(ordered[0].createdAt) === Date.parse(ordered[1].createdAt)) return null;
-  return ordered[0] ?? null;
+const newestRecord = (records: readonly VerifiedPlanRecord[]):
+  | { kind: "selected"; record: VerifiedPlanRecord }
+  | { kind: "selection-required"; records: VerifiedPlanRecord[] }
+  | null => {
+  if (records.length === 1) return { kind: "selected", record: records[0] };
+  if (records.some((record) => record.createdAt === null)) {
+    return records.every((record) => record.provider === "markdown" && record.reference !== null)
+      ? { kind: "selection-required", records: [...records] }
+      : null;
+  }
+  const ordered = [...records].sort((left, right) =>
+    Date.parse(right.createdAt!) - Date.parse(left.createdAt!),
+  );
+  return ordered.length > 1
+    && Date.parse(ordered[0].createdAt!) === Date.parse(ordered[1].createdAt!)
+    ? null
+    : { kind: "selected", record: ordered[0] };
 };
 
 const matchesReference = (record: VerifiedPlanRecord, reference: PlanApprovalReference) =>
@@ -416,8 +594,12 @@ export const selectReusablePlan = (
   const invalid = parsed.find((result) => !result.valid);
   if (invalid && !invalid.valid) return { kind: "blocked", code: invalid.code };
   const records = parsed.map((result) => (result as { valid: true; record: VerifiedPlanRecord }).record);
-  const newest = newestRecord(records);
-  if (!newest) return { kind: "blocked", code: "plan_selection_ambiguous" };
+  const newestResult = newestRecord(records);
+  if (!newestResult) return { kind: "blocked", code: "plan_selection_ambiguous" };
+  if (newestResult.kind === "selection-required") {
+    return { kind: "selection-required", plans: newestResult.records };
+  }
+  const newest = newestResult.record;
   if (newest.outcome === "BLOCKED") return { kind: "blocked", code: "plan_latest_blocked" };
   if (newest.outcome === "LEGACY") return { kind: "confirmation-required", plan: newest };
 

@@ -417,3 +417,40 @@ test("locators with structural, domain, or hostile-object changes fail closed be
   }
   assert.equal(fake.reads(), readsBefore);
 });
+
+test("persists current documentation through the canonical document phase", async () => {
+  const fake = createClient();
+  const provider = createBookStackLifecycleProvider({ client: fake });
+  const document = await provider.persist({
+    request: {
+      ...request,
+      type: "document",
+      summary: "READY: current BookStack documentation evidence is canonical.",
+      artifact: "# Documentation\n\nREADY: canonical documentation evidence.",
+    },
+    placement,
+  });
+
+  assert.equal(document.status, "verified");
+  if (document.status !== "verified") return;
+  assert.equal(document.phase, "document");
+  assert.match(document.artifact, /phase=document/);
+  assert.equal(fake.creates(), 1);
+});
+
+test("rejects new closeout writes that carry document-phase evidence before BookStack writes", async () => {
+  const fake = createClient();
+  const provider = createBookStackLifecycleProvider({ client: fake });
+  const result = await provider.persist({
+    request: {
+      ...request,
+      type: "closeout",
+      summary: "Historical-shaped documentation must not create a new closeout record.",
+      artifact: "# Documentation\n\n<!-- ima-cycle outcome: phase=document; outcome=READY -->",
+    },
+    placement,
+  });
+
+  assert.equal(result.status, "blocked");
+  assert.equal(fake.creates(), 0);
+});

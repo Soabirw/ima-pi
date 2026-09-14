@@ -6,7 +6,15 @@ import {
   revalidateImportedPlanReference,
 } from "../lib/ima-cycle-plan-adoption.ts";
 import { buildCycleOutcomeMarker, createCycleState } from "../lib/ima-cycle.ts";
-import { buildLifecycleArtifact } from "../lib/ima-lifecycle.ts";
+import {
+  buildLifecycleArtifact,
+  prepareLifecycleArtifact,
+  validateLifecycleWriteRequest,
+} from "../lib/ima-lifecycle.ts";
+import {
+  createMarkdownLifecycleRecord,
+  markdownLifecycleReferenceFor,
+} from "../lib/markdown-lifecycle-record.ts";
 import { filterImportedPlanLineage } from "../lib/ima-cycle-plan.ts";
 import {
   coordinateCycleStart,
@@ -38,6 +46,74 @@ const completed = (artifactId, recordKey) => ({
   recordKey,
   receiptAccepted: true,
   semanticRecall: { matched: true },
+});
+
+const markdownPlan = (artifact) => {
+  const request = validateLifecycleWriteRequest({
+    type: "plan",
+    identity: planIdentity(),
+    summary: "Approved Markdown plan requires an explicit operator choice when unordered.",
+    artifact,
+  });
+  assert.equal(request.valid, true);
+  if (!request.valid) throw new Error("fixture request is invalid");
+  const prepared = prepareLifecycleArtifact(request);
+  assert.equal(prepared.valid, true);
+  if (!prepared.valid) throw new Error("fixture artifact is invalid");
+  const record = createMarkdownLifecycleRecord({
+    schemaVersion: 1,
+    phase: request.type,
+    identity: request.identity,
+    summary: request.summary,
+    artifact: prepared.data.artifact,
+    expectedHash: contentHash(prepared.data.artifact),
+  });
+  assert.equal(record.valid, true);
+  if (!record.valid) throw new Error("fixture Markdown record is invalid");
+  const reference = markdownLifecycleReferenceFor({
+    checkoutRoot: "/workspace/ima-pi",
+    record: record.data,
+  });
+  assert.ok(reference);
+  return {
+    id: record.data.artifactId,
+    recordKey: prepared.data.recordKey,
+    lifecycleKey,
+    phase: "plan",
+    summary: request.summary,
+    content: record.data.artifact,
+    detail: record.data.artifact,
+    contentHash: record.data.contentHash,
+    provider: "markdown",
+    reference,
+  };
+};
+
+test("requires an explicit unchanged choice for unordered Markdown plans", async () => {
+  const first = markdownPlan(`${planArtifact("APPROVED")}\n\nFirst local plan.`);
+  const second = markdownPlan(`${planArtifact("APPROVED")}\n\nSecond local plan.`);
+  const noninteractive = await coordinateCyclePlanAdoption({
+    state: state(),
+    recall: async () => recallPayload([first, second]),
+    interactive: false,
+  });
+  assert.equal(noninteractive.kind, "selection-required");
+
+  let selections = 0;
+  const selected = await coordinateCyclePlanAdoption({
+    state: state(),
+    recall: async () => recallPayload([first, second]),
+    interactive: true,
+    select: async (plans) => {
+      selections += 1;
+      assert.deepEqual(plans.map((plan) => plan.recordKey), [first.recordKey, second.recordKey]);
+      return structuredClone(plans[1]);
+    },
+  });
+  assert.equal(selected.kind, "approved");
+  if (selected.kind !== "approved") return;
+  assert.equal(selected.contract.recordKey, second.recordKey);
+  assert.equal(selections, 1);
 });
 
 test("adopts a directly approved plan without prompting or writing an approval wrapper", async () => {

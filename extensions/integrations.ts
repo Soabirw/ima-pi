@@ -1,5 +1,6 @@
 /** FNR-3016 production boundary for external IMA context and lifecycle services. */
 import { Buffer } from "node:buffer";
+import { createHash, randomUUID } from "node:crypto";
 import { execFile as execFileCallback } from "node:child_process";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -7,6 +8,7 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { StringEnum } from "@earendil-works/pi-ai";
+import { parseDocument } from "yaml";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
@@ -31,10 +33,52 @@ import {
   prepareLifecycleArtifact,
   validateLifecycleWriteRequest,
   validateLifecycleStoreReceipt,
+  type LifecyclePhase,
+  type ValidLifecycleRequest,
 } from "../lib/ima-lifecycle.ts";
 import { storeInstitutionalManifest } from "../lib/qdrant-corpus.ts";
 import { withMcpSession } from "../lib/mcp-client.ts";
 import { createQdrantCorpusClient, type QdrantCorpusClient } from "../lib/qdrant-http.ts";
+import { createQdrantLifecycleProvider } from "../lib/qdrant-lifecycle.ts";
+import { createBookStackLifecycleClient } from "../lib/bookstack-lifecycle-client.ts";
+import { createBookStackLifecycleProvider } from "../lib/bookstack-lifecycle.ts";
+import { resolveBookStackOrigin } from "../lib/bookstack-migrate-config.ts";
+import { createMarkdownLifecycleAdapter } from "../lib/markdown-lifecycle.ts";
+import { createSerenaLifecycleClient } from "../lib/serena-lifecycle-client.ts";
+import { createSerenaLifecycleProvider } from "../lib/serena-lifecycle.ts";
+import { createSerenaLifecycleProject } from "../lib/serena-lifecycle-record.ts";
+import {
+  createLifecycleProviderPin,
+  createLifecycleProviderPinAttempt,
+  type LifecycleProviderPinAttempt,
+} from "../lib/ima-lifecycle-pin.ts";
+import {
+  abandonLifecyclePinAttemptWith,
+  beginLifecyclePinWith,
+  confirmLifecyclePinWith,
+  loadLifecyclePinStateWith,
+  markLifecyclePinAttemptWritingWith,
+  type LifecyclePinLoadResult,
+} from "../lib/ima-lifecycle-pin-store.ts";
+import {
+  createLifecycleRouting,
+  routeLifecyclePersistence,
+  routePinnedLifecyclePersistence,
+  routePinnedLifecycleRecall,
+  type LifecycleRoutingAdapter,
+  type RoutedLifecyclePersistResult,
+  type RoutedLifecycleRecallResult,
+  type RoutedLifecycleRecord,
+} from "../lib/ima-lifecycle-routing.ts";
+import {
+  lifecycleProviderRecommendation,
+  normalizeLifecycleProvider,
+  resolveLifecycleProviderRecommendation,
+  type LifecycleProviderName,
+  type LifecycleProviderPreferenceInputs,
+  type LifecycleProviderRecommendation,
+} from "../lib/ima-lifecycle-selection.ts";
+import { defaultResolveCycleProjectRoot } from "../lib/ima-cycle-persistence.ts";
 
 const execFile = promisify(execFileCallback);
 const TIMEOUT = 30_000;
@@ -260,6 +304,23 @@ export type IntegrationDependencies = {
   home?: () => string;
   now?: () => Date;
 };
+
+export type LifecycleRoutingOptions = {
+  cwd?: string;
+  provider?: unknown;
+  pinAttemptId?: unknown;
+  preferences?: LifecycleProviderPreferenceInputs;
+  routing?: ReturnType<typeof createLifecycleRouting>;
+  environment?: Record<string, string | undefined>;
+  confirmProvider?: (input: {
+    recommendation: LifecycleProviderRecommendation;
+    provider: LifecycleProviderName;
+  }) => Promise<boolean> | boolean;
+  confirmBookStackPlacement?: (preview: unknown) => Promise<boolean> | boolean;
+  resolveProjectRoot?: (cwd: string) => Promise<string>;
+};
+
+export type LifecycleIntegrationDependencies = IntegrationDependencies & LifecycleRoutingOptions;
 
 const productionDependencies: Required<IntegrationDependencies> = {
   run: async (program, args, signal) => {
@@ -559,6 +620,28 @@ async function sourcePayload(
       : null;
   }
   if (source.type === "lifecycle") {
+    const pinned = await recallPinnedLifecycle({
+      lifecycleKey: source.key,
+      cwd: root,
+      supplied: deps,
+      signal,
+    });
+    if (pinned.status === "verified") {
+      const artifact = pinned.records[0];
+      return artifact
+        ? {
+          key: source.key,
+          title: `Lifecycle ${source.key}`,
+          content: artifact.artifact,
+          references: [
+            `Lifecycle:${source.key}`,
+            `LifecycleProvider:${artifact.provider}`,
+            `LifecycleRecordKey:${artifact.recordKey}`,
+          ],
+        }
+        : null;
+    }
+    if (pinned.status !== "absent") return null;
     const recalled = await deps.corpus.recallInstitutional({
       lifecycleKey: source.key,
       limit: LIFECYCLE_RECALL_LIMIT,
@@ -632,16 +715,90 @@ export async function coordinateContext(
   const deps = depsFor(supplied);
   const root = await deps.canonical(cwd);
   throwIfAborted(signal);
+  if (valid.source.type === "lifecycle") {
+    const pinned = await recallPinnedLifecycle({
+      lifecycleKey: valid.source.key,
+      cwd: root,
+      supplied,
+      signal,
+    });
+    throwIfAborted(signal);
+    const pinnedRecord = pinned.status === "verified" ? pinned.records[0] : null;
+    if (pinnedRecord && pinnedRecord.provider !== "serena") {
+      const record = pinnedRecord;
+      const source = normalizeSourcePayload({
+        source: valid.source,
+        payload: {
+          key: valid.source.key,
+          title: `Lifecycle ${valid.source.key}`,
+          content: record.artifact,
+          references: [
+            `Lifecycle:${valid.source.key}`,
+            `LifecycleProvider:${record.provider}`,
+            `LifecycleRecordKey:${record.recordKey}`,
+          ],
+        },
+      });
+      return derivePhaseContext({
+        cwd: root,
+        serenaProjectPath: root,
+        source,
+        serena: evaluateSerenaBootstrap({
+          activated: false,
+          instructionsLoaded: false,
+          memoryListLoaded: false,
+        }),
+        allowSerenaFailure: Boolean(source),
+        diagnostics: [{
+          code: "lifecycle_pinned_provider_context",
+          stage: "lifecycle",
+          message: "Lifecycle hydration used the pinned provider.",
+        }],
+      });
+    }
+    if (pinned.status !== "absent" && pinned.status !== "verified") {
+      return derivePhaseContext({
+        cwd: root,
+        serenaProjectPath: root,
+        source: null,
+        serena: evaluateSerenaBootstrap({
+          activated: false,
+          instructionsLoaded: false,
+          memoryListLoaded: false,
+        }),
+        diagnostics: [{
+          code: "pinned_provider_unavailable",
+          stage: "lifecycle",
+          message: "Pinned lifecycle provider could not verify authoritative evidence.",
+        }],
+      });
+    }
+  }
   const setup = await serena(root, deps, signal);
   throwIfAborted(signal);
   if (setup.blocking) {
-    return derivePhaseContext({
-      cwd: root,
-      serenaProjectPath: root,
-      source: null,
-      serena: setup.bootstrap,
-      diagnostics: [{ code: setup.blocking, stage: "serena", message: "Serena bootstrap did not complete." }],
-    });
+    try {
+      const payload = await sourcePayload(valid.source, root, deps, signal);
+      throwIfAborted(signal);
+      const source = normalizeSourcePayload({ source: valid.source, payload });
+      return derivePhaseContext({
+        cwd: root,
+        serenaProjectPath: root,
+        source,
+        serena: setup.bootstrap,
+        allowSerenaFailure: Boolean(source),
+        diagnostics: [{ code: setup.blocking, stage: "serena", message: "Serena bootstrap did not complete." }],
+      });
+    } catch (error) {
+      throwIfAborted(signal);
+      return derivePhaseContext({
+        cwd: root,
+        serenaProjectPath: root,
+        source: null,
+        serena: setup.bootstrap,
+        diagnostics: [{ code: sourceErrorCode(error), stage: "source", message: "Source hydration failed." }],
+      });
+    }
   }
 
   try {
@@ -674,11 +831,11 @@ export async function coordinateContext(
   }
 }
 
-export async function coordinateLifecycle(
+const coordinateQdrantLifecycle = async (
   request: unknown,
   supplied?: IntegrationDependencies,
   signal?: AbortSignal,
-) {
+) => {
   const valid = validateLifecycleWriteRequest(request);
   if (!valid.valid) {
     return {
@@ -801,7 +958,943 @@ export async function coordinateLifecycle(
     receipt,
     recall: evaluateLifecycleArtifact({ artifact: recalled.data.detail, ...verification }),
   });
+};
+
+const LIFECYCLE_REQUEST_FIELDS = ["type", "identity", "summary", "artifact", "provider", "pinAttemptId"] as const;
+const SERENA_LIFECYCLE_TOOL_SCHEMAS = {
+  tools: [
+    { name: "activate_project", inputSchema: { type: "object", properties: { project: { type: "string" } }, required: ["project"] } },
+    { name: "list_memories", inputSchema: { type: "object", properties: { topic: { type: "string" } }, required: [] } },
+    { name: "read_memory", inputSchema: { type: "object", properties: { memory_name: { type: "string" } }, required: ["memory_name"] } },
+    { name: "write_memory", inputSchema: { type: "object", properties: { memory_name: { type: "string" }, content: { type: "string" }, max_chars: { type: "integer" } }, required: ["memory_name", "content"] } },
+  ],
+};
+
+const lifecycleRequestEnvelope = (value: unknown): {
+  request: ValidLifecycleRequest;
+  provider: LifecycleProviderName | null;
+  pinAttemptId: string | null;
+} | null => {
+  try {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const keys = Reflect.ownKeys(value);
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    if (
+      keys.some((key) => typeof key !== "string")
+      || ![4, 5, 6].includes(keys.length)
+      || !["type", "identity", "summary", "artifact"].every((key) => keys.includes(key))
+      || keys.some((key) => !LIFECYCLE_REQUEST_FIELDS.includes(key as typeof LIFECYCLE_REQUEST_FIELDS[number]))
+      || keys.some((key) => {
+        const descriptor = descriptors[key as string];
+        return !descriptor
+          || descriptor.get
+          || descriptor.set
+          || !descriptor.enumerable
+          || !Object.hasOwn(descriptor, "value");
+      })
+    ) return null;
+    const request = validateLifecycleWriteRequest({
+      type: descriptors.type.value,
+      identity: descriptors.identity.value,
+      summary: descriptors.summary.value,
+      artifact: descriptors.artifact.value,
+    });
+    if (!request.valid) return null;
+    const provider = Object.hasOwn(descriptors, "provider")
+      ? normalizeLifecycleProvider(descriptors.provider.value)
+      : null;
+    const pinAttemptId = Object.hasOwn(descriptors, "pinAttemptId")
+      && typeof descriptors.pinAttemptId.value === "string"
+      ? descriptors.pinAttemptId.value.toLowerCase()
+      : null;
+    const validAttemptId = pinAttemptId === null || UUID_PATTERN.test(pinAttemptId);
+    return Object.hasOwn(descriptors, "provider") && !provider
+      || Object.hasOwn(descriptors, "pinAttemptId") && !validAttemptId
+      || pinAttemptId !== null && !provider
+      ? null
+      : { request, provider, pinAttemptId };
+  } catch {
+    return null;
+  }
+};
+
+const lifecycleCode = (value: unknown, fallback: string) =>
+  typeof value === "string" && /^[a-z][a-z0-9_:-]{0,127}$/.test(value)
+    ? value
+    : fallback;
+
+const routedRecord = (input: {
+  provider: LifecycleProviderName;
+  value: unknown;
+  reference: unknown;
+  recordKey?: unknown;
+  lifecycleKey?: unknown;
+  phase?: unknown;
+  summary?: unknown;
+  artifact?: unknown;
+  createdAt?: unknown;
+}): RoutedLifecycleRecord | null => {
+  const value = object(input.value);
+  const artifactId = normalizeUuid(value?.artifactId);
+  const recordKey = normalizeLifecycleRecordKey(input.recordKey ?? value?.recordKey);
+  const lifecycleKey = text(input.lifecycleKey ?? value?.lifecycleKey);
+  const phase = input.phase ?? value?.phase;
+  const summaryValue = input.summary ?? value?.summary;
+  const summary = typeof summaryValue === "string" ? summaryValue.trim() : "";
+  const artifactValue = input.artifact ?? value?.artifact;
+  const artifact = typeof artifactValue === "string" ? artifactValue : "";
+  const reference = input.reference && typeof input.reference === "object"
+    ? input.reference as Record<string, unknown>
+    : null;
+  const createdAtValue = input.createdAt ?? value?.createdAt;
+  const createdAt = typeof createdAtValue === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/.test(createdAtValue)
+    && !Number.isNaN(Date.parse(createdAtValue))
+    ? createdAtValue
+    : null;
+  if (
+    !artifactId
+    || !recordKey
+    || recordKey !== (input.recordKey ?? value?.recordKey)
+    || !lifecycleKey
+    || typeof phase !== "string"
+    || !LIFECYCLE_PHASE_SET.has(phase)
+    || !summary
+    || !artifact
+    || !reference
+  ) return null;
+  return {
+    provider: input.provider,
+    artifactId,
+    recordKey,
+    lifecycleKey,
+    phase: phase as LifecyclePhase,
+    summary,
+    artifact,
+    reference,
+    createdAt,
+  };
+};
+
+const blockedPersist = (
+  provider: LifecycleProviderName,
+  value: unknown,
+  writeState: "no-write" | "possible-write" = "possible-write",
+): RoutedLifecyclePersistResult => ({
+  status: "blocked",
+  provider,
+  code: lifecycleCode(object(value)?.code, "lifecycle_provider_operation_failed"),
+  writeState,
+});
+
+const qdrantLifecycleAdapter = (
+  corpus: QdrantCorpusClient,
+): LifecycleRoutingAdapter => {
+  const provider = createQdrantLifecycleProvider({ client: corpus });
+  const persist = async (request: ValidLifecycleRequest, signal?: AbortSignal): Promise<RoutedLifecyclePersistResult> => {
+    const result = await provider.persist(projectLifecyclePersistenceRequest(request), signal);
+    if (result.status !== "verified") return blockedPersist("qdrant", result);
+    const record = routedRecord({
+      provider: "qdrant",
+      value: result,
+      reference: result.reference,
+    });
+    return record ? { status: "verified", record } : blockedPersist("qdrant", null);
+  };
+  const read = async (reference: Record<string, unknown>, signal?: AbortSignal): Promise<RoutedLifecyclePersistResult> => {
+    const result = await provider.get(reference, signal);
+    if (result.status !== "verified") return blockedPersist("qdrant", result, "no-write");
+    const record = routedRecord({ provider: "qdrant", value: result, reference: result.reference });
+    return record ? { status: "verified", record } : blockedPersist("qdrant", null, "no-write");
+  };
+  return {
+    provider: "qdrant",
+    persist,
+    get: read,
+    reconcile: async (reference, signal) => {
+      const result = await provider.reconcile(reference, signal);
+      if (result.status !== "verified") return blockedPersist("qdrant", result, "no-write");
+      const record = routedRecord({ provider: "qdrant", value: result, reference: result.reference });
+      return record ? { status: "verified", record } : blockedPersist("qdrant", null, "no-write");
+    },
+    recall: async (selection, signal) => {
+      const result = await provider.recall({
+        lifecycleKey: selection.lifecycleKey,
+        ...(selection.phase ? { phase: selection.phase } : {}),
+        limit: selection.limit,
+      }, signal);
+      if (!Array.isArray(result)) {
+        return { status: "blocked", provider: "qdrant", code: lifecycleCode(result?.code, "lifecycle_provider_recall_failed") };
+      }
+      const records = result.map((item) => routedRecord({
+        provider: "qdrant",
+        value: item,
+        reference: item.reference,
+      }));
+      return records.some((record) => record === null)
+        ? { status: "blocked", provider: "qdrant", code: "lifecycle_provider_response_invalid" }
+        : { status: "verified", provider: "qdrant", records: records as RoutedLifecycleRecord[] };
+    },
+  };
+};
+
+const bookStackSourceReference = (request: ValidLifecycleRequest): string | null => {
+  const identity = request.identity;
+  const matches = identity.sourceRefs.filter((reference) => {
+    if (identity.jiraKey) return new RegExp(`^jira:${identity.jiraKey}$`, "i").test(reference);
+    if (identity.taskwarriorUuid) {
+      return new RegExp(`^taskwarrior:${identity.taskwarriorProject}:${identity.taskwarriorUuid}$`, "i").test(reference);
+    }
+    if (identity.planeWorkspace && identity.planeWorkItem) {
+      return new RegExp(`^plane:${identity.planeWorkspace}:${identity.planeWorkItem}$`, "i").test(reference);
+    }
+    return reference === `lifecycle:${identity.lifecycleKey}`;
+  });
+  return matches.length === 1 ? matches[0] : null;
+};
+
+const bookStackLifecycleAdapter = (input: {
+  environment: Record<string, string | undefined>;
+  confirmPlacement?: LifecycleRoutingOptions["confirmBookStackPlacement"];
+}): LifecycleRoutingAdapter | null => {
+  let provider;
+  try {
+    const origin = resolveBookStackOrigin(input.environment);
+    const client = createBookStackLifecycleClient({
+      origin,
+      tokenId: input.environment.BOOKSTACK_TOKEN_ID ?? "",
+      tokenSecret: input.environment.BOOKSTACK_TOKEN_SECRET ?? "",
+    });
+    provider = createBookStackLifecycleProvider({
+      client,
+      approvePlacement: async (preview) => {
+        try {
+          return await input.confirmPlacement?.(structuredClone(preview)) === true;
+        } catch {
+          return false;
+        }
+      },
+    });
+  } catch {
+    return null;
+  }
+  const persist = async (request: ValidLifecycleRequest, signal?: AbortSignal): Promise<RoutedLifecyclePersistResult> => {
+    if (signal?.aborted) return blockedPersist("bookstack", { code: "aborted" }, "no-write");
+    const sourceRef = bookStackSourceReference(request);
+    if (!sourceRef) return blockedPersist("bookstack", { code: "bookstack_placement_invalid" }, "no-write");
+    const location = {
+      projectSlug: request.identity.project,
+      sourceRef,
+      lifecycleKey: request.identity.lifecycleKey,
+    };
+    const placement = await provider.ensurePlacement(location);
+    if (placement.status !== "verified") return blockedPersist("bookstack", placement);
+    const result = await provider.persist({
+      request: projectLifecyclePersistenceRequest(request),
+      placement: placement.placement,
+    });
+    if (result.status !== "verified") return blockedPersist("bookstack", result);
+    const record = routedRecord({
+      provider: "bookstack",
+      value: result,
+      reference: result.locator,
+      lifecycleKey: request.identity.lifecycleKey,
+      phase: request.type,
+      summary: request.summary,
+      artifact: result.artifact,
+      createdAt: null,
+    });
+    return record ? { status: "verified", record } : blockedPersist("bookstack", null);
+  };
+  const read = async (reference: Record<string, unknown>, signal?: AbortSignal): Promise<RoutedLifecyclePersistResult> => {
+    if (signal?.aborted) return blockedPersist("bookstack", { code: "aborted" }, "no-write");
+    const result = await provider.get(reference);
+    if (result.status !== "verified") return blockedPersist("bookstack", result, "no-write");
+    const record = routedRecord({ provider: "bookstack", value: result, reference: result.locator, createdAt: null });
+    return record ? { status: "verified", record } : blockedPersist("bookstack", null, "no-write");
+  };
+  return {
+    provider: "bookstack",
+    persist,
+    get: read,
+    reconcile: read,
+    recall: async (selection, signal) => {
+      if (signal?.aborted || !selection.reference) {
+        return { status: "blocked", provider: "bookstack", code: signal?.aborted ? "aborted" : "pinned_provider_reference_missing" };
+      }
+      const initial = await provider.get(selection.reference);
+      if (initial.status !== "verified") {
+        return { status: "blocked", provider: "bookstack", code: lifecycleCode(initial.code, "pinned_provider_failed") };
+      }
+      const result = await provider.recall({
+        placement: initial.locator,
+        lifecycleKey: selection.lifecycleKey,
+        sourceRef: initial.locator.sourceRef,
+      });
+      if (!Array.isArray(result)) {
+        return { status: "blocked", provider: "bookstack", code: lifecycleCode(result.code, "lifecycle_provider_recall_failed") };
+      }
+      const selected = result.filter((record) => !selection.phase || record.phase === selection.phase);
+      if (selected.length > selection.limit) {
+        return { status: "blocked", provider: "bookstack", code: "lifecycle_provider_recall_unverifiable" };
+      }
+      const records = selected.map((record) => routedRecord({
+        provider: "bookstack",
+        value: record,
+        reference: record.locator,
+        createdAt: null,
+      }));
+      return records.some((record) => record === null)
+        ? { status: "blocked", provider: "bookstack", code: "lifecycle_provider_response_invalid" }
+        : { status: "verified", provider: "bookstack", records: records as RoutedLifecycleRecord[] };
+    },
+  };
+};
+
+const markdownLifecycleAdapter = (checkoutRoot: string): LifecycleRoutingAdapter => {
+  const provider = createMarkdownLifecycleAdapter({ checkoutRoot });
+  const persist = async (request: ValidLifecycleRequest, signal?: AbortSignal): Promise<RoutedLifecyclePersistResult> => {
+    const prepared = prepareLifecycleArtifact(request);
+    if (!prepared.valid) return blockedPersist("markdown", { code: prepared.error.code }, "no-write");
+    const result = await provider.persist({
+      schemaVersion: 1,
+      phase: request.type,
+      identity: request.identity,
+      summary: request.summary,
+      artifact: prepared.data.artifact,
+      expectedHash: createHash("sha256").update(prepared.data.artifact, "utf8").digest("hex"),
+    }, signal);
+    if (result.status !== "verified") return blockedPersist("markdown", result);
+    const record = routedRecord({
+      provider: "markdown",
+      value: result,
+      reference: result.reference,
+      recordKey: prepared.data.recordKey,
+      createdAt: null,
+    });
+    return record ? { status: "verified", record } : blockedPersist("markdown", null);
+  };
+  const read = async (reference: Record<string, unknown>, signal?: AbortSignal): Promise<RoutedLifecyclePersistResult> => {
+    const result = await provider.get(reference, signal);
+    if (result.status !== "verified") return blockedPersist("markdown", result, "no-write");
+    const recordKey = `${result.lifecycleKey}:${result.phase}:${createHash("sha256").update(result.artifact, "utf8").digest("hex").slice(0, 12)}`;
+    const record = routedRecord({ provider: "markdown", value: result, reference: result.reference, recordKey, createdAt: null });
+    return record ? { status: "verified", record } : blockedPersist("markdown", null, "no-write");
+  };
+  return {
+    provider: "markdown",
+    persist,
+    get: read,
+    reconcile: read,
+    recall: async (selection, signal) => {
+      const result = await provider.recall({
+        lifecycleKey: selection.lifecycleKey,
+        ...(selection.phase ? { phase: selection.phase } : {}),
+        limit: selection.limit,
+      }, signal);
+      if (!Array.isArray(result)) {
+        return { status: "blocked", provider: "markdown", code: lifecycleCode(result.code, "lifecycle_provider_recall_failed") };
+      }
+      const records = result.map((item) => {
+        const recordKey = `${item.lifecycleKey}:${item.phase}:${createHash("sha256").update(item.artifact, "utf8").digest("hex").slice(0, 12)}`;
+        return routedRecord({ provider: "markdown", value: item, reference: item.reference, recordKey, createdAt: null });
+      });
+      return records.some((record) => record === null)
+        ? { status: "blocked", provider: "markdown", code: "lifecycle_provider_response_invalid" }
+        : { status: "verified", provider: "markdown", records: records as RoutedLifecycleRecord[] };
+    },
+  };
+};
+
+const serenaProject = async (
+  checkoutRoot: string,
+  deps: ReturnType<typeof depsFor>,
+) => {
+  try {
+    const source = await deps.read(join(checkoutRoot, ".serena", "project.yml"));
+    const document = parseDocument(source, { uniqueKeys: true, prettyErrors: false });
+    const data = object(document.toJS({ maxAliasCount: 0 }));
+    return document.errors.length === 0
+      ? createSerenaLifecycleProject({ projectName: data?.project_name, projectPath: checkoutRoot })
+      : null;
+  } catch {
+    return null;
+  }
+};
+
+const serenaLifecycleAdapter = (
+  checkoutRoot: string,
+  deps: ReturnType<typeof depsFor>,
+): LifecycleRoutingAdapter => {
+  const withProvider = async <Result>(
+    signal: AbortSignal | undefined,
+    operation: (provider: ReturnType<typeof createSerenaLifecycleProvider>) => Promise<Result>,
+  ): Promise<Result | null> => {
+    const project = await serenaProject(checkoutRoot, deps);
+    if (!project || signal?.aborted) return null;
+    return deps.session("serena", async (call) => operation(createSerenaLifecycleProvider({
+      project,
+      client: createSerenaLifecycleClient({
+        call,
+        project,
+        advertisedTools: SERENA_LIFECYCLE_TOOL_SCHEMAS,
+      }),
+    })), signal);
+  };
+  const persist = async (request: ValidLifecycleRequest, signal?: AbortSignal): Promise<RoutedLifecyclePersistResult> => {
+    const result = await withProvider(
+      signal,
+      (provider) => provider.persist(projectLifecyclePersistenceRequest(request), signal),
+    );
+    if (!result) return blockedPersist("serena", { code: "serena_project_unavailable" }, "no-write");
+    if (result.status !== "verified") return blockedPersist("serena", result);
+    const record = routedRecord({ provider: "serena", value: result, reference: result.reference });
+    return record ? { status: "verified", record } : blockedPersist("serena", null);
+  };
+  const read = async (reference: Record<string, unknown>, signal?: AbortSignal): Promise<RoutedLifecyclePersistResult> => {
+    const result = await withProvider(signal, (provider) => provider.get(reference, signal));
+    if (!result) return blockedPersist("serena", { code: "serena_project_unavailable" }, "no-write");
+    if (result.status !== "verified") return blockedPersist("serena", result, "no-write");
+    const record = routedRecord({ provider: "serena", value: result, reference: result.reference });
+    return record ? { status: "verified", record } : blockedPersist("serena", null, "no-write");
+  };
+  return {
+    provider: "serena",
+    persist,
+    get: read,
+    reconcile: async (reference, signal) => {
+      const result = await withProvider(signal, (provider) => provider.reconcile(reference, signal));
+      if (!result) return blockedPersist("serena", { code: "serena_project_unavailable" }, "no-write");
+      if (result.status !== "verified") return blockedPersist("serena", result, "no-write");
+      const record = routedRecord({ provider: "serena", value: result, reference: result.reference });
+      return record ? { status: "verified", record } : blockedPersist("serena", null, "no-write");
+    },
+    recall: async (selection, signal) => {
+      const result = await withProvider(signal, (provider) => provider.recall({
+        lifecycleKey: selection.lifecycleKey,
+        ...(selection.phase ? { phase: selection.phase } : {}),
+        limit: selection.limit,
+      }, signal));
+      if (!result) return { status: "blocked", provider: "serena", code: "serena_project_unavailable" };
+      if (!Array.isArray(result)) {
+        return { status: "blocked", provider: "serena", code: lifecycleCode(result.code, "lifecycle_provider_recall_failed") };
+      }
+      const records = result.map((item) => routedRecord({ provider: "serena", value: item, reference: item.reference }));
+      return records.some((record) => record === null)
+        ? { status: "blocked", provider: "serena", code: "lifecycle_provider_response_invalid" }
+        : { status: "verified", provider: "serena", records: records as RoutedLifecycleRecord[] };
+    },
+  };
+};
+
+const lifecycleRouting = (input: {
+  checkoutRoot: string;
+  dependencies: ReturnType<typeof depsFor>;
+  confirmBookStackPlacement?: LifecycleRoutingOptions["confirmBookStackPlacement"];
+  environment?: Record<string, string | undefined>;
+}) => {
+  const bookstack = bookStackLifecycleAdapter({
+    environment: input.environment ?? process.env,
+    confirmPlacement: input.confirmBookStackPlacement,
+  });
+  return createLifecycleRouting([
+    ...(bookstack ? [bookstack] : []),
+    qdrantLifecycleAdapter(input.dependencies.corpus),
+    serenaLifecycleAdapter(input.checkoutRoot, input.dependencies),
+    markdownLifecycleAdapter(input.checkoutRoot),
+  ]);
+};
+
+const lifecycleVerification = (request: ValidLifecycleRequest, artifact: string, nonce: string) =>
+  evaluateLifecycleArtifact({
+    artifact,
+    lifecycleKey: request.identity.lifecycleKey,
+    nonce,
+    type: request.type,
+    jiraKey: request.identity.jiraKey,
+    taskwarriorUuid: request.identity.taskwarriorUuid,
+    planeWorkspace: request.identity.planeWorkspace,
+    planeWorkItem: request.identity.planeWorkItem,
+  });
+
+const matchesPreparedLifecycleRecord = (input: {
+  request: ValidLifecycleRequest;
+  prepared: { artifact: string; recordKey: string };
+  record: RoutedLifecycleRecord;
+}) => input.record.lifecycleKey === input.request.identity.lifecycleKey
+  && input.record.phase === input.request.type
+  && input.record.summary === input.request.summary
+  && input.record.artifact === input.prepared.artifact
+  && input.record.recordKey === input.prepared.recordKey;
+
+const lifecycleRouteResult = (input: {
+  request: ValidLifecycleRequest;
+  prepared: { nonce: string; artifact: string; recordKey: string };
+  provider: LifecycleProviderName;
+  result: RoutedLifecyclePersistResult;
+  error?: string;
+}) => {
+  const record = input.result.status === "verified" ? input.result.record : null;
+  const exact = record
+    && matchesPreparedLifecycleRecord({
+      request: input.request,
+      prepared: input.prepared,
+      record,
+    });
+  const receipt = exact
+    ? { accepted: true, artifactId: record.artifactId }
+    : { accepted: false, artifactId: null };
+  const recall = exact
+    ? lifecycleVerification(input.request, record.artifact, input.prepared.nonce)
+    : lifecycleVerification(input.request, "", "");
+  const error = input.error
+    ?? (input.result.status === "blocked"
+      ? input.result.code
+      : exact ? undefined : "lifecycle_provider_verification_failed");
+  return {
+    ...deriveLifecycleResult({
+      type: input.request.type,
+      lifecycleKey: input.request.identity.lifecycleKey,
+      recordKey: exact ? record.recordKey : null,
+      receipt,
+      recall,
+      ...(error ? { error } : {}),
+    }),
+    provider: input.provider,
+  };
+};
+
+const projectLifecyclePersistenceRequest = (request: ValidLifecycleRequest) => ({
+  type: request.type,
+  identity: {
+    project: request.identity.project,
+    lifecycleKey: request.identity.lifecycleKey,
+    lifecycleRootMemoryId: request.identity.lifecycleRootMemoryId,
+    taskwarriorProject: request.identity.taskwarriorProject,
+    taskwarriorTask: request.identity.taskwarriorTask,
+    taskwarriorUuid: request.identity.taskwarriorUuid,
+    jiraKey: request.identity.jiraKey,
+    ...(request.identity.planeWorkspace && request.identity.planeWorkItem
+      ? {
+        planeWorkspace: request.identity.planeWorkspace,
+        planeWorkItem: request.identity.planeWorkItem,
+      }
+      : {}),
+    sourceRefs: [...request.identity.sourceRefs],
+    priorArtifactIds: [...request.identity.priorArtifactIds],
+  },
+  summary: request.summary,
+  artifact: request.artifact,
+});
+
+const lifecycleRequestForRouting = (
+  input: {
+    request: ValidLifecycleRequest;
+    provider: LifecycleProviderName | null;
+    pinAttemptId: string | null;
+  },
+  provider = input.provider,
+) => ({
+  ...projectLifecyclePersistenceRequest(input.request),
+  ...(provider ? { provider } : {}),
+  ...(input.pinAttemptId ? { pinAttemptId: input.pinAttemptId } : {}),
+});
+
+const sameAuthorizedLifecyclePinAttempt = (
+  state: LifecyclePinLoadResult,
+  expected: LifecycleProviderPinAttempt,
+) => state.status === "pending"
+  && state.attempt.status === "authorized"
+  && state.attempt.lifecycleKey === expected.lifecycleKey
+  && state.attempt.provider === expected.provider
+  && state.attempt.attemptId === expected.attemptId
+  && state.attempt.startedAt === expected.startedAt;
+
+const lifecyclePinStateFailureCode = (state: LifecyclePinLoadResult) => {
+  if (["corrupt", "conflicting", "inaccessible"].includes(state.status)) {
+    return `lifecycle_pin_store_${state.status}`;
+  }
+  return state.status === "pending" && state.attempt.status === "writing"
+    ? "lifecycle_pin_write_unresolved"
+    : "lifecycle_pin_attempt_conflict";
+};
+
+const failedLifecycleRoute = (input: {
+  request: ValidLifecycleRequest;
+  provider: LifecycleProviderName;
+  code: string;
+  recommendation?: LifecycleProviderRecommendation;
+}) => ({
+  ...lifecycleRouteResult({
+    request: input.request,
+    prepared: prepareLifecycleArtifact(input.request).valid
+      ? prepareLifecycleArtifact(input.request).data
+      : { nonce: "", artifact: "", recordKey: "" },
+    provider: input.provider,
+    result: { status: "blocked", provider: input.provider, code: input.code, writeState: "no-write" },
+    error: input.code,
+  }),
+  ...(input.recommendation ? { recommendation: input.recommendation } : {}),
+});
+
+export async function coordinateLifecycle(
+  requestValue: unknown,
+  supplied?: LifecycleIntegrationDependencies,
+  signal?: AbortSignal,
+) {
+  const envelope = lifecycleRequestEnvelope(requestValue);
+  if (!envelope) return coordinateQdrantLifecycle(requestValue, supplied, signal);
+  if (!supplied?.cwd) {
+    return coordinateQdrantLifecycle(projectLifecyclePersistenceRequest(envelope.request), supplied, signal);
+  }
+  if (signal?.aborted) signal.throwIfAborted();
+
+  const dependencies = depsFor(supplied);
+  const resolveProjectRoot = supplied.resolveProjectRoot ?? defaultResolveCycleProjectRoot;
+  const root = await resolveProjectRoot(supplied.cwd).catch(() => null);
+  if (!root || typeof root !== "string") {
+    return failedLifecycleRoute({ request: envelope.request, provider: envelope.provider ?? "qdrant", code: "lifecycle_pin_store_inaccessible" });
+  }
+  const routing = supplied.routing ?? lifecycleRouting({
+    checkoutRoot: root,
+    dependencies,
+    confirmBookStackPlacement: supplied.confirmBookStackPlacement,
+    environment: supplied.environment,
+  });
+  const loadPin = loadLifecyclePinStateWith(resolveProjectRoot);
+  const pinState = await loadPin(supplied.cwd, envelope.request.identity.lifecycleKey);
+  if (pinState.status === "corrupt" || pinState.status === "conflicting" || pinState.status === "inaccessible") {
+    return failedLifecycleRoute({ request: envelope.request, provider: envelope.provider ?? "qdrant", code: `lifecycle_pin_store_${pinState.status}` });
+  }
+  if (
+    pinState.status === "pending"
+    && envelope.provider === pinState.attempt.provider
+    && envelope.pinAttemptId === pinState.attempt.attemptId
+    && pinState.attempt.status === "authorized"
+  ) {
+    let historical: RoutedLifecycleRecallResult;
+    try {
+      historical = await qdrantLifecycleAdapter(dependencies.corpus).recall({
+        lifecycleKey: envelope.request.identity.lifecycleKey,
+        limit: LIFECYCLE_RECALL_LIMIT,
+      }, signal);
+      throwIfAborted(signal);
+    } catch {
+      throwIfAborted(signal);
+      return failedLifecycleRoute({
+        request: envelope.request,
+        provider: pinState.attempt.provider,
+        code: "lifecycle_provider_recall_failed",
+      });
+    }
+    if (historical.status !== "verified") {
+      return failedLifecycleRoute({
+        request: envelope.request,
+        provider: pinState.attempt.provider,
+        code: historical.code,
+      });
+    }
+    const recheckedPinState = await loadPin(supplied.cwd, envelope.request.identity.lifecycleKey);
+    throwIfAborted(signal);
+    if (!sameAuthorizedLifecyclePinAttempt(recheckedPinState, pinState.attempt)) {
+      return failedLifecycleRoute({
+        request: envelope.request,
+        provider: pinState.attempt.provider,
+        code: lifecyclePinStateFailureCode(recheckedPinState),
+      });
+    }
+    if (historical.records.length > 0 && pinState.attempt.provider !== "qdrant") {
+      return failedLifecycleRoute({ request: envelope.request, provider: "qdrant", code: "historical_qdrant_authority_conflict" });
+    }
+    const prepared = prepareLifecycleArtifact(envelope.request);
+    if (!prepared.valid) {
+      return failedLifecycleRoute({ request: envelope.request, provider: pinState.attempt.provider, code: prepared.error.code });
+    }
+    const writing = await markLifecyclePinAttemptWritingWith(resolveProjectRoot)(supplied.cwd, pinState.attempt);
+    if (writing.status !== "writing") {
+      return failedLifecycleRoute({ request: envelope.request, provider: pinState.attempt.provider, code: writing.code });
+    }
+    const result = await routeLifecyclePersistence({
+      routing,
+      provider: writing.attempt.provider,
+      request: envelope.request,
+      signal,
+    });
+    if (result.status !== "verified") {
+      if (result.writeState === "no-write") {
+        const abandoned = await abandonLifecyclePinAttemptWith(resolveProjectRoot)(
+          supplied.cwd,
+          writing.attempt,
+        );
+        if (abandoned.status !== "cleared") {
+          return failedLifecycleRoute({
+            request: envelope.request,
+            provider: writing.attempt.provider,
+            code: abandoned.code,
+          });
+        }
+      }
+      return lifecycleRouteResult({
+        request: envelope.request,
+        prepared: prepared.data,
+        provider: writing.attempt.provider,
+        result,
+      });
+    }
+    if (!matchesPreparedLifecycleRecord({
+      request: envelope.request,
+      prepared: prepared.data,
+      record: result.record,
+    })) {
+      return lifecycleRouteResult({ request: envelope.request, prepared: prepared.data, provider: writing.attempt.provider, result });
+    }
+    const pin = createLifecycleProviderPin({
+      lifecycleKey: envelope.request.identity.lifecycleKey,
+      provider: writing.attempt.provider,
+      initialReference: result.record.reference,
+      artifactId: result.record.artifactId,
+      recordKey: result.record.recordKey,
+      pinnedAt: writing.attempt.startedAt,
+    });
+    if (!pin) return failedLifecycleRoute({ request: envelope.request, provider: writing.attempt.provider, code: "lifecycle_pin_invalid" });
+    const confirmed = await confirmLifecyclePinWith(resolveProjectRoot)(supplied.cwd, writing.attempt, pin);
+    return confirmed.status === "pinned"
+      ? lifecycleRouteResult({ request: envelope.request, prepared: prepared.data, provider: writing.attempt.provider, result })
+      : failedLifecycleRoute({ request: envelope.request, provider: writing.attempt.provider, code: confirmed.code });
+  }
+  if (pinState.status === "pending") {
+    return failedLifecycleRoute({ request: envelope.request, provider: pinState.attempt.provider, code: "lifecycle_pin_write_unresolved" });
+  }
+  if (pinState.status === "pinned") {
+    const prepared = prepareLifecycleArtifact(envelope.request);
+    if (!prepared.valid) {
+      return failedLifecycleRoute({ request: envelope.request, provider: pinState.pin.provider, code: prepared.error.code });
+    }
+    if (envelope.provider && envelope.provider !== pinState.pin.provider) {
+      return failedLifecycleRoute({ request: envelope.request, provider: pinState.pin.provider, code: "lifecycle_provider_pin_conflict" });
+    }
+    const result = await routePinnedLifecyclePersistence({
+      routing,
+      pin: pinState.pin,
+      request: envelope.request,
+      signal,
+    });
+    return lifecycleRouteResult({
+      request: envelope.request,
+      prepared: prepared.data,
+      provider: pinState.pin.provider,
+      result,
+    });
+  }
+
+  const historical = await qdrantLifecycleAdapter(dependencies.corpus).recall({
+    lifecycleKey: envelope.request.identity.lifecycleKey,
+    limit: LIFECYCLE_RECALL_LIMIT,
+  }, signal);
+  const historicalQdrant = historical.status === "verified" && historical.records.length > 0;
+  if (historicalQdrant && envelope.provider && envelope.provider !== "qdrant") {
+    return failedLifecycleRoute({
+      request: envelope.request,
+      provider: "qdrant",
+      code: "historical_qdrant_authority_conflict",
+    });
+  }
+  const preferences = {
+    ...(supplied.preferences ?? {}),
+    ...(envelope.provider ? { session: envelope.provider } : {}),
+  };
+  const recommendationResult = historicalQdrant
+    ? { ok: true as const, recommendation: lifecycleProviderRecommendation("qdrant", "historical-qdrant") }
+    : resolveLifecycleProviderRecommendation(preferences);
+  if (!recommendationResult.ok) {
+    return failedLifecycleRoute({
+      request: envelope.request,
+      provider: envelope.provider ?? "qdrant",
+      code: recommendationResult.code,
+    });
+  }
+  const recommendation = recommendationResult.recommendation;
+  const provider = historicalQdrant ? "qdrant" : envelope.provider ?? recommendation.provider;
+  let confirmed = false;
+  try {
+    confirmed = await supplied.confirmProvider?.({ recommendation, provider }) === true;
+  } catch {
+    confirmed = false;
+  }
+  if (!confirmed) {
+    return failedLifecycleRoute({
+      request: envelope.request,
+      provider,
+      code: "lifecycle_provider_confirmation_required",
+      recommendation,
+    });
+  }
+
+  let now: string;
+  try {
+    const current = dependencies.now();
+    if (!(current instanceof Date) || !Number.isFinite(current.getTime())) {
+      return failedLifecycleRoute({ request: envelope.request, provider, code: "lifecycle_pin_time_invalid" });
+    }
+    now = current.toISOString();
+  } catch {
+    return failedLifecycleRoute({ request: envelope.request, provider, code: "lifecycle_pin_time_invalid" });
+  }
+  const attempt = createLifecycleProviderPinAttempt({
+    lifecycleKey: envelope.request.identity.lifecycleKey,
+    provider,
+    attemptId: randomUUID(),
+    startedAt: now,
+  });
+  if (!attempt) return failedLifecycleRoute({ request: envelope.request, provider, code: "lifecycle_pin_attempt_invalid" });
+  const begin = await beginLifecyclePinWith(resolveProjectRoot)(supplied.cwd, attempt);
+  if (begin.status === "pinned") {
+    const prepared = prepareLifecycleArtifact(envelope.request);
+    if (!prepared.valid) return failedLifecycleRoute({ request: envelope.request, provider: begin.pin.provider, code: prepared.error.code });
+    const result = await routePinnedLifecyclePersistence({ routing, pin: begin.pin, request: envelope.request, signal });
+    return lifecycleRouteResult({ request: envelope.request, prepared: prepared.data, provider: begin.pin.provider, result });
+  }
+  if (begin.status === "pending") {
+    return failedLifecycleRoute({ request: envelope.request, provider: begin.attempt.provider, code: "lifecycle_pin_write_unresolved" });
+  }
+  if (begin.status === "blocked") return failedLifecycleRoute({ request: envelope.request, provider, code: begin.code });
+
+  const prepared = prepareLifecycleArtifact(envelope.request);
+  if (!prepared.valid) {
+    await abandonLifecyclePinAttemptWith(resolveProjectRoot)(supplied.cwd, attempt);
+    return failedLifecycleRoute({ request: envelope.request, provider, code: prepared.error.code });
+  }
+  const writing = await markLifecyclePinAttemptWritingWith(resolveProjectRoot)(supplied.cwd, attempt);
+  if (writing.status !== "writing") {
+    return failedLifecycleRoute({ request: envelope.request, provider, code: writing.code });
+  }
+  const writeAttempt = writing.attempt;
+  const result = await routeLifecyclePersistence({ routing, provider, request: envelope.request, signal });
+  if (result.status !== "verified") {
+    if (result.writeState === "no-write") {
+      const abandoned = await abandonLifecyclePinAttemptWith(resolveProjectRoot)(supplied.cwd, writeAttempt);
+      if (abandoned.status !== "cleared") {
+        return failedLifecycleRoute({ request: envelope.request, provider, code: abandoned.code });
+      }
+      const next = historicalQdrant
+        ? undefined
+        : recommendation.candidates.find((candidate) =>
+          candidate !== provider && routing.adapters[candidate] !== undefined,
+        );
+      return failedLifecycleRoute({
+        request: envelope.request,
+        provider,
+        code: result.code,
+        ...(next ? { recommendation: lifecycleProviderRecommendation(next, recommendation.source) } : {}),
+      });
+    }
+    return lifecycleRouteResult({ request: envelope.request, prepared: prepared.data, provider, result });
+  }
+  if (!matchesPreparedLifecycleRecord({
+    request: envelope.request,
+    prepared: prepared.data,
+    record: result.record,
+  })) {
+    return lifecycleRouteResult({ request: envelope.request, prepared: prepared.data, provider, result });
+  }
+  const pin = createLifecycleProviderPin({
+    lifecycleKey: envelope.request.identity.lifecycleKey,
+    provider,
+    initialReference: result.record.reference,
+    artifactId: result.record.artifactId,
+    recordKey: result.record.recordKey,
+    pinnedAt: now,
+  });
+  if (!pin) return failedLifecycleRoute({ request: envelope.request, provider, code: "lifecycle_pin_invalid" });
+  const confirmedPin = await confirmLifecyclePinWith(resolveProjectRoot)(supplied.cwd, writeAttempt, pin);
+  if (confirmedPin.status !== "pinned") {
+    return failedLifecycleRoute({ request: envelope.request, provider, code: confirmedPin.code });
+  }
+  return lifecycleRouteResult({ request: envelope.request, prepared: prepared.data, provider, result });
 }
+
+const routedRecallRecord = (record: RoutedLifecycleRecord) => ({
+  id: record.artifactId,
+  recordKey: record.recordKey,
+  lifecycleKey: record.lifecycleKey,
+  phase: record.phase,
+  summary: record.summary,
+  content: record.artifact,
+  detail: record.artifact,
+  contentHash: createHash("sha256").update(record.artifact, "utf8").digest("hex"),
+  ...(record.createdAt ? { createdAt: record.createdAt } : {}),
+  provider: record.provider,
+  reference: structuredClone(record.reference),
+});
+
+const recallPinnedLifecycle = async (input: {
+  lifecycleKey: string;
+  phase?: LifecyclePhase;
+  cwd: string;
+  supplied?: LifecycleIntegrationDependencies;
+  signal?: AbortSignal;
+}) => {
+  const resolveProjectRoot = input.supplied?.resolveProjectRoot ?? defaultResolveCycleProjectRoot;
+  const pinState = await loadLifecyclePinStateWith(resolveProjectRoot)(input.cwd, input.lifecycleKey);
+  if (pinState.status !== "pinned") return pinState;
+  const root = await resolveProjectRoot(input.cwd).catch(() => null);
+  if (!root || typeof root !== "string") return { status: "inaccessible" as const };
+  const dependencies = depsFor(input.supplied);
+  const routing = input.supplied?.routing ?? lifecycleRouting({
+    checkoutRoot: root,
+    dependencies,
+    environment: input.supplied?.environment,
+  });
+  const result = await routePinnedLifecycleRecall({
+    routing,
+    pin: pinState.pin,
+    lifecycleKey: input.lifecycleKey,
+    ...(input.phase ? { phase: input.phase } : {}),
+    limit: LIFECYCLE_RECALL_LIMIT,
+    signal: input.signal,
+  });
+  return result.status === "verified"
+    ? { status: "verified" as const, records: result.records }
+    : { status: "blocked" as const };
+};
+
+export const recallLifecycle = async (
+  query: string,
+  cwd?: string,
+  supplied?: LifecycleIntegrationDependencies,
+  signal?: AbortSignal,
+) => {
+  const selection = lifecycleRecallQuery(query);
+  if (!selection) return null;
+  if (!cwd) return recallCorpusLifecycle(query, supplied?.corpus, signal);
+  const pinned = await recallPinnedLifecycle({
+    lifecycleKey: selection.lifecycleKey,
+    phase: selection.phase as LifecyclePhase,
+    cwd,
+    supplied,
+    signal,
+  });
+  if (pinned.status === "absent") return recallCorpusLifecycle(query, supplied?.corpus, signal);
+  if (
+    selection.phase === "plan"
+    && pinned.status === "pending"
+    && pinned.attempt.status === "authorized"
+  ) {
+    const attempt = { ...pinned.attempt };
+    const recalled = await recallCorpusLifecycle(query, supplied?.corpus, signal);
+    const resolveProjectRoot = supplied?.resolveProjectRoot ?? defaultResolveCycleProjectRoot;
+    const rechecked = await loadLifecyclePinStateWith(resolveProjectRoot)(
+      cwd,
+      selection.lifecycleKey,
+    );
+    throwIfAborted(signal);
+    return recalled && sameAuthorizedLifecyclePinAttempt(rechecked, attempt)
+      ? recalled
+      : null;
+  }
+  return pinned.status === "verified"
+    ? { structuredContent: { results: pinned.records.map(routedRecallRecord) } }
+    : null;
+};
 
 const CONTEXT_SOURCE_PARAMETERS = Type.Object({}, {
   oneOf: [
@@ -859,9 +1952,71 @@ const LIFECYCLE_TOOL_PARAMETERS = Type.Object({
   identity: LIFECYCLE_IDENTITY_PARAMETERS,
   summary: Type.String({ minLength: 1, maxLength: 2_000, pattern: CONTROL_SAFE_STRING_PATTERN, description: "Required approved one-line phase outcome; validated to 2,000 UTF-8 bytes without control characters." }),
   artifact: Type.String({ minLength: 1, maxLength: 128_000 }),
+  provider: Type.Optional(Type.String({ pattern: "^(?:bookstack|qdrant|serena|markdown)$", description: "Optional user-confirmed provider for an unpinned lifecycle. A durable pin overrides this value." })),
+  pinAttemptId: Type.Optional(Type.String({ pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89ab][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$", description: "Checkout-local pre-persistence authorization identifier from an interactive cycle start." })),
 }, { additionalProperties: false });
 
 export default function integrations(pi: ExtensionAPI) {
   pi.registerTool({ name: "ima_context", label: "IMA context", description: "Build Serena-first project context from one typed source: jira/key, taskwarrior/project+uuid, plane/workspace+project+sequenceId, file/path, vestige/id, lifecycle/key, reference/value, or text/title+content. Reference accepts canonical taskwarrior:<project>:<uuid>, plane:<workspace>:PROJ-123, jira:<KEY>, lifecycle:<lifecycle-key>, and vestige:<UUID> forms plus space aliases. Optional durableKnowledge requires query and accepts the supported ima-knowledge collection and limit.", parameters: CONTEXT_TOOL_PARAMETERS, prepareArguments: prepareContextArguments, execute: async (_id, request, signal, _update, ctx) => ({ content: [{ type: "text", text: JSON.stringify(await coordinateContext(request, ctx.cwd, undefined, signal)) }], details: {} }) });
-  pi.registerTool({ name: "ima_lifecycle", label: "IMA lifecycle", description: "Store and directly verify one lifecycle artifact in the Tier-1 Qdrant corpus. An explicit summary and closed bounded lifecycle identity are required for manifest-only semantic recall.", parameters: LIFECYCLE_TOOL_PARAMETERS, execute: async (_id, request, signal) => { const result = await coordinateLifecycle(request, undefined, signal); return { content: [{ type: "text", text: JSON.stringify(result) }], details: result }; } });
+  pi.registerTool({ name: "ima_lifecycle", label: "IMA lifecycle", description: "Store and directly verify one lifecycle artifact through the selected provider. The first verified write establishes checkout-local provider authority; later lifecycle operations use only that pin.", parameters: LIFECYCLE_TOOL_PARAMETERS, execute: async (_id, request, signal, _update, ctx) => {
+    const interactive = ctx.mode === "tui" && ctx.hasUI && typeof ctx.ui.select === "function";
+    const requestEnvelope = lifecycleRequestEnvelope(request);
+    let authority: LifecyclePinLoadResult | null = null;
+    if (requestEnvelope) {
+      try {
+        authority = await loadLifecyclePinStateWith(defaultResolveCycleProjectRoot)(
+          ctx.cwd,
+          requestEnvelope.request.identity.lifecycleKey,
+        );
+      } catch {
+        authority = null;
+      }
+    }
+    throwIfAborted(signal);
+    const pinnedProvider = authority?.status === "pinned"
+      ? authority.pin.provider
+      : null;
+    let routedRequest = requestEnvelope
+      ? lifecycleRequestForRouting(requestEnvelope, requestEnvelope.provider ?? pinnedProvider)
+      : request;
+    if (interactive && requestEnvelope && authority?.status === "absent" && !requestEnvelope.provider) {
+      const recommendation = resolveLifecycleProviderRecommendation();
+      const selected = recommendation.ok
+        ? normalizeLifecycleProvider(await ctx.ui.select("Select lifecycle provider", recommendation.recommendation.candidates))
+        : null;
+      if (!selected) {
+        const result = {
+          status: "failed",
+          artifactId: null,
+          recordKey: null,
+          error: { code: "lifecycle_provider_selection_required", message: "Lifecycle integration failed: lifecycle_provider_selection_required." },
+        };
+        return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
+      }
+      routedRequest = lifecycleRequestForRouting(requestEnvelope, selected);
+    }
+    const confirmProvider = interactive && authority?.status !== "pinned"
+      ? async ({ recommendation, provider }: { recommendation: LifecycleProviderRecommendation; provider: LifecycleProviderName }) => {
+        const source = recommendation.source === "default" ? "built-in default" : `${recommendation.source} preference`;
+        const sharing = provider === "bookstack"
+          ? " BookStack shares lifecycle evidence with the configured organization content."
+          : "";
+        return ctx.ui.confirm("Confirm lifecycle provider", `Use ${provider} from ${source} for this lifecycle?${sharing}`);
+      }
+      : undefined;
+    const confirmBookStackPlacement = interactive
+      ? async (preview: any) => ctx.ui.confirm(
+        "Approve BookStack lifecycle placement",
+        typeof preview?.sharingImplications === "string"
+          ? preview.sharingImplications
+          : "Approve the shared BookStack lifecycle placement?",
+      )
+      : undefined;
+    const result = await coordinateLifecycle(routedRequest, {
+      cwd: ctx.cwd,
+      confirmProvider,
+      confirmBookStackPlacement,
+    }, signal);
+    return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
+  } });
 }

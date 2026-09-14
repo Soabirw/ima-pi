@@ -6,7 +6,13 @@ import {
   latestSessionProfile,
   resolveConfiguredCyclePhaseRoute,
 } from "./workflow-routing.ts";
-import { coordinateContext, coordinateLifecycle, mcpResultData, recallCorpusLifecycle } from "./integrations.ts";
+import {
+  coordinateContext,
+  coordinateLifecycle,
+  mcpResultData,
+  recallLifecycle,
+  type LifecycleRoutingOptions,
+} from "./integrations.ts";
 import {
   CYCLE_ENTRY,
   CYCLE_PHASES,
@@ -15,6 +21,7 @@ import {
   buildCycleStatus,
   buildResumeSource,
   createCycleState,
+  cycleLifecycleKey,
   cycleSourceReference,
   normalizeCycleSource,
   parseCycleCommand,
@@ -28,6 +35,17 @@ import {
   type CycleSource,
   type CycleState,
 } from "../lib/ima-cycle.ts";
+import {
+  normalizeLifecycleProvider,
+  resolveLifecycleProviderRecommendation,
+  type LifecycleProviderName,
+} from "../lib/ima-lifecycle-selection.ts";
+import { createLifecycleProviderPinAttempt } from "../lib/ima-lifecycle-pin.ts";
+import {
+  beginLifecyclePinWith,
+  loadLifecyclePinStateWith,
+  type LifecyclePinLoadResult,
+} from "../lib/ima-lifecycle-pin-store.ts";
 import {
   defaultResolveCycleProjectRoot,
   loadDurableStateWith,
@@ -105,7 +123,13 @@ export type {
 };
 
 export const coordinateCycleClose = async (input: CycleCloseInput) =>
-  coordinateCycleCloseCore({ ...input, lifecycle: input.lifecycle ?? coordinateLifecycle });
+  coordinateCycleCloseCore({
+    ...input,
+    lifecycle: input.lifecycle ?? ((request) => coordinateLifecycle(
+      request,
+      input.cwd ? { cwd: input.cwd } : undefined,
+    )),
+  });
 
 export const CYCLE_STATUS_KEY = "ima-cycle";
 export const CYCLE_WIDGET_KEY = "ima-cycle-phase";
@@ -266,6 +290,8 @@ export type CycleStartInput = {
   implementationMode?: CycleImplementationMode;
   mode?: CycleMode;
   branchId?: string;
+  lifecycleProvider?: LifecycleProviderName;
+  lifecycleProviderAttemptId?: string;
   context?: (request: unknown, cwd: string) => Promise<CycleContextResult>;
   adoptPlan?: CyclePlanAdopter;
   recoverAdoptedState?: (state: CycleState) => Promise<CycleAdoptionRecoveryResult>;
@@ -302,7 +328,9 @@ const reusablePlanningState = (stateValue: CycleState, source: CycleSource, inpu
 const hasConflictingReusableSettings = (state: CycleState, input: CycleStartInput) =>
   (input.lifecycleKey !== undefined && input.lifecycleKey !== state.lifecycleKey)
   || (input.reviewCap !== undefined && input.reviewCap !== state.reviewCap)
-  || (input.implementationMode !== undefined && input.implementationMode !== state.implementationMode);
+  || (input.implementationMode !== undefined && input.implementationMode !== state.implementationMode)
+  || (input.lifecycleProvider !== undefined && input.lifecycleProvider !== state.lifecycleProvider)
+  || (input.lifecycleProviderAttemptId !== undefined && input.lifecycleProviderAttemptId !== state.lifecycleProviderAttemptId);
 
 export async function coordinateCycleStart(input: CycleStartInput): Promise<CycleCoordinatorResult> {
   if (!current(input.isCurrent)) return safeError("cycle_operation_cancelled");
@@ -327,7 +355,11 @@ export async function coordinateCycleStart(input: CycleStartInput): Promise<Cycl
     return safeError("cycle_context_failed");
   }
   if (!current(input.isCurrent)) return safeError("cycle_operation_cancelled");
-  if (hydrated.status !== "ready") return safeError("cycle_context_not_ready");
+  const independentNonSerenaContext = hydrated.status === "degraded"
+    && input.lifecycleProvider !== undefined
+    && input.lifecycleProvider !== "serena"
+    && hydrated.source !== undefined;
+  if (hydrated.status !== "ready" && !independentNonSerenaContext) return safeError("cycle_context_not_ready");
 
   let state: CycleState;
   try {
@@ -337,6 +369,8 @@ export async function coordinateCycleStart(input: CycleStartInput): Promise<Cycl
       implementationMode: input.implementationMode,
       mode: input.mode,
       branchId: input.branchId,
+      lifecycleProvider: input.lifecycleProvider,
+      lifecycleProviderAttemptId: input.lifecycleProviderAttemptId,
       timestamp: input.timestamp,
     });
   } catch (error) {
@@ -389,6 +423,7 @@ export async function coordinateCycleStart(input: CycleStartInput): Promise<Cycl
         : { ...dispatched, state: dispatched.state ?? recovered.state };
     }
     if (adoption.kind === "blocked") return { ...safeError(adoption.code), ...(existing ? { state } : {}) };
+    if (adoption.kind === "selection-required") return { ...safeError("cycle_plan_selection_required"), ...(existing ? { state } : {}) };
     if (adoption.kind === "confirmation-required") return { ...safeError("cycle_plan_confirmation_required"), ...(existing ? { state } : {}) };
     if (adoption.kind === "cancelled") return { ...safeError("cycle_plan_adoption_cancelled"), ...(existing ? { state } : {}) };
     if (existing) return { ...safeError("cycle_manual_plan_unavailable"), state };
@@ -561,8 +596,8 @@ export type CycleExtensionDependencies = {
   expandPrompt: (value: string, cwd: string) => Promise<string>;
   createPhaseRuntime: typeof createCyclePhaseRuntime;
   readPhaseSettlement: typeof readCyclePhaseSettlement;
-  recall: CycleRecall;
-  lifecycle: (request: PlanApprovalPersistenceRequest) => Promise<unknown>;
+  recall: (query: string, cwd?: string) => Promise<unknown>;
+  lifecycle: (request: PlanApprovalPersistenceRequest, options?: LifecycleRoutingOptions) => Promise<unknown>;
   resolveProjectRoot: ResolveCycleProjectRoot;
   loadDurableState: (cwd: string) => Promise<CycleState | null>;
   persistDurableState: (cwd: string, state: CycleState, options?: CyclePersistenceOptions) => Promise<void>;
@@ -574,8 +609,8 @@ const defaultCycleExtensionDependencies: CycleExtensionDependencies = {
   expandPrompt: expandCyclePromptFromResources,
   createPhaseRuntime: createCyclePhaseRuntime,
   readPhaseSettlement: readCyclePhaseSettlement,
-  recall: (query) => recallCorpusLifecycle(query),
-  lifecycle: (request) => coordinateLifecycle(request),
+  recall: (query, cwd) => recallLifecycle(query, cwd),
+  lifecycle: (request, options) => coordinateLifecycle(request, options),
   resolveProjectRoot: defaultResolveCycleProjectRoot,
   loadDurableState: loadDurableStateWith(defaultResolveCycleProjectRoot),
   persistDurableState: persistDurableStateWith(defaultResolveCycleProjectRoot),
@@ -841,6 +876,75 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
       && ctx.modelRegistry
       && typeof ctx.isProjectTrusted === "function",
   );
+  const authorizeLifecycleProvider = async (
+    ctx: ExtensionContext,
+    source: CycleSource,
+    requested: { provider?: LifecycleProviderName; attemptId?: string } = {},
+  ): Promise<{ provider?: LifecycleProviderName; attemptId?: string } | null> => {
+    if (ctx.mode !== "tui" || !ctx.hasUI || typeof ctx.ui.select !== "function") return {};
+    const lifecycleKey = cycleLifecycleKey(source);
+    let authority: LifecyclePinLoadResult;
+    try {
+      authority = await loadLifecyclePinStateWith(dependencies.resolveProjectRoot)(ctx.cwd, lifecycleKey);
+    } catch {
+      return null;
+    }
+    if (authority.status === "pinned") {
+      return requested.provider && requested.provider !== authority.pin.provider
+        ? null
+        : { provider: authority.pin.provider };
+    }
+    if (authority.status === "pending") {
+      return authority.attempt.status === "authorized"
+        && requested.provider === authority.attempt.provider
+        && requested.attemptId === authority.attempt.attemptId
+        ? { provider: authority.attempt.provider, attemptId: authority.attempt.attemptId }
+        : null;
+    }
+    if (authority.status !== "absent") return null;
+    if (requested.attemptId) return null;
+    if (!phaseRuntimeAvailable(ctx)) return {};
+    const resolved = resolveLifecycleProviderRecommendation();
+    if (!resolved.ok) return null;
+    const recommendation = resolved.recommendation;
+    const choice = requested.provider ?? await ctx.ui.select(
+      "Select lifecycle provider",
+      recommendation.candidates,
+    );
+    const provider = normalizeLifecycleProvider(choice);
+    if (!provider || !recommendation.candidates.includes(provider)) return null;
+    const sharing = provider === "bookstack"
+      ? " BookStack shares lifecycle evidence with the configured organization content."
+      : "";
+    const confirmed = await ctx.ui.confirm(
+      "Confirm lifecycle provider",
+      `Use ${provider} from ${recommendation.source === "default" ? "built-in default" : `${recommendation.source} preference`}?${sharing}`,
+    );
+    if (!confirmed) return null;
+    const attempt = createLifecycleProviderPinAttempt({
+      lifecycleKey,
+      provider,
+      attemptId: randomUUID(),
+      startedAt: nowIso(),
+    });
+    if (!attempt) return null;
+    const started = await beginLifecyclePinWith(dependencies.resolveProjectRoot)(ctx.cwd, attempt);
+    if (started.status === "started") {
+      return { provider: started.attempt.provider, attemptId: started.attempt.attemptId };
+    }
+    if (
+      started.status === "pending"
+      && started.attempt.status === "authorized"
+      && started.attempt.provider === provider
+      && started.attempt.attemptId === attempt.attemptId
+    ) {
+      return { provider: started.attempt.provider, attemptId: started.attempt.attemptId };
+    }
+    if (started.status === "pinned" && started.pin.provider === provider) {
+      return { provider: started.pin.provider };
+    }
+    return null;
+  };
   const preparePhaseDispatch = (ctx: ExtensionContext): CyclePrepareDispatch => (candidate, route) => {
     if (!route) throw new Error("phase_route_unavailable");
     const timestamp = nowIso();
@@ -1107,11 +1211,38 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
     orchestratorRoute = resolved.route;
     return { ok: true, route: resolved.route };
   };
+  const lifecycleRoutingOptions = (ctx: ExtensionContext): LifecycleRoutingOptions => ({
+    cwd: ctx.cwd,
+    ...(ctx.mode === "tui" && ctx.hasUI
+      ? {
+        confirmProvider: async ({ recommendation, provider }: { recommendation: { source: string }; provider: string }) => ctx.ui.confirm(
+          "Confirm lifecycle provider",
+          `Use ${provider} from ${recommendation.source === "default" ? "built-in default" : `${recommendation.source} preference`}?${provider === "bookstack" ? " BookStack shares lifecycle evidence with the configured organization content." : ""}`,
+        ),
+        confirmBookStackPlacement: async (preview: any) => ctx.ui.confirm(
+          "Approve BookStack lifecycle placement",
+          typeof preview?.sharingImplications === "string"
+            ? preview.sharingImplications
+            : "Approve the shared BookStack lifecycle placement?",
+        ),
+      }
+      : {}),
+  });
   const confirmLegacyPlan = async (ctx: ExtensionContext, plan: VerifiedPlanRecord) => {
     if (ctx.mode !== "tui") return false;
     const reviewed = await ctx.ui.editor("Review saved manual plan", plan.detail);
     if (reviewed === undefined || reviewed !== plan.detail) return false;
     return ctx.ui.confirm("Approve saved manual plan", "Reuse this exact saved plan for the current cycle?");
+  };
+  const selectUnorderedPlan = async (ctx: ExtensionContext, plans: VerifiedPlanRecord[]) => {
+    if (ctx.mode !== "tui" || plans.length === 0) return null;
+    const options = plans.map((plan) => `${plan.provider}: ${plan.recordKey}`);
+    const selected = await ctx.ui.select("Select the exact saved lifecycle plan", options);
+    const index = typeof selected === "string" ? options.indexOf(selected) : -1;
+    const plan = index >= 0 ? plans[index] : null;
+    if (!plan) return null;
+    const reviewed = await ctx.ui.editor("Review selected saved plan", plan.detail);
+    return reviewed === plan.detail ? plan : null;
   };
   const requestPlanAdoption = async (
     ctx: ExtensionContext,
@@ -1121,13 +1252,22 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
     signal?: AbortSignal,
   ) => coordinateCyclePlanAdoption({
     state: candidate,
-    recall: async (query) => mcpResultData(await dependencies.recall(query)),
+    recall: async (query) => mcpResultData(await dependencies.recall(query, ctx.cwd)),
     interactive: interactive && ctx.mode === "tui",
     ...(interactive && ctx.mode === "tui"
-      ? { confirm: (plan: VerifiedPlanRecord) => confirmLegacyPlan(ctx, plan) }
+      ? {
+        confirm: (plan: VerifiedPlanRecord) => confirmLegacyPlan(ctx, plan),
+        select: (plans: VerifiedPlanRecord[]) => selectUnorderedPlan(ctx, plans),
+      }
       : {}),
-    persistApproval: (request: PlanApprovalPersistenceRequest) => dependencies.lifecycle(request),
+    persistApproval: (request: PlanApprovalPersistenceRequest) => dependencies.lifecycle({
+      ...request,
+      ...(candidate.lifecycleProvider ? { provider: candidate.lifecycleProvider } : {}),
+      ...(candidate.lifecycleProviderAttemptId ? { pinAttemptId: candidate.lifecycleProviderAttemptId } : {}),
+    }, lifecycleRoutingOptions(ctx)),
     identity: identityForSource(candidate),
+    ...(candidate.lifecycleProvider ? { provider: candidate.lifecycleProvider } : {}),
+    ...(candidate.lifecycleProviderAttemptId ? { pinAttemptId: candidate.lifecycleProviderAttemptId } : {}),
     isCurrent,
     signal,
   });
@@ -1186,7 +1326,7 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
     if (!current(isCurrent)) return { ok: false, state: candidate, code: "cycle_operation_cancelled" };
     const planReference = await revalidateImportedPlanReference({
       state: candidate,
-      recall: async (query) => mcpResultData(await dependencies.recall(query)),
+      recall: async (query) => mcpResultData(await dependencies.recall(query, ctx.cwd)),
       isCurrent,
       signal,
     });
@@ -1196,7 +1336,7 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
     if (planReference.kind === "blocked") return { ok: false, state: candidate, code: planReference.code };
     const result = await coordinateCycleRecovery({
       state: candidate,
-      recall: dependencies.recall,
+      recall: (query) => dependencies.recall(query, ctx.cwd),
       appendState,
       readExecutionSettlement: async (recoveryState) => {
         const execution = recoveryState.execution;
@@ -1315,6 +1455,9 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
         state = copyState(adopted.state);
       } else if (adoption.kind === "no-plan") {
         return candidate.status === "awaiting-evidence" ? false : true;
+      } else if (adoption.kind === "selection-required") {
+        if (options.interactive === true) notify(ctx, sanitizeCycleError("cycle_plan_selection_required").message, "warning");
+        return false;
       } else if (adoption.kind === "confirmation-required") {
         if (options.interactive === true) notify(ctx, sanitizeCycleError("cycle_plan_confirmation_required").message, "warning");
         return false;
@@ -1480,6 +1623,33 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
           notify(ctx, orchestrator.message ?? sanitizeCycleError(orchestrator.error).message, "warning");
           return;
         }
+        const requestedProviderAuthorization = state && !["closed", "blocked-after-tracker-close"].includes(state.status)
+          ? {
+            ...(state.lifecycleProvider ? { provider: state.lifecycleProvider } : {}),
+            ...(state.lifecycleProviderAttemptId ? { attemptId: state.lifecycleProviderAttemptId } : {}),
+          }
+          : {};
+        const providerAuthorization = await authorizeLifecycleProvider(
+          ctx,
+          parsed.source,
+          requestedProviderAuthorization,
+        );
+        if (providerAuthorization === null) {
+          clearCycleWidget(ctx);
+          notify(ctx, "Lifecycle provider selection or confirmation was not completed.", "warning");
+          return;
+        }
+        const authorizedActiveState = state
+          && !["closed", "blocked-after-tracker-close"].includes(state.status)
+          && providerAuthorization.provider
+          ? {
+            ...state,
+            lifecycleProvider: providerAuthorization.provider,
+            ...(providerAuthorization.attemptId
+              ? { lifecycleProviderAttemptId: providerAuthorization.attemptId }
+              : { lifecycleProviderAttemptId: undefined }),
+          }
+          : state;
         const operation = beginOperation();
         const isCurrent = () => operationCurrent(operation);
         try {
@@ -1488,8 +1658,10 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
             reviewCap: parsed.reviewCap,
             implementationMode: parsed.implementationMode,
             mode: parsed.mode,
+            ...(providerAuthorization.provider ? { lifecycleProvider: providerAuthorization.provider } : {}),
+            ...(providerAuthorization.attemptId ? { lifecycleProviderAttemptId: providerAuthorization.attemptId } : {}),
             cwd: ctx.cwd,
-            activeState: state,
+            activeState: authorizedActiveState,
             context: dependencies.context,
             adoptPlan: (candidate) => requestPlanAdoption(ctx, candidate, true, isCurrent, operation.controller.signal),
             recoverAdoptedState: (candidate) => recoverImportedPlan(
@@ -1600,6 +1772,27 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
         const isCurrent = () => operationCurrent(operation);
         try {
           if (!state) return;
+          if (typeof ctx.ui.select === "function" && state.status === "awaiting-resume") {
+            const authorization = await authorizeLifecycleProvider(ctx, state.source, {
+              ...(state.lifecycleProvider ? { provider: state.lifecycleProvider } : {}),
+              ...(state.lifecycleProviderAttemptId ? { attemptId: state.lifecycleProviderAttemptId } : {}),
+            });
+            if (!authorization) {
+              notify(ctx, "Lifecycle provider selection or confirmation was not completed.", "warning");
+              return;
+            }
+            const candidate = {
+              ...state,
+              ...(authorization.provider ? { lifecycleProvider: authorization.provider } : {}),
+              ...(authorization.attemptId
+                ? { lifecycleProviderAttemptId: authorization.attemptId }
+                : { lifecycleProviderAttemptId: undefined }),
+              updatedAt: nowIso(),
+            };
+            await appendFor(ctx, isCurrent, operation)(candidate);
+            if (!current(isCurrent)) return;
+            state = copyState(candidate);
+          }
           if (parsed.mode) {
             const candidate = { ...state, mode: parsed.mode, updatedAt: nowIso() };
             await appendFor(ctx, isCurrent, operation)(candidate);
@@ -1665,7 +1858,20 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
           if (ctx.mode !== "tui") { notify(ctx, "Cycle close requires TUI confirmation.", "warning"); return; }
           confirmed = await ctx.ui.confirm("Close cycle", `Close ${cycleSourceReference(state.source)} and mark its single tracker source complete?`);
         }
-        const result = await coordinateCycleClose({ state, mode: ctx.mode, commitPrep: parsed.commitPrep, confirmed, run: (program, commandArgs) => pi.exec(program, commandArgs), appendState: appendFor(ctx) });
+        const result = await coordinateCycleClose({
+          state,
+          cwd: ctx.cwd,
+          mode: ctx.mode,
+          commitPrep: parsed.commitPrep,
+          confirmed,
+          run: (program, commandArgs) => pi.exec(program, commandArgs),
+          lifecycle: (request) => dependencies.lifecycle({
+            ...request,
+            ...(state.lifecycleProvider ? { provider: state.lifecycleProvider } : {}),
+            ...(state.lifecycleProviderAttemptId ? { pinAttemptId: state.lifecycleProviderAttemptId } : {}),
+          }, lifecycleRoutingOptions(ctx)),
+          appendState: appendFor(ctx),
+        });
         if (result.ok) {
           if (result.state) state = result.state;
           notifyState(ctx, result.state ?? state);

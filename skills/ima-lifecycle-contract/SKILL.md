@@ -1,16 +1,39 @@
 ---
 name: ima-lifecycle-contract
-description: IMA lifecycle phase handoff and Qdrant persistence contract; use when producing or saving a plan, implementation, test, review, resolution, rereview, document, or closeout artifact.
+description: IMA lifecycle phase handoff and pin-aware persistence contract; use when producing or saving a plan, implementation, test, review, resolution, rereview, document, or closeout artifact.
 ---
 
 # IMA lifecycle contract
 
 Use this skill for formal lifecycle artifacts and handoffs. The persisted artifact is the detailed source of truth; a next-phase prompt is only a compact pointer to it.
 
+## Pin-aware lifecycle authority
+
+This skill is the operational authority for formal lifecycle evidence. Normalize the supplied source
+through `ima_context` before lifecycle work. Do not choose a provider, call provider-native lifecycle
+storage, or use Qdrant as a generic lifecycle fallback from a phase prompt.
+
+The provider set is exactly **BookStack**, **Qdrant**, **Serena**, and **Markdown**. For an unpinned
+lifecycle, `ima_lifecycle` presents the package preference recommendation (default priority:
+BookStack, Qdrant, Serena, Markdown) and requires explicit user confirmation or adjustment. Only the
+user may approve BookStack's organization-visible placement.
+
+A checkout-local durable pin is established only after the confirmed provider persists and directly
+verifies the first immutable artifact. Before that point, exact bounded Tier-1 Qdrant history across
+**every lifecycle phase** is authoritative: a verified historical record requires Qdrant rather than
+another provider. A proven `no-write` failure may clear an unpinned attempt and permit a new,
+user-confirmed evaluation from the remaining ordered candidates; a possible or unknown write,
+corrupt authority, or cleanup uncertainty is `BLOCKED`. There is no automatic retry or fallback.
+
+After a pin exists, recover evidence only through its provider-native verified recall/get/reconcile
+path. Provider unavailability, a mismatch, partial evidence, or an invalid pin fails closed. Never
+fall back, migrate, or mix providers after pinning, including by querying Qdrant. Retain the returned
+`artifactId`, `recordKey`, and provider-native reference behind the pin in lifecycle evidence and
+handoffs. The local pin establishes no live, replicated, or cross-device authority claim.
+
 ## Prior artifacts and identity
 
-Before phase work, search for prior lifecycle artifacts in the Tier-1 Qdrant corpus and reuse the
-existing identity. Reuse correlation evidence in this order:
+Reuse correlation evidence in this order:
 
 1. existing `lifecycle_key`;
 2. Taskwarrior project plus UUID;
@@ -31,12 +54,13 @@ as input: `taskwarrior:<project>:<uuid>` (`taskwarrior <project> <uuid>`),
 source, then preserve the canonical colon form across handoffs instead of replacing it with a raw
 key.
 
-For a lifecycle source, recall the exact Qdrant lifecycle key and directly fetch selected detail
-before declaring prerequisites absent. For a Plane source, reuse a verified existing lifecycle key;
-if no evidence establishes one, use the documented `ima-pi:plane:<workspace>:<PROJECT>-<seq>`
+For a lifecycle source, recover the exact pinned authority and selected detail before declaring
+prerequisites absent. With no pin, use exact Tier-1 Qdrant history only to establish historical
+Qdrant authority under the preceding rules. For a Plane source, reuse a verified existing lifecycle
+key; if no evidence establishes one, use the documented `ima-pi:plane:<workspace>:<PROJECT>-<seq>`
 convention rather than treating it as automatic derivation. For a Vestige source, retrieve only the
-cited memory, recover an explicitly present lifecycle identity, then recall related Qdrant evidence;
-never use Vestige as a lifecycle fallback or substitute a Taskwarrior/Jira probe for corpus evidence.
+cited memory and recover an explicitly present lifecycle identity; never use Vestige as a lifecycle
+fallback or substitute a Taskwarrior/Jira probe for authoritative lifecycle evidence.
 
 ## `ima_lifecycle` input
 
@@ -100,13 +124,13 @@ Neither field is emitted for an omitted or empty pair.
 ## Persist and hand off
 
 Persist lifecycle artifacts through `ima_lifecycle`; do not substitute a generated SDK namespace,
-direct service storage, or an undocumented fallback. It stores deterministic Qdrant schema-v2
-manifest/detail chunks in chunks-first, manifest-last order, then directly reassembles and verifies
-the full detail, nonce, phase, completed outcome, lifecycle key, and required source identity.
-`artifactId` is the deterministic Qdrant manifest point ID; `recordKey` is the canonical logical
-retrieval key. Both are additive lifecycle-result references, and `ima_corpus_get` accepts either
-value through its compatible `recordKey` argument. No Vestige lifecycle write, recall, or fallback
-is permitted.
+direct service storage, or an undocumented fallback. It applies the pin-aware authority above,
+performs provider-native direct read-back or reassembly verification, and verifies the full detail,
+nonce, phase, completed outcome, lifecycle key, and required source identity. `artifactId` is the
+provider-verified immutable artifact identity (`Qdrant` uses its manifest point ID); `recordKey` is
+the canonical logical retrieval key. Both are additive lifecycle-result references. Preserve the
+provider-native reference with them, but never translate it into another provider.
+No Vestige lifecycle write, recall, or fallback is permitted.
 
 A complete artifact includes the approved outcome, scope and non-goals, phase result,
 changed/reviewed/tested files, decisions, verification commands and results, blockers, residual
@@ -114,14 +138,22 @@ risk, both references for every relevant prior artifact, and the recommended nex
 
 Unresolved security findings are not style-only debt: record them as blockers or route them through
 resolution and rereview before closeout. A closeout cannot claim completion while a Critical or
-Warning security finding remains unresolved.
-`priorArtifactIds` remains point-ID-only; handoffs list logical keys separately as
-`priorArtifactRecordKeys`. Equivalent organization is accepted; the artifact must remain bounded
-and lossless.
+Warning security finding remains unresolved. `priorArtifactIds` remains artifact-ID-only; handoffs
+list logical keys separately as `priorArtifactRecordKeys`. Equivalent organization is accepted; the
+artifact must remain bounded and lossless.
 
 When a concrete next phase is appropriate, emit a compact pointer containing only the next command,
-one-line outcome, lifecycle key, and the latest `artifactId` plus `recordKey`. Do not duplicate the
-detailed artifact or prescribe the destination phase's work.
+one-line outcome, lifecycle key, and the latest `artifactId` plus `recordKey`. Preserve any needed
+provider-native reference in the inherited lifecycle evidence, not by duplicating the detailed
+artifact or prescribing the destination phase's work.
+
+## Configuration classification
+
+Lifecycle preferences and non-sensitive source, artifact, record, and provider identifiers are
+**non-secret variables**. Provider credentials and tokens are **secrets** and never belong in
+artifacts, prompts, handoffs, or source-controlled configuration. Durable pins, Markdown lifecycle
+evidence, local Qdrant data, and machine-local Serena state are **local-only values**. This routing
+contract introduces no **platform binding**.
 
 ## Document and closeout boundary
 

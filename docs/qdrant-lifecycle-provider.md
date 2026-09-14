@@ -1,8 +1,8 @@
 # Qdrant lifecycle provider
 
-> **Additive provider capability:** This reviewed provider is not live lifecycle routing and does not activate Qdrant for a caller. T9 exclusively owns provider selection, preferences, initial fallback, durable pins, and provider-aware routing for `ima_lifecycle`, `ima_context`, `/ima:cycle`, and `/ima:new`.
+> **Provider-native lifecycle authority:** Qdrant is one of the four lifecycle authorities. Provider selection, user confirmation, historical-Qdrant authority, and checkout-local pin handling follow the [lifecycle authority contract](guide.md#lifecycle-authority-memory-and-integrations); this provider preserves its immutable, fail-closed behavior within that decision.
 
-The provider offers `persist`, `get`, `recall`, and `reconcile` to a caller that has already selected Qdrant. It returns either verified immutable lifecycle evidence or a bounded blocked result. It does not select a provider, change a preference or pin, route a command, repair evidence, migrate records, or fall back to another store.
+The provider offers `persist`, `get`, `recall`, and `reconcile` to a caller that has selected Qdrant. It returns either verified immutable lifecycle evidence or a bounded blocked result. It does not change a preference or pin, route a command, repair evidence, migrate records, or fall back to another store.
 
 ## Identity, projection, and verification
 
@@ -22,7 +22,7 @@ The record identity is immutable. A retry of the same verified artifact returns 
 
 `recall` uses an exact lifecycle-key selection with an optional phase and a maximum of 20 records. It obtains the selected manifests and directly retrieves each full record, returning results only when every returned record is exact, unique, complete, and verified. Cancellation is a blocked result at every operation boundary.
 
-Lifecycle-specific recall requires an explicit Qdrant terminal proof: `next_page_offset: null` before any detail reads or successful result. A missing, malformed, or non-null continuation blocks recall; the provider does not continue paging. With that terminal null, a result may successfully contain zero, fewer than 20, or exactly 20 records. An incomplete or unverifiable recall blocks; partial results are never authoritative lifecycle evidence. This lifecycle-specific completeness requirement does not change public summary recall. T9 continues to own live routing and durable pins, not provider completeness.
+Lifecycle-specific recall requires an explicit Qdrant terminal proof: `next_page_offset: null` before any detail reads or successful result. A missing, malformed, or non-null continuation blocks recall; the provider does not continue paging. With that terminal null, a result may successfully contain zero, fewer than 20, or exactly 20 records. An incomplete or unverifiable recall blocks; partial results are never authoritative lifecycle evidence. This lifecycle-specific completeness requirement does not change public summary recall. Lifecycle integration preserves this provider-completeness boundary and the valid pin.
 
 ## Failure behavior
 
@@ -35,4 +35,4 @@ Validation failures, cancellation, unavailable dependencies, invalid receipts, f
 - Local Qdrant data and synthetic fixtures are **local-only values**.
 - This provider adds no **platform binding**.
 
-No external Qdrant or Ollama service, and no live remote persistence, was tested for this additive provider. That absence is a live-integration blocker, not evidence that the provider is activated. T9 may integrate it only after separately accepting provider selection, preferences, initial fallback, durable pins, and live provider-aware routing while preserving these blocked and no-fallback outcomes.
+No external Qdrant or Ollama service, live remote persistence, or cross-device acceptance was tested. That absence remains a live-acceptance blocker. Lifecycle integration must preserve these blocked and no-fallback outcomes; a pinned Qdrant failure does not permit fallback, migration, or provider mixing.

@@ -12,6 +12,7 @@ import {
   type LifecycleIdentity,
 } from "./ima-lifecycle.ts";
 import { verifyQdrantLifecycleRecord } from "./qdrant-lifecycle-record.ts";
+import { normalizeLifecycleProvider, type LifecycleProviderName } from "./ima-lifecycle-selection.ts";
 
 export const CYCLE_SCHEMA_VERSION = 1;
 export const CYCLE_ENTRY = "ima-cycle-state";
@@ -130,6 +131,8 @@ export type CycleState = {
   stoppedPhase?: CyclePhase;
   trackerClosed?: boolean;
   branchId?: string;
+  lifecycleProvider?: LifecycleProviderName;
+  lifecycleProviderAttemptId?: string;
   execution?: CyclePhaseExecution;
 };
 
@@ -1212,7 +1215,7 @@ const validateEvidence = (value: unknown): value is CycleEvidence => {
   );
 };
 
-export function createCycleState(sourceValue: unknown, options: { lifecycleKey?: string; reviewCap?: number; implementationMode?: CycleImplementationMode; mode?: CycleMode; timestamp?: string; branchId?: string } = {}): CycleState {
+export function createCycleState(sourceValue: unknown, options: { lifecycleKey?: string; reviewCap?: number; implementationMode?: CycleImplementationMode; mode?: CycleMode; timestamp?: string; branchId?: string; lifecycleProvider?: LifecycleProviderName; lifecycleProviderAttemptId?: string } = {}): CycleState {
   const source = normalizeCycleSource(sourceValue);
   if (!source) throw new Error("cycle_source_invalid");
   const reviewCap = options.reviewCap ?? CYCLE_REVIEW_CAP_DEFAULT;
@@ -1223,6 +1226,15 @@ export function createCycleState(sourceValue: unknown, options: { lifecycleKey?:
   if (!validCycleMode(mode)) throw new Error("cycle_mode_invalid");
   const lifecycleKey = text(options.lifecycleKey) || cycleLifecycleKey(source);
   if (!LIFECYCLE_KEY.test(lifecycleKey)) throw new Error("lifecycle_key_invalid");
+  const lifecycleProvider = options.lifecycleProvider === undefined
+    ? undefined
+    : normalizeLifecycleProvider(options.lifecycleProvider);
+  const lifecycleProviderAttemptId = options.lifecycleProviderAttemptId;
+  if (
+    lifecycleProvider === null
+    || lifecycleProvider === undefined && lifecycleProviderAttemptId !== undefined
+    || lifecycleProviderAttemptId !== undefined && !UUID.test(lifecycleProviderAttemptId)
+  ) throw new Error("lifecycle_provider_invalid");
   return {
     schemaVersion: CYCLE_SCHEMA_VERSION,
     source,
@@ -1237,6 +1249,8 @@ export function createCycleState(sourceValue: unknown, options: { lifecycleKey?:
     blockers: [],
     updatedAt: timestamp(options.timestamp),
     ...(options.branchId && boundedText(options.branchId, 256) ? { branchId: options.branchId } : {}),
+    ...(lifecycleProvider ? { lifecycleProvider } : {}),
+    ...(lifecycleProviderAttemptId ? { lifecycleProviderAttemptId: lifecycleProviderAttemptId.toLowerCase() } : {}),
   };
 }
 
@@ -1249,6 +1263,15 @@ export function validateCycleState(value: unknown): { valid: true; state: CycleS
   if (state.stoppedPhase !== undefined && !validPhase(state.stoppedPhase)) return { valid: false, error: sanitizeCycleError("cycle_state_invalid") };
   if (state.trackerClosed !== undefined && typeof state.trackerClosed !== "boolean") return { valid: false, error: sanitizeCycleError("cycle_state_invalid") };
   if (state.branchId !== undefined && !boundedText(state.branchId, 256)) return { valid: false, error: sanitizeCycleError("cycle_state_invalid") };
+  const lifecycleProvider = state.lifecycleProvider === undefined
+    ? undefined
+    : normalizeLifecycleProvider(state.lifecycleProvider);
+  const lifecycleProviderAttemptId = state.lifecycleProviderAttemptId;
+  if (
+    lifecycleProvider === null
+    || lifecycleProvider === undefined && lifecycleProviderAttemptId !== undefined
+    || lifecycleProviderAttemptId !== undefined && (typeof lifecycleProviderAttemptId !== "string" || !UUID.test(lifecycleProviderAttemptId))
+  ) return { valid: false, error: sanitizeCycleError("cycle_state_invalid") };
   if (state.execution !== undefined && !validateCyclePhaseExecution(state.execution)) return { valid: false, error: sanitizeCycleError("cycle_state_invalid") };
   const source = normalizeCycleSource(state.source)!;
   const duplicateToolCall = new Set<string>();
@@ -1268,6 +1291,8 @@ export function validateCycleState(value: unknown): { valid: true; state: CycleS
         recordKey: item.recordKey === undefined ? null : item.recordKey,
       })),
       ...(state.execution ? { execution: structuredClone(state.execution) } : {}),
+      ...(lifecycleProvider ? { lifecycleProvider } : {}),
+      ...(lifecycleProviderAttemptId ? { lifecycleProviderAttemptId: lifecycleProviderAttemptId.toLowerCase() } : {}),
       blockers: state.blockers.map((item) => cleanLine(item)),
     } as CycleState,
   };
@@ -1448,6 +1473,8 @@ export function buildResumeSource(stateValue: unknown): string | null {
     `planeWorkItem: ${cleanLine(planeWorkItem, 128)}`,
     `reviewCap: ${cleanLine(String(state.reviewCap), 32)}`,
     `implementationMode: ${cleanLine(state.implementationMode, 32)}`,
+    `lifecycleProvider: ${state.lifecycleProvider ?? "none"}`,
+    `lifecycleProviderAttemptId: ${state.lifecycleProviderAttemptId ?? "none"}`,
     "orderedPhaseEvidence:",
     ...orderedEvidence,
     `priorArtifactIds: ${priorArtifactIds.length ? priorArtifactIds.join(", ") : "none"}`,
@@ -1458,6 +1485,11 @@ export function buildResumeSource(stateValue: unknown): string | null {
     `validOutcomes: ${validOutcomes.join(", ")}`,
     ...autonomousPlanDirectives,
     "Persist this phase through ima_lifecycle with an explicit one-line summary. Finish the saved artifact with exactly one cycle outcome marker for cyclePhase using one validOutcomes value; do not include any other cycle outcome marker.",
+    ...(state.lifecycleProvider && state.lifecycleProviderAttemptId
+      ? ["Pass lifecycleProvider as provider and lifecycleProviderAttemptId as pinAttemptId to ima_lifecycle. They are the user-confirmed checkout-local pre-persistence authorization; do not substitute a provider or attempt ID."]
+      : state.lifecycleProvider
+        ? ["Pass lifecycleProvider as provider to ima_lifecycle. A verified checkout-local provider pin is authoritative; do not substitute a provider."]
+        : []),
     `requiredMarker: <!-- ima-cycle outcome: phase=${state.phase}; outcome=<valid-outcome> -->`,
   ].join("\n");
 }
