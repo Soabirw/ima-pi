@@ -28,6 +28,12 @@ The reviewed independent Serena lifecycle record/client/provider can persist imm
 
 `SERENA_HOME`, if used outside this provider, is a **non-secret variable**; provider v1 does not configure or use it. Serena project paths, `.serena` configuration/memories, synthetic fixtures, and retained lease sidecars are **local-only values**. Serena/MCP/service credentials and tokens are **secrets** and must not be stored in docs, configuration, or lifecycle artifacts. This provider introduces no **platform binding**. Live synthetic Serena acceptance is unperformed and separately authorized.
 
+## Markdown lifecycle provider
+
+The reviewed standalone Markdown lifecycle adapter stores caller-prepared canonical UTF-8 artifacts and canonical receipts as immutable, exact local evidence, with artifact-first read-back and receipt-last publication, exact read-only `get`, and bounded verified recall. It blocks conflicts, partial or unverifiable evidence, unsafe filesystem paths, active leases, cancellation, and uncertain writes; it never overwrites, deletes, adopts, retries, migrates, repairs, or falls back. See the [Markdown adapter contract and T9 boundary](docs/markdown-lifecycle-provider.md).
+
+Markdown is additive and **not live-selected or routed yet**. T9 separately owns user confirmation, provider selection, durable pins, routing, and consumers. Checkout paths, artifacts, receipts, references, locks, and fixtures are **local-only values**; credentials are **secrets** and forbidden; this adapter adds no environment variable, **non-secret variable**, or **platform binding**.
+
 ## Qdrant lifecycle provider (T14)
 
 The reviewed additive Qdrant lifecycle provider can persist immutable evidence only after an exact direct read-back, retrieve or read-only reconcile exact references, and recall up to 20 exact verified records. It supports exact schema-v1/v2 verification, immutable unchanged retries, strict detached projections, cancellation, and bounded blocked failures; it never falls back, repairs, migrates, or treats partial evidence as authoritative. This is not activation or live lifecycle routing: T9 separately owns provider selection, preferences, initial fallback, durable pins, and provider-aware `ima_lifecycle`, `ima_context`, `/ima:cycle`, and `/ima:new` routing. See the [provider contract and live-integration boundary](docs/qdrant-lifecycle-provider.md).
