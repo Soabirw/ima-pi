@@ -18,9 +18,13 @@ Configuration: optional `IMA_QDRANT_URL`, primary `BOOKSTACK_BASE_URL`, and back
 
 ## BookStack shared-memory tools (SKYNET-84)
 
-`/ima:bookstack-search <question>` discovers candidates through the private Cloudflare AI Search index and returns bounded excerpts with BookStack provenance. Use `ima_bookstack_read` for authoritative current content and `ima_bookstack_write` for explicit BookStack authoring with optimistic-concurrency proof. These BookStack-specific tools do not select a lifecycle provider, require no local Qdrant/Ollama, and never enable public Cloudflare endpoints. See [BookStack shared-memory setup](docs/bookstack-knowledge.md).
+`/ima:bookstack-search <question>` discovers candidates through the private Cloudflare AI Search index and returns bounded excerpts with BookStack provenance. Candidate excerpts are derived discovery only: use `ima_bookstack_read` for authoritative current content, and never elevate a denied read's snippet to authority. `ima_bookstack_write` creates only when `sourceId` is absent and `expectedRevisionCount` and `expectedUpdatedAt` are also absent. Creation and updating both require a valid approved destination/book context, authorized BookStack access, validated content, and successful direct verification. It updates only when `sourceId`, `expectedRevisionCount`, and `expectedUpdatedAt` are all supplied; it rereads the page, rejects any mismatch, and directly verifies the revision advance. It is explicit general BookStack authoring, not managed lifecycle persistence. These BookStack-specific tools do not select a lifecycle provider, require no local Qdrant/Ollama, and never enable public Cloudflare endpoints. See [BookStack shared-memory setup](docs/bookstack-knowledge.md).
 
 Configuration: `CLOUDFLARE_ACCOUNT_ID`, `BOOKSTACK_BASE_URL` (or compatible `BOOKSTACK_ORIGIN`), `BOOKSTACK_LIFECYCLE_BOOK_ID`, and `BOOKSTACK_KNOWLEDGE_BOOK_ID` are **non-secret variables**. `CLOUDFLARE_API_MEMORY`, `BOOKSTACK_TOKEN_ID`, and `BOOKSTACK_TOKEN_SECRET` are **secrets**. There is no Pi-tool **platform binding**; `SYNC_COORDINATOR` belongs only to the separate Worker. The invoking shell environment is a **local-only value**.
+
+## New-developer shared-memory readiness (SKYNET-223)
+
+Before requesting shared knowledge or managed lifecycle persistence, follow the [readiness journey](docs/guide.md#new-developer-shared-memory-readiness). A released package installation and packaged-resource discovery do not prove shared-service access or managed lifecycle persistence. This documentation does not mandate local Qdrant/Ollama installation, does not bypass capability-specific, pinned, or historical Qdrant authority, and makes no rollout or live-acceptance claim.
 
 ## Lifecycle provider authority
 

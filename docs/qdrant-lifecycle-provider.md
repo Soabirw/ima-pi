@@ -2,6 +2,10 @@
 
 > **Provider-native lifecycle authority:** Qdrant is one of the four lifecycle authorities. Provider selection, user confirmation, historical-Qdrant authority, and checkout-local pin handling follow the [lifecycle authority contract](guide.md#lifecycle-authority-memory-and-integrations); this provider preserves its immutable, fail-closed behavior within that decision.
 
+## New-developer readiness boundary
+
+Package/resource discovery and BookStack shared-knowledge access do not require a local Qdrant or Ollama installation. Qdrant prerequisites apply only when a Qdrant capability is requested or when a valid Qdrant pin or historical Qdrant phase establishes authority. Those cases cannot be bypassed with another provider, migration, or repin. If exact historical authority cannot be verified, the operator must stop and preserve it; do not assume every runtime path uniformly blocks unavailable historical recall. See the [new-developer readiness journey](guide.md#new-developer-shared-memory-readiness) and the [BookStack shared-memory runbook](bookstack-knowledge.md) for the separate search/read-first path.
+
 The provider offers `persist`, `get`, `recall`, and `reconcile` to a caller that has selected Qdrant. It returns either verified immutable lifecycle evidence or a bounded blocked result. It does not change a preference or pin, route a command, repair evidence, migrate records, or fall back to another store.
 
 ## Identity, projection, and verification

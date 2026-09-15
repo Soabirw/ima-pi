@@ -2,6 +2,10 @@
 
 > **Provider-native lifecycle authority:** Serena is one of the four lifecycle authorities. Provider selection, user confirmation, and checkout-local pin handling follow the [lifecycle authority contract](guide.md#lifecycle-authority-memory-and-integrations); this provider preserves its immutable, fail-closed behavior within that decision.
 
+## New-developer readiness boundary
+
+Package/resource discovery and BookStack shared-memory access do not require a Serena lifecycle project. An existing registered Serena project and its local layout are prerequisites only when Serena is selected or pinned for managed lifecycle persistence; this provider never creates or repairs that state to pass readiness. If exact historical authority cannot be verified, the operator must stop and preserve it rather than fall back, repin, migrate, or mix providers. See the [new-developer readiness journey](guide.md#new-developer-shared-memory-readiness) for configuration classes, owner gates, and non-destructive rollback.
+
 The provider persists an immutable lifecycle record, gets an exact reference, recalls a bounded exact lifecycle selection, and read-only reconciles an exact reference. It reserves the versioned `ima-serena-lifecycle-v1` memory-name namespace. It does not create or select a Serena project, use a Taskwarrior project as Serena identity, alter preferences or pins, fall back to another provider, repair or migrate evidence, delete memories or locks, retry an uncertain write, or activate live routing.
 
 ## Approved scope and evidence

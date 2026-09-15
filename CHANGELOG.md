@@ -12,6 +12,7 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 - Added Serena lifecycle-provider groundwork, now consumed by the integrated authority layer: immutable persistence with direct read-back, exact get/read-only reconcile, and bounded recall in an existing registered project. Live synthetic Serena acceptance is unperformed.
 - Added Markdown lifecycle-provider groundwork, now consumed by the integrated authority layer: an unregistered, fail-closed adapter for checkout-local immutable canonical UTF-8 artifacts with artifact-first exact read-back and receipt-last publication, exact read-only get, and bounded committed-only recall.
 - Added BookStack lifecycle-provider groundwork, now consumed by the integrated authority layer: a fail-closed provider that can provision approved placement, persist and read-back verify immutable lifecycle evidence, and exactly recall or reconcile interrupted operations, including document evidence.
+- Added a TUI-only, bounded-confirmation recovery path for a retained BookStack lifecycle writing attempt: stable discovery confirms an exact existing page without a POST, or records a durable one-shot checkpoint before at most one page POST; it never provisions, deletes, abandons, retries, or falls back.
 - Added BookStack-specific Pi search, authoritative-read, and guarded-write tools with the `/ima:bookstack-search` UX, provenance, fail-closed boundaries, and no local Qdrant/Ollama requirement.
 - Added the `ima-pi` BookStack migration producer's verified read-only `dry-run` workflow, with itemized quarantine reporting and bounded immutable inventory manifests and parts.
 - Added a read-only BookStack apply preflight and an explicitly confirmed deterministic ten-record canary, with provider-free coverage and no automatic bulk apply.
@@ -19,6 +20,7 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ### Changed
 
+- Documented a readiness-only new-developer journey that separates package/resource discovery, BookStack search/read access, and managed lifecycle persistence; it records configuration classes, owner stop gates, and non-destructive read-only reconciliation rollback without claiming rollout or live acceptance.
 - Updated lifecycle prompts, skills, README, provider documentation, guide, and Serena memories for the integrated four-authority model.
 
 ### Fixed
@@ -26,6 +28,9 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 - Made provider selection fail closed: only a proven no-write state permits a new user-confirmed pre-pin evaluation; uncertain writes block. Any historical Qdrant phase establishes Qdrant authority, authorized plan discovery is read-only and race-checked, and valid pins skip reselection.
 - Hardened lifecycle provider boundaries with a strict four-key provider request projection before effects; Qdrant recall also requires an explicit terminal `next_page_offset: null` before detail reads, so incomplete paginated recall cannot be treated as authoritative.
 - Hardened BookStack lifecycle placement and persistence: normal persistence globally discovers one visible canonical page slug before POST, stale locator proof is rejected after authoritative reads, and a reused-shelf failure returns no speculative recovery descriptor.
+- Hardened BookStack page discovery to tolerate unrelated valid empty-slug drafts while treating target drafts as conflicts; authoritative reads and creates remain strict.
+- Made BookStack lifecycle page verification tolerate only the provider's omission of one terminal LF while reconstructing canonical evidence and retaining actual-byte locator hashes; all broader content or whitespace drift still blocks.
+- Fixed pinned BookStack lifecycle recall to verify the full locator before passing its exact placement projection; malformed or mismatched evidence blocks without fallback.
 - Persisted follow-up-eligible direct/manual specialist sessions so original reviewers and implementers can resume safely when lifecycle phases run in new Pi sessions; cycle-owned references remain owner-bound.
 - Added exclusive native local-only sidecar leases for session registries and focused continuations, returning busy results without stale-lock theft; `session_cleanup_unverified` retains the lease and blocks retry. Ambiguous or unrecognized commands rejected before effects and failed owned edits do not alone imply partial writes; definite out-of-scope intent remains an interception, with native `@` target normalization preserving owned paths.
 - Preserved quarantined dry-run outcomes when an apply report is constructed, retaining migration provenance in the final report.

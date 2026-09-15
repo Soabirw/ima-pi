@@ -23,6 +23,27 @@ Set these only in the invoking developer shell; never commit them or pass secret
 
 Local Qdrant and Ollama are not required. Cloudflare instance privacy, token issuance, BookStack access policy, configured books, index freshness, and content availability remain external runtime prerequisites. Missing, malformed, denied, or unverifiable configuration fails closed with a stable sanitized code.
 
+## Read-first onboarding and operation prerequisites
+
+Package/resource discovery is not shared-memory access: seeing the package's commands or skills does not prove Cloudflare or BookStack access. Follow this read-first journey before relying on shared content:
+
+1. Use `/ima:bookstack-search` or `ima_bookstack_search` only to discover a bounded, derived candidate and its `sourceId`.
+2. Use `ima_bookstack_read` with that `sourceId` when current content matters. Its authorized current read and provenance, not the search excerpt, establish authority.
+3. If the read is denied, missing, malformed, or unverifiable, stop. Do not quote or promote a returned snippet as authoritative content.
+4. Use `ima_bookstack_write` only for explicit general BookStack authoring. Creation requires no `sourceId`, `expectedRevisionCount`, or `expectedUpdatedAt`; an update requires all three. Even when writing a `lifecycle` corpus page, it is not managed lifecycle persistence and cannot select, create, change, or bypass a provider pin.
+
+Both creation and updates require a valid approved destination/book context, authorized BookStack access, validated content, and successful direct verification.
+
+| Operation | Shared-service prerequisites | Owner role | Stop gate |
+| --- | --- | --- | --- |
+| Candidate discovery | Private Cloudflare search configuration and authorization | Shared-service administrator and developer | Missing access, configuration, or usable candidate stops discovery. |
+| Authoritative current read | A candidate `sourceId` or known source plus authorized BookStack access | Authorized developer | A denied or unverifiable read stops the claim. |
+| Create a BookStack page | `sourceId`, `expectedRevisionCount`, and `expectedUpdatedAt` are all absent | Authorized BookStack author | Stop if any of those fields is supplied or a common authoring control fails; do not substitute lifecycle persistence. |
+| Update an existing BookStack page | Exact `sourceId`, `expectedRevisionCount`, and `expectedUpdatedAt`; the expected revision values match the reread page | Authorized BookStack author | Stop on missing or mismatched concurrency proof or a common authoring control failure; do not substitute lifecycle persistence. |
+| Managed lifecycle persistence | User-confirmed provider selection or valid pin and that provider's prerequisites | Lifecycle operator and provider owner | Use the [lifecycle authority contract](guide.md#lifecycle-authority-memory-and-integrations); no fallback, repin, or provider mixing. |
+
+The configuration table above classifies every shared-memory setting: non-secret variables stay credential-free, secrets stay out of source control and command arguments, `SYNC_COORDINATOR` remains a Worker platform binding, and the invoking shell remains local-only. For the complete onboarding, readiness gates, and non-destructive rollback boundary, see the [new-developer guide](guide.md#new-developer-shared-memory-readiness).
+
 ## Authoring contract
 
 `ima_bookstack_write` accepts `lifecycle` or `ima-knowledge`, a project, artifact type, title, and Markdown. `lifecycle` additionally requires a lifecycle key. The tool prepends exactly this envelope before the supplied Markdown:
@@ -37,7 +58,11 @@ lifecycle_key: shared-dev-memory:manual:human-ai-memory-system:2026-08-31
 # Page body
 ```
 
-`project` and `artifact_type` have a 64 UTF-8-byte limit. `lifecycle_key`, when present, has a 512 UTF-8-byte limit. The selected configured book depends only on `corpus`. Updating an existing page requires its exact `sourceId`, `expectedRevisionCount`, and `expectedUpdatedAt`; the tool rereads the page, rejects any mismatch, writes, then verifies the revision advanced. This reduces accidental overwrites but is not an atomic conditional write.
+`project` and `artifact_type` have a 64 UTF-8-byte limit. `lifecycle_key`, when present, has a 512 UTF-8-byte limit. The selected configured book depends only on `corpus`. Both creation and update require a valid approved destination/book context, authorized BookStack access, validated content, and successful direct verification.
+
+**Create.** `ima_bookstack_write` creates only when `sourceId` is absent and `expectedRevisionCount` and `expectedUpdatedAt` are also absent.
+
+**Update.** Updating an existing page requires its exact `sourceId`, `expectedRevisionCount`, and `expectedUpdatedAt`; the tool rereads the page, rejects any mismatch, writes, then verifies the revision advanced. This reduces accidental overwrites but is not an atomic conditional write.
 
 ## Search and authoritative reads
 

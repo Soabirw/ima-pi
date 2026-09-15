@@ -2,6 +2,8 @@
 
 ## Status
 
+> **Historical T2 record.** This preserves the SKYNET-98 / T2 configuration snapshot and sanitized acceptance evidence. It is not current installation/readiness evidence, a Pi runtime-store migration, a Qdrant cutover, a shared-service rollout, or cleanup authority. For current readiness, use the [new-developer guide](guide.md#new-developer-shared-memory-readiness).
+
 SKYNET-98 / T2 configured the approved non-public shared-memory area in the
 existing BookStack instance. This runbook records the configuration and
 sanitized API evidence; it is not a Pi runtime-store migration or Qdrant
@@ -122,13 +124,16 @@ BookStack is not Pi's runtime content store in this unit. Package-native Qdrant
 lifecycle routing remains in effect until separately verified migration and
 cutover.
 
-## Reconciliation and rollback
+## Reconciliation and historical cleanup
+
+This is a historical T2 cleanup boundary, not a rollback procedure for readiness documentation, rollout, or cutover. Do not use cleanup, deletion, revision removal, permission changes, or resource removal as rollback for SKYNET-223 documentation/readiness work or a future cutover. That rollback is documentation-only, non-destructive, and read-only; follow the [new-developer guide](guide.md#documentation-only-non-destructive-rollback).
 
 If a future operation is interrupted, first reconcile the recorded resource IDs
 and current BookStack state. Do not blindly retry creates or replace a shelf's
 book list.
 
-To roll back this unit, obtain explicit cleanup approval, verify that no team
+For an independently approved rollback of the original T2 resource-creation
+unit—not SKYNET-223—obtain explicit cleanup approval, verify that no team
 content has been added, and remove only the resources created above. Never
 delete pre-existing content, clear revisions, reset global permissions, or
 weaken access controls to simplify cleanup. Revert this runbook and its README

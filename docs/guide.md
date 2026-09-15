@@ -8,6 +8,66 @@
 
 Use Node.js 24+ and an installed Pi version. The normal package path also needs access to the approved private Gitea repository. Optional integrations have their own credentials and executables; they are not installation prerequisites.
 
+## New-developer shared-memory readiness
+
+This is a documentation-only readiness path for capability contracts in this reviewed checkout. It is not evidence of a release, shared-service rollout, migration, cutover, live-provider acceptance, or tracker closeout.
+
+**Installation versus checkout.** A released installation makes Pi package resources discoverable. The reviewed checkout describes current capability contracts, but neither installation nor resource discovery grants shared-service access, configures a provider, or proves managed lifecycle persistence.
+
+### Journey and dependency matrix
+
+| Step | Establishes | Owner role | Stop gate |
+| --- | --- | --- | --- |
+| Install and discover package resources | Node.js, Pi, package-source access, and visible `/ima:*` or `/skill:*` resources | Developer or package operator | Stop at installation/discovery failure; it does not authorize shared-service changes. |
+| Discover shared knowledge candidates | The private search capability can return a bounded, derived candidate | Shared-service administrator and developer | Missing configuration, authorization, or index access stops discovery. A snippet is not current authority. |
+| Read current shared content | `ima_bookstack_read` authorizes and reads the candidate's current BookStack content | Authorized developer | A denied, missing, malformed, or unverifiable read stops the claim; never elevate its search excerpt to authority. |
+| Create a BookStack page | A new page after successful direct verification when `sourceId`, `expectedRevisionCount`, and `expectedUpdatedAt` are all absent; valid approved destination/book context, authorized BookStack access, and validated content are required | Authorized BookStack author | Stop if `sourceId`, `expectedRevisionCount`, or `expectedUpdatedAt` is supplied, or a required destination/book, access, validation, or verification control fails. |
+| Update a BookStack page | An updated page after successful direct verification when `sourceId`, `expectedRevisionCount`, and `expectedUpdatedAt` are all supplied and the expected revision fields match the reread page; valid approved destination/book context, authorized BookStack access, and validated content are required | Authorized BookStack author | Stop on missing or mismatched revision proof, or a required destination/book, access, validation, or verification control failure. |
+| Persist managed lifecycle evidence | A user-confirmed selected provider or valid pin can perform its provider-native immutable verification | Lifecycle operator and provider owner | An unavailable or unverifiable selected or pinned provider blocks; do not fall back, repin, migrate, or mix providers. |
+| Invoke a Qdrant capability | The requested Qdrant/Ollama capability has its own verified service prerequisites | Qdrant service operator and requesting developer | No local installation is required for the earlier steps. If this capability, a valid Qdrant pin, or historical Qdrant authority is required, stop rather than bypass it. |
+
+General BookStack authoring is not managed lifecycle persistence.
+
+The role labels identify ownership boundaries, not assigned people.
+
+### Shared-service configuration classes
+
+These names classify handling only; use no real values in source control, examples, reports, or lifecycle artifacts.
+
+| Scope or setting | Classification |
+| --- | --- |
+| `CLOUDFLARE_ACCOUNT_ID`, `BOOKSTACK_BASE_URL`, `BOOKSTACK_ORIGIN`, `BOOKSTACK_LIFECYCLE_BOOK_ID`, and `BOOKSTACK_KNOWLEDGE_BOOK_ID` | **Non-secret variables** for BookStack shared-memory access. |
+| `CLOUDFLARE_API_MEMORY`, `BOOKSTACK_TOKEN_ID`, and `BOOKSTACK_TOKEN_SECRET` | **Secrets** for shared-memory operations. |
+| `SYNC_COORDINATOR` | **Platform binding** for the separate Worker; Pi BookStack tools do not consume it. |
+| Invoking shell environment | **Local-only value** for developer-scoped shared-memory configuration. |
+| `IMA_QDRANT_URL` and `IMA_OLLAMA_URL` | **Non-secret variables** only when a Qdrant/Ollama capability is invoked. |
+| Qdrant or Ollama credentials | **Secrets**. |
+| Local Qdrant data and synthetic fixtures | **Local-only values**. |
+| `SERENA_HOME`, when an integrator uses it outside the Serena provider | **Non-secret variable**; the provider itself does not configure it. |
+| Serena project paths, `.serena` configuration/memories, and retained sidecars | **Local-only values**. |
+| Serena, MCP, service, or platform credentials/tokens | **Secrets**. |
+| Markdown checkout paths, artifacts, receipts, references, locks, and fixtures | **Local-only values**; Markdown adds no environment variable or platform binding. |
+| Existing provider preferences and non-sensitive identifiers | **Non-secret variables** under the [lifecycle authority contract](#lifecycle-authority-memory-and-integrations). |
+| Checkout-local pin registry and retained BookStack writing attempts/checkpoints | **Local-only values**. |
+
+Qdrant, Serena, Markdown, and the lifecycle authority contract add no platform binding. This guide invents no preference key and enables no automatic preference loading.
+
+### Owner-owned readiness gates
+
+Use the dependency matrix in order. Package/resource discovery is separate from shared-memory access, and both are separate from managed lifecycle persistence. A general BookStack page write never selects or changes a lifecycle provider pin.
+
+A local Qdrant/Ollama installation is not a base onboarding requirement. A capability-specific Qdrant request, a valid Qdrant pin, or verifiable historical Qdrant authority still retains its own requirements and cannot be bypassed. If an operator cannot verify exact historical authority, the operator must stop and preserve the existing authority; do not assume every runtime path uniformly blocks unavailable historical recall.
+
+### Documentation-only, non-destructive rollback
+
+This is documentation-only readiness guidance. If a later, separately approved rollout must be paused, use these preservation steps; they do not perform a rollout, cleanup, or data recovery.
+
+1. Pause prospective rollout activity and new shared-memory or lifecycle writes with the relevant owner. Preserve concurrent work rather than trying to reverse it.
+2. Inventory exact provider revisions, lifecycle keys, pins, retained attempts or leases, references, and—if a future cutover exists—all post-cutover writes and references.
+3. Preserve provider pins, authoritative history, concurrent work, and every post-cutover write. Do not reset, clean, downgrade, repin, fall back, replay, snapshot-overwrite, delete, or use cleanup as rollback.
+4. Reconcile only through the selected provider's exact read-only `get` or `reconcile` contract; do not repair or overwrite evidence.
+5. Resume only after the responsible owners verify the exact revisions, keys, pins, attempts, references, and preserved writes. See the historical [BookStack T2 record](bookstack-configuration.md) for why its separately approved cleanup path is not this rollback.
+
 ## Desktop notifications
 
 The default-on desktop notification extension uses the repository's Pi 0.84.4
@@ -43,7 +103,7 @@ The packaged `/ima:*` prompts provide phase or bounded-operation entry points. U
 
 BookStack, Qdrant, Serena, and Markdown are the sole lifecycle authorities. Before a checkout-local pin exists, the lifecycle service evaluates a provider preference in this order: explicit session preference, project preference, Serena preference, global lower-case `AGENTS.md` preference, then the default priority: BookStack, Qdrant, Serena, Markdown. It shows the recommendation, its source, and any BookStack sharing implication; **only the user** confirms the provider and, for BookStack, that shared placement is appropriate.
 
-A valid pin skips selection. Before the first write, selection may be reevaluated only after a proven no-write result; an uncertain write blocks. The first approved, verified write creates the checkout-local pin. Later operations, including fresh sessions, use only that pin: a pinned-provider failure blocks without fallback, migration, or mixing. Unpinned historical lifecycle and institutional corpus operations use Tier-1 Qdrant; any historical Qdrant lifecycle phase establishes Qdrant authority. When no preference orders providers, Markdown selection is exact rather than inferred. This contract is currently documented for `plane:ima:SKYNET-94`, lifecycle key `shared-dev-memory:manual:human-ai-memory-system:2026-08-31`, with approved rereview artifact `556c1dd8-c7f2-54f3-bbf4-30627aeb70e6`.
+A valid pin skips selection. Before the first write, selection may be reevaluated only after a proven no-write result; an uncertain write blocks. The first approved, verified write creates the checkout-local pin. Later operations, including fresh sessions, use only that pin: a pinned-provider failure blocks without fallback, migration, or mixing. Unpinned historical lifecycle and institutional corpus operations use Tier-1 Qdrant; any historical Qdrant lifecycle phase establishes Qdrant authority. When exact historical authority cannot be verified, operators must stop rather than assume runtime uniformly blocks unavailable historical recall. When no preference orders providers, Markdown selection is exact rather than inferred. This contract is currently documented for `plane:ima:SKYNET-94`, lifecycle key `shared-dev-memory:manual:human-ai-memory-system:2026-08-31`, with approved rereview artifact `556c1dd8-c7f2-54f3-bbf4-30627aeb70e6`.
 
 There is no live-provider or cross-device acceptance. Provider-native verification and the user-owned closeout boundary remain unchanged: verified storage does not determine lifecycle readiness or close a tracker. Provider preferences and non-sensitive identifiers are **non-secret variables**; credentials and tokens are **secrets**. The pin registry, Markdown location, local Qdrant state, and machine Serena state are **local-only values**. This lifecycle authority introduces no **platform binding**. See the provider-native contracts for [BookStack](bookstack-lifecycle-provider.md), [Qdrant](qdrant-lifecycle-provider.md), [Serena](serena-lifecycle-provider.md), and [Markdown](markdown-lifecycle-provider.md).
 
@@ -79,7 +139,7 @@ npm test
 git diff --check
 ```
 
-Rollback for documentation-only changes is a normal Git revert; package removal uses the installed Pi version's documented command.
+Rollback for documentation-only changes is a normal Git revert and does not alter provider pins, authoritative history, or remote state. For shared-memory and lifecycle readiness, follow the [non-destructive rollback procedure](#documentation-only-non-destructive-rollback); package removal uses the installed Pi version's documented command.
 
 ## Optional cross-harness skill synchronization
 

@@ -2,6 +2,10 @@
 
 > **Provider-native lifecycle authority:** `lib/markdown-lifecycle-record.ts` and `lib/markdown-lifecycle.ts` provide the local Markdown provider, one of the four lifecycle authorities. Provider selection, user confirmation, and checkout-local pin handling follow the [lifecycle authority contract](guide.md#lifecycle-authority-memory-and-integrations). Markdown remains local-only and has no distributed guarantee.
 
+## New-developer readiness boundary
+
+Package/resource discovery does not configure this provider, and BookStack shared-memory access is not managed lifecycle persistence. Markdown applies only after valid user selection or a valid Markdown pin; it is never a substitute when another provider's pin or historical authority is unavailable. If exact historical authority cannot be verified, the operator must stop and preserve existing evidence rather than fall back, repin, migrate, or mix providers. See the [new-developer readiness journey](guide.md#new-developer-shared-memory-readiness) for owner gates and its non-destructive rollback boundary.
+
 ## Lifecycle integration boundary
 
 Lifecycle integration preserves user confirmation, provider selection, the checkout-local pin, and every blocked/no-fallback result. That includes integrations with `ima_lifecycle`, `ima_context`, `/ima:cycle`, `/ima:new`, or other user-facing lifecycle flow. The adapter accepts no preference, pin, route, command, or configuration that makes that decision. It supplies no fallback, migration, adoption, closeout, or recovery tooling; this document claims no live-provider or cross-device acceptance.
