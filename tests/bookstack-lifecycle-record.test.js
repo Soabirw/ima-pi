@@ -65,6 +65,33 @@ test("record round-trip binds the exact envelope, control, identity, summary, an
   assert.equal(parseLifecycleRecord("x".repeat(512_001)), null);
 });
 
+test("TEST-004 accepts exactly one omitted terminal LF while rejecting broader markdown changes", () => {
+  const record = createLifecycleRecord({ request, placement });
+  assert.equal(record.pageMarkdown.endsWith("\n"), true);
+  const missingFinalLf = record.pageMarkdown.slice(0, -1);
+  assert.equal(missingFinalLf.endsWith("\n"), false);
+
+  const parsed = parseLifecycleRecord(missingFinalLf);
+  assert.ok(parsed);
+  assert.equal(parsed.pageMarkdown, record.pageMarkdown);
+  assert.equal(parsed.artifactId, record.artifactId);
+  assert.equal(parsed.recordKey, record.recordKey);
+  assert.equal(parsed.requestHash, record.requestHash);
+  assert.equal(parsed.artifact, record.artifact);
+
+  for (const [name, changed] of [
+    ["internal whitespace", missingFinalLf.replace("# Plan\n\nApproved.", "# Plan\n \nApproved.")],
+    ["CRLF substitution", missingFinalLf.replaceAll("\n", "\r\n")],
+    ["added blank line", `${record.pageMarkdown}\n`],
+    ["more than one terminal byte removed", record.pageMarkdown.slice(0, -2)],
+    ["control marker change", missingFinalLf.replace("ima-bookstack-lifecycle/v1", "ima-bookstack-lifecycle/v2")],
+    ["artifact content change", missingFinalLf.replace("Approved.", "Changed.")],
+    ["arbitrary control hash", record.pageMarkdown.replace(record.contentHash, "0".repeat(64))],
+    ["extra terminal whitespace", `${record.pageMarkdown} \n`],
+    ["generic trimming", `${missingFinalLf} \t`],
+  ]) assert.equal(parseLifecycleRecord(changed), null, name);
+});
+
 test("reconstruction sentinel in valid metadata or payload round-trips", () => {
   for (const requestValue of [
     { ...request, identity: { ...identity, lifecycleRootMemoryId: "ima-bookstack-original-payload" } },

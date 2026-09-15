@@ -18,11 +18,16 @@ import type {
   BookStackLifecycleClient,
   BookStackResource,
 } from "./bookstack-lifecycle-client.ts";
+import { normalizeHttpsOrigin } from "./bookstack-http.ts";
 import {
+  createBookStackPageRecoveryCheckpoint,
   originFingerprint,
+  projectBookStackPageRecoveryCheckpoint,
   projectRecoveryDescriptor,
   recoveryDescriptor,
   safeFailure,
+  sameBookStackPageRecoveryCheckpoint,
+  type BookStackPageRecoveryCheckpoint,
   type FailureCategory,
   type RecoveryDescriptor,
 } from "./bookstack-lifecycle-recovery.ts";
@@ -72,9 +77,18 @@ export type VerifiedResult = {
   locator: LifecycleLocator;
 };
 
+export type BookStackRecoveryDiscovery = {
+  status: "ready";
+  origin: string;
+  checkpoint: BookStackPageRecoveryCheckpoint;
+  pageCount: number;
+  existing: VerifiedResult | null;
+};
+
 const VALID_PHASES = new Set([
   "plan", "implementation", "test", "review", "resolution", "rereview", "document", "decision", "closeout",
 ]);
+const MAX_RECOVERY_CONFIRMATION_ORIGIN_BYTES = 1_024;
 const LOCATOR_FIELDS = [
   "projectSlug", "sourceRef", "lifecycleKey", "shelfId", "shelfSlug", "bookId", "bookSlug", "chapterId", "chapterSlug",
   "pageId", "pageSlug", "originFingerprint", "artifactId", "recordKey", "contentHash", "pageHash", "revisionCount", "updatedAt",
@@ -120,6 +134,10 @@ const blocked = (
   ...safeFailure(error, fallback),
   recovery,
 });
+
+const throwIfAborted = (signal?: AbortSignal) => {
+  if (signal?.aborted) signal.throwIfAborted();
+};
 
 const pageName = (record: BookStackLifecycleRecord) => `${record.phase}-${record.artifactId}`;
 const placementMatches = (left: LifecyclePlacement, right: LifecyclePlacement) =>
@@ -186,7 +204,7 @@ const verifiedPage = async (input: {
     || page.slug !== pageName(record)
     || !placementMatches(record.placement, input.placement)
     || (input.expected && (
-      page.markdown !== input.expected.pageMarkdown
+      record.pageMarkdown !== input.expected.pageMarkdown
       || record.artifactId !== input.expected.artifactId
       || record.contentHash !== input.expected.contentHash
       || record.recordKey !== input.expected.recordKey
@@ -279,6 +297,87 @@ const receipt = (input: {
   };
 };
 
+const resourceSnapshot = (resource: BookStackResource) => ({
+  id: resource.id,
+  name: resource.name,
+  slug: resource.slug,
+  books: resource.books ? [...resource.books] : null,
+  bookId: resource.bookId ?? null,
+  chapterId: resource.chapterId ?? null,
+  markdown: resource.markdown ?? null,
+  revisionCount: resource.revisionCount ?? null,
+  updatedAt: resource.updatedAt ?? null,
+  creatorId: resource.creatorId ?? null,
+  updaterId: resource.updaterId ?? null,
+});
+
+const recoveryRecord = (value: unknown) => {
+  const call = dataRecord(value, ["request", "placement"]);
+  const placement = projectLifecyclePlacement(call?.placement);
+  if (!call || !placement) throw new Error("bookstack_placement_invalid");
+  const request = validateLifecycleRequest(call.request);
+  if (!request.valid || !placementMatchesRequest(placement, request)) {
+    throw new Error("bookstack_placement_invalid");
+  }
+  return { placement, record: createLifecycleRecord({ request: call.request, placement }) };
+};
+
+const discoverRecovery = async (input: {
+  client: BookStackLifecycleClient;
+  placement: LifecyclePlacement;
+  record: BookStackLifecycleRecord;
+}): Promise<BookStackRecoveryDiscovery> => {
+  const origin = normalizeHttpsOrigin(input.client.origin);
+  if (utf8ByteLength(origin) > MAX_RECOVERY_CONFIRMATION_ORIGIN_BYTES) {
+    throw new Error("bookstack_origin_invalid");
+  }
+  const hierarchy = await verifyHierarchy({ client: input.client, placement: input.placement });
+  const pages = await input.client.listPages();
+  const title = pageName(input.record);
+  const candidates = pages.filter((page) => page.slug === title);
+  const nonCanonicalTargetNames = pages.filter((page) =>
+    page.name === title && page.slug !== title,
+  );
+  if (candidates.length > 1 || nonCanonicalTargetNames.length > 0) {
+    throw new Error("bookstack_identity_ambiguous");
+  }
+
+  let existing: VerifiedResult | null = null;
+  let existingPage: BookStackResource | null = null;
+  if (candidates.length === 1) {
+    const verified = await verifiedPage({
+      client: input.client,
+      pageId: candidates[0].id,
+      placement: input.placement,
+      expected: input.record,
+    });
+    if (verified.page.id !== candidates[0].id || verified.page.slug !== title) {
+      throw new Error("bookstack_recovery_unresolved");
+    }
+    existing = receipt({ client: input.client, verified, disposition: "unchanged" });
+    existingPage = verified.page;
+  }
+
+  const discoveryHash = digestBookStackValue(JSON.stringify({
+    hierarchy: {
+      shelf: resourceSnapshot(hierarchy.shelf),
+      book: resourceSnapshot(hierarchy.book),
+      chapter: resourceSnapshot(hierarchy.chapter),
+    },
+    pages: pages.map(resourceSnapshot),
+    existingPage: existingPage ? resourceSnapshot(existingPage) : null,
+  }));
+  const checkpoint = createBookStackPageRecoveryCheckpoint({
+    lifecycleKey: input.record.lifecycleKey,
+    requestHash: input.record.requestHash,
+    originFingerprint: originFingerprint(origin),
+    pageSlug: title,
+    discoveryHash,
+  });
+  if (!checkpoint) throw new Error("bookstack_recovery_unresolved");
+  return { status: "ready", origin, checkpoint, pageCount: pages.length, existing };
+};
+
 const placementPageCandidates = async (
   client: BookStackLifecycleClient,
   placement: LifecyclePlacement,
@@ -286,11 +385,6 @@ const placementPageCandidates = async (
 ) => (await client.listPages()).filter((page) =>
   page.chapterId === placement.chapterId && page.slug === pageSlug,
 );
-
-const canonicalPageCandidates = async (
-  client: BookStackLifecycleClient,
-  pageSlug: string,
-) => (await client.listPages()).filter((page) => page.slug === pageSlug);
 
 const recoveryForPage = (input: {
   client: BookStackLifecycleClient;
@@ -361,6 +455,99 @@ export const createBookStackLifecycleProvider = (input: {
     });
   };
 
+  const discoverSameAttemptRecovery = async (
+    value: unknown,
+  ): Promise<BookStackRecoveryDiscovery | BlockedResult> => {
+    try {
+      const recovered = recoveryRecord(value);
+      return await discoverRecovery({
+        client: input.client,
+        placement: recovered.placement,
+        record: recovered.record,
+      });
+    } catch (error) {
+      return blocked(error, "bookstack_recovery_unresolved");
+    }
+  };
+
+  const persistSameAttemptRecovery = async (
+    value: unknown,
+    signal?: AbortSignal,
+  ): Promise<VerifiedResult | BlockedResult> => {
+    const call = dataRecord(value, ["request", "placement", "checkpoint"]);
+    const checkpoint = projectBookStackPageRecoveryCheckpoint(call?.checkpoint);
+    let recovered: ReturnType<typeof recoveryRecord>;
+    try {
+      if (!call || !checkpoint) throw new Error("bookstack_recovery_unresolved");
+      recovered = recoveryRecord({ request: call.request, placement: call.placement });
+      if (
+        checkpoint.lifecycleKey !== recovered.record.lifecycleKey
+        || checkpoint.requestHash !== recovered.record.requestHash
+        || checkpoint.originFingerprint !== originFingerprint(input.client.origin)
+        || checkpoint.pageSlug !== pageName(recovered.record)
+      ) throw new Error("bookstack_recovery_unresolved");
+    } catch (error) {
+      return blocked(error, "bookstack_recovery_unresolved");
+    }
+
+    let current: BookStackRecoveryDiscovery;
+    try {
+      current = await discoverRecovery({
+        client: input.client,
+        placement: recovered.placement,
+        record: recovered.record,
+      });
+    } catch (error) {
+      return blocked(error, "bookstack_recovery_unresolved");
+    }
+    throwIfAborted(signal);
+    if (!sameBookStackPageRecoveryCheckpoint(current.checkpoint, checkpoint)) {
+      return blocked("bookstack_recovery_stale", "bookstack_recovery_unresolved");
+    }
+    if (current.existing) return current.existing;
+
+    const title = pageName(recovered.record);
+    throwIfAborted(signal);
+    let created: BookStackResource;
+    try {
+      created = await input.client.createPage(
+        title,
+        recovered.placement.chapterId,
+        recovered.record.pageMarkdown,
+      );
+      if (!positiveId(created.id)) throw new Error("bookstack_response_invalid");
+    } catch (error) {
+      return blocked(
+        error,
+        "bookstack_write_unknown",
+        recoveryForPage({
+          client: input.client,
+          record: recovered.record,
+          pageId: knownPostId(error),
+        }),
+      );
+    }
+    const recovery = recoveryForPage({
+      client: input.client,
+      record: recovered.record,
+      pageId: created.id,
+    });
+    if (created.slug !== title) {
+      return blocked("bookstack_slug_unexpected", "bookstack_verification_failed", recovery);
+    }
+    try {
+      const verified = await verifiedPage({
+        client: input.client,
+        pageId: created.id,
+        placement: recovered.placement,
+        expected: recovered.record,
+      });
+      return receipt({ client: input.client, verified, disposition: "stored" });
+    } catch (error) {
+      return blocked(error, "bookstack_verification_failed", recovery);
+    }
+  };
+
   const reconcile = async (value: unknown): Promise<VerifiedResult | BlockedResult> => {
     const recovery = projectRecoveryDescriptor(value);
     if (!recovery || recovery.operation !== "create_page" || recovery.originFingerprint !== originFingerprint(input.client.origin)) {
@@ -387,8 +574,12 @@ export const createBookStackLifecycleProvider = (input: {
       const verified = await verifiedPage({ client: input.client, pageId: candidates[0].id, placement });
       if (verified.record.artifactId !== recovery.artifactId
         || verified.record.recordKey !== recovery.recordKey
-        || verified.record.contentHash !== recovery.contentHash
-        || verified.pageHash !== recovery.pageHash) throw new Error("bookstack_recovery_unresolved");
+        || verified.record.contentHash !== recovery.contentHash) {
+        throw new Error("bookstack_recovery_unresolved");
+      }
+      const canonicalPageHash = digestBookStackValue(verified.record.pageMarkdown);
+      if (recovery.pageHash !== verified.pageHash
+        && recovery.pageHash !== canonicalPageHash) throw new Error("bookstack_recovery_unresolved");
       return receipt({ client: input.client, verified, disposition: "unchanged" });
     } catch (error) {
       return blocked(error, "bookstack_recovery_unresolved", recovery);
@@ -423,12 +614,19 @@ export const createBookStackLifecycleProvider = (input: {
     }
     const title = pageName(record);
     let candidates: BookStackResource[];
+    let nonCanonicalTargetNames: BookStackResource[];
     try {
-      candidates = await canonicalPageCandidates(input.client, title);
+      const pages = await input.client.listPages();
+      candidates = pages.filter((page) => page.slug === title);
+      nonCanonicalTargetNames = pages.filter((page) =>
+        page.name === title && page.slug !== title,
+      );
     } catch (error) {
       return blocked(error, "bookstack_unavailable");
     }
-    if (candidates.length > 1) return blocked("bookstack_identity_ambiguous", "bookstack_identity_ambiguous");
+    if (candidates.length > 1 || nonCanonicalTargetNames.length > 0) {
+      return blocked("bookstack_identity_ambiguous", "bookstack_identity_ambiguous");
+    }
     if (candidates.length === 1) {
       try {
         const verified = await verifiedPage({ client: input.client, pageId: candidates[0].id, placement, expected: record });
@@ -498,5 +696,14 @@ export const createBookStackLifecycleProvider = (input: {
     }
   };
 
-  return { planPlacement: placement, ensurePlacement: ensure, persist, get, recall, reconcile };
+  return {
+    planPlacement: placement,
+    ensurePlacement: ensure,
+    persist,
+    get,
+    recall,
+    reconcile,
+    discoverSameAttemptRecovery,
+    persistSameAttemptRecovery,
+  };
 };

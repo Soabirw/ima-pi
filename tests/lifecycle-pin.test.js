@@ -7,9 +7,14 @@ import { deriveRecordId } from "../lib/qdrant-corpus.ts";
 import {
   createLifecycleProviderPin,
   createLifecycleProviderPinAttempt,
+  projectLifecycleProviderPinAttempt,
 } from "../lib/ima-lifecycle-pin.ts";
 import {
+  createBookStackPageRecoveryCheckpoint,
+} from "../lib/bookstack-lifecycle-recovery.ts";
+import {
   beginLifecyclePinWith,
+  claimLifecyclePinRecoveryWith,
   confirmLifecyclePinWith,
   loadLifecyclePinStateWith,
   markLifecyclePinAttemptWritingWith,
@@ -68,6 +73,18 @@ const temporaryRoot = async (t) => {
   return root;
 };
 
+test("accepts the existing writing-attempt wire shape without a recovery checkpoint", () => {
+  const legacy = {
+    schemaVersion: 1,
+    lifecycleKey,
+    provider: "bookstack",
+    attemptId,
+    status: "writing",
+    startedAt,
+  };
+  assert.deepEqual(projectLifecycleProviderPinAttempt(legacy), legacy);
+});
+
 test("persists checkout-local authority only after a writing attempt and ignores active cycle state", async (t) => {
   const root = await temporaryRoot(t);
   const resolveRoot = async (cwd) => cwd === root ? root : "";
@@ -120,6 +137,80 @@ test("keeps an uncertain writing attempt authoritative instead of replacing it",
   if (second.status !== "pending") return;
   assert.equal(second.attempt.attemptId, first.attemptId);
   assert.equal(second.attempt.status, "writing");
+});
+
+test("claims one BookStack recovery checkpoint with an exact writing-attempt CAS", async (t) => {
+  const root = await temporaryRoot(t);
+  const resolveRoot = async () => root;
+  const attempt = attemptFor(lifecycleKey, "bookstack");
+  const started = await beginLifecyclePinWith(resolveRoot)(root, attempt);
+  assert.equal(started.status, "started");
+  const writing = await markLifecyclePinAttemptWritingWith(resolveRoot)(root, attempt);
+  assert.equal(writing.status, "writing");
+  if (writing.status !== "writing") return;
+  assert.equal(writing.attempt.recoveryCheckpoint, undefined);
+
+  const checkpoint = createBookStackPageRecoveryCheckpoint({
+    lifecycleKey,
+    requestHash: "a".repeat(64),
+    originFingerprint: "b".repeat(64),
+    pageSlug: "plan-00000000-0000-5000-8000-000000000000",
+    discoveryHash: "c".repeat(64),
+  });
+  assert.ok(checkpoint);
+  const claimed = await claimLifecyclePinRecoveryWith(resolveRoot)(
+    root,
+    writing.attempt,
+    checkpoint,
+  );
+  assert.equal(claimed.status, "claimed");
+  if (claimed.status !== "claimed") return;
+  assert.deepEqual(claimed.attempt.recoveryCheckpoint, checkpoint);
+
+  const stale = await claimLifecyclePinRecoveryWith(resolveRoot)(
+    root,
+    writing.attempt,
+    checkpoint,
+  );
+  assert.deepEqual(stale, {
+    status: "blocked",
+    code: "lifecycle_pin_attempt_conflict",
+  });
+  const state = await loadLifecyclePinStateWith(resolveRoot)(root, lifecycleKey);
+  assert.equal(state.status, "pending");
+  if (state.status !== "pending") return;
+  assert.deepEqual(state.attempt, claimed.attempt);
+});
+
+test("recovery checkpoint claim requires the complete original writing attempt", async (t) => {
+  const root = await temporaryRoot(t);
+  const resolveRoot = async () => root;
+  const attempt = attemptFor(lifecycleKey, "bookstack");
+  assert.equal((await beginLifecyclePinWith(resolveRoot)(root, attempt)).status, "started");
+  const writing = await markLifecyclePinAttemptWritingWith(resolveRoot)(root, attempt);
+  assert.equal(writing.status, "writing");
+  if (writing.status !== "writing") return;
+
+  const checkpoint = createBookStackPageRecoveryCheckpoint({
+    lifecycleKey,
+    requestHash: "a".repeat(64),
+    originFingerprint: "b".repeat(64),
+    pageSlug: "plan-00000000-0000-5000-8000-000000000000",
+    discoveryHash: "c".repeat(64),
+  });
+  assert.ok(checkpoint);
+  const changedAttempt = {
+    ...writing.attempt,
+    startedAt: "2026-08-31T12:00:01.000Z",
+  };
+  assert.deepEqual(
+    await claimLifecyclePinRecoveryWith(resolveRoot)(root, changedAttempt, checkpoint),
+    { status: "blocked", code: "lifecycle_pin_attempt_conflict" },
+  );
+  const state = await loadLifecyclePinStateWith(resolveRoot)(root, lifecycleKey);
+  assert.equal(state.status, "pending");
+  if (state.status !== "pending") return;
+  assert.deepEqual(state.attempt, writing.attempt);
 });
 
 test("fails closed for corrupt, conflicting, and path-escape-shaped pin inputs", async (t) => {

@@ -279,7 +279,9 @@ const originalPayload = (input: {
 
 export const parseLifecycleRecord = (markdown: unknown): BookStackLifecycleRecord | null => {
   if (typeof markdown !== "string" || utf8ByteLength(markdown) > MAX_PROVIDER_PAGE_BYTES) return null;
-  const control = parseControl(markdown);
+  // BookStack may omit only the generated terminal LF; exact comparison below rejects every other change.
+  const canonicalMarkdown = markdown.endsWith("\n") ? markdown : `${markdown}\n`;
+  const control = parseControl(canonicalMarkdown);
   if (!isObject(control)
     || !hasOnlyFields(control, CONTROL_FIELDS)
     || control.schemaVersion !== 1
@@ -303,8 +305,8 @@ export const parseLifecycleRecord = (markdown: unknown): BookStackLifecycleRecor
     artifact: "placeholder",
   });
   if (!placeholder.valid) return null;
-  const artifactStart = markdown.indexOf("\n\n", markdown.indexOf("-->"));
-  const artifact = artifactStart < 0 ? "" : markdown.slice(artifactStart + 2);
+  const artifactStart = canonicalMarkdown.indexOf("\n\n", canonicalMarkdown.indexOf("-->"));
+  const artifact = artifactStart < 0 ? "" : canonicalMarkdown.slice(artifactStart + 2);
   const payload = originalPayload({ artifact, artifactId: control.artifactId, request: placeholder });
   if (payload === null) return null;
   const request = validateLifecycleRequest({
@@ -324,7 +326,7 @@ export const parseLifecycleRecord = (markdown: unknown): BookStackLifecycleRecor
     || expected.recordKey !== control.recordKey
     || expected.contentHash !== control.contentHash
     || expected.lifecycleKey !== control.lifecycleKey
-    || expected.pageMarkdown !== markdown) return null;
+    || expected.pageMarkdown !== canonicalMarkdown) return null;
   return expected;
 };
 

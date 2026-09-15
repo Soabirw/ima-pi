@@ -51,6 +51,81 @@ test("generic decoding accepts documented unrelated resources and user ID shapes
   assert.equal(pages[1].updaterId, 8);
 });
 
+test("page-list discovery preserves unrelated empty slugs across pagination while strict reads and creates reject them", async () => {
+  const offsets = [];
+  const listed = clientWith(async (url) => {
+    const offset = Number(new URL(url).searchParams.get("offset"));
+    offsets.push(offset);
+    return json(offset === 0
+      ? {
+        data: Array.from({ length: 500 }, (_, index) => resource({
+          id: index + 1,
+          slug: index < 2 ? "" : `unrelated-${index + 1}`,
+        })),
+        total: 502,
+      }
+      : {
+        data: [
+          resource({ id: 501, slug: "canonical-page", chapter_id: 3 }),
+          resource({ id: 502, slug: "" }),
+        ],
+        total: 502,
+      });
+  });
+  const pages = await listed.listPages();
+  assert.deepEqual(offsets, [0, 500]);
+  assert.equal(pages.length, 502);
+  assert.equal(pages[0].slug, "");
+  assert.equal(pages[1].slug, "");
+  assert.equal(pages[500].slug, "canonical-page");
+  assert.equal(pages[501].slug, "");
+
+  const strict = clientWith(async () => json(resource({ slug: "" })));
+  await assert.rejects(strict.readPage(1), /bookstack_response_invalid/);
+  await assert.rejects(strict.createPage("page", 1, "# Page"), /bookstack_response_invalid/);
+
+  const nonPageList = clientWith(async () => json({
+    data: [resource({ slug: "" })],
+    total: 1,
+  }));
+  await assert.rejects(nonPageList.listBooks(), /bookstack_response_invalid/);
+});
+
+test("non-page lists reject empty slugs at nonzero indexes and later pagination", async () => {
+  const lists = [
+    ["shelves", (client) => client.listShelves()],
+    ["books", (client) => client.listBooks()],
+    ["chapters", (client) => client.listChapters()],
+  ];
+  for (const [name, list] of lists) {
+    const nonzero = clientWith(async () => json({
+      data: [resource({ id: 1 }), resource({ id: 2, slug: "" })],
+      total: 2,
+    }));
+    await assert.rejects(list(nonzero), /bookstack_response_invalid/, `${name} nonzero index`);
+
+    const offsets = [];
+    const laterPage = clientWith(async (url) => {
+      const offset = Number(new URL(url).searchParams.get("offset"));
+      offsets.push(offset);
+      return json(offset === 0
+        ? {
+          data: Array.from({ length: 500 }, (_, index) => resource({
+            id: index + 1,
+            slug: `valid-${index + 1}`,
+          })),
+          total: 502,
+        }
+        : {
+          data: [resource({ id: 501 }), resource({ id: 502, slug: "" })],
+          total: 502,
+        });
+    });
+    await assert.rejects(list(laterPage), /bookstack_response_invalid/, `${name} later pagination`);
+    assert.deepEqual(offsets, [0, 500], `${name} later pagination`);
+  }
+});
+
 test("pagination requires one stable exact total and rejects incomplete authority", async () => {
   const cases = [
     { name: "missing total", pages: [{ data: [] }] },

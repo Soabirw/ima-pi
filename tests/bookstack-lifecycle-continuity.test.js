@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createBookStackLifecycleProvider } from "../lib/bookstack-lifecycle.ts";
+import { createLifecycleRecord, digestBookStackValue } from "../lib/bookstack-lifecycle-record.ts";
 import {
+  createBookStackPageRecoveryCheckpoint,
+  projectBookStackPageRecoveryCheckpoint,
   projectRecoveryDescriptor,
   recoveryDescriptor,
+  sameBookStackPageRecoveryCheckpoint,
 } from "../lib/bookstack-lifecycle-recovery.ts";
 
 const sourceRef = "taskwarrior:shared-dev-memory:cc4755dd-67bf-49a6-8e2d-6563d080dde1";
@@ -35,6 +39,7 @@ const sharedClient = (origin = "https://bookstack.example") => {
   const pages = [];
   let nextPageId = 42;
   let reads = 0;
+  let creates = 0;
   return {
     origin,
     listPages: async () => pages.map((page) => ({ ...page })),
@@ -46,6 +51,7 @@ const sharedClient = (origin = "https://bookstack.example") => {
       return { ...pages.find((page) => page.id === id) };
     },
     createPage: async (name, chapterId, markdown) => {
+      creates += 1;
       const page = {
         id: nextPageId++,
         name,
@@ -63,6 +69,9 @@ const sharedClient = (origin = "https://bookstack.example") => {
       pages[0].revisionCount = 2;
       pages[0].updatedAt = "2026-09-11T00:01:00Z";
     },
+    stripFinalLf: () => { pages[0].markdown = pages[0].markdown.slice(0, -1); },
+    pageMarkdown: () => pages[0].markdown,
+    creates: () => creates,
     reads: () => reads,
   };
 };
@@ -114,6 +123,41 @@ test("locators bind origin and revision proof", async () => {
   assert.equal(changed.code, "bookstack_locator_mismatch");
 });
 
+test("TEST-004 locator hashes a one-LF-normalized page's actual bytes while retaining canonical evidence", async () => {
+  const client = sharedClient();
+  const provider = createBookStackLifecycleProvider({ client });
+  const canonical = createLifecycleRecord({ request, placement });
+  const stored = await provider.persist({ request, placement });
+  assert.equal(stored.status, "verified");
+  if (stored.status !== "verified") return;
+
+  client.stripFinalLf();
+  const actualMarkdown = client.pageMarkdown();
+  assert.equal(actualMarkdown, canonical.pageMarkdown.slice(0, -1));
+  assert.equal(actualMarkdown.endsWith("\n"), false);
+  const actualPageHash = digestBookStackValue(actualMarkdown);
+  const refreshed = await provider.persist({ request, placement });
+  assert.equal(refreshed.status, "verified");
+  if (refreshed.status !== "verified") return;
+  assert.equal(refreshed.disposition, "unchanged");
+  assert.equal(refreshed.locator.pageHash, actualPageHash);
+  assert.notEqual(refreshed.locator.pageHash, digestBookStackValue(canonical.pageMarkdown));
+  assert.equal(refreshed.artifactId, canonical.artifactId);
+  assert.equal(refreshed.recordKey, canonical.recordKey);
+  assert.equal(refreshed.contentHash, canonical.contentHash);
+  assert.equal(refreshed.artifact, canonical.artifact);
+  assert.equal(client.creates(), 1);
+
+  const stale = await provider.get(stored.locator);
+  assert.equal(stale.status, "blocked");
+  assert.equal(stale.code, "bookstack_locator_mismatch");
+  const reread = await provider.get(refreshed.locator);
+  assert.equal(reread.status, "verified");
+  if (reread.status !== "verified") return;
+  assert.equal(reread.locator.pageHash, actualPageHash);
+  assert.equal(client.creates(), 1);
+});
+
 test("reconciliation does not recreate missing evidence or accept incomplete proof", async () => {
   const client = sharedClient();
   const provider = createBookStackLifecycleProvider({ client });
@@ -142,6 +186,22 @@ test("reconciliation does not recreate missing evidence or accept incomplete pro
   assert.equal(result.status, "blocked");
   assert.equal(result.code, "bookstack_recovery_unresolved");
   assert.equal(client.reads(), 0);
+});
+
+test("page recovery checkpoints are closed, request-bound, and comparable", () => {
+  const checkpoint = createBookStackPageRecoveryCheckpoint({
+    lifecycleKey: placement.lifecycleKey,
+    requestHash: "a".repeat(64),
+    originFingerprint: "b".repeat(64),
+    pageSlug: "plan-00000000-0000-5000-8000-000000000000",
+    discoveryHash: "c".repeat(64),
+  });
+  assert.ok(checkpoint);
+  assert.deepEqual(projectBookStackPageRecoveryCheckpoint(checkpoint), checkpoint);
+  assert.equal(sameBookStackPageRecoveryCheckpoint(checkpoint, structuredClone(checkpoint)), true);
+  assert.equal(projectBookStackPageRecoveryCheckpoint({ ...checkpoint, extra: true }), null);
+  assert.equal(projectBookStackPageRecoveryCheckpoint({ ...checkpoint, pageSlug: "not-canonical" }), null);
+  assert.equal(projectBookStackPageRecoveryCheckpoint({ ...checkpoint, requestHash: "token=secret" }), null);
 });
 
 test("recovery projection rejects coercible proof values without throwing", () => {

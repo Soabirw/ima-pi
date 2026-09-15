@@ -14,9 +14,13 @@ import {
   projectLifecycleProviderPin,
   projectLifecycleProviderPinAttempt,
   sameLifecycleProviderPin,
+  sameLifecycleProviderPinAttempt,
   type LifecycleProviderPin,
   type LifecycleProviderPinAttempt,
 } from "./ima-lifecycle-pin.ts";
+import {
+  projectBookStackPageRecoveryCheckpoint,
+} from "./bookstack-lifecycle-recovery.ts";
 import { normalizeLifecycleRecordKey } from "./ima-lifecycle.ts";
 
 export const LIFECYCLE_PIN_STORE_DIRECTORY = ".ima-cycle";
@@ -63,6 +67,10 @@ export type LifecyclePinBeginResult =
 
 export type LifecyclePinWritingResult =
   | { status: "writing"; attempt: LifecycleProviderPinAttempt }
+  | { status: "blocked"; code: string };
+
+export type LifecyclePinRecoveryClaimResult =
+  | { status: "claimed"; attempt: LifecycleProviderPinAttempt }
   | { status: "blocked"; code: string };
 
 export type LifecyclePinConfirmResult =
@@ -480,8 +488,7 @@ export const markLifecyclePinAttemptWritingWith = (
     if (
       !existing
       || existing.status !== "pending"
-      || existing.attempt.attemptId !== attempt.attemptId
-      || existing.attempt.provider !== attempt.provider
+      || !sameLifecycleProviderPinAttempt(existing.attempt, attempt)
       || existing.attempt.status !== "authorized"
     ) return { status: "blocked", code: "lifecycle_pin_attempt_conflict" };
     const writing: LifecycleProviderPinAttempt = { ...existing.attempt, status: "writing" };
@@ -499,12 +506,63 @@ export const markLifecyclePinAttemptWritingWith = (
   }
 };
 
+export const claimLifecyclePinRecoveryWith = (
+  resolveProjectRoot: ResolveLifecyclePinProjectRoot,
+) => async (
+  cwd: string,
+  expectedAttemptValue: unknown,
+  checkpointValue: unknown,
+): Promise<LifecyclePinRecoveryClaimResult> => {
+  const expectedAttempt = projectLifecycleProviderPinAttempt(expectedAttemptValue);
+  const checkpoint = projectBookStackPageRecoveryCheckpoint(checkpointValue);
+  if (
+    !expectedAttempt
+    || expectedAttempt.provider !== "bookstack"
+    || expectedAttempt.status !== "writing"
+    || expectedAttempt.recoveryCheckpoint !== undefined
+    || !checkpoint
+    || checkpoint.lifecycleKey !== expectedAttempt.lifecycleKey
+  ) return { status: "blocked", code: "lifecycle_pin_recovery_invalid" };
+  const store = await prepareStore(cwd, resolveProjectRoot, true);
+  if (!store) return { status: "blocked", code: "lifecycle_pin_store_inaccessible" };
+  const lock = await acquireRegistryLock(store.root, store.paths);
+  if (!lock) return { status: "blocked", code: "lifecycle_pin_store_busy" };
+  try {
+    const read = await readRegistry(store.root, store.paths);
+    if (read.status === "corrupt" || read.status === "conflicting" || read.status === "inaccessible") {
+      return { status: "blocked", code: `lifecycle_pin_store_${read.status}` };
+    }
+    const existing = entryFor(read.registry, expectedAttempt.lifecycleKey);
+    if (
+      !existing
+      || existing.status !== "pending"
+      || !sameLifecycleProviderPinAttempt(existing.attempt, expectedAttempt)
+    ) return { status: "blocked", code: "lifecycle_pin_attempt_conflict" };
+    const claimed: LifecycleProviderPinAttempt = {
+      ...existing.attempt,
+      recoveryCheckpoint: checkpoint,
+    };
+    const next: PinRegistry = {
+      schemaVersion: 1,
+      entries: read.registry.entries.map((entry) => entry === existing
+        ? { status: "pending" as const, attempt: claimed }
+        : entry),
+    };
+    return await writeRegistry(store.root, store.paths, next)
+      ? { status: "claimed", attempt: claimed }
+      : { status: "blocked", code: "lifecycle_pin_store_write_failed" };
+  } finally {
+    await releaseRegistryLock(lock);
+  }
+};
+
 export const confirmLifecyclePinWith = (
   resolveProjectRoot: ResolveLifecyclePinProjectRoot,
 ) => async (
   cwd: string,
   attemptValue: unknown,
   pinValue: unknown,
+  requirePending = false,
 ): Promise<LifecyclePinConfirmResult> => {
   const attempt = projectLifecycleProviderPinAttempt(attemptValue);
   const pin = projectLifecycleProviderPin(pinValue);
@@ -526,14 +584,14 @@ export const confirmLifecyclePinWith = (
     }
     const existing = entryFor(read.registry, pin.lifecycleKey);
     if (existing?.status === "pinned") {
+      if (requirePending) return { status: "blocked", code: "lifecycle_pin_attempt_conflict" };
       return sameLifecycleProviderPin(existing.pin, pin)
         ? { status: "pinned", pin: existing.pin }
         : { status: "blocked", code: "lifecycle_pin_conflict" };
     }
     if (
       !existing
-      || existing.attempt.attemptId !== attempt.attemptId
-      || existing.attempt.provider !== attempt.provider
+      || !sameLifecycleProviderPinAttempt(existing.attempt, attempt)
       || existing.attempt.status !== "writing"
     ) return { status: "blocked", code: "lifecycle_pin_attempt_conflict" };
     const next: PinRegistry = {
@@ -571,8 +629,7 @@ export const abandonLifecyclePinAttemptWith = (
     if (!existing) return { status: "cleared" };
     if (
       existing.status !== "pending"
-      || existing.attempt.attemptId !== attempt.attemptId
-      || existing.attempt.provider !== attempt.provider
+      || !sameLifecycleProviderPinAttempt(existing.attempt, attempt)
     ) return { status: "blocked", code: "lifecycle_pin_attempt_conflict" };
     const next: PinRegistry = {
       schemaVersion: 1,

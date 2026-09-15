@@ -6,6 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { Check } from "typebox/value";
 import integrations, {
+  coordinateBookStackLifecycleRecovery,
   coordinateContext,
   coordinateLifecycle,
   recallCorpusLifecycle,
@@ -27,6 +28,7 @@ import {
 import {
   abandonLifecyclePinAttemptWith,
   beginLifecyclePinWith,
+  claimLifecyclePinRecoveryWith,
   confirmLifecyclePinWith,
   loadLifecyclePinStateWith,
   markLifecyclePinAttemptWritingWith,
@@ -36,6 +38,9 @@ import {
   createLifecycleProviderPinAttempt,
 } from "../lib/ima-lifecycle-pin.ts";
 import { createLifecycleRouting } from "../lib/ima-lifecycle-routing.ts";
+import { createBookStackLifecycleProvider } from "../lib/bookstack-lifecycle.ts";
+import { createLifecycleRecord, digestBookStackValue } from "../lib/bookstack-lifecycle-record.ts";
+import { originFingerprint } from "../lib/bookstack-lifecycle-recovery.ts";
 
 const success = (data) => ({ success: true, data });
 const failure = (code) => corpusFailure(code);
@@ -226,9 +231,11 @@ test("registers strict lifecycle summary schema alongside Serena-first context",
   integrations({ registerTool: (tool) => tools.push(tool) });
   const context = tools.find((tool) => tool.name === "ima_context");
   const lifecycle = tools.find((tool) => tool.name === "ima_lifecycle");
+  const recovery = tools.find((tool) => tool.name === "ima_bookstack_lifecycle_recover");
 
   assert.ok(context);
   assert.ok(lifecycle);
+  assert.ok(recovery);
   assert.equal(Check(context.parameters, {
     source: { type: "plane", workspace: "IMA", project: "ERIC", sequenceId: 1 },
   }), true);
@@ -282,6 +289,21 @@ test("registers strict lifecycle summary schema alongside Serena-first context",
     summary: "Completed implementation.",
     artifact: "Detailed artifact",
     extra: true,
+  }), false);
+  assert.equal(Check(recovery.parameters, {
+    request: localLifecycleRequest(),
+    placement: bookStackRecoveryPlacement,
+    attemptId: "00000000-0000-4000-8000-000000000001",
+  }), true);
+  assert.equal(Check(recovery.parameters, {
+    request: localLifecycleRequest(),
+    placement: bookStackRecoveryPlacement,
+    attemptId: "00000000-0000-4000-8000-000000000001",
+    origin: "https://untrusted.example",
+  }), false);
+  assert.equal(Check(recovery.parameters, {
+    request: localLifecycleRequest(),
+    placement: bookStackRecoveryPlacement,
   }), false);
   assert.equal(Check(lifecycle.parameters, {
     type: "implementation",
@@ -1006,6 +1028,70 @@ const localLifecycleRequest = (type = "plan") => ({
   artifact: `# ${type}\n\nSynthetic lifecycle provider evidence.`,
 });
 
+const bookStackRecoveryPlacement = {
+  projectSlug: identity.project,
+  sourceRef: identity.sourceRefs[0],
+  lifecycleKey,
+  shelfId: 1,
+  shelfSlug: "lifecycle-artifacts",
+  bookId: 2,
+  bookSlug: identity.project,
+  chapterId: 3,
+  chapterSlug: `taskwarrior-${identity.taskwarriorUuid}`,
+};
+
+const createBookStackRecoveryClient = (options = {}) => {
+  const pages = structuredClone(options.pages ?? []);
+  let posts = 0;
+  let lists = 0;
+  let nextPageId = 10;
+  const createCalls = [];
+  return {
+    origin: "https://bookstack.example",
+    listPages: async () => {
+      lists += 1;
+      return pages.map((page) => structuredClone(page));
+    },
+    readShelf: async () => ({
+      id: 1,
+      name: "Lifecycle",
+      slug: "lifecycle-artifacts",
+      books: [2],
+    }),
+    readBook: async () => ({ id: 2, name: "IMA Pi", slug: "ima-pi" }),
+    readChapter: async () => ({
+      id: 3,
+      name: bookStackRecoveryPlacement.chapterSlug,
+      slug: bookStackRecoveryPlacement.chapterSlug,
+      bookId: 2,
+    }),
+    readPage: async (id) => structuredClone(pages.find((page) => page.id === id)),
+    createPage: async (name, chapterId, markdown) => {
+      posts += 1;
+      createCalls.push({ name, chapterId, markdown });
+      if (options.failPost) throw new Error("token=synthetic-secret");
+      const page = {
+        id: nextPageId++,
+        name,
+        slug: name,
+        bookId: 2,
+        chapterId,
+        markdown,
+        revisionCount: 1,
+        updatedAt: "2026-09-30T00:00:00.000Z",
+        creatorId: 7,
+        updaterId: 8,
+      };
+      pages.push(page);
+      return structuredClone(page);
+    },
+    seedPage: (page) => { pages.push(structuredClone(page)); },
+    posts: () => posts,
+    lists: () => lists,
+    createCalls: () => structuredClone(createCalls),
+  };
+};
+
 const routedQdrantRecord = (request, overrides = {}) => {
   const prepared = prepareLifecycleArtifact(request);
   assert.equal(prepared.valid, true);
@@ -1443,6 +1529,834 @@ test("routes a provider-neutral four-key request into native BookStack persisten
   assert.equal(placementConfirmations, 1);
   assert.equal(pages.length, 1);
   assert.equal((await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey)).status, "pinned");
+});
+
+test("rejects malformed BookStack recovery input before pin or provider effects", async (t) => {
+  const root = await pinTestRoot(t);
+  const client = createBookStackRecoveryClient();
+  const result = await coordinateBookStackLifecycleRecovery({
+    request: localLifecycleRequest(),
+    placement: bookStackRecoveryPlacement,
+    attemptId: "not-an-attempt-id",
+  }, {
+    cwd: root,
+    bookStackLifecycleClient: client,
+    resolveProjectRoot: async () => root,
+    confirmBookStackRecovery: async () => true,
+  });
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.code, "bookstack_recovery_request_invalid");
+  assert.equal(client.lists(), 0);
+  assert.equal((await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey)).status, "absent");
+});
+
+test("blocks a target empty-slug BookStack draft before confirmation or a recovery POST", async (t) => {
+  const root = await pinTestRoot(t);
+  const authorized = await authorizedPinAttempt(root, "bookstack");
+  const writing = await markLifecyclePinAttemptWritingWith(async () => root)(root, authorized);
+  assert.equal(writing.status, "writing");
+  if (writing.status !== "writing") return;
+  const request = localLifecycleRequest();
+  const prepared = prepareLifecycleArtifact(request);
+  assert.equal(prepared.valid, true);
+  if (!prepared.valid) return;
+  const client = createBookStackRecoveryClient({
+    pages: [{ id: 9, name: `plan-${prepared.data.nonce}`, slug: "" }],
+  });
+  let confirmations = 0;
+  const result = await coordinateBookStackLifecycleRecovery({
+    request,
+    placement: bookStackRecoveryPlacement,
+    attemptId: writing.attempt.attemptId,
+  }, {
+    cwd: root,
+    bookStackLifecycleClient: client,
+    resolveProjectRoot: async () => root,
+    confirmBookStackRecovery: async () => {
+      confirmations += 1;
+      return true;
+    },
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(confirmations, 0);
+  assert.equal(client.posts(), 0);
+  const pending = await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey);
+  assert.equal(pending.status, "pending");
+  if (pending.status !== "pending") return;
+  assert.equal(pending.attempt.status, "writing");
+  assert.equal(pending.attempt.recoveryCheckpoint, undefined);
+});
+
+test("blocked ambiguous, unavailable, incomplete, and malformed recovery inputs retain writing authority", async (t) => {
+  const request = localLifecycleRequest();
+  const prepared = prepareLifecycleArtifact(request);
+  assert.equal(prepared.valid, true);
+  if (!prepared.valid) return;
+  const target = `plan-${prepared.data.nonce}`;
+  const scenarios = [
+    {
+      name: "ambiguous",
+      client: () => createBookStackRecoveryClient({ pages: [
+        { id: 9, name: target, slug: target },
+        { id: 10, name: target, slug: target },
+      ] }),
+    },
+    {
+      name: "unavailable",
+      client: () => {
+        const client = createBookStackRecoveryClient();
+        client.listPages = async () => { throw new Error("token=synthetic-secret"); };
+        return client;
+      },
+    },
+    {
+      name: "incomplete",
+      client: () => createBookStackRecoveryClient({ pages: [
+        { id: 9, name: target, slug: target, bookId: 2, chapterId: 3 },
+      ] }),
+    },
+    {
+      name: "malformed",
+      malformed: true,
+      client: () => createBookStackRecoveryClient(),
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const root = await pinTestRoot(t);
+    const authorized = await authorizedPinAttempt(root, "bookstack");
+    const writing = await markLifecyclePinAttemptWritingWith(async () => root)(root, authorized);
+    assert.equal(writing.status, "writing", scenario.name);
+    if (writing.status !== "writing") continue;
+    const client = scenario.client();
+    let confirmations = 0;
+    const result = await coordinateBookStackLifecycleRecovery({
+      request,
+      placement: bookStackRecoveryPlacement,
+      attemptId: writing.attempt.attemptId,
+      ...(scenario.malformed ? { extra: true } : {}),
+    }, {
+      cwd: root,
+      bookStackLifecycleClient: client,
+      resolveProjectRoot: async () => root,
+      confirmBookStackRecovery: async () => {
+        confirmations += 1;
+        return true;
+      },
+    });
+    assert.equal(result.status, "failed", scenario.name);
+    assert.equal(confirmations, 0, scenario.name);
+    assert.equal(client.posts(), 0, scenario.name);
+    const pending = await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey);
+    assert.equal(pending.status, "pending", scenario.name);
+    if (pending.status !== "pending") continue;
+    assert.equal(pending.attempt.status, "writing", scenario.name);
+    assert.equal(pending.attempt.recoveryCheckpoint, undefined, scenario.name);
+  }
+});
+
+test("blocks a changed BookStack writing attempt after confirmation without a recovery POST", async (t) => {
+  const root = await pinTestRoot(t);
+  const authorized = await authorizedPinAttempt(root, "bookstack");
+  const writing = await markLifecyclePinAttemptWritingWith(async () => root)(root, authorized);
+  assert.equal(writing.status, "writing");
+  if (writing.status !== "writing") return;
+  const replacement = createLifecycleProviderPinAttempt({
+    lifecycleKey,
+    provider: "bookstack",
+    attemptId: "00000000-0000-4000-8000-000000000002",
+    startedAt: "2026-08-31T12:00:01.000Z",
+  });
+  assert.ok(replacement);
+  const client = createBookStackRecoveryClient();
+  const result = await coordinateBookStackLifecycleRecovery({
+    request: localLifecycleRequest(),
+    placement: bookStackRecoveryPlacement,
+    attemptId: writing.attempt.attemptId,
+  }, {
+    cwd: root,
+    bookStackLifecycleClient: client,
+    resolveProjectRoot: async () => root,
+    confirmBookStackRecovery: async () => {
+      assert.deepEqual(
+        await abandonLifecyclePinAttemptWith(async () => root)(root, writing.attempt),
+        { status: "cleared" },
+      );
+      assert.equal((await beginLifecyclePinWith(async () => root)(root, replacement)).status, "started");
+      assert.equal((await markLifecyclePinAttemptWritingWith(async () => root)(root, replacement)).status, "writing");
+      return true;
+    },
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.code, "lifecycle_pin_attempt_conflict");
+  assert.equal(client.posts(), 0);
+  const pending = await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey);
+  assert.equal(pending.status, "pending");
+  if (pending.status !== "pending") return;
+  assert.equal(pending.attempt.attemptId, replacement.attemptId);
+  assert.equal(pending.attempt.status, "writing");
+});
+
+test("cancellation after checkpoint claim makes no later BookStack POST and retains writing", async (t) => {
+  const root = await pinTestRoot(t);
+  const authorized = await authorizedPinAttempt(root, "bookstack");
+  const writing = await markLifecyclePinAttemptWritingWith(async () => root)(root, authorized);
+  assert.equal(writing.status, "writing");
+  if (writing.status !== "writing") return;
+  const controller = new AbortController();
+  const reason = new Error("BookStack recovery was cancelled after checkpoint claim.");
+  const client = createBookStackRecoveryClient();
+  const listPages = client.listPages;
+  let discoveries = 0;
+  client.listPages = async () => {
+    const pages = await listPages();
+    discoveries += 1;
+    if (discoveries === 3) controller.abort(reason);
+    return pages;
+  };
+
+  await coordinateBookStackLifecycleRecovery({
+    request: localLifecycleRequest(),
+    placement: bookStackRecoveryPlacement,
+    attemptId: writing.attempt.attemptId,
+  }, {
+    cwd: root,
+    bookStackLifecycleClient: client,
+    resolveProjectRoot: async () => root,
+    confirmBookStackRecovery: async () => true,
+  }, controller.signal).catch(() => undefined);
+  assert.equal(discoveries, 3);
+  assert.equal(client.posts(), 0);
+  const pending = await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey);
+  assert.equal(pending.status, "pending");
+  if (pending.status !== "pending") return;
+  assert.equal(pending.attempt.status, "writing");
+  assert.ok(pending.attempt.recoveryCheckpoint);
+});
+
+test("concurrent confirmed BookStack recovery attempts issue at most one POST", async (t) => {
+  const root = await pinTestRoot(t);
+  const authorized = await authorizedPinAttempt(root, "bookstack");
+  const writing = await markLifecyclePinAttemptWritingWith(async () => root)(root, authorized);
+  assert.equal(writing.status, "writing");
+  if (writing.status !== "writing") return;
+  const client = createBookStackRecoveryClient();
+  const createPage = client.createPage;
+  let startPost;
+  let releasePost;
+  const postStarted = new Promise((resolve) => { startPost = resolve; });
+  client.createPage = async (...args) => {
+    startPost();
+    await new Promise((resolve) => { releasePost = resolve; });
+    return createPage(...args);
+  };
+  const input = {
+    request: localLifecycleRequest(),
+    placement: bookStackRecoveryPlacement,
+    attemptId: writing.attempt.attemptId,
+  };
+  const first = coordinateBookStackLifecycleRecovery(input, {
+    cwd: root,
+    bookStackLifecycleClient: client,
+    resolveProjectRoot: async () => root,
+    confirmBookStackRecovery: async () => true,
+  });
+  await postStarted;
+  const second = await coordinateBookStackLifecycleRecovery(input, {
+    cwd: root,
+    bookStackLifecycleClient: client,
+    resolveProjectRoot: async () => root,
+    confirmBookStackRecovery: async () => true,
+  });
+  releasePost();
+  const firstResult = await first;
+
+  assert.equal(firstResult.status, "completed");
+  assert.equal(second.status, "failed");
+  assert.equal(client.posts(), 1);
+  const pinned = await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey);
+  assert.equal(pinned.status, "pinned");
+});
+
+test("BookStack recovery tool is TUI-confirmed and cannot provision, delete, or fall back", async (t) => {
+  const root = await pinTestRoot(t);
+  const authorized = await authorizedPinAttempt(root, "bookstack");
+  const writing = await markLifecyclePinAttemptWritingWith(async () => root)(root, authorized);
+  assert.equal(writing.status, "writing");
+  if (writing.status !== "writing") return;
+  const originalFetch = globalThis.fetch;
+  const environmentKeys = ["BOOKSTACK_BASE_URL", "BOOKSTACK_ORIGIN", "BOOKSTACK_TOKEN_ID", "BOOKSTACK_TOKEN_SECRET"];
+  const previousEnvironment = Object.fromEntries(environmentKeys.map((key) => [key, process.env[key]]));
+  process.env.BOOKSTACK_BASE_URL = "https://bookstack.test";
+  process.env.BOOKSTACK_ORIGIN = "https://bookstack.test";
+  process.env.BOOKSTACK_TOKEN_ID = "synthetic-token-id";
+  process.env.BOOKSTACK_TOKEN_SECRET = "synthetic-token-secret";
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    for (const key of environmentKeys) {
+      if (previousEnvironment[key] === undefined) delete process.env[key];
+      else process.env[key] = previousEnvironment[key];
+    }
+  });
+
+  const shelf = { id: 1, name: "Lifecycle", slug: "lifecycle-artifacts", books: [2] };
+  const book = { id: 2, name: "IMA Pi", slug: "ima-pi" };
+  const chapter = {
+    id: 3,
+    name: bookStackRecoveryPlacement.chapterSlug,
+    slug: bookStackRecoveryPlacement.chapterSlug,
+    book_id: 2,
+  };
+  const pages = [];
+  const calls = [];
+  const json = (body) => new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+  globalThis.fetch = async (input, init = {}) => {
+    const url = new URL(String(input));
+    const method = init.method ?? "GET";
+    calls.push({ origin: url.origin, pathname: url.pathname, method });
+    const list = (data) => json({ total: data.length, data });
+    if (method === "GET" && url.pathname === "/api/shelves/1") return json(shelf);
+    if (method === "GET" && url.pathname === "/api/books/2") return json(book);
+    if (method === "GET" && url.pathname === "/api/chapters/3") return json(chapter);
+    if (method === "GET" && url.pathname === "/api/pages") return list(pages);
+    if (method === "GET" && url.pathname === "/api/pages/10") return json(pages[0]);
+    if (method === "POST" && url.pathname === "/api/pages") {
+      const body = JSON.parse(String(init.body));
+      const page = {
+        id: 10,
+        name: body.name,
+        slug: body.name,
+        book_id: 2,
+        chapter_id: 3,
+        markdown: body.markdown,
+        revision_count: 1,
+        updated_at: "2026-09-30T00:00:00.000Z",
+        created_by: { id: 7 },
+        updated_by: { id: 8 },
+      };
+      pages.push(page);
+      return json(page);
+    }
+    return new Response("unexpected request", { status: 404 });
+  };
+
+  const tools = [];
+  integrations({ registerTool: (tool) => tools.push(tool) });
+  const recovery = tools.find((tool) => tool.name === "ima_bookstack_lifecycle_recover");
+  assert.ok(recovery);
+  const input = {
+    request: localLifecycleRequest(),
+    placement: bookStackRecoveryPlacement,
+    attemptId: writing.attempt.attemptId,
+  };
+  const record = createLifecycleRecord({ request: input.request, placement: bookStackRecoveryPlacement });
+  let confirmations = 0;
+  const confirmationPrompts = [];
+  const nonTui = await recovery.execute("test", input, undefined, undefined, {
+    cwd: root,
+    mode: "json",
+    hasUI: true,
+    ui: { confirm: async () => { confirmations += 1; return true; } },
+  });
+  assert.equal(nonTui.details.status, "failed");
+  assert.equal(nonTui.details.error.code, "bookstack_recovery_confirmation_required");
+  assert.equal(confirmations, 0);
+  assert.equal(calls.some((call) => call.method === "POST"), false);
+
+  const tui = await recovery.execute("test", input, undefined, undefined, {
+    cwd: root,
+    mode: "tui",
+    hasUI: true,
+    ui: {
+      confirm: async (title, message) => {
+        confirmations += 1;
+        confirmationPrompts.push({ title, message });
+        return true;
+      },
+    },
+  });
+  assert.equal(tui.details.status, "completed");
+  assert.equal(confirmations, 1);
+  assert.deepEqual(confirmationPrompts.map(({ title }) => title), ["Confirm one-time BookStack lifecycle recovery"]);
+  const confirmation = confirmationPrompts[0].message;
+  for (const expected of [
+    "Action: Authorize at most one page POST.",
+    `BookStack origin: ${JSON.stringify("https://bookstack.test")}`,
+    `Lifecycle key: ${JSON.stringify(lifecycleKey)}`,
+    `Attempt ID: ${writing.attempt.attemptId}`,
+    `Request hash: ${record.requestHash}`,
+    `Phase: ${input.request.type}`,
+    `Summary: ${JSON.stringify(input.request.summary)}`,
+    `Page slug: ${input.request.type}-${record.artifactId}`,
+    "Discovered page count: 0",
+    `  Project slug: ${JSON.stringify(bookStackRecoveryPlacement.projectSlug)}`,
+    `  Source reference: ${JSON.stringify(bookStackRecoveryPlacement.sourceRef)}`,
+    `  Placement lifecycle key: ${JSON.stringify(bookStackRecoveryPlacement.lifecycleKey)}`,
+    `  Shelf: ${JSON.stringify(bookStackRecoveryPlacement.shelfSlug)} (ID ${bookStackRecoveryPlacement.shelfId})`,
+    `  Book: ${JSON.stringify(bookStackRecoveryPlacement.bookSlug)} (ID ${bookStackRecoveryPlacement.bookId})`,
+    `  Chapter: ${JSON.stringify(bookStackRecoveryPlacement.chapterSlug)} (ID ${bookStackRecoveryPlacement.chapterId})`,
+    "This display is not machine-verifiable proof of a historical request.",
+    "Are these the unchanged original inputs for this recovery?",
+  ]) {
+    assert.ok(confirmation.includes(expected), expected);
+  }
+  assert.equal(confirmation.includes(input.request.artifact), false);
+  assert.equal(confirmation.includes("synthetic-token-id"), false);
+  assert.equal(confirmation.includes("synthetic-token-secret"), false);
+  assert.deepEqual(
+    calls.filter((call) => call.method !== "GET").map(({ method, pathname }) => ({ method, pathname })),
+    [{ method: "POST", pathname: "/api/pages" }],
+  );
+  assert.equal(calls.every((call) => call.origin === "https://bookstack.test"), true);
+  assert.equal(calls.every((call) => call.method !== "DELETE" && call.method !== "PUT"), true);
+});
+
+test("recovers one exact BookStack writing attempt with injected boundaries and one confirmed POST", async (t) => {
+  const root = await pinTestRoot(t);
+  const authorized = await authorizedPinAttempt(root, "bookstack");
+  const writing = await markLifecyclePinAttemptWritingWith(async () => root)(root, authorized);
+  assert.equal(writing.status, "writing");
+  if (writing.status !== "writing") return;
+  const client = createBookStackRecoveryClient({
+    pages: [{ id: 9, name: "Unrelated draft", slug: "" }],
+  });
+  const confirmations = [];
+  const request = localLifecycleRequest();
+  const input = {
+    request,
+    placement: bookStackRecoveryPlacement,
+    attemptId: writing.attempt.attemptId,
+  };
+  const record = createLifecycleRecord({ request, placement: bookStackRecoveryPlacement });
+  const unconfirmed = await coordinateBookStackLifecycleRecovery(input, {
+    cwd: root,
+    bookStackLifecycleClient: client,
+    resolveProjectRoot: async () => root,
+  });
+  assert.equal(unconfirmed.status, "failed");
+  assert.equal(unconfirmed.error.code, "bookstack_recovery_confirmation_required");
+  assert.equal(client.posts(), 0);
+  const result = await coordinateBookStackLifecycleRecovery(input, {
+    cwd: root,
+    bookStackLifecycleClient: client,
+    resolveProjectRoot: async () => root,
+    confirmBookStackRecovery: async (confirmation) => {
+      confirmations.push(confirmation);
+      return true;
+    },
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.provider, "bookstack");
+  assert.equal(client.posts(), 1);
+  assert.deepEqual(confirmations, [{
+    summary: request.summary,
+    placement: bookStackRecoveryPlacement,
+    origin: "https://bookstack.example",
+    requestHash: record.requestHash,
+    attemptId: writing.attempt.attemptId,
+    lifecycleKey,
+    pageSlug: result.artifactId ? `plan-${result.artifactId}` : "",
+    action: "create-page",
+    pageCount: 1,
+    existing: false,
+    phase: request.type,
+  }]);
+  const pinned = await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey);
+  assert.equal(pinned.status, "pinned");
+  assert.equal((await coordinateBookStackLifecycleRecovery(input, {
+    cwd: root,
+    bookStackLifecycleClient: client,
+    resolveProjectRoot: async () => root,
+    confirmBookStackRecovery: async () => true,
+  })).error.code, "lifecycle_pin_attempt_conflict");
+  assert.equal(client.posts(), 1);
+});
+
+test("same-slug BookStack recovery summaries produce distinct confirmation snapshots and decline without effects", async (t) => {
+  const snapshots = [];
+  for (const summary of [
+    "First immutable recovery summary.",
+    "Second immutable recovery summary.",
+  ]) {
+    const root = await pinTestRoot(t);
+    const authorized = await authorizedPinAttempt(root, "bookstack");
+    const writing = await markLifecyclePinAttemptWritingWith(async () => root)(root, authorized);
+    assert.equal(writing.status, "writing");
+    if (writing.status !== "writing") continue;
+    const client = createBookStackRecoveryClient();
+    const request = { ...localLifecycleRequest(), summary };
+    const result = await coordinateBookStackLifecycleRecovery({
+      request,
+      placement: bookStackRecoveryPlacement,
+      attemptId: writing.attempt.attemptId,
+    }, {
+      cwd: root,
+      bookStackLifecycleClient: client,
+      resolveProjectRoot: async () => root,
+      confirmBookStackRecovery: async (confirmation) => {
+        snapshots.push(structuredClone(confirmation));
+        return false;
+      },
+    });
+    assert.equal(result.status, "failed");
+    assert.equal(result.error.code, "bookstack_recovery_declined");
+    assert.equal(client.posts(), 0);
+    const pending = await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey);
+    assert.equal(pending.status, "pending");
+    if (pending.status === "pending") {
+      assert.equal(pending.attempt.status, "writing");
+      assert.equal(pending.attempt.recoveryCheckpoint, undefined);
+    }
+  }
+
+  assert.equal(snapshots.length, 2);
+  assert.equal(snapshots[0].pageSlug, snapshots[1].pageSlug);
+  assert.notEqual(snapshots[0].summary, snapshots[1].summary);
+  assert.notEqual(snapshots[0].requestHash, snapshots[1].requestHash);
+  assert.equal(snapshots.every((snapshot) => snapshot.action === "create-page"), true);
+  assert.doesNotMatch(JSON.stringify(snapshots), /Synthetic lifecycle provider evidence\./);
+});
+
+test("BookStack recovery confirmation callback cannot mutate its request, placement, checkpoint, or POST", async (t) => {
+  const root = await pinTestRoot(t);
+  const authorized = await authorizedPinAttempt(root, "bookstack");
+  const writing = await markLifecyclePinAttemptWritingWith(async () => root)(root, authorized);
+  assert.equal(writing.status, "writing");
+  if (writing.status !== "writing") return;
+  const request = localLifecycleRequest();
+  const record = createLifecycleRecord({ request, placement: bookStackRecoveryPlacement });
+  const client = createBookStackRecoveryClient();
+  const createPage = client.createPage;
+  let checkpoint;
+  client.createPage = async (...args) => {
+    const pending = await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey);
+    assert.equal(pending.status, "pending");
+    if (pending.status !== "pending") throw new Error("recovery checkpoint was not retained");
+    checkpoint = structuredClone(pending.attempt.recoveryCheckpoint);
+    return createPage(...args);
+  };
+  let snapshot;
+  const result = await coordinateBookStackLifecycleRecovery({
+    request,
+    placement: bookStackRecoveryPlacement,
+    attemptId: writing.attempt.attemptId,
+  }, {
+    cwd: root,
+    bookStackLifecycleClient: client,
+    resolveProjectRoot: async () => root,
+    confirmBookStackRecovery: async (confirmation) => {
+      snapshot = structuredClone(confirmation);
+      confirmation.summary = "Tampered summary";
+      confirmation.placement.chapterId = 99;
+      confirmation.origin = "https://tampered.example";
+      confirmation.requestHash = "0".repeat(64);
+      confirmation.lifecycleKey = "tampered-lifecycle";
+      confirmation.pageSlug = "plan-00000000-0000-4000-8000-000000000099";
+      confirmation.action = "pin-existing-page";
+      confirmation.pageCount = 99;
+      return true;
+    },
+  });
+
+  assert.equal(snapshot.summary, request.summary);
+  assert.deepEqual(snapshot.placement, bookStackRecoveryPlacement);
+  assert.equal(result.status, "completed");
+  assert.ok(checkpoint);
+  assert.equal(checkpoint.lifecycleKey, lifecycleKey);
+  assert.equal(checkpoint.requestHash, record.requestHash);
+  assert.equal(checkpoint.originFingerprint, originFingerprint("https://bookstack.example"));
+  assert.equal(checkpoint.pageSlug, `plan-${record.artifactId}`);
+  assert.match(checkpoint.discoveryHash, /^[a-f0-9]{64}$/);
+  assert.deepEqual(client.createCalls(), [{
+    name: `plan-${record.artifactId}`,
+    chapterId: bookStackRecoveryPlacement.chapterId,
+    markdown: record.pageMarkdown,
+  }]);
+});
+
+test("blocks changed complete BookStack discovery after confirmation without a checkpoint or POST", async (t) => {
+  const root = await pinTestRoot(t);
+  const authorized = await authorizedPinAttempt(root, "bookstack");
+  const writing = await markLifecyclePinAttemptWritingWith(async () => root)(root, authorized);
+  assert.equal(writing.status, "writing");
+  if (writing.status !== "writing") return;
+  const client = createBookStackRecoveryClient();
+  const listPages = client.listPages;
+  let changed = false;
+  client.listPages = async () => changed
+    ? [...(await listPages()), { id: 9, name: "New draft", slug: "" }]
+    : listPages();
+  const result = await coordinateBookStackLifecycleRecovery({
+    request: localLifecycleRequest(),
+    placement: bookStackRecoveryPlacement,
+    attemptId: writing.attempt.attemptId,
+  }, {
+    cwd: root,
+    bookStackLifecycleClient: client,
+    resolveProjectRoot: async () => root,
+    confirmBookStackRecovery: async () => {
+      changed = true;
+      return true;
+    },
+  });
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.code, "bookstack_recovery_stale");
+  assert.equal(client.posts(), 0);
+  const pending = await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey);
+  assert.equal(pending.status, "pending");
+  if (pending.status === "pending") {
+    assert.equal(pending.attempt.status, "writing");
+    assert.equal(pending.attempt.recoveryCheckpoint, undefined);
+  }
+});
+
+test("a consumed BookStack recovery checkpoint makes one read-only discovery and cannot issue another POST", async (t) => {
+  const root = await pinTestRoot(t);
+  const authorized = await authorizedPinAttempt(root, "bookstack");
+  const writing = await markLifecyclePinAttemptWritingWith(async () => root)(root, authorized);
+  assert.equal(writing.status, "writing");
+  if (writing.status !== "writing") return;
+  const client = createBookStackRecoveryClient({ failPost: true });
+  const input = {
+    request: localLifecycleRequest(),
+    placement: bookStackRecoveryPlacement,
+    attemptId: writing.attempt.attemptId,
+  };
+  const failed = await coordinateBookStackLifecycleRecovery(input, {
+    cwd: root,
+    bookStackLifecycleClient: client,
+    resolveProjectRoot: async () => root,
+    confirmBookStackRecovery: async () => true,
+  });
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.error.code, "bookstack_write_unknown");
+  assert.doesNotMatch(JSON.stringify(failed), /secret|token=/);
+  assert.equal(client.posts(), 1);
+  const checkpointed = await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey);
+  assert.equal(checkpointed.status, "pending");
+  if (checkpointed.status !== "pending") return;
+  assert.equal(checkpointed.attempt.status, "writing");
+  assert.ok(checkpointed.attempt.recoveryCheckpoint);
+
+  const listsBeforeRetry = client.lists();
+  let confirmations = 0;
+  const retry = await coordinateBookStackLifecycleRecovery(input, {
+    cwd: root,
+    bookStackLifecycleClient: client,
+    resolveProjectRoot: async () => root,
+    confirmBookStackRecovery: async () => {
+      confirmations += 1;
+      return true;
+    },
+  });
+  assert.equal(retry.status, "failed");
+  assert.equal(retry.error.code, "lifecycle_pin_recovery_consumed");
+  assert.equal(confirmations, 0);
+  assert.equal(client.posts(), 1);
+  assert.equal(client.lists(), listsBeforeRetry + 1);
+});
+
+test("a consumed BookStack checkpoint blocks absent, ambiguous, and changed evidence before confirmation or POST", async (t) => {
+  const request = localLifecycleRequest();
+  const record = createLifecycleRecord({ request, placement: bookStackRecoveryPlacement });
+  const pageSlug = `${record.phase}-${record.artifactId}`;
+  const scenarios = [
+    {
+      name: "absent",
+      expectedCode: "lifecycle_pin_recovery_consumed",
+      seed: () => [],
+    },
+    {
+      name: "ambiguous",
+      expectedCode: "bookstack_identity_ambiguous",
+      seed: () => [
+        { id: 9, name: pageSlug, slug: pageSlug },
+        { id: 10, name: pageSlug, slug: pageSlug },
+      ],
+    },
+    {
+      name: "changed",
+      expectedCode: "bookstack_verification_failed",
+      seed: () => [{
+        id: 9,
+        name: pageSlug,
+        slug: pageSlug,
+        bookId: bookStackRecoveryPlacement.bookId,
+        chapterId: bookStackRecoveryPlacement.chapterId,
+        markdown: record.pageMarkdown.replace("Synthetic lifecycle provider evidence.", "Changed evidence."),
+        revisionCount: 1,
+        updatedAt: "2026-09-30T00:00:00.000Z",
+        creatorId: 7,
+        updaterId: 8,
+      }],
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const root = await pinTestRoot(t);
+    const client = createBookStackRecoveryClient();
+    const discovery = await createBookStackLifecycleProvider({ client })
+      .discoverSameAttemptRecovery({ request, placement: bookStackRecoveryPlacement });
+    assert.equal(discovery.status, "ready", scenario.name);
+    if (discovery.status !== "ready") continue;
+    const authorized = await authorizedPinAttempt(root, "bookstack");
+    const writing = await markLifecyclePinAttemptWritingWith(async () => root)(root, authorized);
+    assert.equal(writing.status, "writing", scenario.name);
+    if (writing.status !== "writing") continue;
+    const claimed = await claimLifecyclePinRecoveryWith(async () => root)(
+      root,
+      writing.attempt,
+      discovery.checkpoint,
+    );
+    assert.equal(claimed.status, "claimed", scenario.name);
+    if (claimed.status !== "claimed") continue;
+    for (const page of scenario.seed()) client.seedPage(page);
+
+    let confirmations = 0;
+    const result = await coordinateBookStackLifecycleRecovery({
+      request,
+      placement: bookStackRecoveryPlacement,
+      attemptId: claimed.attempt.attemptId,
+    }, {
+      cwd: root,
+      bookStackLifecycleClient: client,
+      resolveProjectRoot: async () => root,
+      confirmBookStackRecovery: async () => {
+        confirmations += 1;
+        return true;
+      },
+    });
+    assert.equal(result.status, "failed", scenario.name);
+    assert.equal(result.error.code, scenario.expectedCode, scenario.name);
+    assert.equal(confirmations, 0, scenario.name);
+    assert.equal(client.posts(), 0, scenario.name);
+    const pending = await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey);
+    assert.equal(pending.status, "pending", scenario.name);
+    if (pending.status !== "pending") continue;
+    assert.deepEqual(pending.attempt, claimed.attempt, scenario.name);
+  }
+});
+
+test("pins an exact existing BookStack artifact without a recovery POST", async (t) => {
+  const root = await pinTestRoot(t);
+  const client = createBookStackRecoveryClient();
+  const request = localLifecycleRequest();
+  const seeded = await createBookStackLifecycleProvider({ client }).persist({
+    request,
+    placement: bookStackRecoveryPlacement,
+  });
+  assert.equal(seeded.status, "verified");
+  assert.equal(client.posts(), 1);
+  const authorized = await authorizedPinAttempt(root, "bookstack");
+  const writing = await markLifecyclePinAttemptWritingWith(async () => root)(root, authorized);
+  assert.equal(writing.status, "writing");
+  if (writing.status !== "writing") return;
+  const record = createLifecycleRecord({ request, placement: bookStackRecoveryPlacement });
+  let confirmationSnapshot;
+  const recovered = await coordinateBookStackLifecycleRecovery({
+    request,
+    placement: bookStackRecoveryPlacement,
+    attemptId: writing.attempt.attemptId,
+  }, {
+    cwd: root,
+    bookStackLifecycleClient: client,
+    resolveProjectRoot: async () => root,
+    confirmBookStackRecovery: async (confirmation) => {
+      confirmationSnapshot = structuredClone(confirmation);
+      return true;
+    },
+  });
+  assert.deepEqual(confirmationSnapshot, {
+    summary: request.summary,
+    placement: bookStackRecoveryPlacement,
+    origin: "https://bookstack.example",
+    requestHash: record.requestHash,
+    attemptId: writing.attempt.attemptId,
+    lifecycleKey,
+    pageSlug: `plan-${record.artifactId}`,
+    action: "pin-existing-page",
+    pageCount: 1,
+    existing: true,
+    phase: request.type,
+  });
+  assert.equal(recovered.status, "completed");
+  assert.equal(client.posts(), 1);
+  assert.equal((await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey)).status, "pinned");
+});
+
+test("TEST-004 reconciles a checkpointed one-LF-normalized page into a pin-ready receipt without a POST", async (t) => {
+  const root = await pinTestRoot(t);
+  const request = localLifecycleRequest();
+  const record = createLifecycleRecord({ request, placement: bookStackRecoveryPlacement });
+  assert.equal(record.pageMarkdown.endsWith("\n"), true);
+  const actualMarkdown = record.pageMarkdown.slice(0, -1);
+  assert.equal(actualMarkdown.endsWith("\n"), false);
+  const actualPageHash = digestBookStackValue(actualMarkdown);
+  const pageSlug = `${record.phase}-${record.artifactId}`;
+  const client = createBookStackRecoveryClient();
+  const discovery = await createBookStackLifecycleProvider({ client })
+    .discoverSameAttemptRecovery({ request, placement: bookStackRecoveryPlacement });
+  assert.equal(discovery.status, "ready");
+  if (discovery.status !== "ready") return;
+  assert.equal(discovery.existing, null);
+
+  const authorized = await authorizedPinAttempt(root, "bookstack");
+  const writing = await markLifecyclePinAttemptWritingWith(async () => root)(root, authorized);
+  assert.equal(writing.status, "writing");
+  if (writing.status !== "writing") return;
+  const claimed = await claimLifecyclePinRecoveryWith(async () => root)(
+    root,
+    writing.attempt,
+    discovery.checkpoint,
+  );
+  assert.equal(claimed.status, "claimed");
+  if (claimed.status !== "claimed") return;
+  client.seedPage({
+    id: 1796,
+    name: pageSlug,
+    slug: pageSlug,
+    bookId: bookStackRecoveryPlacement.bookId,
+    chapterId: bookStackRecoveryPlacement.chapterId,
+    markdown: actualMarkdown,
+    revisionCount: 1,
+    updatedAt: "2026-09-30T00:00:00.000Z",
+    creatorId: 7,
+    updaterId: 8,
+  });
+
+  const result = await coordinateBookStackLifecycleRecovery({
+    request,
+    placement: bookStackRecoveryPlacement,
+    attemptId: claimed.attempt.attemptId,
+  }, {
+    cwd: root,
+    bookStackLifecycleClient: client,
+    resolveProjectRoot: async () => root,
+    confirmBookStackRecovery: async () => true,
+  });
+  assert.equal(result.status, "completed");
+  assert.equal(result.provider, "bookstack");
+  assert.equal(result.receiptAccepted, true);
+  assert.equal(result.semanticRecall.matched, true);
+  assert.equal(result.artifactId, record.artifactId);
+  assert.equal(result.recordKey, record.recordKey);
+  assert.equal(client.posts(), 0);
+
+  const pinned = await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey);
+  assert.equal(pinned.status, "pinned");
+  if (pinned.status !== "pinned") return;
+  assert.equal(pinned.pin.artifactId, record.artifactId);
+  assert.equal(pinned.pin.recordKey, record.recordKey);
+  assert.equal(pinned.pin.initialReference.pageId, 1796);
+  assert.equal(pinned.pin.initialReference.contentHash, record.contentHash);
+  assert.equal(pinned.pin.initialReference.pageHash, actualPageHash);
+  assert.notEqual(pinned.pin.initialReference.pageHash, digestBookStackValue(record.pageMarkdown));
 });
 
 test("routes a provider-neutral four-key request into native Serena persistence", async (t) => {

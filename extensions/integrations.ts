@@ -31,6 +31,7 @@ import {
   PLANE_WORKSPACE_PATTERN,
   normalizeLifecycleRecordKey,
   prepareLifecycleArtifact,
+  sanitizeLifecycleError,
   validateLifecycleWriteRequest,
   validateLifecycleStoreReceipt,
   type LifecyclePhase,
@@ -40,8 +41,22 @@ import { storeInstitutionalManifest } from "../lib/qdrant-corpus.ts";
 import { withMcpSession } from "../lib/mcp-client.ts";
 import { createQdrantCorpusClient, type QdrantCorpusClient } from "../lib/qdrant-http.ts";
 import { createQdrantLifecycleProvider } from "../lib/qdrant-lifecycle.ts";
-import { createBookStackLifecycleClient } from "../lib/bookstack-lifecycle-client.ts";
-import { createBookStackLifecycleProvider } from "../lib/bookstack-lifecycle.ts";
+import {
+  createBookStackLifecycleClient,
+  type BookStackLifecycleClient,
+} from "../lib/bookstack-lifecycle-client.ts";
+import {
+  createBookStackLifecycleProvider,
+  type BookStackRecoveryDiscovery,
+} from "../lib/bookstack-lifecycle.ts";
+import {
+  placementMatchesRequest,
+  projectLifecyclePlacement,
+  type LifecyclePlacement,
+} from "../lib/bookstack-lifecycle-record.ts";
+import {
+  sameBookStackPageRecoveryCheckpoint,
+} from "../lib/bookstack-lifecycle-recovery.ts";
 import { resolveBookStackOrigin } from "../lib/bookstack-migrate-config.ts";
 import { createMarkdownLifecycleAdapter } from "../lib/markdown-lifecycle.ts";
 import { createSerenaLifecycleClient } from "../lib/serena-lifecycle-client.ts";
@@ -50,11 +65,13 @@ import { createSerenaLifecycleProject } from "../lib/serena-lifecycle-record.ts"
 import {
   createLifecycleProviderPin,
   createLifecycleProviderPinAttempt,
+  sameLifecycleProviderPinAttempt,
   type LifecycleProviderPinAttempt,
 } from "../lib/ima-lifecycle-pin.ts";
 import {
   abandonLifecyclePinAttemptWith,
   beginLifecyclePinWith,
+  claimLifecyclePinRecoveryWith,
   confirmLifecyclePinWith,
   loadLifecyclePinStateWith,
   markLifecyclePinAttemptWritingWith,
@@ -86,6 +103,7 @@ const MCP_TIMEOUT = 300_000;
 const VESTIGE_TIMEOUT = 300_000;
 const LIFECYCLE_RECALL_LIMIT = 20;
 const MAX_BUFFER = 128 * 1024;
+const MAX_BOOKSTACK_RECOVERY_CONFIRMATION_BYTES = 16_384;
 const PLANE_SOURCE_CONTENT_MAXIMUM_BYTES = 64_000;
 const SOURCE_ERROR_CODES = ["source_path_outside_project", "source_file_unreadable", "source_file_too_large"];
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -94,12 +112,95 @@ const inside = (root: string, target: string) => { const path = relative(root, t
 const object = (value: unknown): Record<string, unknown> | null => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 const text = (value: unknown) => typeof value === "string" ? value.trim() : "";
 const UUID_PATTERN = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+const PIN_ATTEMPT_ID_PATTERN = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89ab][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/;
 const normalizeUuid = (value: unknown) => typeof value === "string" && UUID_PATTERN.test(value)
   ? value.toLowerCase()
   : null;
 const envelope = (value: string) => { try { return JSON.parse(value); } catch { return null; } };
 const throwIfAborted = (signal?: AbortSignal) => {
   if (signal?.aborted) signal.throwIfAborted();
+};
+
+type BookStackRecoveryAction = "pin-existing-page" | "create-page";
+
+type BookStackRecoveryConfirmation = {
+  summary: string;
+  placement: LifecyclePlacement;
+  origin: string;
+  requestHash: string;
+  attemptId: string;
+  lifecycleKey: string;
+  pageSlug: string;
+  action: BookStackRecoveryAction;
+  pageCount: number;
+  existing: boolean;
+  phase: LifecyclePhase;
+};
+
+const projectBookStackRecoveryPlacement = (placement: LifecyclePlacement): LifecyclePlacement => ({
+  projectSlug: placement.projectSlug,
+  sourceRef: placement.sourceRef,
+  lifecycleKey: placement.lifecycleKey,
+  shelfId: placement.shelfId,
+  shelfSlug: placement.shelfSlug,
+  bookId: placement.bookId,
+  bookSlug: placement.bookSlug,
+  chapterId: placement.chapterId,
+  chapterSlug: placement.chapterSlug,
+});
+
+const bookStackRecoveryConfirmation = (input: {
+  request: ValidLifecycleRequest;
+  placement: LifecyclePlacement;
+  attempt: LifecycleProviderPinAttempt;
+  discovery: BookStackRecoveryDiscovery;
+}): BookStackRecoveryConfirmation => ({
+  summary: input.request.summary,
+  placement: projectBookStackRecoveryPlacement(input.placement),
+  origin: input.discovery.origin,
+  requestHash: input.discovery.checkpoint.requestHash,
+  attemptId: input.attempt.attemptId,
+  lifecycleKey: input.request.identity.lifecycleKey,
+  pageSlug: input.discovery.checkpoint.pageSlug,
+  action: input.discovery.existing ? "pin-existing-page" : "create-page",
+  pageCount: input.discovery.pageCount,
+  existing: input.discovery.existing !== null,
+  phase: input.request.type,
+});
+
+const bookStackRecoveryActionText = (action: BookStackRecoveryAction) => action === "pin-existing-page"
+  ? "Pin the exact verified existing page without a page POST."
+  : "Authorize at most one page POST.";
+
+const renderBookStackRecoveryConfirmation = (input: BookStackRecoveryConfirmation) => {
+  const value = (text: string) => JSON.stringify(text);
+  const placement = input.placement;
+  const rendered = [
+    "Review the supplied BookStack recovery inputs:",
+    `Action: ${bookStackRecoveryActionText(input.action)}`,
+    `BookStack origin: ${value(input.origin)}`,
+    `Lifecycle key: ${value(input.lifecycleKey)}`,
+    `Attempt ID: ${input.attemptId}`,
+    `Request hash: ${input.requestHash}`,
+    `Phase: ${input.phase}`,
+    `Summary: ${value(input.summary)}`,
+    `Page slug: ${input.pageSlug}`,
+    `Discovered page count: ${input.pageCount}`,
+    "Destination placement:",
+    `  Project slug: ${value(placement.projectSlug)}`,
+    `  Source reference: ${value(placement.sourceRef)}`,
+    `  Placement lifecycle key: ${value(placement.lifecycleKey)}`,
+    `  Shelf: ${value(placement.shelfSlug)} (ID ${placement.shelfId})`,
+    `  Book: ${value(placement.bookSlug)} (ID ${placement.bookId})`,
+    `  Chapter: ${value(placement.chapterSlug)} (ID ${placement.chapterId})`,
+    "",
+    "This display is not machine-verifiable proof of a historical request.",
+    "Are these the unchanged original inputs for this recovery?",
+  ].join("\n");
+  if (Buffer.byteLength(rendered, "utf8") > MAX_BOOKSTACK_RECOVERY_CONFIRMATION_BYTES) {
+    throw new Error("bookstack_recovery_confirmation_too_large");
+  }
+  return rendered;
 };
 
 const mcpServer = async (name: string) => {
@@ -317,6 +418,8 @@ export type LifecycleRoutingOptions = {
     provider: LifecycleProviderName;
   }) => Promise<boolean> | boolean;
   confirmBookStackPlacement?: (preview: unknown) => Promise<boolean> | boolean;
+  confirmBookStackRecovery?: (input: BookStackRecoveryConfirmation) => Promise<boolean> | boolean;
+  bookStackLifecycleClient?: BookStackLifecycleClient;
   resolveProjectRoot?: (cwd: string) => Promise<string>;
 };
 
@@ -1018,6 +1121,49 @@ const lifecycleRequestEnvelope = (value: unknown): {
   }
 };
 
+type BookStackRecoveryEnvelope = {
+  request: ValidLifecycleRequest;
+  placement: LifecyclePlacement;
+  attemptId: string;
+};
+
+const bookStackRecoveryEnvelope = (
+  value: unknown,
+): BookStackRecoveryEnvelope | null => {
+  try {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const keys = Reflect.ownKeys(value);
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const fields = ["request", "placement", "attemptId"];
+    if (
+      keys.some((key) => typeof key !== "string")
+      || keys.length !== fields.length
+      || !fields.every((field) => keys.includes(field))
+      || keys.some((key) => {
+        const descriptor = descriptors[key as string];
+        return !descriptor
+          || descriptor.get
+          || descriptor.set
+          || !descriptor.enumerable
+          || !Object.hasOwn(descriptor, "value");
+      })
+    ) return null;
+    const request = validateLifecycleWriteRequest(descriptors.request.value);
+    const placement = projectLifecyclePlacement(descriptors.placement.value);
+    const attemptId = descriptors.attemptId.value;
+    if (
+      !request.valid
+      || !placement
+      || typeof attemptId !== "string"
+      || !PIN_ATTEMPT_ID_PATTERN.test(attemptId)
+      || !placementMatchesRequest(placement, request)
+    ) return null;
+    return { request, placement, attemptId: attemptId.toLowerCase() };
+  } catch {
+    return null;
+  }
+};
+
 const lifecycleCode = (value: unknown, fallback: string) =>
   typeof value === "string" && /^[a-z][a-z0-9_:-]{0,127}$/.test(value)
     ? value
@@ -1152,19 +1298,20 @@ const bookStackSourceReference = (request: ValidLifecycleRequest): string | null
   return matches.length === 1 ? matches[0] : null;
 };
 
-const bookStackLifecycleAdapter = (input: {
+const bookStackLifecycleProviderFor = (input: {
   environment: Record<string, string | undefined>;
+  client?: BookStackLifecycleClient;
   confirmPlacement?: LifecycleRoutingOptions["confirmBookStackPlacement"];
-}): LifecycleRoutingAdapter | null => {
-  let provider;
+  signal?: AbortSignal;
+}) => {
   try {
-    const origin = resolveBookStackOrigin(input.environment);
-    const client = createBookStackLifecycleClient({
-      origin,
+    const client = input.client ?? createBookStackLifecycleClient({
+      origin: resolveBookStackOrigin(input.environment),
       tokenId: input.environment.BOOKSTACK_TOKEN_ID ?? "",
       tokenSecret: input.environment.BOOKSTACK_TOKEN_SECRET ?? "",
+      signal: input.signal,
     });
-    provider = createBookStackLifecycleProvider({
+    return createBookStackLifecycleProvider({
       client,
       approvePlacement: async (preview) => {
         try {
@@ -1177,6 +1324,14 @@ const bookStackLifecycleAdapter = (input: {
   } catch {
     return null;
   }
+};
+
+const bookStackLifecycleAdapter = (input: {
+  environment: Record<string, string | undefined>;
+  confirmPlacement?: LifecycleRoutingOptions["confirmBookStackPlacement"];
+}): LifecycleRoutingAdapter | null => {
+  const provider = bookStackLifecycleProviderFor(input);
+  if (!provider) return null;
   const persist = async (request: ValidLifecycleRequest, signal?: AbortSignal): Promise<RoutedLifecyclePersistResult> => {
     if (signal?.aborted) return blockedPersist("bookstack", { code: "aborted" }, "no-write");
     const sourceRef = bookStackSourceReference(request);
@@ -1812,6 +1967,345 @@ export async function coordinateLifecycle(
   return lifecycleRouteResult({ request: envelope.request, prepared: prepared.data, provider, result });
 }
 
+const invalidBookStackRecovery = (code: string) => ({
+  schemaVersion: 1,
+  status: "failed" as const,
+  provider: "bookstack" as const,
+  artifactId: null,
+  recordKey: null,
+  error: sanitizeLifecycleError(code, ""),
+});
+
+const bookStackRecoveryRouteResult = (input: {
+  request: ValidLifecycleRequest;
+  prepared: { nonce: string; artifact: string; recordKey: string };
+  result: unknown;
+  writeState: "no-write" | "possible-write";
+}) => {
+  const value = object(input.result);
+  if (value?.status !== "verified") {
+    return lifecycleRouteResult({
+      request: input.request,
+      prepared: input.prepared,
+      provider: "bookstack",
+      result: {
+        status: "blocked",
+        provider: "bookstack",
+        code: lifecycleCode(value?.code, "bookstack_recovery_unresolved"),
+        writeState: input.writeState,
+      },
+    });
+  }
+  const record = routedRecord({
+    provider: "bookstack",
+    value,
+    reference: value.locator,
+    lifecycleKey: input.request.identity.lifecycleKey,
+    phase: input.request.type,
+    summary: input.request.summary,
+    artifact: value.artifact,
+    createdAt: null,
+  });
+  return lifecycleRouteResult({
+    request: input.request,
+    prepared: input.prepared,
+    provider: "bookstack",
+    result: record
+      ? { status: "verified", record }
+      : {
+        status: "blocked",
+        provider: "bookstack",
+        code: "lifecycle_provider_verification_failed",
+        writeState: input.writeState,
+      },
+  });
+};
+
+const bookStackRecoveryAttemptMatches = (
+  state: LifecyclePinLoadResult,
+  attemptId: string,
+  expected?: LifecycleProviderPinAttempt,
+) => state.status === "pending"
+  && state.attempt.provider === "bookstack"
+  && state.attempt.status === "writing"
+  && state.attempt.attemptId === attemptId
+  && (!expected || sameLifecycleProviderPinAttempt(state.attempt, expected));
+
+const bookStackRecoveryCheckpointMatchesDiscovery = (
+  attempt: LifecycleProviderPinAttempt,
+  discovery: BookStackRecoveryDiscovery,
+) => {
+  const checkpoint = attempt.recoveryCheckpoint;
+  return checkpoint !== undefined
+    && checkpoint.lifecycleKey === discovery.checkpoint.lifecycleKey
+    && checkpoint.requestHash === discovery.checkpoint.requestHash
+    && checkpoint.originFingerprint === discovery.checkpoint.originFingerprint
+    && checkpoint.pageSlug === discovery.checkpoint.pageSlug;
+};
+
+const bookStackRecoveryAttemptFailure = (state: LifecyclePinLoadResult) => {
+  if (["corrupt", "conflicting", "inaccessible"].includes(state.status)) {
+    return `lifecycle_pin_store_${state.status}`;
+  }
+  if (state.status === "pending" && state.attempt.recoveryCheckpoint !== undefined) {
+    return "lifecycle_pin_recovery_consumed";
+  }
+  return "lifecycle_pin_attempt_conflict";
+};
+
+export async function coordinateBookStackLifecycleRecovery(
+  recoveryValue: unknown,
+  supplied?: LifecycleIntegrationDependencies,
+  signal?: AbortSignal,
+) {
+  const envelope = bookStackRecoveryEnvelope(recoveryValue);
+  if (!envelope) return invalidBookStackRecovery("bookstack_recovery_request_invalid");
+  if (!supplied?.cwd) {
+    return failedLifecycleRoute({
+      request: envelope.request,
+      provider: "bookstack",
+      code: "lifecycle_pin_store_inaccessible",
+    });
+  }
+  throwIfAborted(signal);
+
+  const prepared = prepareLifecycleArtifact(envelope.request);
+  if (!prepared.valid) {
+    return failedLifecycleRoute({
+      request: envelope.request,
+      provider: "bookstack",
+      code: prepared.error.code,
+    });
+  }
+  const resolveProjectRoot = supplied.resolveProjectRoot ?? defaultResolveCycleProjectRoot;
+  const root = await resolveProjectRoot(supplied.cwd).catch(() => null);
+  if (!root || typeof root !== "string") {
+    return failedLifecycleRoute({
+      request: envelope.request,
+      provider: "bookstack",
+      code: "lifecycle_pin_store_inaccessible",
+    });
+  }
+  const loadPin = loadLifecyclePinStateWith(resolveProjectRoot);
+  const pinState = await loadPin(supplied.cwd, envelope.request.identity.lifecycleKey);
+  const attempt = pinState.status === "pending" ? pinState.attempt : null;
+  if (!attempt || !bookStackRecoveryAttemptMatches(pinState, envelope.attemptId)) {
+    return failedLifecycleRoute({
+      request: envelope.request,
+      provider: "bookstack",
+      code: bookStackRecoveryAttemptFailure(pinState),
+    });
+  }
+  const recoveryCheckpointConsumed = attempt.recoveryCheckpoint !== undefined;
+  const provider = bookStackLifecycleProviderFor({
+    environment: supplied.environment ?? process.env,
+    client: supplied.bookStackLifecycleClient,
+    signal,
+  });
+  if (!provider) {
+    return failedLifecycleRoute({
+      request: envelope.request,
+      provider: "bookstack",
+      code: "bookstack_unavailable",
+    });
+  }
+  const recoveryInput = {
+    request: projectLifecyclePersistenceRequest(envelope.request),
+    placement: projectBookStackRecoveryPlacement(envelope.placement),
+  };
+  const discovered = await provider.discoverSameAttemptRecovery(recoveryInput);
+  throwIfAborted(signal);
+  if (discovered.status !== "ready") {
+    return failedLifecycleRoute({
+      request: envelope.request,
+      provider: "bookstack",
+      code: discovered.code,
+    });
+  }
+  if (
+    recoveryCheckpointConsumed
+    && (!discovered.existing || !bookStackRecoveryCheckpointMatchesDiscovery(attempt, discovered))
+  ) {
+    return failedLifecycleRoute({
+      request: envelope.request,
+      provider: "bookstack",
+      code: "lifecycle_pin_recovery_consumed",
+    });
+  }
+  if (!supplied.confirmBookStackRecovery) {
+    return failedLifecycleRoute({
+      request: envelope.request,
+      provider: "bookstack",
+      code: "bookstack_recovery_confirmation_required",
+    });
+  }
+  let approved = false;
+  try {
+    approved = await supplied.confirmBookStackRecovery(bookStackRecoveryConfirmation({
+      request: envelope.request,
+      placement: envelope.placement,
+      attempt,
+      discovery: discovered,
+    })) === true;
+  } catch {
+    approved = false;
+  }
+  if (!approved) {
+    return failedLifecycleRoute({
+      request: envelope.request,
+      provider: "bookstack",
+      code: "bookstack_recovery_declined",
+    });
+  }
+  const recheckedPin = await loadPin(supplied.cwd, envelope.request.identity.lifecycleKey);
+  throwIfAborted(signal);
+  if (!bookStackRecoveryAttemptMatches(recheckedPin, envelope.attemptId, attempt)) {
+    return failedLifecycleRoute({
+      request: envelope.request,
+      provider: "bookstack",
+      code: bookStackRecoveryAttemptFailure(recheckedPin),
+    });
+  }
+  const rechecked = await provider.discoverSameAttemptRecovery(recoveryInput);
+  throwIfAborted(signal);
+  if (rechecked.status !== "ready") {
+    return failedLifecycleRoute({
+      request: envelope.request,
+      provider: "bookstack",
+      code: rechecked.code,
+    });
+  }
+  if (
+    recoveryCheckpointConsumed
+    && (!rechecked.existing || !bookStackRecoveryCheckpointMatchesDiscovery(attempt, rechecked))
+  ) {
+    return failedLifecycleRoute({
+      request: envelope.request,
+      provider: "bookstack",
+      code: "lifecycle_pin_recovery_consumed",
+    });
+  }
+  if (!sameBookStackPageRecoveryCheckpoint(discovered.checkpoint, rechecked.checkpoint)) {
+    return failedLifecycleRoute({
+      request: envelope.request,
+      provider: "bookstack",
+      code: "bookstack_recovery_stale",
+    });
+  }
+  if (rechecked.existing) {
+    const pin = createLifecycleProviderPin({
+      lifecycleKey: envelope.request.identity.lifecycleKey,
+      provider: "bookstack",
+      initialReference: rechecked.existing.locator,
+      artifactId: rechecked.existing.artifactId,
+      recordKey: rechecked.existing.recordKey,
+      pinnedAt: attempt.startedAt,
+    });
+    if (!pin) {
+      return failedLifecycleRoute({
+        request: envelope.request,
+        provider: "bookstack",
+        code: "lifecycle_pin_invalid",
+      });
+    }
+    const confirmed = await confirmLifecyclePinWith(resolveProjectRoot)(
+      supplied.cwd,
+      attempt,
+      pin,
+      true,
+    );
+    if (confirmed.status !== "pinned") {
+      return failedLifecycleRoute({
+        request: envelope.request,
+        provider: "bookstack",
+        code: confirmed.code,
+      });
+    }
+    return bookStackRecoveryRouteResult({
+      request: envelope.request,
+      prepared: prepared.data,
+      result: rechecked.existing,
+      writeState: "no-write",
+    });
+  }
+
+  if (recoveryCheckpointConsumed) {
+    return failedLifecycleRoute({
+      request: envelope.request,
+      provider: "bookstack",
+      code: "lifecycle_pin_recovery_consumed",
+    });
+  }
+
+  const claimed = await claimLifecyclePinRecoveryWith(resolveProjectRoot)(
+    supplied.cwd,
+    attempt,
+    rechecked.checkpoint,
+  );
+  if (claimed.status !== "claimed") {
+    return failedLifecycleRoute({
+      request: envelope.request,
+      provider: "bookstack",
+      code: claimed.code,
+    });
+  }
+  const checkpoint = claimed.attempt.recoveryCheckpoint;
+  if (!checkpoint) {
+    return failedLifecycleRoute({
+      request: envelope.request,
+      provider: "bookstack",
+      code: "lifecycle_pin_recovery_invalid",
+    });
+  }
+  const persisted = await provider.persistSameAttemptRecovery({
+    ...recoveryInput,
+    checkpoint,
+  }, signal);
+  throwIfAborted(signal);
+  if (persisted.status !== "verified") {
+    return bookStackRecoveryRouteResult({
+      request: envelope.request,
+      prepared: prepared.data,
+      result: persisted,
+      writeState: "possible-write",
+    });
+  }
+  const pin = createLifecycleProviderPin({
+    lifecycleKey: envelope.request.identity.lifecycleKey,
+    provider: "bookstack",
+    initialReference: persisted.locator,
+    artifactId: persisted.artifactId,
+    recordKey: persisted.recordKey,
+    pinnedAt: claimed.attempt.startedAt,
+  });
+  if (!pin) {
+    return failedLifecycleRoute({
+      request: envelope.request,
+      provider: "bookstack",
+      code: "lifecycle_pin_invalid",
+    });
+  }
+  const confirmed = await confirmLifecyclePinWith(resolveProjectRoot)(
+    supplied.cwd,
+    claimed.attempt,
+    pin,
+    true,
+  );
+  if (confirmed.status !== "pinned") {
+    return failedLifecycleRoute({
+      request: envelope.request,
+      provider: "bookstack",
+      code: confirmed.code,
+    });
+  }
+  return bookStackRecoveryRouteResult({
+    request: envelope.request,
+    prepared: prepared.data,
+    result: persisted,
+    writeState: "possible-write",
+  });
+}
+
 const routedRecallRecord = (record: RoutedLifecycleRecord) => ({
   id: record.artifactId,
   recordKey: record.recordKey,
@@ -1956,6 +2450,30 @@ const LIFECYCLE_TOOL_PARAMETERS = Type.Object({
   pinAttemptId: Type.Optional(Type.String({ pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89ab][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$", description: "Checkout-local pre-persistence authorization identifier from an interactive cycle start." })),
 }, { additionalProperties: false });
 
+const BOOKSTACK_LIFECYCLE_RECOVERY_PARAMETERS = Type.Object({
+  request: Type.Object({
+    type: Type.String(),
+    identity: LIFECYCLE_IDENTITY_PARAMETERS,
+    summary: Type.String({ minLength: 1, maxLength: 2_000, pattern: CONTROL_SAFE_STRING_PATTERN }),
+    artifact: Type.String({ minLength: 1, maxLength: 128_000 }),
+  }, { additionalProperties: false }),
+  placement: Type.Object({
+    projectSlug: Type.String({ minLength: 1, maxLength: 100, pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$" }),
+    sourceRef: Type.String({ minLength: 1, maxLength: 1_024, pattern: CONTROL_SAFE_STRING_PATTERN }),
+    lifecycleKey: Type.String({ minLength: 1, maxLength: 512, pattern: CONTROL_SAFE_STRING_PATTERN }),
+    shelfId: Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
+    shelfSlug: Type.Literal("lifecycle-artifacts"),
+    bookId: Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
+    bookSlug: Type.String({ minLength: 1, maxLength: 100, pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$" }),
+    chapterId: Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
+    chapterSlug: Type.String({ minLength: 1, maxLength: 100, pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$" }),
+  }, { additionalProperties: false }),
+  attemptId: Type.String({
+    pattern: PIN_ATTEMPT_ID_PATTERN.source,
+    description: "Exact checkout-local BookStack writing attempt ID. This recovery never selects a provider or creates containers.",
+  }),
+}, { additionalProperties: false });
+
 export default function integrations(pi: ExtensionAPI) {
   pi.registerTool({ name: "ima_context", label: "IMA context", description: "Build Serena-first project context from one typed source: jira/key, taskwarrior/project+uuid, plane/workspace+project+sequenceId, file/path, vestige/id, lifecycle/key, reference/value, or text/title+content. Reference accepts canonical taskwarrior:<project>:<uuid>, plane:<workspace>:PROJ-123, jira:<KEY>, lifecycle:<lifecycle-key>, and vestige:<UUID> forms plus space aliases. Optional durableKnowledge requires query and accepts the supported ima-knowledge collection and limit.", parameters: CONTEXT_TOOL_PARAMETERS, prepareArguments: prepareContextArguments, execute: async (_id, request, signal, _update, ctx) => ({ content: [{ type: "text", text: JSON.stringify(await coordinateContext(request, ctx.cwd, undefined, signal)) }], details: {} }) });
   pi.registerTool({ name: "ima_lifecycle", label: "IMA lifecycle", description: "Store and directly verify one lifecycle artifact through the selected provider. The first verified write establishes checkout-local provider authority; later lifecycle operations use only that pin.", parameters: LIFECYCLE_TOOL_PARAMETERS, execute: async (_id, request, signal, _update, ctx) => {
@@ -2019,4 +2537,26 @@ export default function integrations(pi: ExtensionAPI) {
     }, signal);
     return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
   } });
+  pi.registerTool({
+    name: "ima_bookstack_lifecycle_recover",
+    label: "Recover BookStack lifecycle write",
+    description: "TUI-confirmed recovery for one exact checkout-local BookStack writing attempt. It verifies complete stable discovery, may issue at most one page POST, and never selects a provider, provisions containers, falls back, or retries a consumed checkpoint.",
+    parameters: BOOKSTACK_LIFECYCLE_RECOVERY_PARAMETERS,
+    execute: async (_id, request, signal, _update, ctx) => {
+      const interactive = ctx.mode === "tui"
+        && ctx.hasUI
+        && typeof ctx.ui.confirm === "function";
+      const confirmBookStackRecovery = interactive
+        ? async (input: BookStackRecoveryConfirmation) => ctx.ui.confirm(
+          "Confirm one-time BookStack lifecycle recovery",
+          renderBookStackRecoveryConfirmation(input),
+        )
+        : undefined;
+      const result = await coordinateBookStackLifecycleRecovery(request, {
+        cwd: ctx.cwd,
+        confirmBookStackRecovery,
+      }, signal);
+      return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
+    },
+  });
 }

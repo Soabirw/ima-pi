@@ -29,8 +29,8 @@ export type BookStackClientFailure = Error & { knownResourceId?: number };
 const object = (value: unknown): ObjectValue | null =>
   value && typeof value === "object" && !Array.isArray(value) ? value as ObjectValue : null;
 const positiveId = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) > 0;
-const boundedText = (value: unknown) => typeof value === "string"
-  && value.length > 0
+const boundedText = (value: unknown, allowEmpty = false) => typeof value === "string"
+  && (allowEmpty || value.length > 0)
   && !/[\u0000-\u001f\u007f-\u009f]/.test(value)
   && utf8ByteLength(value) <= MAX_REMOTE_TEXT_BYTES
   ? value
@@ -52,12 +52,15 @@ const invalidResource = (value: unknown): BookStackClientFailure => {
   return error;
 };
 
-const parseResource = (value: unknown): BookStackResource | null => {
+const parseResource = (
+  value: unknown,
+  allowEmptySlug = false,
+): BookStackResource | null => {
   const input = object(value);
   if (!input || !positiveId(input.id)) return null;
   const name = boundedText(input.name);
-  const slug = boundedText(input.slug);
-  if (!name || !slug) return null;
+  const slug = boundedText(input.slug, allowEmptySlug);
+  if (!name || slug === null) return null;
   const bookId = input.book_id === undefined ? undefined : input.book_id;
   const chapterId = input.chapter_id === undefined || input.chapter_id === null
     ? undefined
@@ -117,7 +120,7 @@ export const createBookStackLifecycleClient = (input: BookStackLifecycleClientIn
       if (Number(total) !== expectedTotal || !Array.isArray(response?.data) || response.data.length > PAGE_SIZE) {
         throw new Error("bookstack_pagination_invalid");
       }
-      const page = response.data.map(parseResource);
+      const page = response.data.map((entry) => parseResource(entry, resource === "pages"));
       if (page.some((entry) => entry === null)) throw new Error("bookstack_response_invalid");
       entries.push(...page as BookStackResource[]);
       if (new Set(entries.map((entry) => entry.id)).size !== entries.length || entries.length > expectedTotal) {

@@ -2,6 +2,11 @@ import {
   normalizeLifecycleRecordKey,
 } from "./ima-lifecycle.ts";
 import {
+  projectBookStackPageRecoveryCheckpoint,
+  sameBookStackPageRecoveryCheckpoint,
+  type BookStackPageRecoveryCheckpoint,
+} from "./bookstack-lifecycle-recovery.ts";
+import {
   projectMarkdownLifecycleReference,
 } from "./markdown-lifecycle-record.ts";
 import {
@@ -37,6 +42,7 @@ export type LifecycleProviderPinAttempt = {
   attemptId: string;
   status: "authorized" | "writing";
   startedAt: string;
+  recoveryCheckpoint?: BookStackPageRecoveryCheckpoint;
 };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -60,6 +66,10 @@ const ATTEMPT_FIELDS = [
   "attemptId",
   "status",
   "startedAt",
+] as const;
+const ATTEMPT_WITH_RECOVERY_CHECKPOINT_FIELDS = [
+  ...ATTEMPT_FIELDS,
+  "recoveryCheckpoint",
 ] as const;
 const BOOKSTACK_REFERENCE_FIELDS = [
   "projectSlug",
@@ -247,29 +257,42 @@ export const projectLifecycleProviderReference = (
 export const projectLifecycleProviderPinAttempt = (
   value: unknown,
 ): LifecycleProviderPinAttempt | null => {
-  const attempt = ownDataRecord(value, ATTEMPT_FIELDS);
+  const attempt = ownDataRecord(value, ATTEMPT_FIELDS)
+    ?? ownDataRecord(value, ATTEMPT_WITH_RECOVERY_CHECKPOINT_FIELDS);
   const provider = normalizeLifecycleProvider(attempt?.provider);
   const key = lifecycleKey(attempt?.lifecycleKey);
   const attemptId = canonicalText(attempt?.attemptId, 36);
   const status = attempt?.status;
   const startedAt = timestamp(attempt?.startedAt);
-  return attempt
-    && attempt.schemaVersion === LIFECYCLE_PROVIDER_PIN_ATTEMPT_SCHEMA_VERSION
-    && key
-    && provider
-    && attemptId
-    && UUID.test(attemptId)
-    && (status === "authorized" || status === "writing")
-    && startedAt
-    ? {
-      schemaVersion: 1,
-      lifecycleKey: key,
-      provider,
-      attemptId: attemptId.toLowerCase(),
-      status,
-      startedAt,
-    }
+  const hasRecoveryCheckpoint = Boolean(attempt && Object.hasOwn(attempt, "recoveryCheckpoint"));
+  const recoveryCheckpoint = hasRecoveryCheckpoint
+    ? projectBookStackPageRecoveryCheckpoint(attempt?.recoveryCheckpoint)
     : null;
+  if (
+    !attempt
+    || attempt.schemaVersion !== LIFECYCLE_PROVIDER_PIN_ATTEMPT_SCHEMA_VERSION
+    || !key
+    || !provider
+    || !attemptId
+    || !UUID.test(attemptId)
+    || (status !== "authorized" && status !== "writing")
+    || !startedAt
+    || hasRecoveryCheckpoint && !recoveryCheckpoint
+    || recoveryCheckpoint && (
+      provider !== "bookstack"
+      || status !== "writing"
+      || recoveryCheckpoint.lifecycleKey !== key
+    )
+  ) return null;
+  return {
+    schemaVersion: 1,
+    lifecycleKey: key,
+    provider,
+    attemptId: attemptId.toLowerCase(),
+    status,
+    startedAt,
+    ...(recoveryCheckpoint ? { recoveryCheckpoint } : {}),
+  };
 };
 
 export const createLifecycleProviderPinAttempt = (input: {
@@ -278,6 +301,7 @@ export const createLifecycleProviderPinAttempt = (input: {
   attemptId: unknown;
   status?: unknown;
   startedAt: unknown;
+  recoveryCheckpoint?: unknown;
 }): LifecycleProviderPinAttempt | null => projectLifecycleProviderPinAttempt({
   schemaVersion: LIFECYCLE_PROVIDER_PIN_ATTEMPT_SCHEMA_VERSION,
   lifecycleKey: input.lifecycleKey,
@@ -285,6 +309,9 @@ export const createLifecycleProviderPinAttempt = (input: {
   attemptId: input.attemptId,
   status: input.status ?? "authorized",
   startedAt: input.startedAt,
+  ...(input.recoveryCheckpoint === undefined
+    ? {}
+    : { recoveryCheckpoint: input.recoveryCheckpoint }),
 });
 
 export const projectLifecycleProviderPin = (
@@ -351,6 +378,26 @@ export const sameLifecycleProviderPin = (
   && left.recordKey === right.recordKey
   && left.pinnedAt === right.pinnedAt
   && JSON.stringify(left.initialReference) === JSON.stringify(right.initialReference);
+
+export const sameLifecycleProviderPinAttempt = (
+  left: LifecycleProviderPinAttempt,
+  right: LifecycleProviderPinAttempt,
+): boolean => left.lifecycleKey === right.lifecycleKey
+  && left.provider === right.provider
+  && left.attemptId === right.attemptId
+  && left.status === right.status
+  && left.startedAt === right.startedAt
+  && (
+    (left.recoveryCheckpoint === undefined && right.recoveryCheckpoint === undefined)
+    || (
+      left.recoveryCheckpoint !== undefined
+      && right.recoveryCheckpoint !== undefined
+      && sameBookStackPageRecoveryCheckpoint(
+        left.recoveryCheckpoint,
+        right.recoveryCheckpoint,
+      )
+    )
+  );
 
 export const isLifecycleProviderName = (
   value: unknown,

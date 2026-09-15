@@ -36,6 +36,17 @@ export type RecoveryDescriptor = {
   pageHash: string;
 };
 
+export type BookStackPageRecoveryCheckpoint = {
+  schemaVersion: 1;
+  provider: "bookstack";
+  operation: "recover_page";
+  lifecycleKey: string;
+  requestHash: string;
+  originFingerprint: string;
+  pageSlug: string;
+  discoveryHash: string;
+};
+
 export type FailureCategory =
   | "validation"
   | "denied"
@@ -53,6 +64,16 @@ const RECOVERY_FIELDS = [
   "sourceRef", "lifecycleKey", "intendedSlug", "shelfId", "shelfSlug", "bookId",
   "bookSlug", "chapterId", "chapterSlug", "pageId", "membershipBefore",
   "membershipAfter", "artifactId", "recordKey", "contentHash", "pageHash",
+] as const;
+const PAGE_RECOVERY_CHECKPOINT_FIELDS = [
+  "schemaVersion",
+  "provider",
+  "operation",
+  "lifecycleKey",
+  "requestHash",
+  "originFingerprint",
+  "pageSlug",
+  "discoveryHash",
 ] as const;
 const PHASES = new Set([
   "plan", "implementation", "test", "review", "resolution", "rereview", "document", "decision", "closeout",
@@ -126,6 +147,58 @@ const sameMembership = (left: readonly unknown[], right: readonly unknown[]) =>
   left.length === right.length && left.every((value, index) => value === right[index]);
 const phaseArtifactSlug = (value: string) => /^([a-z]+)-([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i.exec(value);
 
+export const projectBookStackPageRecoveryCheckpoint = (
+  value: unknown,
+): BookStackPageRecoveryCheckpoint | null => {
+  const checkpoint = ownDataRecord(value, PAGE_RECOVERY_CHECKPOINT_FIELDS);
+  const page = typeof checkpoint?.pageSlug === "string"
+    ? phaseArtifactSlug(checkpoint.pageSlug)
+    : null;
+  if (
+    !checkpoint
+    || checkpoint.schemaVersion !== 1
+    || checkpoint.provider !== "bookstack"
+    || checkpoint.operation !== "recover_page"
+    || !boundedText(checkpoint.lifecycleKey, 512)
+    || typeof checkpoint.requestHash !== "string"
+    || !/^[a-f0-9]{64}$/.test(checkpoint.requestHash)
+    || typeof checkpoint.originFingerprint !== "string"
+    || !/^[a-f0-9]{64}$/.test(checkpoint.originFingerprint)
+    || !page
+    || !PHASES.has(page[1])
+    || typeof checkpoint.discoveryHash !== "string"
+    || !/^[a-f0-9]{64}$/.test(checkpoint.discoveryHash)
+  ) return null;
+  return {
+    schemaVersion: 1,
+    provider: "bookstack",
+    operation: "recover_page",
+    lifecycleKey: checkpoint.lifecycleKey,
+    requestHash: checkpoint.requestHash,
+    originFingerprint: checkpoint.originFingerprint,
+    pageSlug: checkpoint.pageSlug,
+    discoveryHash: checkpoint.discoveryHash,
+  };
+};
+
+export const createBookStackPageRecoveryCheckpoint = (
+  input: Omit<BookStackPageRecoveryCheckpoint, "schemaVersion" | "provider" | "operation">,
+): BookStackPageRecoveryCheckpoint | null => projectBookStackPageRecoveryCheckpoint({
+  schemaVersion: 1,
+  provider: "bookstack",
+  operation: "recover_page",
+  ...input,
+});
+
+export const sameBookStackPageRecoveryCheckpoint = (
+  left: BookStackPageRecoveryCheckpoint,
+  right: BookStackPageRecoveryCheckpoint,
+) => left.lifecycleKey === right.lifecycleKey
+  && left.requestHash === right.requestHash
+  && left.originFingerprint === right.originFingerprint
+  && left.pageSlug === right.pageSlug
+  && left.discoveryHash === right.discoveryHash;
+
 const KNOWN_CODES = new Set([
   "bookstack_access_denied",
   "bookstack_approval_declined",
@@ -143,6 +216,7 @@ const KNOWN_CODES = new Set([
   "bookstack_record_invalid",
   "bookstack_recall_unavailable",
   "bookstack_recovery_reconciled",
+  "bookstack_recovery_stale",
   "bookstack_recovery_unresolved",
   "bookstack_response_invalid",
   "bookstack_response_too_large",

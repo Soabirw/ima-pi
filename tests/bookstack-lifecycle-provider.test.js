@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createBookStackLifecycleProvider } from "../lib/bookstack-lifecycle.ts";
+import { createLifecycleRecord, digestBookStackValue } from "../lib/bookstack-lifecycle-record.ts";
 import { recoveryDescriptor } from "../lib/bookstack-lifecycle-recovery.ts";
 
 const sourceRef = "taskwarrior:shared-dev-memory:cc4755dd-67bf-49a6-8e2d-6563d080dde1";
@@ -32,13 +33,17 @@ const createClient = (options = {}) => {
   const shelf = { id: 1, name: "Lifecycle", slug: "lifecycle-artifacts", books: [2] };
   const book = { id: 2, name: "Shared", slug: "shared-dev-memory" };
   const chapter = { id: 3, name: placement.chapterSlug, slug: placement.chapterSlug, bookId: 2 };
-  const pages = [];
+  const pages = (options.pages ?? []).map((page) => ({ ...page }));
   let creates = 0;
   let nextPageId = 42;
   let reads = 0;
+  let lists = 0;
   return {
     origin: options.origin ?? "https://bookstack.example",
-    listPages: async () => pages.map((page) => ({ ...page })),
+    listPages: async () => {
+      lists += 1;
+      return pages.map((page) => ({ ...page }));
+    },
     readShelf: async () => ({ ...shelf, books: [...shelf.books] }),
     readBook: async () => ({ ...book }),
     readChapter: async () => ({ ...chapter }),
@@ -72,6 +77,7 @@ const createClient = (options = {}) => {
     detachBook: () => { shelf.books = []; },
     creates: () => creates,
     pageIds: () => pages.map((page) => page.id),
+    lists: () => lists,
     reads: () => reads,
   };
 };
@@ -172,6 +178,203 @@ test("provider verifies hierarchy and full evidence, then makes identical retrie
   assert.equal((await provider.get(JSON.parse(JSON.stringify(first.locator)))).status, "verified");
 });
 
+test("ordinary persistence treats target-named noncanonical drafts as conflicts", async () => {
+  const record = createLifecycleRecord({ request, placement });
+  const title = `${record.phase}-${record.artifactId}`;
+  const targetDraft = { id: 9, name: title, slug: "" };
+  const canonical = {
+    id: 10,
+    name: title,
+    slug: title,
+    bookId: placement.bookId,
+    chapterId: placement.chapterId,
+    markdown: record.pageMarkdown,
+    revisionCount: 1,
+    updatedAt: "2026-09-11T00:00:00Z",
+    creatorId: 7,
+    updaterId: 8,
+  };
+  const scenarios = [
+    {
+      name: "target draft",
+      pages: [targetDraft],
+      expected: { status: "blocked", creates: 0, reads: 0 },
+    },
+    {
+      name: "target draft plus canonical",
+      pages: [targetDraft, canonical],
+      expected: { status: "blocked", creates: 0, reads: 0 },
+    },
+    {
+      name: "unrelated draft",
+      pages: [{ id: 9, name: "Unrelated draft", slug: "" }],
+      expected: { status: "verified", creates: 1, reads: 1 },
+    },
+    {
+      name: "absent target",
+      pages: [],
+      expected: { status: "verified", creates: 1, reads: 1 },
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const fake = createClient({ pages: scenario.pages });
+    const provider = createBookStackLifecycleProvider({ client: fake });
+    const result = await provider.persist({ request, placement });
+    assert.equal(result.status, scenario.expected.status, scenario.name);
+    if (result.status === "blocked") {
+      assert.equal(result.code, "bookstack_identity_ambiguous", scenario.name);
+    } else {
+      assert.equal(result.disposition, "stored", scenario.name);
+    }
+    assert.equal(fake.creates(), scenario.expected.creates, scenario.name);
+    assert.equal(fake.reads(), scenario.expected.reads, scenario.name);
+    assert.equal(fake.lists(), 1, scenario.name);
+  }
+});
+
+test("same-attempt recovery preserves empty-slug discovery entries and cannot repeat a checkpointed POST", async () => {
+  const fake = createClient({ origin: "https://BOOKSTACK.example/" });
+  const listPages = fake.listPages;
+  fake.listPages = async () => [
+    { id: 9, name: "Unrelated draft", slug: "" },
+    ...(await listPages()),
+  ];
+  const provider = createBookStackLifecycleProvider({ client: fake });
+  const discovered = await provider.discoverSameAttemptRecovery({ request, placement });
+  assert.equal(discovered.status, "ready");
+  if (discovered.status !== "ready") return;
+  assert.equal(discovered.origin, "https://bookstack.example");
+  assert.equal(discovered.pageCount, 1);
+  assert.equal(discovered.existing, null);
+
+  const stored = await provider.persistSameAttemptRecovery({
+    request,
+    placement,
+    checkpoint: discovered.checkpoint,
+  });
+  assert.equal(stored.status, "verified");
+  assert.equal(fake.creates(), 1);
+
+  const repeated = await provider.persistSameAttemptRecovery({
+    request,
+    placement,
+    checkpoint: discovered.checkpoint,
+  });
+  assert.equal(repeated.status, "blocked");
+  assert.equal(repeated.code, "bookstack_recovery_stale");
+  assert.equal(fake.creates(), 1);
+});
+
+test("same-attempt recovery returns an exact existing artifact without a POST", async () => {
+  const fake = createClient();
+  const provider = createBookStackLifecycleProvider({ client: fake });
+  const stored = await provider.persist({ request, placement });
+  assert.equal(stored.status, "verified");
+  const discovered = await provider.discoverSameAttemptRecovery({ request, placement });
+  assert.equal(discovered.status, "ready");
+  if (discovered.status !== "ready") return;
+  assert.ok(discovered.existing);
+  const recovered = await provider.persistSameAttemptRecovery({
+    request,
+    placement,
+    checkpoint: discovered.checkpoint,
+  });
+  assert.equal(recovered.status, "verified");
+  assert.equal(recovered.disposition, "unchanged");
+  assert.equal(fake.creates(), 1);
+});
+
+test("TEST-004 checkpointed recovery accepts a one-LF-normalized existing page without a POST", async () => {
+  const record = createLifecycleRecord({ request, placement });
+  assert.equal(record.pageMarkdown.endsWith("\n"), true);
+  const actualMarkdown = record.pageMarkdown.slice(0, -1);
+  assert.equal(actualMarkdown.endsWith("\n"), false);
+  const actualPageHash = digestBookStackValue(actualMarkdown);
+  const fake = createClient({
+    pages: [{
+      id: 1796,
+      name: `${record.phase}-${record.artifactId}`,
+      slug: `${record.phase}-${record.artifactId}`,
+      bookId: placement.bookId,
+      chapterId: placement.chapterId,
+      markdown: actualMarkdown,
+      revisionCount: 1,
+      updatedAt: "2026-09-11T00:00:00Z",
+      creatorId: 7,
+      updaterId: 8,
+    }],
+  });
+  const provider = createBookStackLifecycleProvider({ client: fake });
+  const discovered = await provider.discoverSameAttemptRecovery({ request, placement });
+  assert.equal(discovered.status, "ready");
+  if (discovered.status !== "ready") return;
+  assert.ok(discovered.existing);
+  assert.equal(discovered.existing.artifactId, record.artifactId);
+  assert.equal(discovered.existing.recordKey, record.recordKey);
+  assert.equal(discovered.existing.contentHash, record.contentHash);
+  assert.equal(discovered.existing.artifact, record.artifact);
+  assert.equal(discovered.existing.locator.pageHash, actualPageHash);
+  assert.notEqual(discovered.existing.locator.pageHash, digestBookStackValue(record.pageMarkdown));
+
+  const recovered = await provider.persistSameAttemptRecovery({
+    request,
+    placement,
+    checkpoint: discovered.checkpoint,
+  });
+  assert.equal(recovered.status, "verified");
+  if (recovered.status !== "verified") return;
+  assert.equal(recovered.disposition, "unchanged");
+  assert.equal(recovered.locator.pageId, 1796);
+  assert.equal(recovered.locator.pageHash, actualPageHash);
+  assert.equal(recovered.artifactId, record.artifactId);
+  assert.equal(recovered.recordKey, record.recordKey);
+  assert.equal(recovered.contentHash, record.contentHash);
+  assert.equal(recovered.artifact, record.artifact);
+  assert.equal(fake.creates(), 0);
+
+  const readBack = await provider.get(recovered.locator);
+  assert.equal(readBack.status, "verified");
+  if (readBack.status !== "verified") return;
+  assert.equal(readBack.locator.pageHash, actualPageHash);
+  assert.equal(fake.creates(), 0);
+});
+
+test("same-attempt recovery binds its checkpoint to the request, placement, and origin before a POST", async () => {
+  const scenarios = [
+    {
+      name: "request",
+      change: () => ({ request: { ...request, summary: "Changed after discovery" }, placement }),
+    },
+    {
+      name: "placement",
+      change: () => ({ request, placement: { ...placement, shelfId: 4 } }),
+    },
+    {
+      name: "origin",
+      change: (fake) => {
+        fake.origin = "https://other-bookstack.example";
+        return { request, placement };
+      },
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const fake = createClient();
+    const provider = createBookStackLifecycleProvider({ client: fake });
+    const discovered = await provider.discoverSameAttemptRecovery({ request, placement });
+    assert.equal(discovered.status, "ready", scenario.name);
+    if (discovered.status !== "ready") continue;
+
+    const result = await provider.persistSameAttemptRecovery({
+      ...scenario.change(fake),
+      checkpoint: discovered.checkpoint,
+    });
+    assert.equal(result.status, "blocked", scenario.name);
+    assert.equal(fake.creates(), 0, scenario.name);
+  }
+});
+
 test("same artifact identity with changed summary conflicts without another POST", async () => {
   const fake = createClient();
   const provider = createBookStackLifecycleProvider({ client: fake });
@@ -261,6 +464,84 @@ test("unknown POST outcome returns sanitized proof and reconciles read-only", as
     .reconcile(JSON.parse(JSON.stringify(failed.recovery)));
   assert.equal(recovered.status, "verified");
   assert.equal(fake.creates(), 1);
+});
+
+test("TEST-004 legacy reconciliation accepts the permitted omitted terminal LF and retains actual-byte proof", async () => {
+  const record = createLifecycleRecord({ request, placement });
+  const actualMarkdown = record.pageMarkdown.slice(0, -1);
+  const actualPageHash = digestBookStackValue(actualMarkdown);
+  const fake = createClient({ loseCreateResponse: true });
+  const failed = await createBookStackLifecycleProvider({ client: fake }).persist({ request, placement });
+  assert.equal(failed.status, "blocked");
+  assert.equal(failed.code, "bookstack_write_unknown");
+  assert.ok(failed.recovery);
+  fake.alterPage({ markdown: actualMarkdown });
+
+  const recovered = await createBookStackLifecycleProvider({ client: fake })
+    .reconcile(JSON.parse(JSON.stringify(failed.recovery)));
+  assert.equal(recovered.status, "verified");
+  if (recovered.status !== "verified") return;
+  assert.equal(recovered.artifactId, record.artifactId);
+  assert.equal(recovered.recordKey, record.recordKey);
+  assert.equal(recovered.contentHash, record.contentHash);
+  assert.equal(recovered.artifact, record.artifact);
+  const canonicalPageHash = digestBookStackValue(record.pageMarkdown);
+  assert.equal(failed.recovery.pageHash, canonicalPageHash);
+  assert.equal(recovered.locator.pageHash, actualPageHash);
+  assert.notEqual(recovered.locator.pageHash, canonicalPageHash);
+
+  const actualHashRecovered = await createBookStackLifecycleProvider({ client: fake })
+    .reconcile(JSON.parse(JSON.stringify({ ...failed.recovery, pageHash: actualPageHash })));
+  assert.equal(actualHashRecovered.status, "verified");
+  if (actualHashRecovered.status !== "verified") return;
+  assert.equal(actualHashRecovered.locator.pageHash, actualPageHash);
+
+  const arbitraryHash = "f".repeat(64);
+  assert.notEqual(arbitraryHash, actualPageHash);
+  assert.notEqual(arbitraryHash, canonicalPageHash);
+  const mismatched = await createBookStackLifecycleProvider({ client: fake })
+    .reconcile(JSON.parse(JSON.stringify({ ...failed.recovery, pageHash: arbitraryHash })));
+  assert.equal(mismatched.status, "blocked");
+  assert.equal(mismatched.code, "bookstack_recovery_unresolved");
+  assert.equal(fake.creates(), 1);
+});
+
+test("TEST-004 legacy canonical hash never bypasses page identity, content, or placement checks", async () => {
+  const record = createLifecycleRecord({ request, placement });
+  const actualMarkdown = record.pageMarkdown.slice(0, -1);
+  const scenarios = [
+    {
+      name: "page identity",
+      change: { slug: `other-${record.artifactId}` },
+      expectedCode: "bookstack_recovery_unresolved",
+    },
+    {
+      name: "placement",
+      change: { chapterId: 99 },
+      expectedCode: "bookstack_recovery_unresolved",
+    },
+    {
+      name: "content",
+      change: { markdown: actualMarkdown.replace("Approved.", "Changed.") },
+      expectedCode: "bookstack_verification_failed",
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const fake = createClient({ loseCreateResponse: true });
+    const failed = await createBookStackLifecycleProvider({ client: fake }).persist({ request, placement });
+    assert.equal(failed.status, "blocked", scenario.name);
+    assert.equal(failed.code, "bookstack_write_unknown", scenario.name);
+    assert.ok(failed.recovery, scenario.name);
+    assert.equal(failed.recovery.pageHash, digestBookStackValue(record.pageMarkdown), scenario.name);
+    fake.alterPage({ markdown: actualMarkdown, ...scenario.change });
+
+    const result = await createBookStackLifecycleProvider({ client: fake })
+      .reconcile(JSON.parse(JSON.stringify(failed.recovery)));
+    assert.equal(result.status, "blocked", scenario.name);
+    assert.equal(result.code, scenario.expectedCode, scenario.name);
+    assert.equal(fake.creates(), 1, scenario.name);
+  }
 });
 
 test("recovery and read-back require the canonical authoritative page slug", async () => {
