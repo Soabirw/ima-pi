@@ -304,11 +304,61 @@ test("soft-cycle is a prompt-only delegating SDLC orchestrator with bounded auto
     "newest test passes",
     "Test defects never enter resolution or rereview",
     "dispatch ceiling",
+    "untrusted-soft-cycle-input",
+    "first standalone `--`",
+    "BARE-INSTRUCTIONS",
+    "bare uppercase Jira key",
+    "approved configured Jira or Plane browse URL",
+    "project-relative file path or `file:` path",
+    "65,536 JavaScript string units",
+    "65,537-unit or larger invocation",
+    "256 KiB",
+    "64,000 JavaScript UTF-16 code units",
+    "same complete matching content",
+    "available implementer-capable agent catalog",
+    "<project>:manual:<approved-name>:<YYYY-MM-DD>",
+    "human-selected resume path",
+    "human-selected new path",
+    "naming registry",
+    "Guided plan approval is human-owned",
+    "orchestrator owns plan approval only after the existing safety gate",
+    "programmatic soft-cycle parser or coordinator",
+    "raw, unvalidated block",
+    "fully validated, normalized source",
+    "one required `ima_context` call",
+    "whitespace-free, project-relative token",
+    "each component must be nonempty",
+    "ASCII letters, digits, `.`, `_`, or `-`",
+    "percent-encoded",
   ]) has(text, value);
+  assert.match(text, /one source followed only by\s+controls/i);
+  assert.match(text, /never falls back to\s+prose/i);
+  assert.match(text, /must not\s+be `\.` or `\.\.`/i);
+  assert.match(
+    text,
+    /Never create or consult a naming registry,[\s\S]*?auto-suffix, merge, overwrite, or similarity-match a manual identity/i,
+  );
+  assert.match(
+    text,
+    /Before parsing, trimming, normalizing, validating, or taking any tool action,[\s\S]*?including all leading, trailing, and\s+inter-token whitespace[\s\S]*?65,536 JavaScript string units/i,
+  );
+  assert.match(
+    text,
+    /raw file is at most 256 KiB[\s\S]*?complete normalized-context content is at most 64,000 JavaScript UTF-16 code units[\s\S]*?After\s+that single hydration,[\s\S]*?same complete matching content/i,
+  );
+  assert.match(
+    text,
+    /manual identity\/new-versus-resume decision and required first-use BookStack placement consent\s+are human-owned[\s\S]*?Guided plan approval is human-owned[\s\S]*?orchestrator owns plan approval only after the existing safety gate/i,
+  );
+  assert.ok(
+    text.indexOf("### Complete expanded-input gate")
+      < text.indexOf("### Hydrate only validated input"),
+    "the whole-invocation gate must precede hydration",
+  );
   assert.equal((text.match(/ima-cycle outcome:/g) ?? []).length, 1);
   assert.match(
     text,
-    /expected-empty recall[\s\S]*new normalized Taskwarrior, Jira, or Plane source[\s\S]*proceed to Plan/i,
+    /expected-empty recall[\s\S]*new normalized Taskwarrior, Jira, Plane, or[\s\S]*proceed to Plan/i,
   );
   assert.match(
     text,
@@ -316,11 +366,77 @@ test("soft-cycle is a prompt-only delegating SDLC orchestrator with bounded auto
   );
   assert.match(
     text,
-    /explicit lifecycle or resume source[\s\S]*missing required artifact is `BLOCKED`/i,
+    /explicit lifecycle or requested resume source[\s\S]*missing required artifact is `BLOCKED`/i,
   );
   assert.match(
     text,
     /mismatched,[\s\S]*incomplete, corrupt, or unverified evidence is also `BLOCKED`; stop/i,
+  );
+});
+
+test("soft-cycle user documentation explains flexible input and manual identity gates", async () => {
+  const [readme, guide] = await Promise.all([
+    readFile(join(root, "README.md"), "utf8"),
+    readFile(join(root, "docs", "guide.md"), "utf8"),
+  ]);
+
+  for (const text of [readme, guide]) {
+    for (const value of [
+      "/ima:soft-cycle SOURCE",
+      "[-- INSTRUCTIONS]",
+      "first standalone `--`",
+      "65,536 JavaScript string units",
+      "64,000 JavaScript UTF-16",
+      "file:",
+      "manual identity",
+      "BookStack placement consent",
+      "Guided plan approval is human-owned",
+      "orchestrator",
+      "auto-suffix",
+      "whitespace-free",
+      "1,024",
+    ]) has(text, value);
+  }
+
+  assert.match(
+    readme,
+    /65,537 or more it shows usage and stops without trimming or truncating[\s\S]*?single hydration[\s\S]*?incomplete, changed, truncated, mismatched, or unverifiable content blocks/i,
+  );
+  assert.match(
+    guide,
+    /Before parsing,[\s\S]*?complete native Pi-expanded invocation[\s\S]*?leading, trailing, and inter-token whitespace[\s\S]*?65,537 units or more[\s\S]*?without a tool call/i,
+  );
+  assert.match(
+    guide,
+    /Before its one hydration,[\s\S]*?256 KiB \(bytes, not characters\)[\s\S]*?64,000 JavaScript UTF-16-code-unit normalized-context[\s\S]*?After that single hydration,[\s\S]*?complete matching content[\s\S]*?no second hydration, chunking, or text fallback/i,
+  );
+
+  for (const value of [
+    "BARE-INSTRUCTIONS",
+    "available implementer-capable agent",
+    "256 KiB",
+    "String.length",
+    "<project>:manual:<approved-name>:<YYYY-MM-DD>",
+    "project, proposed name, complete key, validated source/file reference, bounded outcome",
+    "[a-z0-9]+(?:-[a-z0-9]+)*",
+    "verified UTC date freezes with the approved key",
+    "new complete preview, and renewed approval",
+    "naming registry, similarity match, auto-suffix, merge, or overwrite",
+    "canonical handoff is `lifecycle:<key>`",
+    "never arbitrary fetch destinations",
+    "not a programmatic parser, coordinator, or general file-import service",
+    "every component must be nonempty",
+    "ASCII letters, digits, `.`, `_`, or `-`",
+    "percent-encoded",
+  ]) has(guide, value);
+
+  assert.match(
+    guide,
+    /human-owned manual identity\/new-versus-resume gate[\s\S]*?explicit `new` or `resume` choice[\s\S]*?exact existing key only resumes[\s\S]*?expected-empty exact key only proceeds/i,
+  );
+  assert.match(
+    guide,
+    /manual identity\/new-versus-resume gate and required first-use BookStack placement consent are human-owned[\s\S]*?Guided plan approval is human-owned[\s\S]*?Only after the existing safety gate can the orchestrator approve an eligible autonomous plan; an unsafe autonomous plan blocks/i,
   );
 });
 

@@ -20,6 +20,7 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ### Changed
 
+- Expanded and hardened the prompt-only `/ima:soft-cycle` input contract: it accepts canonical and alias tracker/lifecycle identifiers, bare Jira keys, approved Jira/Plane browse URLs, source commentary (`--`), source-less `--` instructions with explicit controls (including autonomous mode), bare guided instructions, and constrained project-contained files. Complete-input/file limits and malformed source/control cases fail closed; text/file work requires human-approved manual identity and new-versus-resume gates, while BookStack consent, guided plan approval, and safety-gated autonomous plan approval remain distinct. It still stops after `document` and never auto-closes.
 - Documented a readiness-only new-developer journey that separates package/resource discovery, BookStack search/read access, and managed lifecycle persistence; it records configuration classes, owner stop gates, and non-destructive read-only reconciliation rollback without claiming rollout or live acceptance.
 - Updated lifecycle prompts, skills, README, provider documentation, guide, and Serena memories for the integrated four-authority model.
 
