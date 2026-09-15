@@ -28,15 +28,22 @@ Preserve the canonical colon source form in every handoff. Accept these manual s
 Always call `ima_context` with the normalized source before any lifecycle work. For Plane, reuse a recovered lifecycle key; otherwise use the documented `ima-pi:plane:<workspace>:<PROJECT>-<seq>` convention. Do not substitute a Taskwarrior or Jira probe for unavailable lifecycle evidence.
 
 After hydration, load `ima-lifecycle-contract` and recover any durable pin before recalling the
-latest verified lifecycle artifact with the exact lifecycle key. A pin requires only its verified
-provider-native recall/get path. Without a pin, exact Tier-1 Qdrant history across every phase
-establishes historical Qdrant authority; only an expected-empty recall through that historical
-lookup for a new normalized Taskwarrior, Jira, or Plane source has no prior artifact to reuse. Retain
-its derived or
-documented lifecycle key and proceed to Plan so the first plan artifact can be created. When
-matching verified evidence exists, retrieve selected detail directly through the authoritative route
-before acting on it and reuse its lifecycle identity, `artifactId`, `recordKey`, and provider-native
-references.
+latest verified lifecycle artifact with the exact lifecycle key. The first unpinned,
+organization-visible BookStack placement requires explicit user consent; consent alone never creates
+a pin. Only verified persistence of the first immutable artifact plus provider-native direct
+read-back establishes a durable pin.
+
+For lifecycle storage authority, autonomous mode pauses for user input only when that first-use
+BookStack consent is missing. Once a pin is verified, both guided and autonomous phases use its
+exact provider-native placement without provider selection or placement confirmation. Guided phase
+gates remain separate human approval gates, not storage prompts. Provider unavailability, mismatch,
+unknown writes, or persistence failure is `BLOCKED`; do not retry a `BLOCKED` write, fall back,
+migrate, switch providers, or mix history.
+
+Without a pin, exact Tier-1 Qdrant history across every phase establishes historical Qdrant
+authority; only an expected-empty recall through that historical lookup for a new normalized Taskwarrior, Jira, or Plane source
+has no prior artifact to reuse. Retain its derived or documented lifecycle key and proceed to Plan so the first plan artifact can be created. When matching verified evidence exists, retrieve selected detail directly through the
+authoritative route before acting on it and reuse its lifecycle identity, `artifactId`, `recordKey`, and provider-native references.
 
 For an explicit lifecycle or resume source, a missing required artifact is `BLOCKED`. Mismatched,
 incomplete, corrupt, or unverified evidence is also `BLOCKED`; stop rather than inventing a

@@ -41,6 +41,11 @@ export type LifecycleRoutingAdapter = {
     request: ValidLifecycleRequest,
     signal?: AbortSignal,
   ) => Promise<RoutedLifecyclePersistResult>;
+  persistPinned?: (
+    request: ValidLifecycleRequest,
+    initialReference: Record<string, unknown>,
+    signal?: AbortSignal,
+  ) => Promise<RoutedLifecyclePersistResult>;
   recall: (
     selection: {
       lifecycleKey: string;
@@ -267,6 +272,37 @@ const blockedPersist = (
   writeState: LifecycleRouteWriteState = "possible-write",
 ): RoutedLifecyclePersistResult => ({ status: "blocked", provider, code, writeState });
 
+const sameProviderReference = (
+  left: Record<string, unknown>,
+  right: Record<string, unknown>,
+) => {
+  try {
+    return JSON.stringify(left) === JSON.stringify(right);
+  } catch {
+    return false;
+  }
+};
+
+const verifiedPinnedInitialReference = (input: {
+  pin: LifecycleProviderPin;
+  expectedReference: Record<string, unknown>;
+  record: RoutedLifecycleRecord;
+}): Record<string, unknown> | null => {
+  const reference = projectLifecycleProviderReference(
+    input.pin.provider,
+    input.record.reference,
+  );
+  if (
+    !reference
+    || input.record.provider !== input.pin.provider
+    || input.record.lifecycleKey !== input.pin.lifecycleKey
+    || input.record.artifactId !== input.pin.artifactId
+    || input.record.recordKey !== input.pin.recordKey
+    || !sameProviderReference(input.expectedReference, reference)
+  ) return null;
+  return reference;
+};
+
 export const routeLifecyclePersistence = async (input: {
   routing: LifecycleRouting;
   provider: LifecycleProviderName;
@@ -301,16 +337,45 @@ export const routePinnedLifecyclePersistence = async (input: {
   if (!adapter || !verify) {
     return blockedPersist(pin.provider, "pinned_provider_unavailable", "no-write");
   }
+  const expectedReference = projectLifecycleProviderReference(
+    pin.provider,
+    pin.initialReference,
+  );
+  const referenceForVerification = expectedReference
+    ? projectLifecycleProviderReference(pin.provider, expectedReference)
+    : null;
+  if (!expectedReference || !referenceForVerification) {
+    return blockedPersist(pin.provider, "lifecycle_pin_invalid", "no-write");
+  }
   let verified: RoutedLifecyclePersistResult;
   try {
     verified = projectRoutedLifecyclePersistResult(
-      await verify(pin.initialReference, input.signal),
+      await verify(referenceForVerification, input.signal),
       pin.provider,
     ) ?? blockedPersist(pin.provider, "pinned_provider_response_invalid", "no-write");
   } catch {
     verified = blockedPersist(pin.provider, "pinned_provider_failed", "no-write");
   }
   if (verified.status !== "verified") return verified;
+  const initialReference = verifiedPinnedInitialReference({
+    pin,
+    expectedReference,
+    record: verified.record,
+  });
+  if (!initialReference) {
+    return blockedPersist(pin.provider, "pinned_provider_response_invalid", "no-write");
+  }
+  if (typeof adapter.persistPinned === "function") {
+    try {
+      const result = projectRoutedLifecyclePersistResult(
+        await adapter.persistPinned(input.request, initialReference, input.signal),
+        pin.provider,
+      );
+      return result ?? blockedPersist(pin.provider, "lifecycle_provider_response_invalid");
+    } catch {
+      return blockedPersist(pin.provider, "lifecycle_provider_operation_failed");
+    }
+  }
   return routeLifecyclePersistence({
     routing: input.routing,
     provider: pin.provider,

@@ -1531,6 +1531,173 @@ test("routes a provider-neutral four-key request into native BookStack persisten
   assert.equal((await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey)).status, "pinned");
 });
 
+test("continues a verified BookStack pin without selecting, confirming placement, or provisioning", async (t) => {
+  const root = await pinTestRoot(t);
+  const originalFetch = globalThis.fetch;
+  const environmentKeys = ["BOOKSTACK_BASE_URL", "BOOKSTACK_ORIGIN", "BOOKSTACK_TOKEN_ID", "BOOKSTACK_TOKEN_SECRET"];
+  const previousEnvironment = Object.fromEntries(environmentKeys.map((key) => [key, process.env[key]]));
+  const environment = {
+    BOOKSTACK_BASE_URL: "https://bookstack.test",
+    BOOKSTACK_ORIGIN: "https://bookstack.test",
+    BOOKSTACK_TOKEN_ID: "test-token-id",
+    BOOKSTACK_TOKEN_SECRET: "test-token-secret",
+  };
+  for (const [key, value] of Object.entries(environment)) process.env[key] = value;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    for (const key of environmentKeys) {
+      if (previousEnvironment[key] === undefined) delete process.env[key];
+      else process.env[key] = previousEnvironment[key];
+    }
+  });
+
+  const shelf = { id: 1, name: "Lifecycle artifacts", slug: "lifecycle-artifacts", books: [2] };
+  const book = { id: 2, name: "ima-pi", slug: "ima-pi" };
+  const chapter = {
+    id: 3,
+    name: `taskwarrior-${identity.taskwarriorUuid}`,
+    slug: `taskwarrior-${identity.taskwarriorUuid}`,
+    book_id: 2,
+  };
+  const pages = [];
+  const calls = [];
+  let stage = "first-use";
+  const json = (value) => new Response(JSON.stringify(value), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+  globalThis.fetch = async (input, init = {}) => {
+    const url = new URL(String(input));
+    const method = init.method ?? "GET";
+    const body = typeof init.body === "string" ? JSON.parse(init.body) : null;
+    calls.push({ stage, origin: url.origin, pathname: url.pathname, method, body });
+    const list = (data) => json({ total: data.length, data });
+    if (method === "GET" && ["/api/shelves", "/api/books", "/api/chapters"].includes(url.pathname)) {
+      if (stage === "continuation") return new Response("ensure placement is forbidden", { status: 500 });
+      return url.pathname === "/api/shelves"
+        ? list([shelf])
+        : url.pathname === "/api/books"
+          ? list([book])
+          : list([chapter]);
+    }
+    if (method === "GET" && url.pathname === "/api/shelves/1") return json(shelf);
+    if (method === "GET" && url.pathname === "/api/books/2") return json(book);
+    if (method === "GET" && url.pathname === "/api/chapters/3") return json(chapter);
+    if (method === "GET" && url.pathname === "/api/pages") return list(pages);
+    const pageId = /^\/api\/pages\/(\d+)$/.exec(url.pathname)?.[1];
+    if (method === "GET" && pageId) {
+      const page = pages.find((candidate) => candidate.id === Number(pageId));
+      return page ? json(page) : new Response("not found", { status: 404 });
+    }
+    if (method === "POST" && url.pathname === "/api/pages" && body?.chapter_id === chapter.id) {
+      const page = {
+        id: pages.length + 4,
+        name: body.name,
+        slug: body.name,
+        book_id: book.id,
+        chapter_id: chapter.id,
+        markdown: body.markdown,
+        revision_count: 1,
+        updated_at: "2026-08-31T12:00:00.000Z",
+        created_by: { id: 7 },
+        updated_by: { id: 8 },
+      };
+      pages.push(page);
+      return json(page);
+    }
+    return new Response("unexpected request", { status: 404 });
+  };
+
+  let providerConfirmations = 0;
+  let placementConfirmations = 0;
+  const first = await coordinateLifecycle({
+    ...localLifecycleRequest(),
+    provider: "bookstack",
+  }, {
+    cwd: root,
+    corpus: noHistoricalLifecycleCorpus,
+    environment,
+    resolveProjectRoot: async () => root,
+    now: () => new Date("2026-08-31T12:00:00.000Z"),
+    confirmProvider: async () => {
+      providerConfirmations += 1;
+      return true;
+    },
+    confirmBookStackPlacement: async () => {
+      placementConfirmations += 1;
+      return true;
+    },
+  });
+  assert.equal(first.status, "completed");
+  assert.equal(providerConfirmations, 1);
+  assert.equal(placementConfirmations, 1);
+  assert.equal(pages.length, 1);
+
+  const pinned = await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey);
+  assert.equal(pinned.status, "pinned");
+  if (pinned.status !== "pinned") return;
+  assert.equal(pinned.pin.provider, "bookstack");
+  assert.deepEqual({
+    shelfId: pinned.pin.initialReference.shelfId,
+    bookId: pinned.pin.initialReference.bookId,
+    chapterId: pinned.pin.initialReference.chapterId,
+  }, {
+    shelfId: shelf.id,
+    bookId: book.id,
+    chapterId: chapter.id,
+  });
+  assert.equal(
+    pinned.pin.initialReference.originFingerprint,
+    originFingerprint("https://bookstack.test"),
+  );
+  const registry = join(root, ".ima-cycle", "provider-pins.json");
+  const pinBeforeContinuation = await readFile(registry, "utf8");
+
+  stage = "continuation";
+  calls.length = 0;
+  const tools = [];
+  integrations({ registerTool: (tool) => tools.push(tool) });
+  const lifecycle = tools.find((tool) => tool.name === "ima_lifecycle");
+  assert.ok(lifecycle);
+  let selections = 0;
+  let confirmations = 0;
+  const continued = await lifecycle.execute("test", localLifecycleRequest("implementation"), undefined, undefined, {
+    cwd: root,
+    mode: "tui",
+    hasUI: true,
+    ui: {
+      select: async () => {
+        selections += 1;
+        return "qdrant";
+      },
+      confirm: async () => {
+        confirmations += 1;
+        return true;
+      },
+    },
+  });
+
+  assert.equal(continued.details.status, "completed");
+  assert.equal(continued.details.provider, "bookstack");
+  assert.equal(selections, 0);
+  assert.equal(confirmations, 0);
+  assert.equal(calls.every((call) => call.origin === "https://bookstack.test"), true);
+  assert.equal(calls.some((call) => ["/api/shelves", "/api/books", "/api/chapters"].includes(call.pathname)), false);
+  for (const pathname of ["/api/shelves/1", "/api/books/2", "/api/chapters/3"]) {
+    assert.equal(calls.some((call) => call.method === "GET" && call.pathname === pathname), true, pathname);
+  }
+  assert.deepEqual(
+    calls.filter((call) => call.method !== "GET").map((call) => ({
+      method: call.method,
+      pathname: call.pathname,
+      chapterId: call.body?.chapter_id,
+    })),
+    [{ method: "POST", pathname: "/api/pages", chapterId: chapter.id }],
+  );
+  assert.equal(pages.length, 2);
+  assert.equal(await readFile(registry, "utf8"), pinBeforeContinuation);
+});
+
 test("rejects malformed BookStack recovery input before pin or provider effects", async (t) => {
   const root = await pinTestRoot(t);
   const client = createBookStackRecoveryClient();

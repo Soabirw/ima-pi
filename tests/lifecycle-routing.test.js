@@ -141,6 +141,182 @@ test("uses the pinned provider alone for verified persistence and recovery", asy
   ]);
 });
 
+test("gates BookStack pinned persistence on an exact verified native pin", async () => {
+  const skynetLifecycleKey = "ima-pi:plane:ima:SKYNET-228";
+  const planArtifactId = "c3aa52d8-5efb-51cf-a461-0ecb89177f0b";
+  const planRecordKey = "ima-pi:plane:ima:SKYNET-228:plan:ace88d5c8593";
+  const implementationArtifactId = "17a8efb9-e559-5ca0-8c07-89c933696e9f";
+  const implementationRecordKey = "ima-pi:plane:ima:SKYNET-228:implementation:2a4e76acc288";
+  const request = validateLifecycleWriteRequest({
+    type: "implementation",
+    identity: {
+      project: "ima-pi",
+      lifecycleKey: skynetLifecycleKey,
+      lifecycleRootMemoryId: "",
+      taskwarriorProject: "",
+      taskwarriorTask: "",
+      taskwarriorUuid: "",
+      jiraKey: "",
+      planeWorkspace: "ima",
+      planeWorkItem: "SKYNET-228",
+      sourceRefs: ["plane:ima:SKYNET-228"],
+      priorArtifactIds: [planArtifactId],
+    },
+    summary: "BookStack continuation must use the verified native placement.",
+    artifact: "# Implementation\n\nPinned BookStack continuation.",
+  });
+  assert.equal(request.valid, true);
+  if (!request.valid) return;
+
+  const referenceFor = ({
+    artifactId = planArtifactId,
+    recordKey = planRecordKey,
+    lifecycle = skynetLifecycleKey,
+    phase = "plan",
+    pageHash = "b".repeat(64),
+  } = {}) => ({
+    projectSlug: "ima-pi",
+    sourceRef: "plane:ima:SKYNET-228",
+    lifecycleKey: lifecycle,
+    shelfId: 71,
+    shelfSlug: "lifecycle-artifacts",
+    bookId: 72,
+    bookSlug: "ima-pi",
+    chapterId: 73,
+    chapterSlug: "skynet-228",
+    pageId: 74,
+    pageSlug: `${phase}-${artifactId}`,
+    originFingerprint: "a".repeat(64),
+    artifactId,
+    recordKey,
+    contentHash: "c".repeat(64),
+    pageHash,
+    revisionCount: 1,
+    updatedAt: "2026-08-31T12:00:00.000Z",
+  });
+  const recordForBookStack = ({
+    artifactId = planArtifactId,
+    recordKey = planRecordKey,
+    lifecycle = skynetLifecycleKey,
+    phase = "plan",
+    reference = referenceFor(),
+  } = {}) => ({
+    provider: "bookstack",
+    artifactId,
+    recordKey,
+    lifecycleKey: lifecycle,
+    phase,
+    summary: "Verified BookStack lifecycle evidence.",
+    artifact: "# Lifecycle\n\nVerified BookStack lifecycle evidence.",
+    reference,
+    createdAt: null,
+  });
+  const initial = recordForBookStack();
+  const continuation = recordForBookStack({
+    artifactId: implementationArtifactId,
+    recordKey: implementationRecordKey,
+    phase: "implementation",
+    reference: referenceFor({
+      artifactId: implementationArtifactId,
+      recordKey: implementationRecordKey,
+      phase: "implementation",
+    }),
+  });
+  const pin = createLifecycleProviderPin({
+    lifecycleKey: skynetLifecycleKey,
+    provider: "bookstack",
+    initialReference: initial.reference,
+    artifactId: initial.artifactId,
+    recordKey: initial.recordKey,
+    pinnedAt: "2026-08-31T12:00:00.000Z",
+  });
+  assert.ok(pin);
+  if (!pin) return;
+
+  const routingFor = (reconciled) => {
+    const calls = [];
+    return {
+      calls,
+      routing: createLifecycleRouting([{
+        provider: "bookstack",
+        reconcile: async (reference) => {
+          calls.push({ operation: "reconcile", reference: structuredClone(reference) });
+          return { status: "verified", record: reconciled };
+        },
+        persistPinned: async (nextRequest, reference) => {
+          calls.push({
+            operation: "persistPinned",
+            request: structuredClone(nextRequest),
+            reference: structuredClone(reference),
+          });
+          return { status: "verified", record: continuation };
+        },
+        persist: async () => {
+          calls.push({ operation: "persist" });
+          return { status: "verified", record: continuation };
+        },
+        recall: async () => ({ status: "verified", provider: "bookstack", records: [] }),
+      }]),
+    };
+  };
+
+  const valid = routingFor(initial);
+  const persisted = await routePinnedLifecyclePersistence({ routing: valid.routing, pin, request });
+  assert.equal(persisted.status, "verified");
+  assert.deepEqual(valid.calls.map(({ operation }) => operation), ["reconcile", "persistPinned"]);
+  assert.deepEqual(valid.calls[0].reference, pin.initialReference);
+  assert.deepEqual(valid.calls[1].reference, pin.initialReference);
+  assert.deepEqual(valid.calls[1].request, request);
+
+  const invalidResponses = [
+    { label: "provider", record: recordFor(requestFor()) },
+    {
+      label: "lifecycle key",
+      record: recordForBookStack({ lifecycle: "ima-pi:plane:ima:SKYNET-229" }),
+    },
+    {
+      label: "artifact ID",
+      record: recordForBookStack({ artifactId: implementationArtifactId }),
+    },
+    {
+      label: "record key",
+      record: recordForBookStack({ recordKey: implementationRecordKey }),
+    },
+    {
+      label: "native reference",
+      record: recordForBookStack({ reference: referenceFor({ pageHash: "d".repeat(64) }) }),
+    },
+  ];
+  for (const invalidResponse of invalidResponses) {
+    const invalid = routingFor(invalidResponse.record);
+    const result = await routePinnedLifecyclePersistence({ routing: invalid.routing, pin, request });
+    assert.deepEqual(result, {
+      status: "blocked",
+      provider: "bookstack",
+      code: "pinned_provider_response_invalid",
+      writeState: "no-write",
+    }, invalidResponse.label);
+    assert.deepEqual(invalid.calls.map(({ operation }) => operation), ["reconcile"], invalidResponse.label);
+  }
+
+  const malformed = routingFor(initial);
+  const invalidPin = {
+    ...pin,
+    initialReference: { ...pin.initialReference, pageHash: "not-a-valid-hash" },
+  };
+  assert.deepEqual(await routePinnedLifecyclePersistence({
+    routing: malformed.routing,
+    pin: invalidPin,
+    request,
+  }), {
+    status: "blocked",
+    provider: "qdrant",
+    code: "lifecycle_pin_invalid",
+    writeState: "no-write",
+  });
+  assert.deepEqual(malformed.calls, []);
+});
+
 test("blocks invalid pins and failed pinned recovery without fallback writes", async () => {
   const initial = recordFor(requestFor("plan"));
   const next = requestFor("implementation");

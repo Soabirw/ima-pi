@@ -1332,20 +1332,13 @@ const bookStackLifecycleAdapter = (input: {
 }): LifecycleRoutingAdapter | null => {
   const provider = bookStackLifecycleProviderFor(input);
   if (!provider) return null;
-  const persist = async (request: ValidLifecycleRequest, signal?: AbortSignal): Promise<RoutedLifecyclePersistResult> => {
-    if (signal?.aborted) return blockedPersist("bookstack", { code: "aborted" }, "no-write");
-    const sourceRef = bookStackSourceReference(request);
-    if (!sourceRef) return blockedPersist("bookstack", { code: "bookstack_placement_invalid" }, "no-write");
-    const location = {
-      projectSlug: request.identity.project,
-      sourceRef,
-      lifecycleKey: request.identity.lifecycleKey,
-    };
-    const placement = await provider.ensurePlacement(location);
-    if (placement.status !== "verified") return blockedPersist("bookstack", placement);
+  const persistAtPlacement = async (
+    request: ValidLifecycleRequest,
+    placement: LifecyclePlacement,
+  ): Promise<RoutedLifecyclePersistResult> => {
     const result = await provider.persist({
       request: projectLifecyclePersistenceRequest(request),
-      placement: placement.placement,
+      placement,
     });
     if (result.status !== "verified") return blockedPersist("bookstack", result);
     const record = routedRecord({
@@ -1360,6 +1353,41 @@ const bookStackLifecycleAdapter = (input: {
     });
     return record ? { status: "verified", record } : blockedPersist("bookstack", null);
   };
+  const persist = async (request: ValidLifecycleRequest, signal?: AbortSignal): Promise<RoutedLifecyclePersistResult> => {
+    if (signal?.aborted) return blockedPersist("bookstack", { code: "aborted" }, "no-write");
+    const sourceRef = bookStackSourceReference(request);
+    if (!sourceRef) return blockedPersist("bookstack", { code: "bookstack_placement_invalid" }, "no-write");
+    const location = {
+      projectSlug: request.identity.project,
+      sourceRef,
+      lifecycleKey: request.identity.lifecycleKey,
+    };
+    const placement = await provider.ensurePlacement(location);
+    if (placement.status !== "verified") return blockedPersist("bookstack", placement);
+    return persistAtPlacement(request, placement.placement);
+  };
+  const persistPinned = async (
+    request: ValidLifecycleRequest,
+    initialReference: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<RoutedLifecyclePersistResult> => {
+    if (signal?.aborted) return blockedPersist("bookstack", { code: "aborted" }, "no-write");
+    const verifiedPlacement = projectLifecyclePlacement({
+      projectSlug: initialReference.projectSlug,
+      sourceRef: initialReference.sourceRef,
+      lifecycleKey: initialReference.lifecycleKey,
+      shelfId: initialReference.shelfId,
+      shelfSlug: initialReference.shelfSlug,
+      bookId: initialReference.bookId,
+      bookSlug: initialReference.bookSlug,
+      chapterId: initialReference.chapterId,
+      chapterSlug: initialReference.chapterSlug,
+    });
+    if (!verifiedPlacement || !placementMatchesRequest(verifiedPlacement, request)) {
+      return blockedPersist("bookstack", { code: "bookstack_placement_invalid" }, "no-write");
+    }
+    return persistAtPlacement(request, verifiedPlacement);
+  };
   const read = async (reference: Record<string, unknown>, signal?: AbortSignal): Promise<RoutedLifecyclePersistResult> => {
     if (signal?.aborted) return blockedPersist("bookstack", { code: "aborted" }, "no-write");
     const result = await provider.get(reference);
@@ -1370,6 +1398,7 @@ const bookStackLifecycleAdapter = (input: {
   return {
     provider: "bookstack",
     persist,
+    persistPinned,
     get: read,
     reconcile: read,
     recall: async (selection, signal) => {

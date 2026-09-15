@@ -14,22 +14,24 @@ through `ima_context` before lifecycle work. Do not choose a provider, call prov
 storage, or use Qdrant as a generic lifecycle fallback from a phase prompt.
 
 The provider set is exactly **BookStack**, **Qdrant**, **Serena**, and **Markdown**. For an unpinned
-lifecycle, `ima_lifecycle` presents the package preference recommendation (default priority:
-BookStack, Qdrant, Serena, Markdown) and requires explicit user confirmation or adjustment. Only the
-user may approve BookStack's organization-visible placement.
+lifecycle, `ima_lifecycle` applies the package preference recommendation (default priority:
+BookStack, Qdrant, Serena, Markdown). Only the first unpinned, organization-visible BookStack
+placement requires explicit user consent. Phase prompts must neither infer nor auto-approve that
+consent, which authorizes that first-use placement only and does not establish a pin. `ima_lifecycle`
+owns provider and placement decisions; phase prompts do not select a provider.
 
-A checkout-local durable pin is established only after the confirmed provider persists and directly
-verifies the first immutable artifact. Before that point, exact bounded Tier-1 Qdrant history across
-**every lifecycle phase** is authoritative: a verified historical record requires Qdrant rather than
-another provider. A proven `no-write` failure may clear an unpinned attempt and permit a new,
-user-confirmed evaluation from the remaining ordered candidates; a possible or unknown write,
-corrupt authority, or cleanup uncertainty is `BLOCKED`. There is no automatic retry or fallback.
+A checkout-local durable pin is established only after the selected provider persists the first
+immutable artifact and provider-native direct read-back verifies it. Before that point, exact bounded
+Tier-1 Qdrant history across **every lifecycle phase** is authoritative: a verified historical record
+requires Qdrant rather than another provider. Provider unavailability, mismatch, unknown writes,
+persistence failure, partial evidence, an invalid pin, corrupt authority, or cleanup uncertainty is
+`BLOCKED`. Do not retry a `BLOCKED` write, fall back, migrate, switch providers, or mix history.
 
-After a pin exists, recover evidence only through its provider-native verified recall/get/reconcile
-path. Provider unavailability, a mismatch, partial evidence, or an invalid pin fails closed. Never
-fall back, migrate, or mix providers after pinning, including by querying Qdrant. Retain the returned
-`artifactId`, `recordKey`, and provider-native reference behind the pin in lifecycle evidence and
-handoffs. The local pin establishes no live, replicated, or cross-device authority claim.
+After a pin exists, both guided and autonomous phases use its exact provider-native placement without
+provider selection or placement confirmation. Recover evidence only through its provider-native
+verified recall/get/reconcile path. Retain the returned `artifactId`, `recordKey`, and provider-native
+reference behind the pin in lifecycle evidence and handoffs. The local pin establishes no live,
+replicated, or cross-device authority claim.
 
 ## Prior artifacts and identity
 

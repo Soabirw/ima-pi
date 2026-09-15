@@ -17,7 +17,7 @@ Shelf: lifecycle-artifacts
 
 The caller supplies a validated lower-case project slug and canonical source reference. The project slug selects the Book; `ima-pi` is an example project, not a provider-wide restriction. Taskwarrior chapters use `taskwarrior-<full-uuid>`; Jira and Plane use their lower-case work-item key; lifecycle and cited legacy sources use `lifecycle-<sha256(lifecycle-key)>`. The complete source identity and lifecycle key remain in every page record; a slug alone never grants authority.
 
-`planPlacement` reads placement without writing and returns the exact reuse/create preview, authoritative ordered shelf membership before and after the approved operation, sharing implications, and required prerequisites. Chapters are resolved only inside the selected project Book. `ensurePlacement` accepts one injected approval callback for the complete preview, requires literal `true`, rechecks the preview immediately before writes, then creates only approved missing resources and verifies slugs and relationships. Declined, missing, non-boolean, thrown, stale, ambiguous, unavailable, or unverifiable approval produces a bounded blocked result and no speculative write.
+`planPlacement` reads placement without writing and returns the exact reuse/create preview, authoritative ordered shelf membership before and after the approved operation, sharing implications, and required prerequisites. Chapters are resolved only inside the selected project Book. For an unpinned lifecycle, its first organization-visible BookStack placement requires the user's explicit consent to that complete preview. `ensurePlacement` accepts one injected approval callback for that preview, requires literal `true`, rechecks it immediately before writes, then creates only approved missing resources and verifies slugs and relationships. Consent authorizes this placement attempt only: it never creates a durable pin. Declined, missing, non-boolean, thrown, stale, ambiguous, unavailable, or unverifiable approval produces a bounded blocked result and no speculative write.
 
 Before live provisioning, an administrator must confirm all of the following:
 
@@ -38,6 +38,12 @@ Pages are immutable through this provider: there is no update operation. Before 
 Page-list discovery accepts a literal empty `slug` only for an unrelated page-list entry and retains that entry in the stable total and discovery hash. This narrowly handles BookStack drafts that lack a slug. Page reads, page-create responses, verification, locator validation, and every Shelf, Book, and Chapter decode still require a non-empty bounded slug.
 
 `get` uses an origin-fingerprinted serialized locator containing the complete Shelf → Book → Chapter placement, canonical `<phase>-<artifact UUID>` page slug, deterministic record key, immutable record hash, actual-byte page hash, revision, and bounded update timestamp. It projects that locator into a detached value before any HTTP request, so caller mutation during a read cannot redirect the request or alter its result. Missing, extra, accessor-backed, malformed, or wrong-origin fields fail closed before HTTP. Stale revision/hash proof and moved or missing resources are detected only after authoritative page and hierarchy reads; those failures still perform no write and no fallback.
+
+## Pinning and later phases
+
+A durable BookStack pin is established only when the approved artifact is persisted and the provider directly reads it back to verify the complete placement and immutable artifact evidence. A consented placement that has not completed that verified persistence remains unpinned and cannot be reused as a pin.
+
+Once this verified pin is in the checkout-local registry, every later guided or autonomous lifecycle phase reuses its exact Shelf → Book → Chapter placement. It does not prompt again for a provider or placement. A missing, stale, ambiguous, moved, unavailable, or unverifiable pin blocks the phase; it never retries, falls back, migrates, switches provider, or mixes history.
 
 ## Recovery contract
 
@@ -110,4 +116,4 @@ git diff --check
 
 A separately authorized synthetic BookStack acceptance run may create test-only containers, approve placement once, verify read-back and retry behavior, and retrieve from a fresh provider instance. It must not use real lifecycle content or clean up remote material without separate approval.
 
-Lifecycle integration must preserve the user's selection and BookStack-placement confirmation, the checkout-local pin, and this provider's no-fallback, fail-closed results. No live-provider or cross-device acceptance is claimed.
+Lifecycle integration must request explicit placement consent only for an unpinned lifecycle's first organization-visible BookStack placement. It must persist the checkout-local pin only after verified artifact persistence and direct read-back; consent alone is never a pin. Later guided or autonomous phases must reuse the exact verified pinned placement with no provider or placement prompt, preserving this provider's no-fallback, fail-closed results. No live-provider or cross-device acceptance is claimed.
