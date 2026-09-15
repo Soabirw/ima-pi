@@ -1381,7 +1381,7 @@ const bookStackLifecycleAdapter = (input: {
         return { status: "blocked", provider: "bookstack", code: lifecycleCode(initial.code, "pinned_provider_failed") };
       }
       const result = await provider.recall({
-        placement: initial.locator,
+        placement: projectBookStackRecoveryPlacement(initial.locator),
         lifecycleKey: selection.lifecycleKey,
         sourceRef: initial.locator.sourceRef,
       });

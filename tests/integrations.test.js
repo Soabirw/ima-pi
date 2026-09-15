@@ -2359,6 +2359,196 @@ test("TEST-004 reconciles a checkpointed one-LF-normalized page into a pin-ready
   assert.notEqual(pinned.pin.initialReference.pageHash, digestBookStackValue(record.pageMarkdown));
 });
 
+test("TEST-006 recalls a valid pinned BookStack lifecycle through the exact placement projection", async (t) => {
+  const root = await pinTestRoot(t);
+  const request = localLifecycleRequest();
+  const record = createLifecycleRecord({ request, placement: bookStackRecoveryPlacement });
+  const page = {
+    id: 1796,
+    name: `${record.phase}-${record.artifactId}`,
+    slug: `${record.phase}-${record.artifactId}`,
+    book_id: bookStackRecoveryPlacement.bookId,
+    chapter_id: bookStackRecoveryPlacement.chapterId,
+    markdown: record.pageMarkdown,
+    revision_count: 1,
+    updated_at: "2026-09-30T00:00:00.000Z",
+    created_by: { id: 7 },
+    updated_by: { id: 8 },
+  };
+  const implementationRecord = createLifecycleRecord({
+    request: {
+      ...request,
+      type: "implementation",
+      summary: "Synthetic implementation evidence shares the pinned lifecycle source.",
+      artifact: "# Implementation\n\nSynthetic implementation lifecycle provider evidence.",
+    },
+    placement: bookStackRecoveryPlacement,
+  });
+  const pageFor = (id, lifecycleRecord) => ({
+    id,
+    name: `${lifecycleRecord.phase}-${lifecycleRecord.artifactId}`,
+    slug: `${lifecycleRecord.phase}-${lifecycleRecord.artifactId}`,
+    book_id: bookStackRecoveryPlacement.bookId,
+    chapter_id: bookStackRecoveryPlacement.chapterId,
+    markdown: lifecycleRecord.pageMarkdown,
+    revision_count: 1,
+    updated_at: "2026-09-30T00:00:00.000Z",
+    created_by: { id: 7 },
+    updated_by: { id: 8 },
+  });
+  const implementationPage = pageFor(1797, implementationRecord);
+  let listedPages = [page, implementationPage];
+  const locator = {
+    ...bookStackRecoveryPlacement,
+    pageId: page.id,
+    pageSlug: page.slug,
+    originFingerprint: originFingerprint("https://bookstack.test"),
+    artifactId: record.artifactId,
+    recordKey: record.recordKey,
+    contentHash: record.contentHash,
+    pageHash: digestBookStackValue(page.markdown),
+    revisionCount: page.revision_count,
+    updatedAt: page.updated_at,
+  };
+  const attempt = await authorizedPinAttempt(root, "bookstack");
+  const writing = await markLifecyclePinAttemptWritingWith(async () => root)(root, attempt);
+  assert.equal(writing.status, "writing");
+  if (writing.status !== "writing") return;
+  const pin = createLifecycleProviderPin({
+    lifecycleKey,
+    provider: "bookstack",
+    initialReference: locator,
+    artifactId: record.artifactId,
+    recordKey: record.recordKey,
+    pinnedAt: attempt.startedAt,
+  });
+  assert.ok(pin);
+  const confirmed = await confirmLifecyclePinWith(async () => root)(root, writing.attempt, pin);
+  assert.equal(confirmed.status, "pinned");
+  const registry = join(root, ".ima-cycle", "provider-pins.json");
+  const pinStateBeforeRecall = await readFile(registry, "utf8");
+
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const calls = [];
+  const shelf = { id: 1, name: "Lifecycle", slug: "lifecycle-artifacts", books: [2] };
+  const book = { id: 2, name: "IMA Pi", slug: "ima-pi" };
+  const chapter = {
+    id: 3,
+    name: bookStackRecoveryPlacement.chapterSlug,
+    slug: bookStackRecoveryPlacement.chapterSlug,
+    book_id: 2,
+  };
+  const json = (body) => new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+  globalThis.fetch = async (input, init = {}) => {
+    const url = new URL(String(input));
+    const method = init.method ?? "GET";
+    calls.push({ origin: url.origin, pathname: url.pathname, method });
+    const list = (data) => json({ total: data.length, data });
+    if (method === "GET" && url.pathname === "/api/shelves/1") return json(shelf);
+    if (method === "GET" && url.pathname === "/api/books/2") return json(book);
+    if (method === "GET" && url.pathname === "/api/chapters/3") return json(chapter);
+    if (method === "GET" && url.pathname === "/api/pages") return list(listedPages);
+    const pageId = /^\/api\/pages\/(\d+)$/.exec(url.pathname)?.[1];
+    const listed = pageId ? listedPages.find((candidate) => candidate.id === Number(pageId)) : null;
+    if (method === "GET" && listed) return json(listed);
+    return new Response("unexpected request", { status: 404 });
+  };
+
+  const access = corpusAccessCounter();
+  let serenaCalls = 0;
+  const supplied = {
+    canonical: async (path) => path,
+    corpus: access.corpus,
+    environment: {
+      BOOKSTACK_BASE_URL: "https://bookstack.test",
+      BOOKSTACK_TOKEN_ID: "test-token-id",
+      BOOKSTACK_TOKEN_SECRET: "test-token-secret",
+    },
+    resolveProjectRoot: async () => root,
+    session: async () => {
+      serenaCalls += 1;
+      throw new Error("Serena fallback is forbidden for a verified BookStack pin");
+    },
+  };
+  const context = await coordinateContext({
+    source: { type: "lifecycle", key: lifecycleKey },
+  }, root, supplied);
+
+  assert.equal(
+    context.status,
+    "degraded",
+    `valid BookStack pin must pass provider get and exact-placement recall: ${JSON.stringify(context.diagnostics)}`,
+  );
+  assert.deepEqual(context.source, {
+    type: "lifecycle",
+    key: lifecycleKey,
+    title: `Lifecycle ${lifecycleKey}`,
+    content: record.artifact,
+    references: [
+      `Lifecycle:${lifecycleKey}`,
+      "LifecycleProvider:bookstack",
+      `LifecycleRecordKey:${record.recordKey}`,
+    ],
+  });
+  assert.deepEqual(context.diagnostics, [{
+    code: "lifecycle_pinned_provider_context",
+    stage: "lifecycle",
+    message: "Lifecycle hydration used the pinned provider.",
+  }]);
+  assert.equal(calls.filter(({ pathname }) => pathname === "/api/pages").length, 1);
+  const firstRecallList = calls.findIndex(({ pathname }) => pathname === "/api/pages");
+  assert.equal(calls.slice(0, firstRecallList).some(({ pathname }) => pathname === "/api/pages/1796"), true);
+  assert.equal(calls.every(({ origin }) => origin === "https://bookstack.test"), true);
+  assert.equal(calls.every(({ method }) => method === "GET"), true);
+  assert.equal(access.calls(), 0);
+  assert.equal(serenaCalls, 0);
+  assert.equal(await readFile(registry, "utf8"), pinStateBeforeRecall);
+
+  const phaseRecalled = await recallLifecycle(`${lifecycleKey} plan`, root, supplied);
+  assert.ok(phaseRecalled);
+  assert.deepEqual(phaseRecalled.structuredContent.results.map(({ phase, recordKey }) => ({ phase, recordKey })), [{
+    phase: "plan",
+    recordKey: record.recordKey,
+  }]);
+
+  const overflowPages = Array.from({ length: 20 }, (_, index) => pageFor(
+    1798 + index,
+    createLifecycleRecord({
+      request: {
+        ...request,
+        summary: `Synthetic overflow plan evidence ${index + 1}.`,
+        artifact: `# Plan\n\nSynthetic overflow lifecycle provider evidence ${index + 1}.`,
+      },
+      placement: bookStackRecoveryPlacement,
+    }),
+  ));
+  listedPages = [page, ...overflowPages];
+  const listCallsBeforeOverflow = calls.filter(({ pathname }) => pathname === "/api/pages").length;
+  assert.equal(await recallLifecycle(`${lifecycleKey} plan`, root, supplied), null);
+  assert.equal(calls.filter(({ pathname }) => pathname === "/api/pages").length, listCallsBeforeOverflow + 1);
+  listedPages = [page, implementationPage];
+
+  page.markdown = page.markdown.replace("Synthetic lifecycle provider evidence.", "Tampered provider evidence.");
+  const mismatched = await coordinateContext({
+    source: { type: "lifecycle", key: lifecycleKey },
+  }, root, supplied);
+  assert.equal(mismatched.status, "failed");
+  assert.equal(mismatched.source, null);
+  assert.deepEqual(mismatched.diagnostics, [{
+    code: "pinned_provider_unavailable",
+    stage: "lifecycle",
+    message: "Pinned lifecycle provider could not verify authoritative evidence.",
+  }]);
+  assert.equal(calls.every(({ method }) => method === "GET"), true);
+  assert.equal(access.calls(), 0);
+  assert.equal(serenaCalls, 0);
+  assert.equal(await readFile(registry, "utf8"), pinStateBeforeRecall);
+});
+
 test("routes a provider-neutral four-key request into native Serena persistence", async (t) => {
   const root = await pinTestRoot(t);
   await mkdir(join(root, ".serena", "memories"), { recursive: true });

@@ -178,6 +178,55 @@ test("provider verifies hierarchy and full evidence, then makes identical retrie
   assert.equal((await provider.get(JSON.parse(JSON.stringify(first.locator)))).status, "verified");
 });
 
+test("TEST-006 BookStack recall accepts the exact placement projection and rejects locators or mismatched evidence", async () => {
+  const fake = createClient();
+  const provider = createBookStackLifecycleProvider({ client: fake });
+  const stored = await provider.persist({ request, placement });
+  assert.equal(stored.status, "verified");
+  if (stored.status !== "verified") return;
+  const writesBeforeRecall = fake.creates();
+  const pinned = await provider.get(structuredClone(stored.locator));
+  assert.equal(pinned.status, "verified");
+  if (pinned.status !== "verified") return;
+  assert.equal(pinned.artifactId, stored.artifactId);
+  assert.equal(pinned.recordKey, stored.recordKey);
+  assert.deepEqual(pinned.locator, stored.locator);
+
+  const recalled = await provider.recall({
+    placement: structuredClone(placement),
+    lifecycleKey: identity.lifecycleKey,
+    sourceRef,
+  });
+  assert.equal(Array.isArray(recalled), true);
+  if (!Array.isArray(recalled)) return;
+  assert.equal(recalled.length, 1);
+  assert.equal(recalled[0].artifactId, stored.artifactId);
+  assert.equal(recalled[0].recordKey, stored.recordKey);
+  assert.equal(recalled[0].artifact, stored.artifact);
+
+  const locatorAsPlacement = await provider.recall({
+    placement: structuredClone(pinned.locator),
+    lifecycleKey: identity.lifecycleKey,
+    sourceRef,
+  });
+  assert.equal(Array.isArray(locatorAsPlacement), false);
+  if (Array.isArray(locatorAsPlacement)) return;
+  assert.equal(locatorAsPlacement.status, "blocked");
+  assert.equal(locatorAsPlacement.code, "bookstack_placement_invalid");
+
+  fake.alterPage({ markdown: stored.artifact });
+  const mismatchedEvidence = await provider.recall({
+    placement: structuredClone(placement),
+    lifecycleKey: identity.lifecycleKey,
+    sourceRef,
+  });
+  assert.equal(Array.isArray(mismatchedEvidence), false);
+  if (Array.isArray(mismatchedEvidence)) return;
+  assert.equal(mismatchedEvidence.status, "blocked");
+  assert.equal(mismatchedEvidence.code, "bookstack_verification_failed");
+  assert.equal(fake.creates(), writesBeforeRecall);
+});
+
 test("ordinary persistence treats target-named noncanonical drafts as conflicts", async () => {
   const record = createLifecycleRecord({ request, placement });
   const title = `${record.phase}-${record.artifactId}`;
