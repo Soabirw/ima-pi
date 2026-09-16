@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
-import { resolve } from "node:path";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import test from "node:test";
-import { runFocusedContinuation } from "../extensions/agents.ts";
+import { createScopedTools, runFocusedContinuation } from "../extensions/agents.ts";
 import { agentContractFingerprint, canResumeSession } from "../lib/ima-delegation.ts";
 
 const agent = {
@@ -51,12 +54,15 @@ const continuation = ({
   manager = {},
   acquireSessionLock = async (path) => ({ target: path, release: async () => undefined }),
   onSessionRecord,
+  cwd = "/repo",
+  scopedTools = () => [],
+  createSession,
 } = {}) => {
   const store = new Map([[record.reference, record]]);
   let opened = 0;
   let created = 0;
   const promise = runFocusedContinuation({
-    record, agent: definition, brief: "Fix the retained finding", runtime: modelRuntime, cwd: "/repo", sessionStore: store, onSessionRecord,
+    record, agent: definition, brief: "Fix the retained finding", runtime: modelRuntime, cwd, sessionStore: store, onSessionRecord,
     dependencies: {
       fileExists: () => exists,
       openManager: (path) => {
@@ -65,12 +71,12 @@ const continuation = ({
         return {
           getSessionId: () => manager.sessionId ?? record.sessionId,
           getSessionFile: () => manager.sessionFile ?? path,
-          getCwd: () => manager.cwd ?? "/repo",
+          getCwd: () => manager.cwd ?? cwd,
         };
       },
-      createSession: async () => { created += 1; return { session: fake.session }; },
+      createSession: createSession ?? (async () => { created += 1; return { session: fake.session }; }),
       acquireSessionLock,
-      scopedTools: () => [], clock: () => "new",
+      scopedTools, clock: () => "new",
     },
   });
   return { promise, store, fake, counts: () => ({ opened, created }) };
@@ -197,6 +203,336 @@ const trackedLease = () => {
 };
 
 const aliasedRecord = () => makeRecord({ sessionFile: "/sessions/./a.jsonl" });
+
+test("focused continuation recovers a contained absolute exact-edit failure without changing bytes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ima-agent-continuation-exact-edit-"));
+  const target = join(root, "owned", "file.txt");
+  const sessionFile = join(root, "continued.jsonl");
+  const definition = { ...agent, tools: ["read", "write", "edit"] };
+  const record = makeRecord({ writeScope: ["owned"], sessionFile });
+  record.contractFingerprint = agentContractFingerprint(definition, record.writeScope);
+  let tools;
+  const persisted = [];
+  await mkdir(join(root, "owned"));
+  await writeFile(target, "before\n");
+  await writeFile(sessionFile, "session\n");
+  const fake = fakeSession({ sessionFile, prompt: async ({ listeners }) => {
+    const edit = tools.find((tool) => tool.name === "edit");
+    for (const listener of listeners) {
+      listener({ type: "tool_execution_start", toolCallId: "continued-exact-edit", toolName: "edit", args: { path: `@${target}` } });
+    }
+    await assert.rejects(edit.execute("continued-exact-edit", {
+      path: `@${target}`,
+      edits: [{ oldText: "not present", newText: "after" }],
+    }, undefined, undefined, {}));
+    for (const listener of listeners) {
+      listener({ type: "tool_execution_end", toolCallId: "continued-exact-edit", toolName: "edit", isError: true });
+    }
+  } });
+  try {
+    const run = continuation({
+      record,
+      definition,
+      fake,
+      cwd: root,
+      scopedTools: (input) => {
+        tools = createScopedTools(input);
+        return tools;
+      },
+      onSessionRecord: async (updated) => { persisted.push(updated); },
+    });
+    const result = await run.promise;
+    assert.equal(result.status, "succeeded");
+    assert.equal(result.attempts, 1);
+    assert.equal(fake.state.aborts, 0);
+    assert.equal(await readFile(target, "utf8"), "before\n");
+    assert.equal(run.store.get(record.reference).status, "succeeded");
+    assert.equal(persisted.length, 1);
+    assert.equal(canResumeSession({
+      record: run.store.get(record.reference),
+      agent: definition,
+      purpose: "implementation-follow-up",
+      sessionFileExists: true,
+    }), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("focused continuation invalidates a record after an operation-level ownership violation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ima-agent-continuation-ownership-"));
+  const target = join(root, "sibling", "blocked.txt");
+  const sessionFile = join(root, "continued.jsonl");
+  const record = makeRecord({ writeScope: ["owned"], sessionFile });
+  record.contractFingerprint = agentContractFingerprint(agent, record.writeScope);
+  const lease = trackedLease();
+  let tools;
+  const persisted = [];
+  await mkdir(join(root, "owned"));
+  await mkdir(join(root, "sibling"));
+  await writeFile(sessionFile, "session\n");
+  const fake = fakeSession({ sessionFile, prompt: async ({ listeners }) => {
+    const write = tools.find((tool) => tool.name === "write");
+    for (const listener of listeners) {
+      listener({ type: "tool_execution_start", toolCallId: "continued-unowned-write", toolName: "write", args: { path: "sibling/blocked.txt" } });
+    }
+    await assert.rejects(write.execute("continued-unowned-write", {
+      path: "sibling/blocked.txt",
+      content: "blocked",
+    }, undefined, undefined, {}));
+    for (const listener of listeners) {
+      listener({ type: "tool_execution_end", toolCallId: "continued-unowned-write", toolName: "write", isError: true });
+    }
+  } });
+  try {
+    const run = continuation({
+      record,
+      fake,
+      cwd: root,
+      acquireSessionLock: lease.acquireSessionLock,
+      scopedTools: (input) => {
+        tools = createScopedTools(input);
+        return tools;
+      },
+      onSessionRecord: async (updated) => { persisted.push(updated); },
+    });
+    const result = await run.promise;
+    assert.equal(result.status, "failed");
+    assert.equal(result.error, "unsafe-partial-state");
+    assert.equal(result.attempts, 1);
+    assert.equal(result.session, null);
+    assert.equal(run.store.get(record.reference).status, "failed");
+    assert.equal(persisted[0].status, "failed");
+    assert.equal(lease.releases(), 1);
+    assert.ok(fake.state.aborts >= 1);
+    assert.equal(existsSync(target), false);
+    assert.equal(canResumeSession({
+      record: run.store.get(record.reference),
+      agent,
+      purpose: "implementation-follow-up",
+      sessionFileExists: true,
+    }), false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("focused continuation retains its lease when an unsafe edit invalidation cannot persist", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ima-agent-continuation-edit-failure-"));
+  const target = join(root, "owned", "file.txt");
+  const sessionFile = join(root, "continued.jsonl");
+  const definition = { ...agent, tools: ["read", "write", "edit"] };
+  const record = makeRecord({ writeScope: ["owned"], sessionFile });
+  record.contractFingerprint = agentContractFingerprint(definition, record.writeScope);
+  const lease = trackedLease();
+  let tools;
+  let writeEntries = 0;
+  const persisted = [];
+  await mkdir(join(root, "owned"));
+  await writeFile(target, "before\n");
+  await writeFile(sessionFile, "session\n");
+  const fake = fakeSession({ sessionFile, prompt: async ({ listeners }) => {
+    const edit = tools.find((tool) => tool.name === "edit");
+    for (const listener of listeners) {
+      listener({ type: "tool_execution_start", toolCallId: "continued-write-failure", toolName: "edit", args: { path: `@${target}` } });
+    }
+    await assert.rejects(edit.execute("continued-write-failure", {
+      path: `@${target}`,
+      edits: [{ oldText: "before", newText: "after" }],
+    }, undefined, undefined, {}));
+    for (const listener of listeners) {
+      listener({ type: "tool_execution_end", toolCallId: "continued-write-failure", toolName: "edit", isError: true });
+    }
+  } });
+  try {
+    const run = continuation({
+      record,
+      definition,
+      fake,
+      cwd: root,
+      acquireSessionLock: lease.acquireSessionLock,
+      scopedTools: (input) => {
+        tools = createScopedTools({
+          ...input,
+          operations: {
+            writeFile: async () => {
+              writeEntries += 1;
+              throw new Error("injected_edit_write_failure");
+            },
+          },
+        });
+        return tools;
+      },
+      onSessionRecord: async (updated) => {
+        persisted.push(updated);
+        throw new Error("invalidation_persistence_unverified");
+      },
+    });
+    const result = await run.promise;
+    assert.equal(result.status, "failed");
+    assert.equal(result.error, "unsafe-partial-state");
+    assert.equal(result.attempts, 1);
+    assert.equal(result.session, null);
+    assert.equal(writeEntries, 1);
+    assert.equal(await readFile(target, "utf8"), "before\n");
+    assert.equal(run.store.get(record.reference).status, "failed");
+    assert.equal(persisted[0].status, "failed");
+    assert.equal(lease.releases(), 0);
+    assert.ok(fake.state.aborts >= 1);
+    assert.equal(canResumeSession({
+      record: run.store.get(record.reference),
+      agent: definition,
+      purpose: "implementation-follow-up",
+      sessionFileExists: true,
+    }), false);
+
+    const blocked = continuation({
+      record: { ...record, reference: "alias" },
+      definition,
+      cwd: root,
+      acquireSessionLock: lease.acquireSessionLock,
+    });
+    assert.equal((await blocked.promise).error, "session_follow_up_busy");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("focused documenter continuation invalidates a canonical code alias", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ima-documenter-continuation-alias-"));
+  const modulePath = join(root, "lib", "module.ts");
+  const moduleContent = "export const value = 'before';\n";
+  const sessionFile = join(root, "continued.jsonl");
+  const documenter = { ...agent, name: "documenter", authority: "document-write", tools: ["write", "edit", "bash"], result: { kind: "documentation", requiredSections: ["local-changes"] } };
+  const record = makeRecord({ agent: documenter.name, role: documenter.authority, resultKind: documenter.result.kind, writeScope: ["README.md"], sessionFile });
+  record.contractFingerprint = agentContractFingerprint(documenter, record.writeScope);
+  const lease = trackedLease();
+  const persisted = [];
+  let tools;
+  await mkdir(join(root, "lib"));
+  await writeFile(modulePath, moduleContent);
+  await symlink("lib/module.ts", join(root, "README.md"));
+  await writeFile(sessionFile, "session\n");
+  const fake = fakeSession({ sessionFile, text: "## Local-changes\nnone", prompt: async ({ listeners }) => {
+    const edit = tools.find((tool) => tool.name === "edit");
+    for (const listener of listeners) {
+      listener({ type: "tool_execution_start", toolCallId: "continued-readme-edit", toolName: "edit", args: { path: "README.md" } });
+    }
+    await assert.rejects(
+      edit.execute("continued-readme-edit", { path: "README.md", edits: [{ oldText: "before", newText: "after" }] }, undefined, undefined, {}),
+      /documentation_target_required/,
+    );
+    for (const listener of listeners) {
+      listener({ type: "tool_execution_end", toolCallId: "continued-readme-edit", toolName: "edit", isError: true });
+    }
+  } });
+  try {
+    const run = continuation({
+      record,
+      definition: documenter,
+      fake,
+      cwd: root,
+      acquireSessionLock: lease.acquireSessionLock,
+      scopedTools: (input) => {
+        tools = createScopedTools(input);
+        return tools;
+      },
+      onSessionRecord: async (updated) => { persisted.push(updated); },
+    });
+    const result = await run.promise;
+    assert.equal(result.status, "failed");
+    assert.equal(result.error, "unsafe-partial-state");
+    assert.equal(result.attempts, 1);
+    assert.equal(result.session, null);
+    assert.deepEqual(run.counts(), { opened: 1, created: 1 });
+    assert.equal(run.store.get(record.reference).status, "failed");
+    assert.equal(persisted[0].status, "failed");
+    assert.equal(lease.releases(), 1);
+    assert.ok(fake.state.aborts >= 1);
+    assert.equal(await readFile(modulePath, "utf8"), moduleContent);
+    assert.equal(canResumeSession({
+      record: run.store.get(record.reference),
+      agent: documenter,
+      purpose: "implementation-follow-up",
+      sessionFileExists: true,
+    }), false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("focused documenter continuation retains its lease when canonical alias invalidation cannot persist", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ima-documenter-continuation-lease-"));
+  const modulePath = join(root, "lib", "module.ts");
+  const moduleContent = "export const value = 'before';\n";
+  const sessionFile = join(root, "continued.jsonl");
+  const documenter = { ...agent, name: "documenter", authority: "document-write", tools: ["write", "edit", "bash"], result: { kind: "documentation", requiredSections: ["local-changes"] } };
+  const record = makeRecord({ agent: documenter.name, role: documenter.authority, resultKind: documenter.result.kind, writeScope: ["README.md"], sessionFile });
+  record.contractFingerprint = agentContractFingerprint(documenter, record.writeScope);
+  const lease = trackedLease();
+  const persisted = [];
+  let tools;
+  await mkdir(join(root, "lib"));
+  await writeFile(modulePath, moduleContent);
+  await symlink("lib/module.ts", join(root, "README.md"));
+  await writeFile(sessionFile, "session\n");
+  const fake = fakeSession({ sessionFile, text: "## Local-changes\nnone", prompt: async ({ listeners }) => {
+    const write = tools.find((tool) => tool.name === "write");
+    for (const listener of listeners) {
+      listener({ type: "tool_execution_start", toolCallId: "continued-readme-write", toolName: "write", args: { path: "README.md" } });
+    }
+    await assert.rejects(
+      write.execute("continued-readme-write", { path: "README.md", content: "blocked\n" }, undefined, undefined, {}),
+      { message: "documentation_target_required" },
+    );
+    for (const listener of listeners) {
+      listener({ type: "tool_execution_end", toolCallId: "continued-readme-write", toolName: "write", isError: true });
+    }
+  } });
+  try {
+    const run = continuation({
+      record,
+      definition: documenter,
+      fake,
+      cwd: root,
+      acquireSessionLock: lease.acquireSessionLock,
+      scopedTools: (input) => {
+        tools = createScopedTools(input);
+        return tools;
+      },
+      onSessionRecord: async (updated) => {
+        persisted.push(updated);
+        throw new Error("invalidation_persistence_unverified");
+      },
+    });
+    const result = await run.promise;
+    assert.equal(result.status, "failed");
+    assert.equal(result.error, "unsafe-partial-state");
+    assert.equal(result.attempts, 1);
+    assert.equal(result.session, null);
+    assert.equal(run.store.get(record.reference).status, "failed");
+    assert.equal(persisted[0].status, "failed");
+    assert.equal(lease.releases(), 0);
+    assert.ok(fake.state.aborts >= 1);
+    assert.equal(await readFile(modulePath, "utf8"), moduleContent);
+    assert.equal(canResumeSession({
+      record: run.store.get(record.reference),
+      agent: documenter,
+      purpose: "implementation-follow-up",
+      sessionFileExists: true,
+    }), false);
+
+    const blocked = continuation({
+      record: { ...record, reference: "alias" },
+      definition: documenter,
+      cwd: root,
+      acquireSessionLock: lease.acquireSessionLock,
+    });
+    assert.equal((await blocked.promise).error, "session_follow_up_busy");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("fails closed and retains the lease when owned cleanup cannot be verified", async () => {
   const cases = [

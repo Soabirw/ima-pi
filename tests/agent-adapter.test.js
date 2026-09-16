@@ -51,58 +51,94 @@ const fakeSession = (overrides = {}) => {
   return { session, state };
 };
 
-const run = ({ assignments = [assignment("a")], sessions, signal, onActivity, selectedConfig = config, selectedRuntime = runtime, sessionStore = new Map() } = {}) => {
+const run = ({
+  assignments = [assignment("a")],
+  sessions,
+  signal,
+  onActivity,
+  selectedConfig = config,
+  selectedRuntime = runtime,
+  sessionStore = new Map(),
+  cwd = "/repo",
+  scopedTools = () => [],
+  selectedAgent = agent,
+  createSession,
+} = {}) => {
   let index = 0;
   let tick = 1_000;
   return coordinateDelegation({
-    cwd: "/repo", request: { title: "work", assignments }, agents: [agent], config: selectedConfig, runtime: selectedRuntime, runId: "tool-call", onActivity, signal,
+    cwd, request: { title: "work", assignments }, agents: [selectedAgent], config: selectedConfig, runtime: selectedRuntime, runId: "tool-call", onActivity, signal,
     sessionStore, dependencies: {
-      createManager: () => ({}), scopedTools: () => [], clock: () => "2026-07-31T20:00:00.000Z", activityClock: () => tick += 10,
-      createSession: async () => sessions[index++],
+      createManager: () => ({}), scopedTools, clock: () => "2026-07-31T20:00:00.000Z", activityClock: () => tick += 10,
+      createSession: createSession ?? (async () => sessions[index++]),
     },
   });
 };
 
-test("TEST-004 scoped write and edit permit one native @ prefix but deny outside and doubled prefixes", async () => {
+test("TEST-004 scoped tools preserve supported native paths and fail closed on unsafe path evidence", async () => {
   const root = await mkdtemp(join(tmpdir(), "ima-agent-adapter-"));
   const outside = await mkdtemp(join(tmpdir(), "ima-agent-outside-"));
-  await mkdir(join(root, "owned"));
-  await mkdir(join(root, "sibling"));
-  await writeFile(join(root, "owned", "edit.txt"), "before\n");
-  await writeFile(join(root, "sibling", "edit.txt"), "before\n");
-  await symlink(outside, join(root, "owned", "escape"));
-  const tools = createScopedTools({ cwd: root, assignment: assignment("a"), agent });
-  const byName = new Map(tools.map((tool) => [tool.name, tool]));
-  const invoke = (name, args) => byName.get(name).execute("call", args, undefined, undefined, {});
+  try {
+    await mkdir(join(root, "owned"));
+    await mkdir(join(root, "sibling"));
+    await writeFile(join(root, "owned", "edit.txt"), "before\n");
+    await writeFile(join(root, "sibling", "edit.txt"), "before\n");
+    await symlink(outside, join(root, "owned", "escape"));
+    await symlink(join(outside, "missing"), join(root, "owned", "broken"));
+    await symlink("loop", join(root, "owned", "loop"));
+    const tools = createScopedTools({ cwd: root, assignment: assignment("a"), agent });
+    const byName = new Map(tools.map((tool) => [tool.name, tool]));
+    const invoke = (name, args) => byName.get(name).execute("call", args, undefined, undefined, {});
 
-  await invoke("write", { path: "@owned/new.txt", content: "owned" });
-  await invoke("edit", { path: `@${join(root, "owned", "edit.txt")}`, edits: [{ oldText: "before", newText: "after" }] });
-  assert.equal(await readFile(join(root, "owned", "new.txt"), "utf8"), "owned");
-  assert.equal(await readFile(join(root, "owned", "edit.txt"), "utf8"), "after\n");
+    await invoke("write", { path: "owned/relative.txt", content: "relative" });
+    await invoke("write", { path: "./owned/dot.txt", content: "dot" });
+    await invoke("write", { path: join(root, "owned", "absolute.txt"), content: "absolute" });
+    await invoke("write", { path: "@owned/new.txt", content: "owned" });
+    await invoke("edit", { path: `@${join(root, "owned", "edit.txt")}`, edits: [{ oldText: "before", newText: "after" }] });
+    assert.equal(await readFile(join(root, "owned", "relative.txt"), "utf8"), "relative");
+    assert.equal(await readFile(join(root, "owned", "dot.txt"), "utf8"), "dot");
+    assert.equal(await readFile(join(root, "owned", "absolute.txt"), "utf8"), "absolute");
+    assert.equal(await readFile(join(root, "owned", "new.txt"), "utf8"), "owned");
+    assert.equal(await readFile(join(root, "owned", "edit.txt"), "utf8"), "after\n");
 
-  const denied = [
-    ["write", { path: "sibling/no.txt", content: "no" }],
-    ["write", { path: "@sibling/no-at-prefix.txt", content: "no" }],
-    ["write", { path: `@${join(root, "sibling", "no-absolute-at-prefix.txt")}`, content: "no" }],
-    ["write", { path: "@@owned/double-prefix.txt", content: "no" }],
-    ["edit", { path: "@sibling/edit.txt", edits: [{ oldText: "before", newText: "after" }] }],
-    ["write", { path: "../parent-no.txt", content: "no" }],
-    ["write", { path: "owned/../sibling/no.txt", content: "no" }],
-    ["write", { path: "owned/escape/no.txt", content: "no" }],
-    ["bash", { command: "rm owned/edit.txt" }],
-    ["bash", { command: "echo pwn>sibling/no-space.txt" }],
-    ["bash", { command: "git status --short && printf diagnostics" }],
-  ];
-  for (const [name, args] of denied) await assert.rejects(invoke(name, args));
-  assert.equal(existsSync(join(root, "sibling", "no.txt")), false);
-  assert.equal(existsSync(join(root, "sibling", "no-at-prefix.txt")), false);
-  assert.equal(existsSync(join(root, "sibling", "no-absolute-at-prefix.txt")), false);
-  assert.equal(existsSync(join(root, "owned", "double-prefix.txt")), false);
-  assert.equal(await readFile(join(root, "sibling", "edit.txt"), "utf8"), "before\n");
-  assert.equal(existsSync(join(root, "sibling", "no-space.txt")), false);
-  assert.equal(existsSync(join(root, "..", "parent-no.txt")), false);
-  assert.equal(existsSync(join(outside, "no.txt")), false);
-  assert.equal(existsSync(join(root, "owned", "edit.txt")), true);
+    const denied = [
+      ["write", { path: "sibling/no.txt", content: "no" }],
+      ["write", { path: "@sibling/no-at-prefix.txt", content: "no" }],
+      ["write", { path: `@${join(root, "sibling", "no-absolute-at-prefix.txt")}`, content: "no" }],
+      ["write", { path: "@@owned/double-prefix.txt", content: "no" }],
+      ["write", { path: "~/no-home.txt", content: "no" }],
+      ["write", { path: `file://${join(root, "owned", "no-file-url.txt")}`, content: "no" }],
+      ["write", { path: "owned\\no-backslash.txt", content: "no" }],
+      ["write", { path: `${root}/owned/../sibling/no-raw-parent.txt`, content: "no" }],
+      ["edit", { path: "@sibling/edit.txt", edits: [{ oldText: "before", newText: "after" }] }],
+      ["write", { path: "../parent-no.txt", content: "no" }],
+      ["write", { path: "owned/../sibling/no.txt", content: "no" }],
+      ["write", { path: "owned/escape/no.txt", content: "no" }],
+      ["write", { path: "owned/broken/no.txt", content: "no" }],
+      ["write", { path: "owned/loop/no.txt", content: "no" }],
+      ["bash", { command: "rm owned/edit.txt" }],
+      ["bash", { command: "echo pwn>sibling/no-space.txt" }],
+      ["bash", { command: "git status --short && printf diagnostics" }],
+    ];
+    for (const [name, args] of denied) await assert.rejects(invoke(name, args));
+    assert.equal(existsSync(join(root, "sibling", "no.txt")), false);
+    assert.equal(existsSync(join(root, "sibling", "no-at-prefix.txt")), false);
+    assert.equal(existsSync(join(root, "sibling", "no-absolute-at-prefix.txt")), false);
+    assert.equal(existsSync(join(root, "owned", "double-prefix.txt")), false);
+    assert.equal(existsSync(join(root, "owned", "no-file-url.txt")), false);
+    assert.equal(existsSync(join(root, "owned", "no-backslash.txt")), false);
+    assert.equal(existsSync(join(root, "sibling", "no-raw-parent.txt")), false);
+    assert.equal(await readFile(join(root, "sibling", "edit.txt"), "utf8"), "before\n");
+    assert.equal(existsSync(join(root, "sibling", "no-space.txt")), false);
+    assert.equal(existsSync(join(root, "..", "parent-no.txt")), false);
+    assert.equal(existsSync(join(outside, "no.txt")), false);
+    assert.equal(existsSync(join(root, "owned", "edit.txt")), true);
+  } finally {
+    await Promise.all([
+      rm(root, { recursive: true, force: true }),
+      rm(outside, { recursive: true, force: true }),
+    ]);
+  }
 });
 
 test("uses Pi trust as authoritative and only falls back to the environment decision when unavailable", () => {
@@ -338,36 +374,236 @@ test("unexpected mutation marks unsafe partial state and aborts settled siblings
   assert.equal(unsafeChild.state.disposes, 1);
 });
 
-test("blocked ambiguous bash does not claim partial state or abort sibling work", async () => {
+test("pre-execution ambiguous bash denial remains recoverable without aborting sibling work", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ima-agent-ambiguous-bash-"));
   const diagnostic = "git status --short && printf '\\n-- candidates --\\n' && rg -l 'REVIEW-001|REVIEW-002' . | head -80";
-  const inspectingChild = fakeSession({ prompt: ({ listeners }) => {
+  const toolSets = new Map();
+  const nativeBashContext = {
+    sessionManager: {
+      getSessionId: () => "ambiguous-bash-test",
+      getSessionFile: () => undefined,
+    },
+  };
+  const inspectingChild = fakeSession({ prompt: async ({ listeners }) => {
+    const bash = toolSets.get("inspect").find((tool) => tool.name === "bash");
     for (const listener of listeners) {
-      listener({ type: "tool_execution_start", toolName: "bash", args: { command: diagnostic } });
-      listener({ type: "tool_execution_end", toolName: "bash", isError: true });
+      listener({ type: "tool_execution_start", toolCallId: "ambiguous-bash", toolName: "bash", args: { command: diagnostic } });
+    }
+    await assert.rejects(
+      bash.execute("ambiguous-bash", { command: diagnostic }, undefined, undefined, nativeBashContext),
+      { message: "ownership_bash_denied:shell_composition" },
+    );
+    for (const listener of listeners) {
+      listener({ type: "tool_execution_end", toolCallId: "ambiguous-bash", toolName: "bash", isError: true });
     }
   } });
   const sibling = fakeSession();
-  const result = await run({
-    assignments: [assignment("inspect", ["owned/a"]), assignment("sibling", ["owned/b"])],
-    sessions: [{ session: inspectingChild.session }, { session: sibling.session }],
-  });
-  assert.equal(result.status, "succeeded");
-  assert.equal(result.partialEffects, false);
-  assert.deepEqual(result.unsafeEvidence, []);
-  assert.equal(sibling.state.aborts, 0);
+  try {
+    const result = await run({
+      cwd: root,
+      assignments: [assignment("inspect", ["owned/a"]), assignment("sibling", ["owned/b"])],
+      sessions: [{ session: inspectingChild.session }, { session: sibling.session }],
+      scopedTools: (input) => {
+        const tools = createScopedTools(input);
+        toolSets.set(input.assignment.id, tools);
+        return tools;
+      },
+    });
+    assert.equal(result.status, "succeeded");
+    assert.equal(result.results[0].attempts, 1);
+    assert.equal(result.partialEffects, false);
+    assert.deepEqual(result.unsafeEvidence, []);
+    assert.equal(sibling.state.aborts, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
-test("absolute paths and failed edits inside declared ownership remain recoverable", async () => {
+test("authorized absolute exact-edit failures are proven non-mutating and recoverable", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ima-agent-exact-edit-"));
+  const target = join(root, "owned", "file.txt");
+  const toolSets = new Map();
+  await mkdir(join(root, "owned"));
+  await writeFile(target, "before\n");
+  const child = fakeSession({ prompt: async ({ listeners }) => {
+    const edit = toolSets.get("a").find((tool) => tool.name === "edit");
+    for (const listener of listeners) {
+      listener({ type: "tool_execution_start", toolCallId: "exact-edit", toolName: "edit", args: { path: `@${target}` } });
+    }
+    await assert.rejects(edit.execute("exact-edit", {
+      path: `@${target}`,
+      edits: [{ oldText: "not present", newText: "after" }],
+    }, undefined, undefined, {}));
+    for (const listener of listeners) {
+      listener({ type: "tool_execution_end", toolCallId: "exact-edit", toolName: "edit", isError: true });
+    }
+  } });
+  try {
+    const result = await run({
+      cwd: root,
+      sessions: [{ session: child.session }],
+      scopedTools: (input) => {
+        const tools = createScopedTools(input);
+        toolSets.set(input.assignment.id, tools);
+        return tools;
+      },
+    });
+    assert.equal(result.status, "succeeded");
+    assert.equal(result.results[0].attempts, 1);
+    assert.equal(result.partialEffects, false);
+    assert.deepEqual(result.unsafeEvidence, []);
+    assert.equal(child.state.aborts, 0);
+    assert.equal(await readFile(target, "utf8"), "before\n");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("mismatched trusted operation evidence fails closed after an otherwise non-mutating edit", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ima-agent-mismatched-evidence-"));
+  const target = join(root, "owned", "file.txt");
+  const toolSets = new Map();
+  await mkdir(join(root, "owned"));
+  await writeFile(target, "before\n");
+  const child = fakeSession({ prompt: async ({ listeners }) => {
+    const edit = toolSets.get("a").find((tool) => tool.name === "edit");
+    for (const listener of listeners) {
+      listener({ type: "tool_execution_start", toolCallId: "actual-edit", toolName: "edit", args: { path: `@${target}` } });
+    }
+    await assert.rejects(edit.execute("actual-edit", {
+      path: `@${target}`,
+      edits: [{ oldText: "not present", newText: "after" }],
+    }, undefined, undefined, {}));
+    for (const listener of listeners) {
+      listener({ type: "tool_execution_end", toolCallId: "mismatched-edit", toolName: "edit", isError: true });
+    }
+  } });
+  try {
+    const result = await run({
+      cwd: root,
+      sessions: [{ session: child.session }],
+      scopedTools: (input) => {
+        const tools = createScopedTools(input);
+        toolSets.set(input.assignment.id, tools);
+        return tools;
+      },
+    });
+    assert.equal(result.status, "failed");
+    assert.equal(result.results[0].attempts, 1);
+    assert.equal(result.results[0].failure, "unsafe-partial-state");
+    assert.equal(result.partialEffects, true);
+    assert.ok(child.state.aborts >= 1);
+    assert.equal(await readFile(target, "utf8"), "before\n");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("operation-level ownership violations immediately latch unsafe fresh delegation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ima-agent-owned-failure-"));
+  const target = join(root, "sibling", "unowned.txt");
+  const toolSets = new Map();
+  await mkdir(join(root, "owned"));
+  await mkdir(join(root, "sibling"));
+  const child = fakeSession({ prompt: async ({ listeners }) => {
+    const write = toolSets.get("a").find((tool) => tool.name === "write");
+    for (const listener of listeners) {
+      listener({ type: "tool_execution_start", toolCallId: "unowned-write", toolName: "write", args: { path: "sibling/unowned.txt" } });
+    }
+    await assert.rejects(write.execute("unowned-write", {
+      path: "sibling/unowned.txt",
+      content: "blocked",
+    }, undefined, undefined, {}));
+    for (const listener of listeners) {
+      listener({ type: "tool_execution_end", toolCallId: "unowned-write", toolName: "write", isError: true });
+    }
+  } });
+  try {
+    const result = await run({
+      cwd: root,
+      sessions: [{ session: child.session }],
+      scopedTools: (input) => {
+        const tools = createScopedTools(input);
+        toolSets.set(input.assignment.id, tools);
+        return tools;
+      },
+    });
+    assert.equal(result.status, "failed");
+    assert.equal(result.results[0].attempts, 1);
+    assert.equal(result.results[0].failure, "unsafe-partial-state");
+    assert.equal(result.partialEffects, true);
+    assert.ok(child.state.aborts >= 1);
+    assert.equal(existsSync(target), false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("post-mkdir injected write failures immediately latch unsafe fresh delegation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ima-agent-write-failure-"));
+  const target = join(root, "owned", "result.txt");
+  const toolSets = new Map();
+  const enteredEffects = [];
+  await mkdir(join(root, "owned"));
+  const child = fakeSession({ prompt: async ({ listeners }) => {
+    const write = toolSets.get("a").find((tool) => tool.name === "write");
+    for (const listener of listeners) {
+      listener({ type: "tool_execution_start", toolCallId: "injected-write", toolName: "write", args: { path: `@${target}` } });
+    }
+    await assert.rejects(write.execute("injected-write", {
+      path: `@${target}`,
+      content: "must not persist",
+    }, undefined, undefined, {}));
+    for (const listener of listeners) {
+      listener({ type: "tool_execution_end", toolCallId: "injected-write", toolName: "write", isError: true });
+    }
+  } });
+  try {
+    const result = await run({
+      cwd: root,
+      sessions: [{ session: child.session }],
+      scopedTools: (input) => {
+        const tools = createScopedTools({
+          ...input,
+          operations: {
+            mkdir: async (path, options) => {
+              enteredEffects.push("mkdir");
+              await mkdir(path, options);
+            },
+            writeFile: async () => {
+              enteredEffects.push("writeFile");
+              throw new Error("injected_write_failure");
+            },
+          },
+        });
+        toolSets.set(input.assignment.id, tools);
+        return tools;
+      },
+    });
+    assert.equal(result.status, "failed");
+    assert.equal(result.results[0].attempts, 1);
+    assert.equal(result.results[0].failure, "unsafe-partial-state");
+    assert.equal(result.partialEffects, true);
+    assert.deepEqual(enteredEffects, ["mkdir", "writeFile"]);
+    assert.ok(child.state.aborts >= 1);
+    assert.equal(existsSync(target), false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("missing mutation-operation evidence fails closed in fresh delegation", async () => {
   const child = fakeSession({ prompt: ({ listeners }) => {
     for (const listener of listeners) {
-      listener({ type: "tool_execution_start", toolName: "edit", args: { path: "/repo/owned/file.txt" } });
-      listener({ type: "tool_execution_end", toolName: "edit", isError: true });
+      listener({ type: "tool_execution_end", toolCallId: "missing-evidence", toolName: "edit", isError: true });
     }
   } });
   const result = await run({ sessions: [{ session: child.session }] });
-  assert.equal(result.status, "succeeded");
-  assert.equal(result.partialEffects, false);
-  assert.deepEqual(result.unsafeEvidence, []);
+  assert.equal(result.status, "failed");
+  assert.equal(result.results[0].attempts, 1);
+  assert.equal(result.results[0].failure, "unsafe-partial-state");
+  assert.equal(result.partialEffects, true);
+  assert.ok(child.state.aborts >= 1);
 });
 
 test("normalizes native @ mutation paths in fresh delegated-agent observers", async () => {
@@ -564,6 +800,151 @@ test("documenter rejects prohibited documentation-looking locations at construct
   assert.throws(() => createScopedTools({ cwd: root, assignment: { ...assignment("bad"), writeScope: ["config/other.md"] }, agent: documenter }));
   const tools = new Map(createScopedTools({ cwd: root, assignment: { ...assignment("docs"), writeScope: ["docs/guide.md"] }, agent: documenter }).map((tool) => [tool.name, tool]));
   for (const [name, args] of [["write", { path: "config/other.md", content: "no" }], ["edit", { path: "lib/design.md", edits: [] }], ["bash", { command: "echo no > tests/notes.md" }]]) await assert.rejects(tools.get(name).execute("call", args, undefined, undefined, {}));
+});
+
+test("documenter final-target authorization rejects code aliases and preserves documentation-only aliases", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ima-documenter-final-target-"));
+  const modulePath = join(root, "lib", "module.ts");
+  const moduleContent = "export const value = 'before';\n";
+  const documenter = { ...agent, name: "documenter", authority: "document-write", tools: ["write", "edit", "bash"], result: { kind: "documentation", requiredSections: ["local-changes"] } };
+  const nativeBashContext = {
+    sessionManager: {
+      getSessionId: () => "documenter-final-target",
+      getSessionFile: () => undefined,
+    },
+  };
+  let bashEffects = 0;
+  try {
+    await mkdir(join(root, "lib"));
+    await writeFile(modulePath, moduleContent);
+    await symlink("lib/module.ts", join(root, "README.md"));
+    const codeAliasTools = new Map(createScopedTools({
+      cwd: root,
+      assignment: { ...assignment("readme", ["README.md"]), agent: "documenter", paths: ["README.md"], writeScope: ["README.md"] },
+      agent: documenter,
+      operations: {
+        bash: {
+          exec: async () => {
+            bashEffects += 1;
+            return { exitCode: 0 };
+          },
+        },
+      },
+    }).map((tool) => [tool.name, tool]));
+
+    await assert.rejects(
+      codeAliasTools.get("write").execute("readme-write", { path: "README.md", content: "overwritten\n" }, undefined, undefined, {}),
+      { message: "documentation_target_required" },
+    );
+    await assert.rejects(
+      codeAliasTools.get("edit").execute("readme-edit", { path: "README.md", edits: [{ oldText: "before", newText: "after" }] }, undefined, undefined, {}),
+      /documentation_target_required/,
+    );
+    await assert.rejects(
+      codeAliasTools.get("bash").execute("readme-bash", { command: "echo blocked > README.md" }, undefined, undefined, nativeBashContext),
+      { message: "documentation_target_required" },
+    );
+    assert.equal(bashEffects, 0);
+    assert.equal(await readFile(modulePath, "utf8"), moduleContent);
+
+    const newGuide = "docs/new/guide.md";
+    const newGuideTools = new Map(createScopedTools({
+      cwd: root,
+      assignment: { ...assignment("new-guide", [newGuide]), agent: "documenter", paths: [newGuide], writeScope: [newGuide] },
+      agent: documenter,
+    }).map((tool) => [tool.name, tool]));
+    await newGuideTools.get("write").execute("new-guide-write", { path: newGuide, content: "first\n" }, undefined, undefined, {});
+    assert.equal(await readFile(join(root, newGuide), "utf8"), "first\n");
+
+    await symlink("new/guide.md", join(root, "docs", "alias.md"));
+    const documentationAliasTools = new Map(createScopedTools({
+      cwd: root,
+      assignment: { ...assignment("documentation-alias", ["docs/alias.md"]), agent: "documenter", paths: ["docs/alias.md"], writeScope: ["docs/alias.md"] },
+      agent: documenter,
+    }).map((tool) => [tool.name, tool]));
+    await documentationAliasTools.get("write").execute("documentation-alias-write", { path: "docs/alias.md", content: "aliased\n" }, undefined, undefined, {});
+    assert.equal(await readFile(join(root, newGuide), "utf8"), "aliased\n");
+
+    await rm(join(root, "docs"), { recursive: true, force: true });
+    await writeFile(join(root, "lib", "notes.md"), "code notes\n");
+    await symlink("lib", join(root, "docs"));
+    const directoryAliasEditTools = new Map(createScopedTools({
+      cwd: root,
+      assignment: { ...assignment("directory-alias-edit", ["docs/notes.md"]), agent: "documenter", paths: ["docs/notes.md"], writeScope: ["docs/notes.md"] },
+      agent: documenter,
+    }).map((tool) => [tool.name, tool]));
+    const directoryAliasWriteTools = new Map(createScopedTools({
+      cwd: root,
+      assignment: { ...assignment("directory-alias-write", ["docs/created.md"]), agent: "documenter", paths: ["docs/created.md"], writeScope: ["docs/created.md"] },
+      agent: documenter,
+    }).map((tool) => [tool.name, tool]));
+    await assert.rejects(
+      directoryAliasEditTools.get("edit").execute("directory-alias-edit", { path: "docs/notes.md", edits: [{ oldText: "code", newText: "changed" }] }, undefined, undefined, {}),
+      /documentation_target_required/,
+    );
+    await assert.rejects(
+      directoryAliasWriteTools.get("write").execute("directory-alias-write", { path: "docs/created.md", content: "blocked\n" }, undefined, undefined, {}),
+      { message: "documentation_target_required" },
+    );
+    assert.equal(await readFile(join(root, "lib", "notes.md"), "utf8"), "code notes\n");
+    assert.equal(existsSync(join(root, "lib", "created.md")), false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("fresh documenter alias denial has no retry or reusable reference", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ima-documenter-fresh-alias-"));
+  const modulePath = join(root, "lib", "module.ts");
+  const moduleContent = "export const value = 'before';\n";
+  const documenter = { ...agent, name: "documenter", authority: "document-write", tools: ["write", "edit", "bash"], result: { kind: "documentation", requiredSections: ["local-changes"] } };
+  const docsAssignment = { ...assignment("documenter", ["README.md"]), agent: "documenter", paths: ["README.md"], expectedOutput: "local-changes", writeScope: ["README.md"] };
+  const sessionStore = new Map();
+  let tools;
+  let created = 0;
+  const child = fakeSession({ text: "## Local-changes\nnone", prompt: async ({ listeners }) => {
+    const write = tools.find((tool) => tool.name === "write");
+    for (const listener of listeners) {
+      listener({ type: "tool_execution_start", toolCallId: "fresh-readme-write", toolName: "write", args: { path: "README.md" } });
+    }
+    await assert.rejects(
+      write.execute("fresh-readme-write", { path: "README.md", content: "blocked\n" }, undefined, undefined, {}),
+      { message: "documentation_target_required" },
+    );
+    for (const listener of listeners) {
+      listener({ type: "tool_execution_end", toolCallId: "fresh-readme-write", toolName: "write", isError: true });
+    }
+  } });
+  try {
+    await mkdir(join(root, "lib"));
+    await writeFile(modulePath, moduleContent);
+    await symlink("lib/module.ts", join(root, "README.md"));
+    const result = await run({
+      cwd: root,
+      assignments: [docsAssignment],
+      selectedAgent: documenter,
+      sessionStore,
+      scopedTools: createScopedTools,
+      createSession: async ({ customTools }) => {
+        created += 1;
+        tools = customTools;
+        return { session: child.session };
+      },
+    });
+    assert.equal(result.status, "failed");
+    assert.equal(result.results[0].attempts, 1);
+    assert.equal(result.results[0].failure, "unsafe-partial-state");
+    assert.equal(result.results[0].session, null);
+    assert.equal(result.report.children[0].resumeReference, null);
+    assert.deepEqual(result.report.reusableSessionReferences, []);
+    assert.equal(result.partialEffects, true);
+    assert.equal(created, 1);
+    assert.equal(sessionStore.size, 0);
+    assert.ok(child.state.aborts >= 1);
+    assert.equal(await readFile(modulePath, "utf8"), moduleContent);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("delivers admitted vision images through Pi prompt options without projecting bytes or paths", async () => {

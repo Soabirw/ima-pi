@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { createAgentSession, SessionManager } from "@earendil-works/pi-coding-agent";
@@ -20,7 +21,12 @@ export type FocusedContinuationDependencies = {
   createSession?: typeof createAgentSession;
   openManager?: (path: string) => unknown;
   acquireSessionLock?: (path: string) => Promise<NativeFileLease | null>;
-  scopedTools: (input: { cwd: string; assignment: DelegationAssignment; agent: AgentDefinition }) => unknown[];
+  scopedTools: (input: {
+    cwd: string;
+    assignment: DelegationAssignment;
+    agent: AgentDefinition;
+    operationEvidence?: ScopedToolOperationEvidence;
+  }) => unknown[];
   toolNames: Record<string, string>;
   finalAssistant: (session: unknown) => {
     stopReason?: unknown;
@@ -53,6 +59,167 @@ export type FocusedContinuationInput = {
 const now = () => new Date().toISOString();
 const SESSION_CLEANUP_UNVERIFIED = "session_cleanup_unverified";
 const text = (value: unknown) => typeof value === "string" ? value.trim() : "";
+const normalizedToolCallId = (value: unknown) => typeof value === "string"
+  && value.length > 0
+  && value.trim() === value
+  && !/[\u0000-\u001f]/.test(value)
+  ? value
+  : "";
+const normalizedToolName = (value: unknown) => typeof value === "string" ? value : "";
+
+export type ScopedToolOperationEvidenceSnapshot = {
+  toolCallId: string;
+  toolName: string;
+  attempt: number;
+  operations: Array<{
+    name: string;
+    mutation: boolean;
+    entered: boolean;
+    completed: boolean;
+    failed: boolean;
+  }>;
+  mutationEntered: boolean;
+  operationFailed: boolean;
+  preExecutionBashDenial: string | null;
+  unsafe: boolean;
+};
+
+type ToolOperation = ScopedToolOperationEvidenceSnapshot["operations"][number];
+type ToolCallOperationEvidence = ScopedToolOperationEvidenceSnapshot;
+const scopedMutationToolNames = new Set(["write", "edit", "bash"]);
+const recoverableBashDenials = new Set([
+  "empty_command",
+  "unclassifiable_mutation",
+  "shell_composition",
+  "destructive_command",
+  "unrecognized_command",
+]);
+export const isScopedMutationTool = (value: unknown) =>
+  typeof value === "string" && scopedMutationToolNames.has(value);
+
+export type ScopedToolOperationEvidence = {
+  runTool: <Value>(
+    toolCallId: unknown,
+    toolName: unknown,
+    effect: () => Value | Promise<Value>,
+  ) => Promise<Value>;
+  runOperation: <Value>(input: {
+    name: string;
+    mutation: boolean;
+    authorize: () => void | Promise<void>;
+    effect: () => Value | Promise<Value>;
+  }) => Promise<Value>;
+  denyBashBeforeExecution: (reason: unknown) => void;
+  isUnsafeToolFailure: (input: {
+    toolCallId: unknown;
+    toolName: unknown;
+    signalAborted: boolean;
+  }) => boolean;
+  hasPossibleMutation: () => boolean;
+  snapshot: () => ScopedToolOperationEvidenceSnapshot[];
+};
+
+// SKYNET-222: native tool events report a call boundary, while these records prove which
+// authorized filesystem operation actually ran. A failure without that proof is unsafe.
+export function createScopedToolOperationEvidence(input: {
+  attempt: number;
+  onUnsafe?: () => void;
+}): ScopedToolOperationEvidence {
+  const calls = new Map<string, ToolCallOperationEvidence>();
+  const storage = new AsyncLocalStorage<ToolCallOperationEvidence>();
+  const attempt = Number.isSafeInteger(input.attempt) && input.attempt > 0 ? input.attempt : 0;
+  const keyFor = (toolCallId: string, toolName: string) => `${toolCallId}\u0000${toolName}`;
+  const latchUnsafe = (call: ToolCallOperationEvidence) => {
+    if (call.unsafe) return;
+    call.unsafe = true;
+    try { input.onUnsafe?.(); } catch {}
+  };
+  const currentCall = () => {
+    const call = storage.getStore();
+    if (!call) throw new Error("operation_evidence_unavailable");
+    return call;
+  };
+  const completeEditRead = (call: ToolCallOperationEvidence) => {
+    const names = call.operations.map(({ name }) => name);
+    const access = call.operations.find(({ name }) => name === "access");
+    const readFile = call.operations.find(({ name }) => name === "readFile");
+    return names.length === 2
+      && names.every((name) => name === "access" || name === "readFile")
+      && access?.completed === true
+      && readFile?.completed === true;
+  };
+
+  return {
+    async runTool(toolCallId, toolName, effect) {
+      const id = normalizedToolCallId(toolCallId);
+      const name = normalizedToolName(toolName);
+      const key = keyFor(id, name);
+      const call: ToolCallOperationEvidence = {
+        toolCallId: id,
+        toolName: name,
+        attempt,
+        operations: [],
+        mutationEntered: false,
+        operationFailed: false,
+        preExecutionBashDenial: null,
+        unsafe: false,
+      };
+      const duplicate = calls.has(key);
+      calls.set(key, call);
+      if (!id || !isScopedMutationTool(name) || duplicate) latchUnsafe(call);
+      return storage.run(call, effect);
+    },
+    async runOperation({ name, mutation, authorize, effect }) {
+      const call = currentCall();
+      const operation: ToolOperation = {
+        name,
+        mutation,
+        entered: false,
+        completed: false,
+        failed: false,
+      };
+      call.operations.push(operation);
+      try {
+        await authorize();
+        // Mark entry before waiting so a rejected or interrupted effect remains unsafe.
+        operation.entered = true;
+        if (mutation) call.mutationEntered = true;
+        const result = await effect();
+        operation.completed = true;
+        return result;
+      } catch (error) {
+        operation.failed = true;
+        call.operationFailed = true;
+        latchUnsafe(call);
+        throw error;
+      }
+    },
+    denyBashBeforeExecution(reason) {
+      const call = currentCall();
+      const denial = typeof reason === "string" ? reason : "";
+      call.preExecutionBashDenial = denial || null;
+      if (!recoverableBashDenials.has(denial)) latchUnsafe(call);
+    },
+    isUnsafeToolFailure({ toolCallId, toolName, signalAborted }) {
+      const id = normalizedToolCallId(toolCallId);
+      const name = normalizedToolName(toolName);
+      const call = calls.get(keyFor(id, name));
+      if (!call || call.toolName !== name || signalAborted) return true;
+      if (call.unsafe || call.operationFailed || call.mutationEntered) return true;
+      if (name === "edit") return !completeEditRead(call);
+      if (name === "bash") {
+        return !call.preExecutionBashDenial
+          || !recoverableBashDenials.has(call.preExecutionBashDenial);
+      }
+      return true;
+    },
+    hasPossibleMutation: () => [...calls.values()].some(({ mutationEntered }) => mutationEntered),
+    snapshot: () => [...calls.values()].map((call) => ({
+      ...call,
+      operations: call.operations.map((operation) => ({ ...operation })),
+    })),
+  };
+}
 const samePath = (left: unknown, right: unknown) => {
   const first = text(left);
   const second = text(right);
@@ -160,6 +327,38 @@ export async function runFocusedAgentContinuation(input: FocusedContinuationInpu
       return createDelegationResult({ id: record.reference, status: "refused", attempts: 0, error: "session_not_reusable", session: null });
     }
     const clock = input.dependencies.clock ?? now;
+    let unsafe = false;
+    let invalidation: Promise<boolean> | undefined;
+    const invalidateUnsafeRecord = () => {
+      invalidation ??= (async () => {
+        const failed = { ...record, status: "failed" as const, updatedAt: clock() };
+        let persisted = typeof input.onSessionRecord === "function";
+        try {
+          await input.onSessionRecord?.(failed);
+        } catch {
+          persisted = false;
+        }
+        try {
+          input.sessionStore.set(failed.reference, failed);
+        } catch {
+          persisted = false;
+        }
+        return persisted;
+      })();
+      return invalidation;
+    };
+    const unsafeResult = async (attempts: number) => {
+      if (!await invalidateUnsafeRecord()) releaseLease = false;
+      return createDelegationResult({
+        id: record.reference,
+        status: "failed",
+        attempts,
+        error: "unsafe-partial-state",
+        failure: "unsafe-partial-state",
+        session: null,
+      });
+    };
+
     for (let attempt = 0; attempt < 2; attempt += 1) {
       let session: any;
       let unsubscribe = () => undefined;
@@ -178,6 +377,14 @@ export async function runFocusedAgentContinuation(input: FocusedContinuationInpu
           abortRequests.push(Promise.resolve(false));
         }
       };
+      const latchUnsafe = () => {
+        unsafe = true;
+        requestAbort();
+      };
+      const operationEvidence = createScopedToolOperationEvidence({
+        attempt: attempt + 1,
+        onUnsafe: latchUnsafe,
+      });
       const onAbort = () => {
         cancelled = true;
         requestAbort();
@@ -204,6 +411,7 @@ export async function runFocusedAgentContinuation(input: FocusedContinuationInpu
               writeScope: record.writeScope,
             },
             agent: input.agent,
+            operationEvidence,
           }),
           sessionManager: sessionManager as any,
         });
@@ -212,28 +420,42 @@ export async function runFocusedAgentContinuation(input: FocusedContinuationInpu
         if (!observedIdentityMatchesRecord(observedBeforePrompt, validatedRecord)) {
           return createDelegationResult({ id: record.reference, status: "refused", attempts: attempt + 1, error: "session_not_reusable", session: null });
         }
-        let unsafe = false;
         unsubscribe = session.subscribe?.((event: unknown) => {
-          if (input.dependencies.mutationAttemptUnsafe(
-            event,
-            { writeScope: record.writeScope } as DelegationAssignment,
-            cwd,
-          )) {
-            unsafe = true;
-            requestAbort();
+          try {
+            if (input.dependencies.mutationAttemptUnsafe(
+              event,
+              { writeScope: record.writeScope } as DelegationAssignment,
+              cwd,
+            )) latchUnsafe();
+            const toolEvent = event as {
+              type?: unknown;
+              toolCallId?: unknown;
+              toolName?: unknown;
+              isError?: unknown;
+            };
+            if (toolEvent?.type === "tool_execution_end"
+              && toolEvent.isError === true
+              && isScopedMutationTool(toolEvent.toolName)
+              && operationEvidence.isUnsafeToolFailure({
+                toolCallId: toolEvent.toolCallId,
+                toolName: toolEvent.toolName,
+                signalAborted: cancelled || input.signal?.aborted === true,
+              })) latchUnsafe();
+          } catch {
+            latchUnsafe();
           }
         }) ?? unsubscribe;
+        if (unsafe) return await unsafeResult(attempt + 1);
         if (cancelled) {
           return createDelegationResult({ id: record.reference, status: "failed", attempts: attempt + 1, error: "cancelled", failure: "unsafe-partial-state", session: null });
         }
         await session.prompt(input.brief, { expandPromptTemplates: false });
         await session.waitForIdle();
         childSettled = true;
+        if (cancelled && operationEvidence.hasPossibleMutation()) latchUnsafe();
+        if (unsafe) return await unsafeResult(attempt + 1);
         if (cancelled) {
           return createDelegationResult({ id: record.reference, status: "failed", attempts: attempt + 1, error: "cancelled", failure: "unsafe-partial-state", session: null });
-        }
-        if (unsafe) {
-          return createDelegationResult({ id: record.reference, status: "failed", attempts: attempt + 1, error: "unsafe-partial-state", failure: "unsafe-partial-state", session: null });
         }
         const final = input.dependencies.finalAssistant(session);
         const report = final?.report ?? "";
@@ -252,6 +474,8 @@ export async function runFocusedAgentContinuation(input: FocusedContinuationInpu
           observed,
         });
         if (!completion.ok) {
+          if (operationEvidence.hasPossibleMutation()) latchUnsafe();
+          if (unsafe) return await unsafeResult(attempt + 1);
           const failure = final?.errorMessage ? classifyChildFailure(final.errorMessage) : "agent-contract";
           if (attempt === 0 && decideRecovery({ failure, retries: 0 }).retry) continue;
           const detail = final?.errorMessage ? sanitizeDelegationError(final.errorMessage) : completion.failures.join(",");
@@ -268,6 +492,7 @@ export async function runFocusedAgentContinuation(input: FocusedContinuationInpu
             session: unverifiedReport ? { id: observed.sessionId, file: observed.sessionFile, resumeReference: null } : null,
           });
         }
+        if (unsafe) return await unsafeResult(attempt + 1);
         const updated = { ...record, status: "succeeded" as const, updatedAt: clock() };
         durableUpdateStarted = true;
         await input.onSessionRecord?.(updated);
@@ -283,6 +508,8 @@ export async function runFocusedAgentContinuation(input: FocusedContinuationInpu
           session: { id: observed.sessionId, file: observed.sessionFile, resumeReference: record.reference },
         });
       } catch (error) {
+        if (!unsafe && operationEvidence.hasPossibleMutation()) latchUnsafe();
+        if (unsafe) return await unsafeResult(attempt + 1);
         const failure = classifyChildFailure(error);
         if (!durableUpdateStarted && attempt === 0 && decideRecovery({ failure, retries: 0 }).retry) continue;
         return createDelegationResult({
@@ -302,14 +529,16 @@ export async function runFocusedAgentContinuation(input: FocusedContinuationInpu
         try { sessionCleanupVerified = await settleAndDispose(session, childSettled, unsubscribe); } catch {}
         if (!signalDetached || !abortRequestsVerified || !sessionCleanupVerified) {
           releaseLease = false;
-          return createDelegationResult({
-            id: record.reference,
-            status: "failed",
-            attempts: attempt + 1,
-            error: SESSION_CLEANUP_UNVERIFIED,
-            failure: "unsafe-partial-state",
-            session: null,
-          });
+          if (!unsafe) {
+            return createDelegationResult({
+              id: record.reference,
+              status: "failed",
+              attempts: attempt + 1,
+              error: SESSION_CLEANUP_UNVERIFIED,
+              failure: "unsafe-partial-state",
+              session: null,
+            });
+          }
         }
       }
     }
