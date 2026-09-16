@@ -1,5 +1,4 @@
 import {
-  normalizeLifecycleIdentity,
   normalizeLifecycleRecordKey,
   type LifecycleIdentity,
 } from "./ima-lifecycle.ts";
@@ -9,6 +8,11 @@ import {
   type ReusablePlanSelection,
   type VerifiedPlanRecord,
 } from "./ima-cycle-plan.ts";
+import {
+  createLifecycleContinuationIdentity,
+  deriveLifecycleRoot,
+  projectLifecycleSourceIdentity,
+} from "./ima-lifecycle-routing.ts";
 import {
   reduceCycleState,
   validateCycleState,
@@ -89,12 +93,23 @@ const sameContract = (left: VerifiedPlanRecord, right: VerifiedPlanRecord) =>
   && JSON.stringify(left.reference) === JSON.stringify(right.reference);
 
 const approvalIdentity = (identity: LifecycleIdentity, plan: VerifiedPlanRecord) => {
-  const normalized = normalizeLifecycleIdentity({
-    ...identity,
-    sourceRefs: [...new Set([...identity.sourceRefs, `QdrantRecordKey:${plan.recordKey}`])],
-    priorArtifactIds: [...new Set([...identity.priorArtifactIds, plan.artifactId])],
+  const sourceIdentity = projectLifecycleSourceIdentity(plan.identity);
+  const lifecycleRootMemoryId = deriveLifecycleRoot({
+    phase: "plan",
+    artifactId: plan.artifactId,
+    lifecycleRootMemoryId: plan.identity.lifecycleRootMemoryId,
   });
-  return normalized;
+  return sourceIdentity && lifecycleRootMemoryId
+    ? createLifecycleContinuationIdentity({
+      sourceIdentity,
+      lifecycleRootMemoryId,
+      priorArtifactIds: [...new Set([
+        ...plan.identity.priorArtifactIds,
+        ...identity.priorArtifactIds,
+        plan.artifactId,
+      ])],
+    })
+    : null;
 };
 
 const readSelection = async (

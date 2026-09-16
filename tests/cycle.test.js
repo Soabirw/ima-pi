@@ -42,6 +42,7 @@ import {
   createLifecycleProviderPin,
   createLifecycleProviderPinAttempt,
 } from "../lib/ima-lifecycle-pin.ts";
+import { createLifecycleRouting } from "../lib/ima-lifecycle-routing.ts";
 import {
   beginLifecyclePinWith,
   confirmLifecyclePinWith,
@@ -50,7 +51,7 @@ import {
 } from "../lib/ima-lifecycle-pin-store.ts";
 import { filterImportedPlanLineage } from "../lib/ima-cycle-plan.ts";
 import { coordinateCyclePlanAdoption } from "../lib/ima-cycle-plan-adoption.ts";
-import { mcpResultData, recallLifecycle } from "../extensions/integrations.ts";
+import { mcpResultData, recallLifecycle, resolveLifecycleLineage } from "../extensions/integrations.ts";
 import {
   coordinateCycleClose,
   coordinateCycleReconcile,
@@ -142,6 +143,20 @@ const lifecycleIdentityForState = (state, priorArtifactIds, overrides = {}) => (
   priorArtifactIds,
   ...overrides,
 });
+
+const closeoutLineage = (state, rootArtifactId = reviewUuid(998)) => {
+  const identity = lifecycleIdentityForState(state, []);
+  const { lifecycleRootMemoryId: _root, priorArtifactIds: _prior, ...sourceIdentity } = identity;
+  return async () => ({
+    status: "verified",
+    lineage: {
+      provider: "qdrant",
+      initialReference: {},
+      rootArtifactId,
+      sourceIdentity,
+    },
+  });
+};
 
 const documentSelection = (state) => ({
   lifecycleKey: state.lifecycleKey,
@@ -1782,10 +1797,12 @@ test("keeps current resume recovery phases as stop authority", async () => {
   const planLookupStarted = deferred();
   const planLookup = deferred();
   const durableStates = [];
+  let planLookupSignal;
   const beforePublication = createCycleExtensionHarness([{ type: "custom", customType: "ima-cycle-state", data: initial }]);
   registerCycleExtension(beforePublication.pi, cycleDependencies({
-    recall: async (query) => {
+    recall: async (query, _cwd, signal) => {
       if (query.endsWith(" plan")) {
+        planLookupSignal = signal;
         planLookupStarted.resolve();
         return planLookup.promise;
       }
@@ -1802,6 +1819,7 @@ test("keeps current resume recovery phases as stop authority", async () => {
   assert.equal(beforePublication.wasAborted(), false);
   assert.ok(beforePublication.notifications.some(({ level, message }) => level === "warning" && /cycle_stop_ack_required/.test(message)));
   const stoppedBeforePublication = beforePublication.commands.get("ima:cycle").handler("stop --ack", beforePublication.ctx);
+  assert.equal(planLookupSignal?.aborted, true);
   planLookup.resolve(vestigeSearch([plan]));
   await Promise.all([resumedBeforePublication, stoppedBeforePublication]);
   const firstStopped = beforePublication.entries.at(-1).data;
@@ -2195,7 +2213,7 @@ test("closes exactly one tracker after confirmation and blocks after lifecycle f
     if (args[1] === "jira:transition") return { code: 0, stdout: "" };
     throw new Error("unexpected");
   };
-  const result = await coordinateCycleClose({ state, mode: "tui", commitPrep: false, confirmed: true, run, lifecycle: async () => ({ status: "failed" }), appendState: (next) => calls.push(["append", next.status]), timestamp: at });
+  const result = await coordinateCycleClose({ state, mode: "tui", commitPrep: false, confirmed: true, run, resolveLineage: closeoutLineage(state), lifecycle: async () => ({ status: "failed" }), appendState: (next) => calls.push(["append", next.status]), timestamp: at });
   assert.equal(result.ok, false);
   assert.equal(result.error.code, "lifecycle_closeout_failed");
   assert.equal(result.state.status, "blocked-after-tracker-close");
@@ -2205,6 +2223,236 @@ test("closes exactly one tracker after confirmation and blocks after lifecycle f
   assert.equal(cancelled.error.code, "close_confirmation_required");
 });
 
+test("blocks missing or conflicting closeout lineage before tracker mutation and persists the verified root", async () => {
+  const state = readyState();
+  const rootArtifactId = reviewUuid(997);
+  const calls = [];
+  const blocked = await coordinateCycleClose({
+    state,
+    mode: "tui",
+    commitPrep: false,
+    confirmed: true,
+    resolveLineage: async () => ({ status: "blocked", code: "lifecycle_lineage_unresolved" }),
+    run: async () => { calls.push("tracker"); return { code: 0, stdout: "" }; },
+    appendState: () => {},
+    timestamp: at,
+  });
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.error.code, "lifecycle_lineage_unresolved");
+  assert.deepEqual(calls, []);
+
+  const conflictingIdentity = {
+    ...identity,
+    lifecycleKey: state.lifecycleKey,
+    lifecycleRootMemoryId: reviewUuid(996),
+    priorArtifactIds: [],
+  };
+  const conflicting = await coordinateCycleClose({
+    state,
+    mode: "tui",
+    commitPrep: false,
+    confirmed: true,
+    identity: conflictingIdentity,
+    resolveLineage: closeoutLineage(state, rootArtifactId),
+    run: async () => { calls.push("conflicting-tracker"); return { code: 0, stdout: "" }; },
+    appendState: () => {},
+    timestamp: at,
+  });
+  assert.equal(conflicting.ok, false);
+  assert.equal(conflicting.error.code, "lifecycle_lineage_conflict");
+  assert.deepEqual(calls, []);
+
+  let persisted;
+  const completed = await coordinateCycleClose({
+    state,
+    mode: "tui",
+    commitPrep: false,
+    confirmed: true,
+    resolveLineage: closeoutLineage(state, rootArtifactId),
+    run: async (_program, args) => {
+      calls.push(args[1]);
+      return args[1] === "jira:transitions"
+        ? { code: 0, stdout: JSON.stringify([{ id: "done", name: "Done", to: "Done" }]) }
+        : { code: 0, stdout: "" };
+    },
+    lifecycle: async (request) => {
+      persisted = request;
+      return { status: "completed" };
+    },
+    appendState: () => {},
+    timestamp: at,
+  });
+  assert.equal(completed.ok, true);
+  assert.equal(persisted.identity.lifecycleRootMemoryId, rootArtifactId);
+  assert.deepEqual(persisted.identity.sourceRefs, ["Jira:FNR-3036"]);
+  assert.deepEqual(calls, ["jira:transitions", "jira:transition"]);
+
+  calls.length = 0;
+  let manuallyPersisted;
+  const manual = await coordinateCycleClose({
+    state,
+    mode: "tui",
+    commitPrep: false,
+    confirmed: true,
+    identity: {
+      ...identity,
+      lifecycleKey: state.lifecycleKey,
+      lifecycleRootMemoryId: rootArtifactId,
+      priorArtifactIds: [],
+    },
+    resolveLineage: closeoutLineage(state, rootArtifactId),
+    run: async (_program, args) => {
+      calls.push(args[1]);
+      return args[1] === "jira:transitions"
+        ? { code: 0, stdout: JSON.stringify([{ id: "done", name: "Done", to: "Done" }]) }
+        : { code: 0, stdout: "" };
+    },
+    lifecycle: async (request) => {
+      manuallyPersisted = request;
+      return { status: "completed" };
+    },
+    appendState: () => {},
+    timestamp: at,
+  });
+  assert.equal(manual.ok, true);
+  assert.equal(manuallyPersisted.identity.lifecycleRootMemoryId, rootArtifactId);
+  assert.deepEqual(calls, ["jira:transitions", "jira:transition"]);
+});
+
+test("REVIEW-003 blocks stale resolver lineage before closeout tracker, persistence, or state effects", async () => {
+  const root = await temporaryDirectory();
+  try {
+    const state = readyState();
+    const request = validateLifecycleRequest({
+      type: "plan",
+      identity: lifecycleIdentityForState(state, []),
+      summary: "Synthetic root plan for stale closeout lineage verification.",
+      artifact: "# Plan\n\nSynthetic root plan for stale closeout lineage verification.",
+    });
+    assert.equal(request.valid, true);
+    if (!request.valid) throw new Error("invalid closeout lineage root fixture");
+    const prepared = prepareLifecycleArtifact(request);
+    assert.equal(prepared.valid, true);
+    if (!prepared.valid) throw new Error("unprepared closeout lineage root fixture");
+    const artifactId = deriveRecordId(prepared.data.recordKey);
+    assert.equal(artifactId.success, true);
+    if (!artifactId.success) throw new Error("underived closeout lineage root fixture");
+    const record = {
+      provider: "qdrant",
+      artifactId: artifactId.data,
+      recordKey: prepared.data.recordKey,
+      lifecycleKey: state.lifecycleKey,
+      phase: "plan",
+      summary: request.summary,
+      artifact: prepared.data.artifact,
+      reference: {
+        schemaVersion: 1,
+        provider: "qdrant",
+        artifactId: artifactId.data,
+        recordKey: prepared.data.recordKey,
+        contentHash: createHash("sha256").update(prepared.data.artifact, "utf8").digest("hex"),
+        lifecycleKey: state.lifecycleKey,
+        phase: "plan",
+        nonce: prepared.data.nonce,
+      },
+      createdAt: null,
+    };
+    const attempt = await beginCycleProviderAttempt(
+      root,
+      state,
+      "qdrant",
+      "00000000-0000-4000-8000-000000000003",
+    );
+    const writing = await markLifecyclePinAttemptWritingWith(async () => root)(root, attempt);
+    assert.equal(writing.status, "writing");
+    const pin = createLifecycleProviderPin({
+      lifecycleKey: state.lifecycleKey,
+      provider: "qdrant",
+      initialReference: record.reference,
+      artifactId: record.artifactId,
+      recordKey: record.recordKey,
+      pinnedAt: at,
+    });
+    assert.ok(pin);
+    const confirmed = await confirmLifecyclePinWith(async () => root)(root, writing.attempt, pin);
+    assert.equal(confirmed.status, "pinned");
+
+    const registry = join(root, ".ima-cycle", "provider-pins.json");
+    const calls = { tracker: 0, lifecycle: 0, publication: 0, providerPersist: 0, fallback: 0 };
+    const routing = createLifecycleRouting([
+      {
+        provider: "qdrant",
+        persist: async () => {
+          calls.providerPersist += 1;
+          return { status: "blocked", provider: "qdrant", code: "unexpected_persist", writeState: "no-write" };
+        },
+        recall: async () => ({ status: "verified", provider: "qdrant", records: [] }),
+        reconcile: async () => {
+          await rm(registry);
+          return { status: "verified", record: structuredClone(record) };
+        },
+      },
+      {
+        provider: "markdown",
+        persist: async () => {
+          calls.fallback += 1;
+          return { status: "blocked", provider: "markdown", code: "fallback_forbidden", writeState: "no-write" };
+        },
+        recall: async () => {
+          calls.fallback += 1;
+          return { status: "verified", provider: "markdown", records: [] };
+        },
+        reconcile: async () => {
+          calls.fallback += 1;
+          return { status: "blocked", provider: "markdown", code: "fallback_forbidden", writeState: "no-write" };
+        },
+      },
+    ]);
+
+    const result = await coordinateCycleClose({
+      state,
+      cwd: root,
+      mode: "tui",
+      commitPrep: false,
+      confirmed: true,
+      run: async () => {
+        calls.tracker += 1;
+        throw new Error("tracker must not run for stale lineage");
+      },
+      resolveLineage: (lifecycleKey) => resolveLifecycleLineage(lifecycleKey, {
+        cwd: root,
+        routing,
+        resolveProjectRoot: async () => root,
+      }),
+      lifecycle: async () => {
+        calls.lifecycle += 1;
+        return { status: "completed" };
+      },
+      appendState: async () => {
+        calls.publication += 1;
+      },
+      timestamp: at,
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.error.code, "lifecycle_lineage_unavailable");
+    assert.deepEqual(calls, {
+      tracker: 0,
+      lifecycle: 0,
+      publication: 0,
+      providerPersist: 0,
+      fallback: 0,
+    });
+    assert.deepEqual(
+      await loadLifecyclePinStateWith(async () => root)(root, state.lifecycleKey),
+      { status: "absent" },
+    );
+    await assert.rejects(readFile(registry, "utf8"), { code: "ENOENT" });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("rejects failed tracker reads before any close mutation", async () => {
   const calls = [];
   const result = await coordinateCycleClose({
@@ -2212,6 +2460,7 @@ test("rejects failed tracker reads before any close mutation", async () => {
     mode: "tui",
     commitPrep: false,
     confirmed: true,
+    resolveLineage: closeoutLineage(readyState()),
     run: async (program, args) => { calls.push([program, args]); return { code: 1, stdout: JSON.stringify([{ id: "done", name: "Done", to: "Done" }]) }; },
     appendState: () => {},
     timestamp: at,

@@ -38,6 +38,8 @@ const IDENTITY = Object.freeze({
 const ACTIVE_TOOLS = Object.freeze([
   "ima_context",
   "ima_lifecycle",
+  "ima_lifecycle_recall",
+  "ima_lifecycle_get",
   "ima_delegate",
   "ima_agent_follow_up",
   "mcp",
@@ -320,6 +322,16 @@ test("fails closed before prompting for missing toolkit or initial identity drif
     {
       name: "missing lifecycle toolkit capability",
       harness: { activeTools: ACTIVE_TOOLS.filter((name) => name !== "ima_lifecycle") },
+      error: "phase_toolkit_missing",
+    },
+    {
+      name: "missing lifecycle recall capability",
+      harness: { activeTools: ACTIVE_TOOLS.filter((name) => name !== "ima_lifecycle_recall") },
+      error: "phase_toolkit_missing",
+    },
+    {
+      name: "missing lifecycle get capability",
+      harness: { activeTools: ACTIVE_TOOLS.filter((name) => name !== "ima_lifecycle_get") },
       error: "phase_toolkit_missing",
     },
   ];

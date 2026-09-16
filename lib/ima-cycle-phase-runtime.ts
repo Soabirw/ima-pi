@@ -31,6 +31,8 @@ const cycleExtensionPath = resolve(packageRoot, "extensions", "cycle.ts");
 const REQUIRED_PHASE_TOOLS = [
   "ima_context",
   "ima_lifecycle",
+  "ima_lifecycle_recall",
+  "ima_lifecycle_get",
   "ima_delegate",
   "ima_agent_follow_up",
   "mcp",

@@ -32,9 +32,25 @@ BookStack, Qdrant, Serena, and Markdown are the sole lifecycle authorities. Befo
 
 A valid pin skips reselection. Before the first write, reevaluation is allowed only after a proven no-write result; an uncertain write blocks. The first approved, verified write creates the checkout-local pin. Later and fresh-session operations use only that pin: failure blocks without fallback, migration, or provider mixing. Any historical Qdrant phase establishes Qdrant authority; when no preference orders providers, Markdown selection is exact. Provider-native persistence remains immutable and fail-closed, and human closeout remains separate.
 
-This authority contract is documented for `plane:ima:SKYNET-94`, lifecycle key `shared-dev-memory:manual:human-ai-memory-system:2026-08-31`, and approved rereview artifact `556c1dd8-c7f2-54f3-bbf4-30627aeb70e6`. No live-provider or cross-device acceptance has occurred. See the provider-native [BookStack](docs/bookstack-lifecycle-provider.md), [Qdrant](docs/qdrant-lifecycle-provider.md), [Serena](docs/serena-lifecycle-provider.md), and [Markdown](docs/markdown-lifecycle-provider.md) contracts.
+The underlying authority contract is documented for `plane:ima:SKYNET-94`, lifecycle key `shared-dev-memory:manual:human-ai-memory-system:2026-08-31`, and approved rereview artifact `556c1dd8-c7f2-54f3-bbf4-30627aeb70e6`. No live-provider or cross-device acceptance has occurred. See the provider-native [BookStack](docs/bookstack-lifecycle-provider.md), [Qdrant](docs/qdrant-lifecycle-provider.md), [Serena](docs/serena-lifecycle-provider.md), and [Markdown](docs/markdown-lifecycle-provider.md) contracts.
 
-Provider preferences and non-sensitive IDs are **non-secret variables**; credentials and tokens are **secrets**. The pin registry, Markdown location, local Qdrant state, and machine Serena state are **local-only values**. This authority contract introduces no **platform binding**.
+### P/R/S lineage authority
+
+**P** is the verified provider-pin anchor, **R** the original plan root, and **S** the stable source identity. A rootless original plan remains valid; later records preserve its original R and S, and a rooted initial pin preserves R. An approval receipt preserves the original R and S and never replaces the plan root.
+
+A legacy rootless non-plan pin remains unchanged but blocks: it has no repair, migration, repinning, or fallback. Future non-plan rootless first writes reject before effects. Before tracker effects, closeout revalidates exact P/R/S evidence and blocks if it is missing or mismatched; closeout never auto-closes a tracker. This policy leaves the public provider-neutral read signatures unchanged.
+
+Approved lineage evidence: canonical source `plane:ima:SKYNET-230`; final approved rereview `d2ffc65d-35ae-57cd-bfc2-ed9f3c65c69c`; assessment `direct:d7f62171-e139-422b-a05b-7b59b929fef1`.
+
+### Provider-neutral lifecycle reads
+
+`ima_lifecycle_recall({ lifecycleKey, phase?, limit? })` returns at most 20 verified descriptors; `limit` defaults to 20 and may be 1–20. Each descriptor contains `lifecycleKey`, exact `phase`, `artifactId`, `recordKey`, `contentHash`, a bounded `summary` (at most 2,000 UTF-8 bytes), and a closed `reference` proof. `ima_lifecycle_get({ lifecycleKey, phase, artifactId, recordKey, contentHash, reference, summary? })` returns one complete verified artifact. A recalled descriptor can be passed unchanged to `get`, including its `summary`; prior recall or a cache is not required. The public `document` phase is exact and never expands to `closeout`.
+
+Failed reads preserve their existing error code and message and may add an optional, bounded `error.diagnostic`. Provider diagnostics use only the allowlisted codes `provider_access_denied`, `provider_adapter_unavailable`, `provider_operation_failed`, `provider_response_invalid`, `provider_transport_failed`, `provider_unavailable`, or `provider_verification_failed`, with optional safe `phase` and `reason` metadata. Get-side local verification diagnostics use stage `verification` and only `get_reference_projection_failed`, `get_record_verification_failed`, `get_descriptor_projection_failed`, or `get_descriptor_mismatch`; runtime uses only `unexpected_failure`. Diagnostics never include a provider name, endpoint, credential, page or resource ID, artifact content, raw upstream error, or stack trace.
+
+The tools derive provider and destination internally. After pinning, the durable pin is the sole authority; exact all-phase historical Qdrant applies only while genuinely unpinned. A pending, changed, unavailable, malformed, mismatched, secret-shaped, or incomplete read fails closed—no selection, write, pinning, fallback, repair, migration, or partial output. Closed references are verification proof, not bearer authorization. `ima_corpus_*` remains the Qdrant-native institutional corpus API. This surface is documented from canonical source `plane:ima:SKYNET-230` and final approved rereview artifact `d2ffc65d-35ae-57cd-bfc2-ed9f3c65c69c`.
+
+Provider preferences and lifecycle identifiers are **non-secret variables**; credentials and tokens are **secrets**. Pins, Markdown evidence, local Qdrant state, machine Serena state, and retained read output are **local-only values**. Configured provider service, project, or workspace destinations are **platform bindings** where applicable and are never public read inputs.
 
 ## Text-to-speech command and engine (S1–S4, S6)
 

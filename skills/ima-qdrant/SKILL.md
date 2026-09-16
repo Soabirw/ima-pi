@@ -1,6 +1,6 @@
 ---
 name: ima-qdrant
-description: Use the Pi-native IMA Qdrant institutional corpus tools for bounded durable records, search, unpinned historical lifecycle authority, and full retrieval.
+description: Use the Pi-native IMA Qdrant institutional corpus tools for bounded durable records, search, and full institutional retrieval; formal lifecycle reads use the lifecycle read pair.
 ---
 
 # IMA Qdrant corpus
@@ -14,12 +14,12 @@ Use `ima_corpus_*` tools; never add, copy, discover, or invoke `qdrant-memory` o
 1. Use `ima_corpus_status` for read-only prerequisite and compatibility evidence. It never
    bootstraps, creates, indexes, stores, repairs, or migrates data.
 2. Use `ima_corpus_find` for bounded semantic summary search. It excludes full `detail`.
-3. Use `ima_corpus_recall` for Qdrant-native exact lifecycle-key lookup only when
-   `ima-lifecycle-contract` is establishing unpinned historical Qdrant authority or Qdrant is the
-   selected pin. It is not a post-pin fallback for another provider.
-4. Use `ima_corpus_get` only for a selected Qdrant logical record key or a known manifest point-ID
-   UUID when full bounded detail is necessary. The public argument remains `recordKey`: logical keys
-   are canonical retrieval references, while `artifactId` values identify Qdrant manifest points.
+3. Use `ima_corpus_recall` only for a bounded Qdrant institutional-corpus summary lookup. It is not
+   formal lifecycle phase evidence, including while the lifecycle is unpinned or Qdrant-pinned.
+4. Use `ima_corpus_get` only for selected institutional Qdrant detail. The public argument remains
+   `recordKey`: logical keys are canonical retrieval references, while `artifactId` values identify
+   Qdrant manifest points. Formal lifecycle detail instead requires a selected
+   `ima_lifecycle_get` descriptor.
 
 Treat unavailable, incompatible, missing-model, and model-digest failures as fail-closed
 local prerequisite evidence. Do not substitute unrelated MCP output, stale caches, or
@@ -31,13 +31,14 @@ Use `ima_corpus_store` only for an explicitly authorized **non-lifecycle** insti
 Supply one bounded, immutable record with a stable `recordKey`, project, lifecycle key, phase,
 summary, detail, and source references. Small schema-v1 records remain compatible; large detail is
 stored as a schema-v2 embedded manifest plus deterministic vectorless detail chunks. Semantic find
-and lifecycle recall return manifest summaries only; direct get validates and reassembles full detail.
+and corpus recall return manifest summaries only; direct get validates and reassembles full detail.
 Identical content returns `unchanged`; a changed record for the same key is `record_conflict` and
 must not be overwritten.
 
-Formal lifecycle persistence goes through `ima_lifecycle`, not a direct corpus call. Its pin-aware
-route retains both the Qdrant manifest `artifactId` and logical `recordKey` when Qdrant is the
-historical or selected authority; do not use them to cross a provider boundary.
+Formal lifecycle persistence goes through `ima_lifecycle`, and formal lifecycle retrieval goes
+through `ima_lifecycle_recall` followed by selected `ima_lifecycle_get`, never a direct corpus call.
+The pin-aware route retains both the Qdrant manifest `artifactId` and logical `recordKey` when
+Qdrant is the historical or selected authority; do not use them to cross a provider boundary.
 
 Do not store credentials, endpoint values, raw provider responses, stack traces, transient
 logs, or unreviewed personal data. The package owns endpoint defaults and operator environment
@@ -45,10 +46,11 @@ configuration; tool arguments never select endpoints, models, or collections.
 
 ## Qdrant lifecycle-provider boundary
 
-The reviewed Qdrant lifecycle provider is an internal capability behind the current pin-aware
-`ima_lifecycle` route, not an agent-facing alternate workflow. `ima_corpus_*` remains the public
-corpus boundary. Follow [the lifecycle routing contract](../ima-lifecycle-contract/SKILL.md): before
-a pin, exact verified Tier-1 Qdrant history from any phase is authoritative; after a non-Qdrant pin,
+The reviewed Qdrant lifecycle provider is an internal capability behind the pin-aware
+`ima_lifecycle` route and the public `ima_lifecycle_recall`/`ima_lifecycle_get` read pair, not an
+agent-facing alternate workflow. `ima_corpus_*` remains the institutional corpus boundary. Follow
+[the lifecycle routing contract](../ima-lifecycle-contract/SKILL.md): before a pin, the public read
+pair may establish exact verified Tier-1 Qdrant history from any phase; after a non-Qdrant pin,
 Qdrant is never fallback or mixed evidence.
 
 For provider routing only, it can:
@@ -77,8 +79,9 @@ replicated, or cross-device authority claim.
 - `ima_context.durableKnowledge` keeps its documented public contract while using the direct
   package corpus boundary internally for the legacy `ima-knowledge` collection only. Other
   collection names fail closed before embedding or search.
-- Formal lifecycle persistence/routing uses `ima_lifecycle` and its durable pin. Tier-1 Qdrant is
-  authoritative only for unpinned historical lifecycle evidence or a Qdrant pin; Vestige remains
-  cited-legacy-only.
+- Formal lifecycle persistence uses `ima_lifecycle`; formal lifecycle reads use
+  `ima_lifecycle_recall` followed by selected `ima_lifecycle_get` and their durable-pin authority.
+  Tier-1 Qdrant is authoritative only through that pair for unpinned historical lifecycle evidence
+  or a Qdrant pin; Vestige remains cited-legacy-only.
 - Qdrant collection deletion, generic vector-database abstractions, and `ima-rag` integration
   are outside this capability.

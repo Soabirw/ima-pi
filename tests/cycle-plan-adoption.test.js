@@ -171,8 +171,48 @@ test("confirms a legacy plan once, persists only a reference, and rechecks the w
   assert.match(request.artifact, /ima-plan-approval/);
   assert.match(request.artifact, /ima-cycle outcome: phase=plan; outcome=APPROVED/);
   assert.doesNotMatch(request.artifact, /lifecycle:\n/);
+  assert.equal(request.identity.lifecycleRootMemoryId, original.id);
   assert.deepEqual(request.identity.priorArtifactIds, [original.id]);
-  assert.ok(request.identity.sourceRefs.includes(`QdrantRecordKey:${original.recordKey}`));
+  assert.deepEqual(request.identity.sourceRefs, planIdentity().sourceRefs);
+});
+
+test("uses the original explicit root and unmodified source references for legacy approval", async () => {
+  const rootArtifactId = uuid(220);
+  const original = legacy({
+    id: uuid(221),
+    key: recordKey("rooted-legacy"),
+    identity: planIdentity({ lifecycleRootMemoryId: rootArtifactId }),
+  });
+  let records = [original];
+  let request;
+  const result = await coordinateCyclePlanAdoption({
+    state: state(),
+    recall: async () => recallPayload(records),
+    interactive: true,
+    confirm: async () => true,
+    identity: planIdentity({
+      sourceRefs: ["plane:ima:SKYNET-189", "must-not-replace-stable-source"],
+    }),
+    persistApproval: async (value) => {
+      request = value;
+      records = [
+        original,
+        planRecord({
+          id: uuid(222),
+          key: recordKey("rooted-approval"),
+          createdAt: "2026-09-08T01:03:00.000Z",
+          artifact: value.artifact,
+          identity: value.identity,
+          hash: contentHash(recordKey("rooted-approval")),
+        }),
+      ];
+      return completed(uuid(222), recordKey("rooted-approval"));
+    },
+  });
+  assert.equal(result.kind, "approved");
+  assert.equal(request.identity.lifecycleRootMemoryId, rootArtifactId);
+  assert.deepEqual(request.identity.sourceRefs, planIdentity().sourceRefs);
+  assert.deepEqual(request.identity.priorArtifactIds, [original.id]);
 });
 
 test("does not prompt in noninteractive recovery and does not write after cancellation", async () => {
@@ -529,6 +569,9 @@ test("interactive resume previews the complete legacy artifact and dispatches im
   await commands.get("ima:cycle").handler("resume", ctx);
   assert.equal(preview, original.content);
   assert.equal(persisted.type, "plan");
+  assert.equal(persisted.identity.lifecycleRootMemoryId, original.id);
+  assert.deepEqual(persisted.identity.sourceRefs, planIdentity().sourceRefs);
+  assert.deepEqual(persisted.identity.priorArtifactIds, [original.id]);
   assert.doesNotMatch(persisted.artifact, /lifecycle:\n/);
   assert.equal(messages.length, 1);
   assert.match(messages[0], /^\/ima:implement plane:ima:SKYNET-189/);

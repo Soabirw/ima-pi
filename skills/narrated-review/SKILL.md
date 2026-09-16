@@ -12,21 +12,28 @@ perform, repeat, or alter the review.
 ## Read-only boundary
 
 - Treat the persisted verified review verdict as authoritative.
-- Select authoritative review evidence with exact `ima_corpus_recall` at `limit: 20`.
-- If 20 summaries return, treat lifecycle evidence as potentially saturated and stop; the bounded
-  response cannot prove completeness.
-- Filter summaries to `review` or `rereview` candidates. If none remain, report the missing
+- Do not use `ima_corpus_recall` at `limit: 20` or `ima_corpus_get` for lifecycle evidence; both
+  remain institutional Qdrant-only.
+- In every fresh narration session, call `ima_lifecycle_recall` for the exact lifecycle key at
+  `limit: 20`. It derives the checkout pin or, only while genuinely unpinned, exact historical
+  Qdrant authority.
+- Its results are descriptors only. If 20 descriptors return, treat lifecycle evidence as potentially saturated
+  and stop; the bounded response cannot prove completeness.
+- Filter descriptors to `review` or `rereview` candidates. If none remain, report the missing
   completed-review prerequisite and stop.
-- Directly retrieve every candidate by logical `recordKey` with `ima_corpus_get`.
-- Validate every candidate's lifecycle identity, review/rereview phase, authoritative completion
-  marker, returned record identity, logical record key, and usable `createdAt` before narration.
+- Directly retrieve every candidate by passing its unchanged selected descriptor to
+  `ima_lifecycle_get`; never reconstruct a descriptor or accept one as evidence.
+- Validate every candidate's complete result for lifecycle identity, review/rereview phase,
+  authoritative completion marker, returned `artifactId`, logical `recordKey`, content hash, read reference, and
+  authoritative usable `createdAt` before narration; never infer a missing timestamp.
 - Select the unique candidate with the greatest valid `createdAt`. If timestamps are missing,
   invalid, or tied at the greatest value, report ambiguous evidence and stop.
 - Fail closed when a candidate cannot be retrieved or validated, or when evidence cannot identify
-  the reviewed context. State the missing prerequisite; do not infer findings or substitute a
-  Taskwarrior/Jira lookup for unavailable Tier-1 evidence.
+  the reviewed context. Pending, inaccessible, unavailable, corrupt, mismatched, overflowed, or
+  cancelled reads block; do not infer findings or substitute a Taskwarrior/Jira lookup.
 - Use [ima-memory-workflow](../ima-memory-workflow/SKILL.md) for Serena, Vestige, and Tier-1
-  Qdrant boundaries. Vestige is not a lifecycle fallback.
+  Qdrant boundaries. `ima_corpus_*` remains institutional Qdrant-only; Vestige is not a lifecycle
+  fallback.
 - Do not re-review, change a verdict or severity, resolve a finding, run tests or builds, edit
   files, persist narration state, write a lifecycle artifact, or make any lifecycle mutation.
 - Do not make a tool-driven TTS invocation. The operator decides whether to run `/ima:speak`.

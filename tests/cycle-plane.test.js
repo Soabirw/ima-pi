@@ -92,6 +92,27 @@ const closeoutReadyState = () => {
   return evidence(awaitingEvidence(state), "document", "READY");
 };
 
+const closeoutRootArtifactId = "66666666-6666-4666-8666-666666666666";
+const verifiedPlaneCloseoutLineage = (state) => async () => ({
+  status: "verified",
+  lineage: {
+    provider: "qdrant",
+    initialReference: {},
+    rootArtifactId: closeoutRootArtifactId,
+    sourceIdentity: {
+      project: "ima-pi",
+      lifecycleKey: state.lifecycleKey,
+      taskwarriorProject: "",
+      taskwarriorTask: "",
+      taskwarriorUuid: "",
+      jiraKey: "",
+      planeWorkspace: state.source.workspace,
+      planeWorkItem: `${state.source.project}-${state.source.sequenceId}`,
+      sourceRefs: [cycleSourceReference(state.source)],
+    },
+  },
+});
+
 const lifecycleMarker = (state, phase, overrides = {}) => `<!-- ima-lifecycle verification: lifecycle_key=${overrides.lifecycleKey ?? state.lifecycleKey}; nonce=test-nonce; phase=${phase}; jira_key=${overrides.jiraKey ?? ""}; taskwarrior_uuid=${overrides.taskwarriorUuid ?? ""}; plane_workspace=${overrides.planeWorkspace ?? "ima"}; plane_work_item=${overrides.planeWorkItem ?? "SKYNET-61"}; outcome=completed -->`;
 
 const persistedRecord = (state, phase, outcome, overrides = {}) => ({
@@ -433,6 +454,7 @@ test("validates Plane helper envelopes and terminal states before mutation", () 
 test("closes Plane in get-to-states-to-set-state order and never retries after lifecycle failure", async () => {
   const calls = [];
   const lifecycleRequests = [];
+  const state = closeoutReadyState();
   const run = async (program, args) => {
     calls.push([program, args]);
     if (args[1] === "plane:get") return { code: 0, stdout: JSON.stringify(currentWorkItem()) };
@@ -442,10 +464,11 @@ test("closes Plane in get-to-states-to-set-state order and never retries after l
   };
 
   const result = await coordinateCycleClose({
-    state: closeoutReadyState(),
+    state,
     mode: "tui",
     commitPrep: false,
     confirmed: true,
+    resolveLineage: verifiedPlaneCloseoutLineage(state),
     run,
     lifecycle: async (request) => {
       lifecycleRequests.push(request);
@@ -467,7 +490,7 @@ test("closes Plane in get-to-states-to-set-state order and never retries after l
   assert.deepEqual(lifecycleRequests[0].identity, {
     project: "ima-pi",
     lifecycleKey: "ima-pi:plane:ima:SKYNET-61",
-    lifecycleRootMemoryId: "",
+    lifecycleRootMemoryId: closeoutRootArtifactId,
     taskwarriorProject: "",
     taskwarriorTask: "",
     taskwarriorUuid: "",
@@ -481,11 +504,13 @@ test("closes Plane in get-to-states-to-set-state order and never retries after l
 
 test("fails closed before a Plane write when a read or state envelope is invalid", async () => {
   const malformed = [];
+  const malformedState = closeoutReadyState();
   const malformedResult = await coordinateCycleClose({
-    state: closeoutReadyState(),
+    state: malformedState,
     mode: "tui",
     commitPrep: false,
     confirmed: true,
+    resolveLineage: verifiedPlaneCloseoutLineage(malformedState),
     run: async (program, args) => {
       malformed.push([program, args]);
       return { code: 0, stdout: "not JSON" };
@@ -497,11 +522,13 @@ test("fails closed before a Plane write when a read or state envelope is invalid
   assert.equal(malformed.length, 1);
 
   const failedRead = [];
+  const failedReadState = closeoutReadyState();
   const failedReadResult = await coordinateCycleClose({
-    state: closeoutReadyState(),
+    state: failedReadState,
     mode: "tui",
     commitPrep: false,
     confirmed: true,
+    resolveLineage: verifiedPlaneCloseoutLineage(failedReadState),
     run: async (program, args) => {
       failedRead.push([program, args]);
       return { code: 1, stdout: "" };
@@ -513,11 +540,13 @@ test("fails closed before a Plane write when a read or state envelope is invalid
   assert.equal(failedRead.length, 1);
 
   const terminal = [];
+  const terminalState = closeoutReadyState();
   const terminalResult = await coordinateCycleClose({
-    state: closeoutReadyState(),
+    state: terminalState,
     mode: "tui",
     commitPrep: false,
     confirmed: true,
+    resolveLineage: verifiedPlaneCloseoutLineage(terminalState),
     run: async (program, args) => {
       terminal.push([program, args]);
       if (args[1] === "plane:get") {
@@ -541,11 +570,13 @@ test("does not persist or retry when the Plane helper rejects an unconfirmed mut
   const calls = [];
   const lifecycleRequests = [];
   const appended = [];
+  const state = closeoutReadyState();
   const result = await coordinateCycleClose({
-    state: closeoutReadyState(),
+    state,
     mode: "tui",
     commitPrep: false,
     confirmed: true,
+    resolveLineage: verifiedPlaneCloseoutLineage(state),
     run: async (program, args) => {
       calls.push([program, args]);
       if (args[1] === "plane:get") {

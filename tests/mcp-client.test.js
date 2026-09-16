@@ -147,7 +147,7 @@ test("child stderr remains hidden behind the lifecycle error boundary", async ()
 
     const result = await coordinateLifecycle(
       {
-        type: "implementation",
+        type: "plan",
         identity: {
           project: "ima-pi",
           lifecycleKey: "ima-pi:test:child-stderr",

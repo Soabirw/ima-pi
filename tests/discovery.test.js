@@ -68,8 +68,9 @@ test("package ships integrations and native corpus production tool registrations
   const integrations = await readFile(join(root, "extensions", "integrations.ts"), "utf8");
   const corpus = await readFile(join(root, "extensions", "institutional-memory.ts"), "utf8");
   const migration = await readFile(join(root, "extensions", "vestige-migrate.ts"), "utf8");
-  assert.match(integrations, /registerTool\(\{ name: "ima_context"/);
-  assert.match(integrations, /registerTool\(\{ name: "ima_lifecycle"/);
+  for (const name of ["ima_context", "ima_lifecycle", "ima_lifecycle_recall", "ima_lifecycle_get"]) {
+    assert.match(integrations, new RegExp(`registerTool\\(\\{\\s+name: "${name}"`));
+  }
   for (const name of ["ima_corpus_status", "ima_corpus_store", "ima_corpus_find", "ima_corpus_recall", "ima_corpus_get"]) {
     assert.match(corpus, new RegExp(`name: "${name}"`));
   }

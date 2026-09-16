@@ -17,6 +17,11 @@ import {
   type CycleState,
 } from "./ima-cycle.ts";
 import type { LifecycleIdentity } from "./ima-lifecycle.ts";
+import {
+  createLifecycleContinuationIdentity,
+  validateLifecycleContinuationRequest,
+  type PinnedLifecycleLineage,
+} from "./ima-lifecycle-routing.ts";
 
 const JIRA_HELPER = join(homedir(), ".agents", "skills", "mcp-atlassian", "scripts", "atlassian-api.mjs");
 const PLANE_HELPER = fileURLToPath(new URL("../skills/plane-api/scripts/plane-api.mjs", import.meta.url));
@@ -31,6 +36,10 @@ export type CycleCloseInput = {
   run: (program: string, args: string[]) => Promise<unknown>;
   lifecycle?: (request: { type: "closeout"; identity: LifecycleIdentity; summary: string; artifact: string }) => Promise<{ status?: string; [key: string]: unknown }>;
   identity?: LifecycleIdentity;
+  resolveLineage?: (lifecycleKey: string) => Promise<
+    | { status: "verified"; lineage: PinnedLifecycleLineage }
+    | { status: "blocked"; code: string }
+  >;
   appendState: (state: CycleState) => void | Promise<void>;
   timestamp?: string;
 };
@@ -83,11 +92,13 @@ const sameLifecycleIdentity = (state: CycleState, identityValue: unknown): boole
     && text(identity.planeWorkItem) === `${state.source.project}-${state.source.sequenceId}`;
 };
 
+const priorArtifactIdsForCycleState = (state: CycleState) => [...new Set(state.evidence.flatMap((item) => [
+  ...(item.artifactId ? [item.artifactId] : []),
+  ...(item.approvedPlan ? [item.approvedPlan.artifactId] : []),
+]))];
+
 export const identityForCycleSource = (state: CycleState): LifecycleIdentity => {
-  const priorArtifactIds = [...new Set(state.evidence.flatMap((item) => [
-    ...(item.artifactId ? [item.artifactId] : []),
-    ...(item.approvedPlan ? [item.approvedPlan.artifactId] : []),
-  ]))];
+  const priorArtifactIds = priorArtifactIdsForCycleState(state);
   if (state.source.type === "jira") {
     return { project: IMA_PROJECT, lifecycleKey: state.lifecycleKey, lifecycleRootMemoryId: "", taskwarriorProject: "", taskwarriorTask: "", taskwarriorUuid: "", jiraKey: state.source.key, sourceRefs: [`Jira:${state.source.key}`], priorArtifactIds };
   }
@@ -108,6 +119,44 @@ export const identityForCycleSource = (state: CycleState): LifecycleIdentity => 
     sourceRefs: [cycleSourceReference(state.source)],
     priorArtifactIds,
   };
+};
+
+const closeoutRequestForLineage = async (input: CycleCloseInput): Promise<
+  | { ok: true; identity: LifecycleIdentity; artifact: string }
+  | { ok: false; code: string }
+> => {
+  if (!input.resolveLineage) return { ok: false, code: "lifecycle_lineage_unavailable" };
+  let resolved: Awaited<ReturnType<NonNullable<CycleCloseInput["resolveLineage"]>>>;
+  try {
+    resolved = await input.resolveLineage(input.state.lifecycleKey);
+  } catch {
+    return { ok: false, code: "lifecycle_lineage_unavailable" };
+  }
+  if (resolved.status !== "verified") return { ok: false, code: resolved.code };
+
+  const derived = createLifecycleContinuationIdentity({
+    sourceIdentity: resolved.lineage.sourceIdentity,
+    lifecycleRootMemoryId: resolved.lineage.rootArtifactId,
+    priorArtifactIds: priorArtifactIdsForCycleState(input.state),
+  });
+  const identity = input.identity ?? derived;
+  if (!identity || !sameLifecycleIdentity(input.state, identity)) {
+    return { ok: false, code: "lifecycle_identity_mismatch" };
+  }
+  const artifact = buildFinalCloseoutArtifact(input.state, { identity });
+  const request = {
+    type: "closeout" as const,
+    identity,
+    summary: "Cycle closeout verified after tracker completion.",
+    artifact,
+  };
+  const valid = validateLifecycleContinuationRequest({
+    lineage: resolved.lineage,
+    request,
+  });
+  return valid.valid
+    ? { ok: true, identity, artifact }
+    : { ok: false, code: valid.code };
 };
 
 const closePlaneTracker = async (
@@ -170,8 +219,9 @@ export async function coordinateCycleClose(input: CycleCloseInput): Promise<{ ok
   if (!requiredCloseoutEvidence(input.state).valid) return { ...safeError("closeout_evidence_missing"), state: input.state };
   if (input.confirmed !== true) return { ...safeError("close_confirmation_required"), state: input.state };
   const state = input.state;
-  const identity = input.identity ?? identityForCycleSource(state);
-  if (!sameLifecycleIdentity(state, identity)) return { ...safeError("lifecycle_identity_mismatch"), state };
+  const closeout = await closeoutRequestForLineage(input);
+  if (!closeout.ok) return { ...safeError(closeout.code), state };
+  const { identity, artifact } = closeout;
   if (state.source.type === "plane") {
     const closed = await closePlaneTracker(state.source, input.run);
     if (!closed.ok) return { ...safeError(closed.code), state };
@@ -207,7 +257,6 @@ export async function coordinateCycleClose(input: CycleCloseInput): Promise<{ ok
     }
     if (!execSucceeded(mutation)) return { ...safeError("tracker_close_failed"), state };
   }
-  const artifact = buildFinalCloseoutArtifact(state, { identity });
   let persisted: { status?: string; [key: string]: unknown };
   try {
     persisted = input.lifecycle

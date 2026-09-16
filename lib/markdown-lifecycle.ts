@@ -7,6 +7,7 @@ import {
   MARKDOWN_LIFECYCLE_PROVIDER,
   MAX_MARKDOWN_LIFECYCLE_ARTIFACT_BYTES,
   MAX_MARKDOWN_LIFECYCLE_ENUMERATION,
+  MAX_MARKDOWN_LIFECYCLE_RECALL_LIMIT,
   MAX_MARKDOWN_LIFECYCLE_RECEIPT_BYTES,
   containsRecognizedMarkdownLifecycleSecret,
   canonicalMarkdownCheckoutRoot,
@@ -982,8 +983,13 @@ export const createMarkdownLifecycleAdapter = (input: {
     if (finalLease === "active") return blocked("markdown_lease_active");
     if (finalLease !== "clear") return blocked("markdown_lease_unavailable");
 
-    return records
-      .filter((record) => selection.phase === undefined || record.phase === selection.phase)
+    const selected = records.filter((record) =>
+      selection.phase === undefined || record.phase === selection.phase,
+    );
+    if (selected.length > MAX_MARKDOWN_LIFECYCLE_RECALL_LIMIT) {
+      return blocked("markdown_recall_unverifiable");
+    }
+    return selected
       .slice(0, selection.limit)
       .map((record) => verifiedResult(record, "unchanged"));
   };

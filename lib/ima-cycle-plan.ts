@@ -16,6 +16,11 @@ import {
   type LifecycleIdentity,
 } from "./ima-lifecycle.ts";
 import { projectLifecycleProviderReference } from "./ima-lifecycle-pin.ts";
+import {
+  deriveLifecycleRoot,
+  projectLifecycleSourceIdentity,
+  sameLifecycleSourceIdentity,
+} from "./ima-lifecycle-routing.ts";
 import { normalizeLifecycleProvider, type LifecycleProviderName } from "./ima-lifecycle-selection.ts";
 
 export const PLAN_RECALL_LIMIT = 20;
@@ -608,14 +613,26 @@ export const selectReusablePlan = (
   }
 
   const referenced = records.filter((record) => matchesReference(record, newest.approvalReference!));
+  const original = referenced.length === 1 ? referenced[0] : null;
+  const originalRoot = original && deriveLifecycleRoot({
+    phase: "plan",
+    artifactId: original.artifactId,
+    lifecycleRootMemoryId: original.identity.lifecycleRootMemoryId,
+  });
+  const originalSourceIdentity = original && projectLifecycleSourceIdentity(original.identity);
+  const approvalSourceIdentity = projectLifecycleSourceIdentity(newest.identity);
   if (
-    referenced.length !== 1
-    || referenced[0].outcome !== "LEGACY"
-    || referenced[0].approvalReference !== null
-    || !newest.identity.priorArtifactIds.includes(referenced[0].artifactId)
-    || !newest.identity.sourceRefs.includes(`QdrantRecordKey:${referenced[0].recordKey}`)
+    !original
+    || original.outcome !== "LEGACY"
+    || original.approvalReference !== null
+    || !originalRoot
+    || newest.identity.lifecycleRootMemoryId !== originalRoot
+    || !originalSourceIdentity
+    || !approvalSourceIdentity
+    || !sameLifecycleSourceIdentity(originalSourceIdentity, approvalSourceIdentity)
+    || !newest.identity.priorArtifactIds.includes(original.artifactId)
   ) return { kind: "blocked", code: "plan_approval_reference_invalid" };
-  return { kind: "approved", approval: newest, contract: referenced[0] };
+  return { kind: "approved", approval: newest, contract: original };
 };
 
 export const buildLegacyPlanApproval = (plan: VerifiedPlanRecord) => {

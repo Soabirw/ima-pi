@@ -171,22 +171,29 @@ Once the human approves the complete key, the verified UTC date freezes with tha
 Never infer a name from prose, a file name, similarity, or prior history. Do not silently normalize
 an invalid adjustment: it requires correction, then a new complete preview and renewed human
 approval; no prior approval survives an adjustment. Convert the approved key to the canonical
-handoff `lifecycle:<key>`. Perform an exact pin-aware collision/recall check: an existing exact key
-may proceed only through the human-selected resume path, and an expected-empty exact key may proceed
-only through the human-selected new path. A collision, missing requested resume, multiple result,
-incomplete evidence, or any uncertainty is `BLOCKED`. Never create or consult a naming registry,
-auto-suffix, merge, overwrite, or similarity-match a manual identity.
+handoff `lifecycle:<key>`. Perform an exact public `ima_lifecycle_recall` collision check at
+`limit: 20`: descriptors are not evidence. An existing exact key may proceed only through the human-selected resume path,
+and an expected-empty exact key may proceed only through the human-selected new path. For a resume, pass its selected
+descriptor unchanged to `ima_lifecycle_get` before acting. A collision, missing requested resume,
+20-result potential overflow, multiple result, incomplete evidence, or any uncertainty is `BLOCKED`.
+Never create or consult a naming registry, auto-suffix, merge, overwrite, or similarity-match a manual identity.
 
 The manual identity/new-versus-resume decision and required first-use BookStack placement consent
 are human-owned and independent of plan approval. Autonomous mode never supplies either human-owned
 decision; it pauses for the human gate before the first persistence.
 
 After the one hydration and, for file/text work, the completed manual identity gate, load
-`ima-lifecycle-contract` and recover any durable pin before recalling the latest verified lifecycle
-artifact with the exact lifecycle key. The first unpinned, organization-visible BookStack placement
+`ima-lifecycle-contract` and call `ima_lifecycle_recall` for the exact lifecycle key at `limit: 20`.
+Its results are descriptors only: if 20 return, block as potentially overflowed; otherwise select
+matching required descriptors and pass each unchanged to `ima_lifecycle_get` before acting. Accept a
+prior artifact only after its complete result verifies lifecycle/source identity, phase and terminal
+outcome, returned `artifactId`/`recordKey`, content hash, read reference, and phase-specific
+semantics. A descriptor, summary, handoff pointer, or cache alone is never lifecycle evidence.
+
+The public pair derives checkout-pin authority; only while genuinely unpinned does it use exact
+all-phase historical Qdrant authority. The first unpinned, organization-visible BookStack placement
 requires explicit human-owned consent; consent alone never creates a pin. Only verified persistence
 of the first immutable artifact plus provider-native direct read-back establishes a durable pin.
-
 For lifecycle storage authority, autonomous mode pauses for user input when the mandatory manual
 identity gate or human-owned first-use BookStack consent is missing. Once a pin is verified, both
 guided and autonomous phases use its exact provider-native placement without provider selection or
@@ -194,19 +201,14 @@ placement confirmation. Guided phase gates remain separate human approval gates,
 Provider unavailability, mismatch, unknown writes, or persistence failure is `BLOCKED`; do not retry
 a `BLOCKED` write, fall back, migrate, switch providers, or mix history.
 
-Without a pin, exact Tier-1 Qdrant history across every phase establishes historical Qdrant
-authority. Only an expected-empty recall for a new normalized Taskwarrior, Jira, Plane, or
-human-approved manual `new` source has no prior artifact to reuse. Retain its documented lifecycle
+Only after a verified expected-empty recall through the public pair may a new normalized Taskwarrior, Jira, Plane, or human-approved manual `new` source proceed to Plan; it has no prior artifact to reuse. Retain its documented lifecycle
 key and proceed to Plan so the first plan artifact can be created. When matching verified evidence
-exists, retrieve selected detail directly through the authoritative route before acting on it and
-reuse its lifecycle identity, `artifactId`, `recordKey`, and provider-native references.
-
-For an explicit lifecycle or requested resume source, a missing required artifact is `BLOCKED`.
-For a manual source explicitly approved as `new`, the required expected-empty exact recall is the
-only exception. Mismatched, incomplete, corrupt, or unverified evidence is also `BLOCKED`; stop
-rather than inventing a lifecycle thread or guessing a next phase. Vestige supplies cited legacy
-evidence only: continue only when it explicitly establishes lifecycle identity and the pin-aware
-authoritative evidence is sufficient; it is never a lifecycle fallback.
+exists, retrieve selected detail only with its selected exact `ima_lifecycle_get` result before you
+reuse its lifecycle identity, `artifactId`, `recordKey`, and read reference. For an explicit lifecycle or requested resume source, a missing required artifact is `BLOCKED`. For a manual source explicitly
+approved as `new`, the required expected-empty exact recall is the only exception. Pending, inaccessible, unavailable, overflowed, or cancelled public reads are also `BLOCKED`. Mismatched, incomplete, corrupt, or unverified evidence is also `BLOCKED`; stop rather than inventing a lifecycle thread or guessing a next phase. Never substitute `ima_corpus_*`, a provider-native read, generated SDK namespace, or MCP
+discovery. Vestige supplies cited legacy evidence only: continue only when it explicitly establishes
+lifecycle identity and the public authoritative evidence is sufficient; it is never a lifecycle
+fallback.
 
 ## Scope and safety gate
 
@@ -260,11 +262,20 @@ marker:
 
 If safe approval is impossible, persist a plan `BLOCKED` outcome and stop. This plan marker records reusable plan approval only; it does not dispatch `/ima:cycle`.
 
-For every persisted artifact, retain the inherited lifecycle identity, canonical source, relevant
-prior artifact IDs and logical record keys, phase result, scope and non-goals, evidence used,
-commands/results, changed or reviewed files, blockers, residual risk, deviations, and recommended
-next phase. Claim a phase outcome only after `ima_lifecycle` verifies its persistence and direct
-detail reassembly. Persisting an approval receipt alone never makes implementation safe.
+Keep the verified provider-pin anchor `P`, original plan root `R`, and stable source identity `S`
+distinct. Only the original `plan` may be rootless; its verified artifact establishes R, while P is
+only the provider anchor. A rooted later pin supplies its explicit R and verified S. Every later
+artifact, including a later `plan` approval receipt, preserves exact R/S; an approval receipt never
+becomes a replacement root. A future rootless non-plan first write is `BLOCKED` before provider
+effect. An existing rootless non-plan P remains unchanged and blocks; do not infer, repair pins,
+repin, migrate, select a provider, fall back, or perform historical rewriting.
+
+For every persisted artifact, retain the inherited lifecycle identity, canonical source, exact R/S
+when it is a continuation, relevant prior artifact IDs and logical record keys, phase result, scope
+and non-goals, evidence used, commands/results, changed or reviewed files, blockers, residual risk,
+deviations, and recommended next phase. Claim a phase outcome only after `ima_lifecycle` verifies
+its persistence and direct detail reassembly. Persisting an approval receipt alone never makes
+implementation safe.
 
 ## Implement
 
@@ -286,11 +297,20 @@ When test reports `DEFECTS`, require stable `TEST-NNN` evidence containing the a
 ## Phase handoff discipline
 
 Before each phase, summarize the inherited plan outcome, non-goals, exact target boundary,
-acceptance criteria, prior evidence, and the one decision the specialist is authorized to make.
-After each report, check that it addresses the requested boundary and has not introduced a material
-contradiction. If a child report is partial, stale, or lacks observable evidence, request a bounded
-clarification through the existing child reference where available; otherwise stop and surface the
-gap. Do not silently re-run a phase under a different authority.
+acceptance criteria, prior evidence, and the one decision the specialist is authorized to make. In
+every fresh coordinator or specialist session, recall descriptors for the exact lifecycle key with
+`ima_lifecycle_recall` before using prior evidence, then pass every selected required descriptor
+unchanged to `ima_lifecycle_get`; descriptors alone never authorize a phase. The public pair derives
+pinned or genuinely unpinned historical-Qdrant authority. Pending, inaccessible, unavailable,
+corrupt, mismatched, overflowed, or cancelled reads block the phase without a retry, fallback,
+provider-native read, `ima_corpus_*` substitution, or provider change. Before a continuation phase,
+use complete verified evidence to resolve P/R/S and hand off exact R/S with the canonical source;
+`priorArtifactIds`, a latest receipt, or a tracker never derives or replaces them. A rootless
+non-plan authority blocks without repair. After each report, check that it addresses the requested
+boundary and has not introduced a material contradiction. If a child report is partial, stale, or
+lacks observable evidence, request a bounded clarification through the existing child reference where
+available; otherwise stop and surface the gap. Do not silently re-run a phase under a different
+authority.
 
 ## Review and second opinion
 
@@ -309,7 +329,7 @@ An unresolved Critical or Warning finding after the bounded loop, any contradict
 
 ## Document and stop
 
-After reviewer approval, delegate documentation work to `documenter` or evidence assessment to `document-assessor`, with exact approved local documentation targets. The orchestrator persists the document artifact through `ima_lifecycle` with lifecycle type `document`.
+After reviewer approval, delegate documentation work to `documenter` or evidence assessment to `document-assessor`, with exact approved local documentation targets. The orchestrator persists the document artifact through `ima_lifecycle` with lifecycle type `document`; it is a continuation and preserves exact R/S rather than becoming rootless.
 
 Document only approved, current project material. Do not treat an external tracker update as
 implicit closeout authority. Report documentation that remains human-owned or was intentionally

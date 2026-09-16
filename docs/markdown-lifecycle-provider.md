@@ -10,6 +10,14 @@ Package/resource discovery does not configure this provider, and BookStack share
 
 Lifecycle integration preserves user confirmation, provider selection, the checkout-local pin, and every blocked/no-fallback result. That includes integrations with `ima_lifecycle`, `ima_context`, `/ima:cycle`, `/ima:new`, or other user-facing lifecycle flow. The adapter accepts no preference, pin, route, command, or configuration that makes that decision. It supplies no fallback, migration, adoption, closeout, or recovery tooling; this document claims no live-provider or cross-device acceptance.
 
+## P/R/S lineage authority
+
+For operator use, **P** is the verified provider-pin anchor, **R** is the original plan root, and **S** is the stable source identity. A rootless original plan is valid. Later records retain its original R and S, and a rooted initial pin retains R. Approval receipts preserve the original R and S; they never become or replace the plan root.
+
+An existing legacy rootless non-plan pin remains unchanged but blocks. There is no repair, migration, repinning, or fallback. A future non-plan rootless first write rejects before any effect. Before tracker effects, closeout revalidates the exact P/R/S lineage and blocks on missing or mismatched evidence; it does not auto-close a tracker. This policy does not change the public, provider-neutral recall or get signatures.
+
+The approved lineage authority is canonical source `plane:ima:SKYNET-230`, final approved rereview `d2ffc65d-35ae-57cd-bfc2-ed9f3c65c69c`, with assessment `direct:d7f62171-e139-422b-a05b-7b59b929fef1`.
+
 ## API and value contracts
 
 `createMarkdownLifecycleAdapter({ checkoutRoot })` returns the standalone `MarkdownLifecycleAdapter`:
@@ -62,6 +70,12 @@ A verified result has the exact shape below; `stored` means publication complete
 ```
 
 Every failure is a bounded `{ provider: "markdown", status: "blocked", code, reference? }` result. The possible codes are `markdown_request_invalid`, `markdown_secret_detected`, `aborted`, `markdown_checkout_invalid`, `markdown_containment_violation`, `markdown_lease_active`, `markdown_lease_lost`, `markdown_lease_release_failed`, `markdown_lease_unavailable`, `markdown_operation_failed`, `markdown_partial_evidence`, `markdown_path_invalid`, `markdown_recall_unverifiable`, `markdown_record_not_found`, `markdown_reference_invalid`, `markdown_selection_invalid`, `markdown_target_conflict`, `markdown_target_unverifiable`, `markdown_verification_failed`, `markdown_write_failed`, and `markdown_write_uncertain`. The result exposes no raw filesystem error body.
+
+### Provider-neutral lifecycle read surface
+
+The public package tools are provider-neutral; callers do not invoke this adapter directly. `ima_lifecycle_recall({ lifecycleKey, phase?, limit? })` returns at most 20 verified descriptors, and `ima_lifecycle_get({ lifecycleKey, phase, artifactId, recordKey, contentHash, reference })` returns exactly one complete verified artifact. A recall descriptor contains only `lifecycleKey`, exact `phase`, `artifactId`, `recordKey`, `contentHash`, `summary`, and a closed `reference` proof. `document` is exact and never expands to `closeout`.
+
+After a lifecycle is pinned, its durable pin is the sole authority for both public tools. Only while genuinely unpinned may the tools use exact all-phase historical Qdrant authority. Provider, checkout path, endpoint, credential, and destination remain internal; a closed reference is proof of a verified binding, not bearer authorization or provider-selection input. A pending, changed, unavailable, malformed, mismatched, secret-shaped, or incomplete read fails closed with no provider selection, mutation, pinning, fallback, repair, migration, or partial output. `ima_corpus_*` remains the separate Qdrant-native institutional corpus API.
 
 A `MarkdownLifecycleReference` is a strict exact binding:
 
@@ -120,9 +134,10 @@ Those controls do not make a checkout trustworthy against a privileged or concur
 
 ## Configuration and data classification
 
-- Checkout paths, artifacts, receipts, references, locks, and synthetic fixtures are **local-only values**. They are not portable provider configuration or shared state.
-- Credentials are **secrets** and are forbidden in requests, artifacts, receipts, references, locks, fixtures, documentation examples, and configuration. The adapter rejects only recognized credential-shaped forms; callers remain responsible for never supplying credentials.
-- This adapter adds no environment variable, **non-secret variable**, or **platform binding**.
+- Checkout paths, Markdown artifacts, receipts, references, locks, synthetic fixtures, local Qdrant state, and machine Serena state are **local-only values**. They are not portable provider configuration or shared state.
+- Lifecycle keys, phases, artifact IDs, record keys, content hashes, and closed public-read reference fields are **non-secret variables**. Closed references remain verification proof, not bearer authorization.
+- Credentials and tokens are **secrets** and are forbidden in requests, artifacts, receipts, references, locks, fixtures, documentation examples, and configuration. The adapter rejects only recognized credential-shaped forms; callers remain responsible for never supplying credentials.
+- Configured provider service, project, or workspace destinations are **platform bindings** where applicable and remain internal to the public read surface. This adapter adds no environment variable.
 
 ## Reviewed verification evidence
 

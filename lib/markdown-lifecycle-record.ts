@@ -268,6 +268,14 @@ export const canonicalMarkdownCheckoutRoot = (value: unknown): string | null => 
     : null;
 };
 
+/** A closed checkout binding for callers that must never receive an absolute path. */
+export const markdownLifecycleCheckoutFingerprint = (value: unknown): string | null => {
+  const checkoutRoot = canonicalMarkdownCheckoutRoot(value);
+  return checkoutRoot
+    ? digest(`ima-markdown-lifecycle-checkout-v1\u0000${checkoutRoot}`)
+    : null;
+};
+
 /**
  * Callers remain responsible for never supplying credentials in lifecycle data.
  * This guard rejects only recognized assignment, Bearer, and private-key forms;

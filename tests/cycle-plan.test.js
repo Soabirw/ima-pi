@@ -186,7 +186,7 @@ test("requires confirmation for a marker-free legacy plan and resolves a one-hop
   const approval = buildLegacyPlanApproval(initial.plan);
   assert.ok(approval);
   const approvalIdentity = planIdentity({
-    sourceRefs: ["plane:ima:SKYNET-189", `QdrantRecordKey:${original.recordKey}`],
+    lifecycleRootMemoryId: original.id,
     priorArtifactIds: [original.id],
   });
   const wrapper = planRecord({
@@ -201,6 +201,22 @@ test("requires confirmation for a marker-free legacy plan and resolves a one-hop
   if (selected.kind !== "approved") return;
   assert.equal(selected.approval.recordKey, wrapper.recordKey);
   assert.equal(selected.contract.recordKey, original.recordKey);
+
+  const changedSource = planRecord({
+    id: uuid(55),
+    key: recordKey("legacy-changed-source"),
+    createdAt: "2026-09-08T00:02:00.000Z",
+    artifact: approval.artifact,
+    identity: planIdentity({
+      lifecycleRootMemoryId: original.id,
+      sourceRefs: ["plane:ima:SKYNET-189", "QdrantRecordKey:forbidden-annotation"],
+      priorArtifactIds: [original.id],
+    }),
+  });
+  assert.deepEqual(select([original, changedSource]), {
+    kind: "blocked",
+    code: "plan_approval_reference_invalid",
+  });
 });
 
 test("rejects confirmation wrappers that point to a direct approval or an altered contract", () => {
@@ -257,7 +273,7 @@ test("rejects confirmation wrappers that point to a direct approval or an altere
       "<!-- ima-cycle outcome: phase=plan; outcome=APPROVED -->",
     ].join("\n"),
     identity: planIdentity({
-      sourceRefs: ["plane:ima:SKYNET-189", `QdrantRecordKey:${legacyPlan.recordKey}`],
+      lifecycleRootMemoryId: legacyPlan.id,
       priorArtifactIds: [legacyPlan.id],
     }),
   });

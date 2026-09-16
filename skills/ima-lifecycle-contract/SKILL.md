@@ -28,10 +28,45 @@ persistence failure, partial evidence, an invalid pin, corrupt authority, or cle
 `BLOCKED`. Do not retry a `BLOCKED` write, fall back, migrate, switch providers, or mix history.
 
 After a pin exists, both guided and autonomous phases use its exact provider-native placement without
-provider selection or placement confirmation. Recover evidence only through its provider-native
-verified recall/get/reconcile path. Retain the returned `artifactId`, `recordKey`, and provider-native
-reference behind the pin in lifecycle evidence and handoffs. The local pin establishes no live,
-replicated, or cross-device authority claim.
+provider selection or placement confirmation. Recover evidence only through `ima_lifecycle_recall`
+and `ima_lifecycle_get`; that public pair uses the provider-native verified recall/get/reconcile path
+internally. Retain the returned `artifactId`, `recordKey`, and read reference behind the pin in
+lifecycle evidence and handoffs. The local pin establishes no live, replicated, or cross-device
+authority claim.
+
+### P/R/S lineage
+
+Keep three exact values separate: `P` is the verified provider-pin anchor, `R` is the original plan
+root, and `S` is the stable source identity, including canonical source references. Derive R only
+from P's complete verified artifact: a rootless original `plan` P yields its artifact ID, an
+explicitly rooted P yields its exact root, and a rootless non-plan P is unresolved. P never replaces
+R.
+
+Only the original `plan` may be rootless. Every continuation—including a later `plan`, decision,
+approval receipt, implementation, test, review, document, or closeout—must retain exact R and
+unchanged S. Approval receipts preserve the original R/S and never become replacement roots.
+Existing rootless non-plan pins remain unchanged but block lineage-dependent reads and writes. A
+future rootless non-plan first write is rejected before provider effect. Do not infer R from pin
+identity, ordering, a tracker, an approval receipt, or `priorArtifactIds`; do not repair pins, repin,
+migrate, select a provider, fall back, or perform historical rewriting.
+
+## Public lifecycle reads
+
+For every fresh manual or `/ima:soft-cycle` phase session, use the package-native public read pair
+before accepting a prior artifact. Call `ima_lifecycle_recall` with the exact lifecycle key and a
+bounded selection (at most 20 descriptors). Its descriptors are selection proofs, not phase evidence:
+never act on a descriptor, summary, handoff pointer, or cache alone. Select each required descriptor
+and pass it unchanged to `ima_lifecycle_get`. Accept a prerequisite only after its complete returned
+artifact verifies the lifecycle and source identity, phase, terminal outcome, returned `artifactId`,
+`recordKey`, content hash, read reference, and phase-specific prerequisite semantics.
+
+The pair derives authority from the checkout-local pin. Only while genuinely unpinned does it use
+exact all-phase historical Qdrant authority. Callers never select a provider, checkout, endpoint,
+resource, or fallback. A pending, inaccessible, unavailable, incomplete or overflowed, corrupt,
+mismatched, unverifiable, or cancelled public read is `BLOCKED`; do not retry, fall back, migrate,
+switch providers, or mix evidence. `ima_corpus_*` remains institutional Qdrant tooling and is not a
+manual lifecycle evidence route. Do not use provider-native storage, generated SDK namespaces, or
+MCP discovery in place of this pair.
 
 ## Prior artifacts and identity
 
@@ -44,7 +79,9 @@ Reuse correlation evidence in this order:
 5. source issue or task ID; or
 6. a manual project, story slug, and stable date suffix.
 
-Do not create a disconnected lifecycle thread when prior evidence exists.
+Do not create a disconnected lifecycle thread when prior evidence exists. For a pinned lifecycle,
+correlation and `priorArtifactIds` can locate evidence but never derive R. Preserve S exactly across
+handoffs; do not replace it with a receipt, retrieval annotation, or later source representation.
 
 ## Manual source identifiers
 
@@ -56,13 +93,14 @@ as input: `taskwarrior:<project>:<uuid>` (`taskwarrior <project> <uuid>`),
 source, then preserve the canonical colon form across handoffs instead of replacing it with a raw
 key.
 
-For a lifecycle source, recover the exact pinned authority and selected detail before declaring
-prerequisites absent. With no pin, use exact Tier-1 Qdrant history only to establish historical
-Qdrant authority under the preceding rules. For a Plane source, reuse a verified existing lifecycle
-key; if no evidence establishes one, use the documented `ima-pi:plane:<workspace>:<PROJECT>-<seq>`
-convention rather than treating it as automatic derivation. For a Vestige source, retrieve only the
-cited memory and recover an explicitly present lifecycle identity; never use Vestige as a lifecycle
-fallback or substitute a Taskwarrior/Jira probe for authoritative lifecycle evidence.
+For a lifecycle source, use `ima_lifecycle_recall` followed by selected exact
+`ima_lifecycle_get` detail before declaring prerequisites absent. The public pair derives pinned
+authority or, only while genuinely unpinned, exact historical Qdrant authority under the preceding
+rules. For a Plane source, reuse a verified existing lifecycle key; if no evidence establishes one,
+use the documented `ima-pi:plane:<workspace>:<PROJECT>-<seq>` convention rather than treating it as
+automatic derivation. For a Vestige source, retrieve only the cited memory and recover an explicitly
+present lifecycle identity; never use Vestige as a lifecycle fallback or substitute a
+Taskwarrior/Jira probe for authoritative lifecycle evidence.
 
 ## `ima_lifecycle` input
 
@@ -94,7 +132,9 @@ Do not pass a `lifecycle:` wrapper or snake_case keys as the tool identity. `pla
 `planeWorkItem` are optional as a pair: omit both, or send both empty, for a non-Plane identity; for
 a Plane identity, send both nonempty values. A partial pair is invalid. `summary` is explicit,
 non-empty, control-character-safe, and used for manifest-only semantic retrieval; do not extract it
-mechanically from the artifact.
+mechanically from the artifact. `lifecycleRootMemoryId` holds R: it may be empty only for the
+original `plan`. A rooted later pin and every continuation require exact R and the unchanged S
+identity fields.
 
 ## Persisted artifact metadata
 
@@ -128,11 +168,13 @@ Neither field is emitted for an omitted or empty pair.
 Persist lifecycle artifacts through `ima_lifecycle`; do not substitute a generated SDK namespace,
 direct service storage, or an undocumented fallback. It applies the pin-aware authority above,
 performs provider-native direct read-back or reassembly verification, and verifies the full detail,
-nonce, phase, completed outcome, lifecycle key, and required source identity. `artifactId` is the
-provider-verified immutable artifact identity (`Qdrant` uses its manifest point ID); `recordKey` is
-the canonical logical retrieval key. Both are additive lifecycle-result references. Preserve the
-provider-native reference with them, but never translate it into another provider.
-No Vestige lifecycle write, recall, or fallback is permitted.
+nonce, phase, completed outcome, lifecycle key, and required source identity. Before a first provider
+effect, it rejects a rootless non-plan first write. For pinned persistence, it revalidates P, derives
+R/S, validates the continuation's exact R/S, and only then invokes the pinned provider; invalid
+prewrite lineage is `no-write`. `artifactId` is the provider-verified immutable artifact identity
+(`Qdrant` uses its manifest point ID); `recordKey` is the canonical logical retrieval key. Both are
+additive lifecycle-result references. Preserve the provider-native reference with them, but never
+translate it into another provider. No Vestige lifecycle write, recall, or fallback is permitted.
 
 A complete artifact includes the approved outcome, scope and non-goals, phase result,
 changed/reviewed/tested files, decisions, verification commands and results, blockers, residual
@@ -177,6 +219,6 @@ only meaningful completed or blocked phase results; never treat an unpersisted r
 
 A manually approved `plan` artifact also ends with exactly one canonical plan outcome marker. That marker makes the immutable, verified plan eligible for `/ima:cycle` adoption; it does not start a cycle, alter its mode, or grant autonomous authority.
 
-For an older verified plan with no plan outcome marker, cycle may obtain one explicit TUI confirmation of the exact artifact. It persists a small `plan` approval artifact with one strict versioned `ima-plan-approval` JSON reference to the original artifact ID, logical record key, and content hash, plus `plan=APPROVED`. The approval artifact must reference—not embed—the original serialized plan, and confirmation references never chain.
+For an older verified plan with no plan outcome marker, cycle may obtain one explicit TUI confirmation of the exact artifact. It persists a small `plan` approval artifact with one strict versioned `ima-plan-approval` JSON reference to the original artifact ID, logical record key, and content hash, plus `plan=APPROVED`. The approval artifact must reference—not embed—the original serialized plan, and confirmation references never chain. It preserves the original R/S, retains the original artifact as prior evidence, and never becomes a replacement root.
 
-When cycle evidence identifies an `approvedPlan` original contract separately from its approval artifact, downstream phases retain both artifact IDs and logical record keys. Before implementation, directly retrieve and verify the original contract; an approval receipt alone is not an implementation-grade plan.
+When cycle evidence identifies an `approvedPlan` original contract separately from its approval artifact, downstream phases retain both artifact IDs and logical record keys plus the original R/S. Before implementation, directly retrieve and verify the original contract; an approval receipt alone is not an implementation-grade plan.

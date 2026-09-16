@@ -65,7 +65,9 @@ import { createSerenaLifecycleProject } from "../lib/serena-lifecycle-record.ts"
 import {
   createLifecycleProviderPin,
   createLifecycleProviderPinAttempt,
+  sameLifecycleProviderPin,
   sameLifecycleProviderPinAttempt,
+  type LifecycleProviderPin,
   type LifecycleProviderPinAttempt,
 } from "../lib/ima-lifecycle-pin.ts";
 import {
@@ -78,10 +80,23 @@ import {
   type LifecyclePinLoadResult,
 } from "../lib/ima-lifecycle-pin-store.ts";
 import {
+  containsRecognizedLifecycleSecret,
   createLifecycleRouting,
+  lifecycleReadNativeReferenceFor,
+  lifecycleReadReferenceFor,
+  projectLifecycleReadReference,
+  resolvePinnedLifecycleLineage,
+  routeLifecycleGet,
   routeLifecyclePersistence,
+  routeLifecycleRecall,
+  routePinnedLifecycleGet,
   routePinnedLifecyclePersistence,
   routePinnedLifecycleRecall,
+  sameLifecycleReadReference,
+  validateInitialLifecycleWriteRequest,
+  verifyRoutedLifecycleReadRecord,
+  type LifecycleReadReference,
+  type PinnedLifecycleLineage,
   type LifecycleRoutingAdapter,
   type RoutedLifecyclePersistResult,
   type RoutedLifecycleRecallResult,
@@ -102,6 +117,11 @@ const TIMEOUT = 30_000;
 const MCP_TIMEOUT = 300_000;
 const VESTIGE_TIMEOUT = 300_000;
 const LIFECYCLE_RECALL_LIMIT = 20;
+const MAX_LIFECYCLE_READ_REFERENCE_BYTES = 2_048;
+const MAX_LIFECYCLE_READ_SUMMARY_BYTES = 2_000;
+const MAX_LIFECYCLE_READ_ARTIFACT_BYTES = 160_000;
+const MAX_LIFECYCLE_READ_OUTPUT_BYTES = (MAX_LIFECYCLE_READ_ARTIFACT_BYTES * 6) + 32_000;
+const MAX_LIFECYCLE_READ_RESULTS = 20;
 const MAX_BUFFER = 128 * 1024;
 const MAX_BOOKSTACK_RECOVERY_CONFIRMATION_BYTES = 16_384;
 const PLANE_SOURCE_CONTENT_MAXIMUM_BYTES = 64_000;
@@ -110,6 +130,34 @@ const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const sourceErrorCode = (error: unknown) => error instanceof Error && SOURCE_ERROR_CODES.includes(error.message) ? error.message : "source_boundary_unavailable";
 const inside = (root: string, target: string) => { const path = relative(root, target); return path === "" || (!path.startsWith("..") && !isAbsolute(path)); };
 const object = (value: unknown): Record<string, unknown> | null => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+const ownDataRecord = (
+  value: unknown,
+  required: readonly string[],
+  optional: readonly string[] = [],
+): Record<string, unknown> | null => {
+  try {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const keys = Reflect.ownKeys(value);
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    if (
+      keys.some((key) => typeof key !== "string")
+      || keys.length < required.length
+      || !required.every((field) => keys.includes(field))
+      || keys.some((key) => ![...required, ...optional].includes(key as string))
+      || keys.some((key) => {
+        const descriptor = descriptors[key as string];
+        return !descriptor
+          || descriptor.get
+          || descriptor.set
+          || !descriptor.enumerable
+          || !Object.hasOwn(descriptor, "value");
+      })
+    ) return null;
+    return Object.fromEntries(keys.map((key) => [key, descriptors[key as string].value]));
+  } catch {
+    return null;
+  }
+};
 const text = (value: unknown) => typeof value === "string" ? value.trim() : "";
 const UUID_PATTERN = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 const PIN_ATTEMPT_ID_PATTERN = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89ab][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/;
@@ -273,6 +321,113 @@ const lifecycleRecallQuery = (value: string) => {
   const phase = trimmed.slice(separator + 1);
   return lifecycleKey && LIFECYCLE_PHASE_SET.has(phase)
     ? { lifecycleKey, phase }
+    : null;
+};
+
+const LIFECYCLE_READ_HASH = /^[a-f0-9]{64}$/;
+
+const exactLifecycleReadText = (value: unknown, maximum: number): string | null =>
+  typeof value === "string"
+  && value === value.trim()
+  && value.length > 0
+  && Buffer.from(value, "utf8").toString("utf8") === value
+  && Buffer.byteLength(value, "utf8") <= maximum
+  && !/[\u0000-\u001f\u007f-\u009f]/.test(value)
+  && !containsRecognizedLifecycleSecret(value)
+    ? value
+    : null;
+
+const exactLifecycleReadKey = (value: unknown) => {
+  const key = exactLifecycleReadText(value, 512);
+  return key && normalizeLifecycleRecordKey(key) === key ? key : null;
+};
+
+const exactLifecycleReadPhase = (value: unknown): LifecyclePhase | null =>
+  typeof value === "string" && LIFECYCLE_PHASE_SET.has(value)
+    ? value as LifecyclePhase
+    : null;
+
+const exactLifecycleReadUuid = (value: unknown): string | null => {
+  const uuid = normalizeUuid(value);
+  return uuid && uuid === value ? uuid : null;
+};
+
+const exactLifecycleReadHash = (value: unknown): string | null => {
+  const hash = exactLifecycleReadText(value, 64);
+  return hash && LIFECYCLE_READ_HASH.test(hash) ? hash : null;
+};
+
+type LifecycleReadRecallRequest = {
+  lifecycleKey: string;
+  phase?: LifecyclePhase;
+  limit: number;
+};
+
+type LifecycleReadGetRequest = {
+  lifecycleKey: string;
+  phase: LifecyclePhase;
+  artifactId: string;
+  recordKey: string;
+  contentHash: string;
+  reference: LifecycleReadReference;
+};
+
+const lifecycleReadRecallRequest = (value: unknown): LifecycleReadRecallRequest | null => {
+  const request = ownDataRecord(value, ["lifecycleKey"], ["phase", "limit"]);
+  if (!request) return null;
+  const lifecycleKey = exactLifecycleReadKey(request.lifecycleKey);
+  const hasPhase = Object.hasOwn(request, "phase");
+  const phase = hasPhase ? exactLifecycleReadPhase(request.phase) : undefined;
+  const limit = Object.hasOwn(request, "limit") ? request.limit : LIFECYCLE_RECALL_LIMIT;
+  if (
+    !lifecycleKey
+    || hasPhase && !phase
+    || typeof limit !== "number"
+    || !Number.isSafeInteger(limit)
+    || limit < 1
+    || limit > MAX_LIFECYCLE_READ_RESULTS
+  ) return null;
+  return {
+    lifecycleKey,
+    ...(phase ? { phase } : {}),
+    limit,
+  };
+};
+
+const lifecycleReadGetRequest = (value: unknown): LifecycleReadGetRequest | null => {
+  const request = ownDataRecord(value, [
+    "lifecycleKey",
+    "phase",
+    "artifactId",
+    "recordKey",
+    "contentHash",
+    "reference",
+  ], ["summary"]);
+  if (!request) return null;
+  const lifecycleKey = exactLifecycleReadKey(request.lifecycleKey);
+  const phase = exactLifecycleReadPhase(request.phase);
+  const artifactId = exactLifecycleReadUuid(request.artifactId);
+  const recordKey = exactLifecycleReadKey(request.recordKey);
+  const contentHash = exactLifecycleReadHash(request.contentHash);
+  const summary = Object.hasOwn(request, "summary")
+    ? exactLifecycleReadText(request.summary, MAX_LIFECYCLE_READ_SUMMARY_BYTES)
+    : undefined;
+  const reference = projectLifecycleReadReference(request.reference);
+  if (!reference) return null;
+  let serializedReference: string;
+  try {
+    serializedReference = JSON.stringify(reference);
+  } catch {
+    return null;
+  }
+  return lifecycleKey
+    && phase
+    && artifactId
+    && recordKey
+    && contentHash
+    && summary !== null
+    && Buffer.byteLength(serializedReference, "utf8") <= MAX_LIFECYCLE_READ_REFERENCE_BYTES
+    ? { lifecycleKey, phase, artifactId, recordKey, contentHash, reference }
     : null;
 };
 
@@ -962,6 +1117,17 @@ const coordinateQdrantLifecycle = async (
     planeWorkspace: valid.identity.planeWorkspace,
     planeWorkItem: valid.identity.planeWorkItem,
   });
+  const initialWrite = validateInitialLifecycleWriteRequest(valid);
+  if (!initialWrite.valid) {
+    return deriveLifecycleResult({
+      type: valid.type,
+      lifecycleKey: valid.identity.lifecycleKey,
+      recordKey: null,
+      receipt: { accepted: false, artifactId: null },
+      recall: emptyRecall,
+      error: initialWrite.code,
+    });
+  }
   if (!preparation.valid) {
     return deriveLifecycleResult({
       type: valid.type,
@@ -1277,7 +1443,7 @@ const qdrantLifecycleAdapter = (
         reference: item.reference,
       }));
       return records.some((record) => record === null)
-        ? { status: "blocked", provider: "qdrant", code: "lifecycle_provider_response_invalid" }
+        ? { status: "blocked", provider: "qdrant", code: "lifecycle_provider_record_projection_invalid" }
         : { status: "verified", provider: "qdrant", records: records as RoutedLifecycleRecord[] };
     },
   };
@@ -1329,6 +1495,7 @@ const bookStackLifecycleProviderFor = (input: {
 const bookStackLifecycleAdapter = (input: {
   environment: Record<string, string | undefined>;
   confirmPlacement?: LifecycleRoutingOptions["confirmBookStackPlacement"];
+  signal?: AbortSignal;
 }): LifecycleRoutingAdapter | null => {
   const provider = bookStackLifecycleProviderFor(input);
   if (!provider) return null;
@@ -1391,6 +1558,7 @@ const bookStackLifecycleAdapter = (input: {
   const read = async (reference: Record<string, unknown>, signal?: AbortSignal): Promise<RoutedLifecyclePersistResult> => {
     if (signal?.aborted) return blockedPersist("bookstack", { code: "aborted" }, "no-write");
     const result = await provider.get(reference);
+    if (signal?.aborted) return blockedPersist("bookstack", { code: "aborted" }, "no-write");
     if (result.status !== "verified") return blockedPersist("bookstack", result, "no-write");
     const record = routedRecord({ provider: "bookstack", value: result, reference: result.locator, createdAt: null });
     return record ? { status: "verified", record } : blockedPersist("bookstack", null, "no-write");
@@ -1406,6 +1574,9 @@ const bookStackLifecycleAdapter = (input: {
         return { status: "blocked", provider: "bookstack", code: signal?.aborted ? "aborted" : "pinned_provider_reference_missing" };
       }
       const initial = await provider.get(selection.reference);
+      if (signal?.aborted) {
+        return { status: "blocked", provider: "bookstack", code: "aborted" };
+      }
       if (initial.status !== "verified") {
         return { status: "blocked", provider: "bookstack", code: lifecycleCode(initial.code, "pinned_provider_failed") };
       }
@@ -1414,6 +1585,9 @@ const bookStackLifecycleAdapter = (input: {
         lifecycleKey: selection.lifecycleKey,
         sourceRef: initial.locator.sourceRef,
       });
+      if (signal?.aborted) {
+        return { status: "blocked", provider: "bookstack", code: "aborted" };
+      }
       if (!Array.isArray(result)) {
         return { status: "blocked", provider: "bookstack", code: lifecycleCode(result.code, "lifecycle_provider_recall_failed") };
       }
@@ -1428,7 +1602,7 @@ const bookStackLifecycleAdapter = (input: {
         createdAt: null,
       }));
       return records.some((record) => record === null)
-        ? { status: "blocked", provider: "bookstack", code: "lifecycle_provider_response_invalid" }
+        ? { status: "blocked", provider: "bookstack", code: "lifecycle_provider_record_projection_invalid" }
         : { status: "verified", provider: "bookstack", records: records as RoutedLifecycleRecord[] };
     },
   };
@@ -1483,7 +1657,7 @@ const markdownLifecycleAdapter = (checkoutRoot: string): LifecycleRoutingAdapter
         return routedRecord({ provider: "markdown", value: item, reference: item.reference, recordKey, createdAt: null });
       });
       return records.some((record) => record === null)
-        ? { status: "blocked", provider: "markdown", code: "lifecycle_provider_response_invalid" }
+        ? { status: "blocked", provider: "markdown", code: "lifecycle_provider_record_projection_invalid" }
         : { status: "verified", provider: "markdown", records: records as RoutedLifecycleRecord[] };
     },
   };
@@ -1564,7 +1738,7 @@ const serenaLifecycleAdapter = (
       }
       const records = result.map((item) => routedRecord({ provider: "serena", value: item, reference: item.reference }));
       return records.some((record) => record === null)
-        ? { status: "blocked", provider: "serena", code: "lifecycle_provider_response_invalid" }
+        ? { status: "blocked", provider: "serena", code: "lifecycle_provider_record_projection_invalid" }
         : { status: "verified", provider: "serena", records: records as RoutedLifecycleRecord[] };
     },
   };
@@ -1586,6 +1760,26 @@ const lifecycleRouting = (input: {
     serenaLifecycleAdapter(input.checkoutRoot, input.dependencies),
     markdownLifecycleAdapter(input.checkoutRoot),
   ]);
+};
+
+const lifecycleReadRouting = (input: {
+  provider: LifecycleProviderName;
+  checkoutRoot: string;
+  dependencies: ReturnType<typeof depsFor>;
+  environment?: Record<string, string | undefined>;
+  signal?: AbortSignal;
+}): ReturnType<typeof createLifecycleRouting> => {
+  const adapter = input.provider === "qdrant"
+    ? qdrantLifecycleAdapter(input.dependencies.corpus)
+    : input.provider === "bookstack"
+      ? bookStackLifecycleAdapter({
+        environment: input.environment ?? process.env,
+        signal: input.signal,
+      })
+      : input.provider === "serena"
+        ? serenaLifecycleAdapter(input.checkoutRoot, input.dependencies)
+        : markdownLifecycleAdapter(input.checkoutRoot);
+  return createLifecycleRouting(adapter ? [adapter] : []);
 };
 
 const lifecycleVerification = (request: ValidLifecycleRequest, artifact: string, nonce: string) =>
@@ -1748,6 +1942,19 @@ export async function coordinateLifecycle(
   const pinState = await loadPin(supplied.cwd, envelope.request.identity.lifecycleKey);
   if (pinState.status === "corrupt" || pinState.status === "conflicting" || pinState.status === "inaccessible") {
     return failedLifecycleRoute({ request: envelope.request, provider: envelope.provider ?? "qdrant", code: `lifecycle_pin_store_${pinState.status}` });
+  }
+  if (
+    pinState.status === "absent"
+    || pinState.status === "pending" && pinState.attempt.status === "authorized"
+  ) {
+    const initialWrite = validateInitialLifecycleWriteRequest(envelope.request);
+    if (!initialWrite.valid) {
+      return failedLifecycleRoute({
+        request: envelope.request,
+        provider: envelope.provider ?? "qdrant",
+        code: initialWrite.code,
+      });
+    }
   }
   if (
     pinState.status === "pending"
@@ -2098,6 +2305,14 @@ export async function coordinateBookStackLifecycleRecovery(
   }
   throwIfAborted(signal);
 
+  const initialWrite = validateInitialLifecycleWriteRequest(envelope.request);
+  if (!initialWrite.valid) {
+    return failedLifecycleRoute({
+      request: envelope.request,
+      provider: "bookstack",
+      code: initialWrite.code,
+    });
+  }
   const prepared = prepareLifecycleArtifact(envelope.request);
   if (!prepared.valid) {
     return failedLifecycleRoute({
@@ -2380,6 +2595,627 @@ const recallPinnedLifecycle = async (input: {
     : { status: "blocked" as const };
 };
 
+export type LifecycleLineageResolution =
+  | { status: "verified"; lineage: PinnedLifecycleLineage }
+  | { status: "blocked"; code: string };
+
+export const resolveLifecycleLineage = async (
+  lifecycleKey: string,
+  supplied?: LifecycleIntegrationDependencies,
+  signal?: AbortSignal,
+): Promise<LifecycleLineageResolution> => {
+  const key = exactLifecycleReadKey(lifecycleKey);
+  const cwd = supplied?.cwd;
+  if (!key || typeof cwd !== "string" || !cwd) {
+    return { status: "blocked", code: "lifecycle_lineage_unavailable" };
+  }
+  const resolveProjectRoot = supplied?.resolveProjectRoot ?? defaultResolveCycleProjectRoot;
+  try {
+    const root = await resolveProjectRoot(cwd);
+    throwIfAborted(signal);
+    if (!root || typeof root !== "string") {
+      return { status: "blocked", code: "lifecycle_lineage_unavailable" };
+    }
+    const pinState = await loadLifecyclePinStateWith(resolveProjectRoot)(cwd, key);
+    throwIfAborted(signal);
+    if (pinState.status !== "pinned") {
+      return {
+        status: "blocked",
+        code: pinState.status === "pending"
+          ? "lifecycle_lineage_unresolved"
+          : "lifecycle_lineage_unavailable",
+      };
+    }
+    const authority = {
+      kind: "pinned" as const,
+      pin: structuredClone(pinState.pin),
+    };
+    const dependencies = depsFor(supplied);
+    const routing = supplied?.routing ?? lifecycleReadRouting({
+      provider: authority.pin.provider,
+      checkoutRoot: root,
+      dependencies,
+      environment: supplied?.environment,
+      signal,
+    });
+    const resolved = await resolvePinnedLifecycleLineage({
+      routing,
+      pin: structuredClone(authority.pin),
+      signal,
+    });
+    throwIfAborted(signal);
+    if (resolved.status !== "verified") {
+      return { status: "blocked", code: resolved.code };
+    }
+    const authorityUnchanged = await sameLifecycleReadAuthority({
+      cwd,
+      lifecycleKey: key,
+      resolveProjectRoot,
+      authority,
+    });
+    throwIfAborted(signal);
+    if (!authorityUnchanged) {
+      return { status: "blocked", code: "lifecycle_lineage_unavailable" };
+    }
+    return { status: "verified", lineage: structuredClone(resolved.lineage) };
+  } catch {
+    throwIfAborted(signal);
+    return { status: "blocked", code: "lifecycle_lineage_unavailable" };
+  }
+};
+
+type LifecycleReadAuthority =
+  | { kind: "pinned"; pin: LifecycleProviderPin }
+  | { kind: "historical-qdrant" };
+
+type LifecycleReadDescriptor = {
+  lifecycleKey: string;
+  phase: LifecyclePhase;
+  artifactId: string;
+  recordKey: string;
+  contentHash: string;
+  summary: string;
+  reference: LifecycleReadReference;
+};
+
+type LifecycleReadSetup = {
+  root: string;
+  authority: LifecycleReadAuthority;
+  dependencies: ReturnType<typeof depsFor>;
+  resolveProjectRoot: (cwd: string) => Promise<string>;
+  routing: ReturnType<typeof createLifecycleRouting>;
+};
+
+type LifecycleReadFailureCode =
+  | "lifecycle_read_authority_changed"
+  | "lifecycle_read_authority_invalid"
+  | "lifecycle_read_authority_pending"
+  | "lifecycle_read_authority_unavailable"
+  | "lifecycle_read_request_invalid"
+  | "lifecycle_read_unavailable"
+  | "lifecycle_read_verification_failed";
+
+type LifecycleReadProviderDiagnosticCode =
+  | "provider_access_denied"
+  | "provider_adapter_unavailable"
+  | "provider_operation_failed"
+  | "provider_response_invalid"
+  | "provider_transport_failed"
+  | "provider_unavailable"
+  | "provider_verification_failed";
+
+type LifecycleReadProviderDiagnosticReason =
+  | "adapter_record_projection_invalid"
+  | "pagination_invalid"
+  | "pinned_reference_invalid"
+  | "recall_envelope_invalid"
+  | "record_artifact_missing"
+  | "record_artifact_secret_bearer_placeholder"
+  | "record_artifact_secret_bearer_value"
+  | "record_artifact_secret_named"
+  | "record_artifact_secret_private_key"
+  | "record_artifact_too_large"
+  | "record_artifact_utf8_invalid"
+  | "record_created_at_invalid"
+  | "record_identity_invalid"
+  | "record_projection_invalid"
+  | "record_reference_invalid"
+  | "record_structure_invalid"
+  | "record_summary_invalid"
+  | "record_verification_failed"
+  | "response_decode_invalid"
+  | "response_too_large";
+
+type LifecycleReadDiagnostic =
+  | {
+    stage: "provider";
+    code: LifecycleReadProviderDiagnosticCode;
+    step?: "authority" | "recall";
+    phase?: LifecyclePhase;
+    reason?: LifecycleReadProviderDiagnosticReason;
+  }
+  | {
+    stage: "verification";
+    code:
+      | "get_descriptor_mismatch"
+      | "get_descriptor_projection_failed"
+      | "get_record_verification_failed"
+      | "get_reference_projection_failed";
+  }
+  | { stage: "runtime"; code: "unexpected_failure" };
+
+type LifecycleReadRouteFailure = {
+  code: LifecycleReadFailureCode;
+  diagnostic?: LifecycleReadDiagnostic;
+};
+
+const LIFECYCLE_READ_ERROR_MESSAGES: Record<LifecycleReadFailureCode, string> = {
+  lifecycle_read_authority_changed: "Lifecycle read authority changed before verification completed.",
+  lifecycle_read_authority_invalid: "Lifecycle read authority cannot verify the requested record.",
+  lifecycle_read_authority_pending: "Lifecycle read authority is pending and cannot be used.",
+  lifecycle_read_authority_unavailable: "Lifecycle read authority is unavailable.",
+  lifecycle_read_request_invalid: "Lifecycle read request is invalid.",
+  lifecycle_read_unavailable: "Lifecycle read is unavailable.",
+  lifecycle_read_verification_failed: "Lifecycle read verification failed.",
+};
+
+const lifecycleReadFailure = (
+  code: LifecycleReadFailureCode,
+  diagnostic?: LifecycleReadDiagnostic,
+) => ({
+  schemaVersion: 1,
+  status: "failed" as const,
+  error: {
+    code,
+    message: LIFECYCLE_READ_ERROR_MESSAGES[code],
+    ...(diagnostic ? { diagnostic } : {}),
+  },
+});
+
+const lifecycleReadProviderDiagnosticCode = (
+  code: string | null,
+): LifecycleReadProviderDiagnosticCode => {
+  if (code === "bookstack_access_denied") return "provider_access_denied";
+  if (code === "bookstack_transport_failed") return "provider_transport_failed";
+  if (["lifecycle_provider_unavailable", "pinned_provider_unavailable"].includes(code ?? "")) {
+    return "provider_adapter_unavailable";
+  }
+  if ([
+    "bookstack_response_invalid",
+    "bookstack_response_too_large",
+    "bookstack_pagination_invalid",
+    "lifecycle_provider_recall_envelope_invalid",
+    "lifecycle_provider_record_projection_invalid",
+    "lifecycle_provider_response_invalid",
+    "pinned_provider_response_invalid",
+  ].includes(code ?? "")) return "provider_response_invalid";
+  if ([
+    "bookstack_identity_ambiguous",
+    "bookstack_locator_invalid",
+    "bookstack_locator_mismatch",
+    "bookstack_markdown_missing",
+    "bookstack_placement_conflict",
+    "bookstack_placement_invalid",
+    "bookstack_verification_failed",
+    "lifecycle_provider_recall_unverifiable",
+    "lifecycle_provider_record_artifact_missing_invalid",
+    "lifecycle_provider_record_artifact_secret_bearer_placeholder_invalid",
+    "lifecycle_provider_record_artifact_secret_bearer_value_invalid",
+    "lifecycle_provider_record_artifact_secret_named_invalid",
+    "lifecycle_provider_record_artifact_secret_private_key_invalid",
+    "lifecycle_provider_record_artifact_too_large_invalid",
+    "lifecycle_provider_record_artifact_utf8_invalid",
+    "lifecycle_provider_record_created_at_invalid",
+    "lifecycle_provider_record_identity_invalid",
+    "lifecycle_provider_record_reference_invalid",
+    "lifecycle_provider_record_structure_invalid",
+    "lifecycle_provider_record_summary_invalid",
+    "lifecycle_provider_record_verification_failed",
+  ].includes(code ?? "")) return "provider_verification_failed";
+  if ([
+    "bookstack_recall_unavailable",
+    "bookstack_unavailable",
+    "lifecycle_provider_read_failed",
+    "lifecycle_provider_recall_failed",
+    "pinned_provider_failed",
+  ].includes(code ?? "")) return "provider_unavailable";
+  return "provider_operation_failed";
+};
+
+const lifecycleReadProviderDiagnosticReason = (
+  code: string | null,
+): LifecycleReadProviderDiagnosticReason | undefined => {
+  if (code === "bookstack_pagination_invalid") return "pagination_invalid";
+  if (code === "bookstack_response_invalid") return "response_decode_invalid";
+  if (code === "bookstack_response_too_large") return "response_too_large";
+  if (code === "lifecycle_provider_record_projection_invalid") return "adapter_record_projection_invalid";
+  if (code === "lifecycle_provider_recall_envelope_invalid") return "recall_envelope_invalid";
+  if (code === "lifecycle_provider_record_artifact_missing_invalid") return "record_artifact_missing";
+  if (code === "lifecycle_provider_record_artifact_secret_bearer_placeholder_invalid") return "record_artifact_secret_bearer_placeholder";
+  if (code === "lifecycle_provider_record_artifact_secret_bearer_value_invalid") return "record_artifact_secret_bearer_value";
+  if (code === "lifecycle_provider_record_artifact_secret_named_invalid") return "record_artifact_secret_named";
+  if (code === "lifecycle_provider_record_artifact_secret_private_key_invalid") return "record_artifact_secret_private_key";
+  if (code === "lifecycle_provider_record_artifact_too_large_invalid") return "record_artifact_too_large";
+  if (code === "lifecycle_provider_record_artifact_utf8_invalid") return "record_artifact_utf8_invalid";
+  if (code === "lifecycle_provider_record_created_at_invalid") return "record_created_at_invalid";
+  if (code === "lifecycle_provider_record_identity_invalid") return "record_identity_invalid";
+  if (code === "lifecycle_provider_record_reference_invalid") return "record_reference_invalid";
+  if (code === "lifecycle_provider_record_structure_invalid") return "record_structure_invalid";
+  if (code === "lifecycle_provider_record_summary_invalid") return "record_summary_invalid";
+  if (code === "lifecycle_provider_record_verification_failed") return "record_verification_failed";
+  if (code === "lifecycle_provider_response_invalid") return "record_projection_invalid";
+  if (code === "pinned_provider_response_invalid") return "pinned_reference_invalid";
+  return undefined;
+};
+
+const lifecycleReadRouteFailure = (
+  result: RoutedLifecycleRecallResult | RoutedLifecyclePersistResult,
+): LifecycleReadRouteFailure => {
+  if (result.status === "blocked" && result.code === "lifecycle_read_authority_invalid") {
+    return { code: "lifecycle_read_authority_invalid" };
+  }
+  const routeCode = result.status === "blocked" ? result.code : null;
+  const step = result.status === "blocked" && "readStep" in result
+    ? result.readStep
+    : undefined;
+  const phase = result.status === "blocked" && "readPhase" in result
+    ? result.readPhase
+    : undefined;
+  const reason = lifecycleReadProviderDiagnosticReason(routeCode);
+  return {
+    code: "lifecycle_read_unavailable",
+    diagnostic: {
+      stage: "provider",
+      code: lifecycleReadProviderDiagnosticCode(routeCode),
+      ...(step ? { step } : {}),
+      ...(phase ? { phase } : {}),
+      ...(reason ? { reason } : {}),
+    },
+  };
+};
+
+const unexpectedLifecycleReadFailure = () => lifecycleReadFailure("lifecycle_read_unavailable", {
+  stage: "runtime",
+  code: "unexpected_failure",
+});
+
+const boundedLifecycleReadResult = <Result extends Record<string, unknown>>(
+  result: Result,
+): Result | ReturnType<typeof lifecycleReadFailure> => {
+  try {
+    return Buffer.byteLength(JSON.stringify(result), "utf8") <= MAX_LIFECYCLE_READ_OUTPUT_BYTES
+      ? result
+      : lifecycleReadFailure("lifecycle_read_verification_failed");
+  } catch {
+    return lifecycleReadFailure("lifecycle_read_verification_failed");
+  }
+};
+
+const lifecycleReadDescriptor = (
+  value: unknown,
+): LifecycleReadDescriptor | null => {
+  const record = verifyRoutedLifecycleReadRecord(value);
+  if (!record) return null;
+  const reference = lifecycleReadReferenceFor(record);
+  const contentHash = createHash("sha256").update(record.artifact, "utf8").digest("hex");
+  if (
+    !reference
+    || Buffer.byteLength(record.summary, "utf8") > MAX_LIFECYCLE_READ_SUMMARY_BYTES
+    || Buffer.byteLength(record.artifact, "utf8") > MAX_LIFECYCLE_READ_ARTIFACT_BYTES
+  ) return null;
+  return {
+    lifecycleKey: record.lifecycleKey,
+    phase: record.phase,
+    artifactId: record.artifactId,
+    recordKey: record.recordKey,
+    contentHash,
+    summary: record.summary,
+    reference,
+  };
+};
+
+const lifecycleReadAuthorityFor = async (input: {
+  cwd: string;
+  lifecycleKey: string;
+  resolveProjectRoot: (cwd: string) => Promise<string>;
+}): Promise<LifecycleReadAuthority | "pending" | null> => {
+  try {
+    const state = await loadLifecyclePinStateWith(input.resolveProjectRoot)(
+      input.cwd,
+      input.lifecycleKey,
+    );
+    if (state.status === "absent") return { kind: "historical-qdrant" };
+    if (state.status === "pending") return "pending";
+    if (state.status !== "pinned") return null;
+    return { kind: "pinned", pin: structuredClone(state.pin) };
+  } catch {
+    return null;
+  }
+};
+
+const sameLifecycleReadAuthority = async (input: {
+  cwd: string;
+  lifecycleKey: string;
+  resolveProjectRoot: (cwd: string) => Promise<string>;
+  authority: LifecycleReadAuthority;
+}) => {
+  try {
+    const state = await loadLifecyclePinStateWith(input.resolveProjectRoot)(
+      input.cwd,
+      input.lifecycleKey,
+    );
+    return input.authority.kind === "historical-qdrant"
+      ? state.status === "absent"
+      : state.status === "pinned"
+        && sameLifecycleProviderPin(state.pin, input.authority.pin);
+  } catch {
+    return false;
+  }
+};
+
+const lifecycleReadSetup = async (input: {
+  lifecycleKey: string;
+  supplied?: LifecycleIntegrationDependencies;
+  signal?: AbortSignal;
+}): Promise<LifecycleReadSetup | ReturnType<typeof lifecycleReadFailure>> => {
+  const cwd = input.supplied?.cwd;
+  if (typeof cwd !== "string" || !cwd) return lifecycleReadFailure("lifecycle_read_authority_unavailable");
+  const resolveProjectRoot = input.supplied?.resolveProjectRoot ?? defaultResolveCycleProjectRoot;
+  let root: string | null;
+  try {
+    root = await resolveProjectRoot(cwd);
+  } catch {
+    root = null;
+  }
+  throwIfAborted(input.signal);
+  if (!root || typeof root !== "string") {
+    return lifecycleReadFailure("lifecycle_read_authority_unavailable");
+  }
+
+  const authority = await lifecycleReadAuthorityFor({
+    cwd,
+    lifecycleKey: input.lifecycleKey,
+    resolveProjectRoot,
+  });
+  throwIfAborted(input.signal);
+  if (authority === "pending") return lifecycleReadFailure("lifecycle_read_authority_pending");
+  if (!authority) return lifecycleReadFailure("lifecycle_read_authority_unavailable");
+
+  const dependencies = depsFor(input.supplied);
+  const provider = authority.kind === "pinned"
+    ? authority.pin.provider
+    : "qdrant";
+  return {
+    root,
+    authority,
+    dependencies,
+    resolveProjectRoot,
+    routing: input.supplied?.routing ?? lifecycleReadRouting({
+      provider,
+      checkoutRoot: root,
+      dependencies,
+      environment: input.supplied?.environment,
+      signal: input.signal,
+    }),
+  };
+};
+
+const lifecycleReadRecords = async (input: {
+  request: LifecycleReadRecallRequest;
+  setup: LifecycleReadSetup;
+  signal?: AbortSignal;
+}): Promise<{
+  records: RoutedLifecycleRecord[] | null;
+  failure: LifecycleReadRouteFailure | null;
+}> => {
+  const result = input.setup.authority.kind === "pinned"
+    ? await routePinnedLifecycleRecall({
+      routing: input.setup.routing,
+      pin: input.setup.authority.pin,
+      lifecycleKey: input.request.lifecycleKey,
+      ...(input.request.phase ? { phase: input.request.phase } : {}),
+      limit: MAX_LIFECYCLE_READ_RESULTS,
+      signal: input.signal,
+    })
+    : await routeLifecycleRecall({
+      routing: input.setup.routing,
+      provider: "qdrant",
+      lifecycleKey: input.request.lifecycleKey,
+      limit: MAX_LIFECYCLE_READ_RESULTS,
+      signal: input.signal,
+    });
+  throwIfAborted(input.signal);
+  if (result.status !== "verified") {
+    return { records: null, failure: lifecycleReadRouteFailure(result) };
+  }
+
+  const selected = result.records.filter((record) =>
+    input.request.phase === undefined || record.phase === input.request.phase,
+  );
+  return selected.length <= MAX_LIFECYCLE_READ_RESULTS
+    ? { records: selected.map((record) => structuredClone(record)), failure: null }
+    : { records: null, failure: { code: "lifecycle_read_verification_failed" } };
+};
+
+const orderedLifecycleReadDescriptors = (
+  records: readonly RoutedLifecycleRecord[],
+): LifecycleReadDescriptor[] | null => {
+  const ordered = [...records].sort((left, right) =>
+    left.recordKey < right.recordKey ? -1 : left.recordKey > right.recordKey ? 1 : 0,
+  );
+  const descriptors = ordered.map(lifecycleReadDescriptor);
+  return descriptors.some((descriptor) => descriptor === null)
+    ? null
+    : descriptors as LifecycleReadDescriptor[];
+};
+
+const lifecycleReadNativeReference = async (input: {
+  request: LifecycleReadGetRequest;
+  setup: LifecycleReadSetup;
+}): Promise<Record<string, unknown> | null> => {
+  const provider = input.setup.authority.kind === "pinned"
+    ? input.setup.authority.pin.provider
+    : "qdrant";
+  const serenaProjectFingerprint = provider === "serena"
+    ? (await serenaProject(input.setup.root, input.setup.dependencies))?.fingerprint
+    : undefined;
+  return lifecycleReadNativeReferenceFor({
+    provider,
+    lifecycleKey: input.request.lifecycleKey,
+    phase: input.request.phase,
+    artifactId: input.request.artifactId,
+    recordKey: input.request.recordKey,
+    contentHash: input.request.contentHash,
+    reference: input.request.reference,
+    checkoutRoot: input.setup.root,
+    ...(input.setup.authority.kind === "pinned"
+      ? { initialReference: input.setup.authority.pin.initialReference }
+      : {}),
+    ...(serenaProjectFingerprint ? { serenaProjectFingerprint } : {}),
+  });
+};
+
+export const coordinateLifecycleRecall = async (
+  requestValue: unknown,
+  supplied?: LifecycleIntegrationDependencies,
+  signal?: AbortSignal,
+) => {
+  const request = lifecycleReadRecallRequest(requestValue);
+  if (!request) return lifecycleReadFailure("lifecycle_read_request_invalid");
+  try {
+    throwIfAborted(signal);
+    const setup = await lifecycleReadSetup({ lifecycleKey: request.lifecycleKey, supplied, signal });
+    throwIfAborted(signal);
+    if ("status" in setup) return setup;
+    const cwd = supplied?.cwd;
+    if (typeof cwd !== "string") return lifecycleReadFailure("lifecycle_read_authority_unavailable");
+    const recalled = await lifecycleReadRecords({ request, setup, signal });
+    if (recalled.records === null) {
+      const failure: LifecycleReadRouteFailure = recalled.failure ?? { code: "lifecycle_read_verification_failed" };
+      return lifecycleReadFailure(failure.code, failure.diagnostic);
+    }
+    const records = recalled.records;
+    const authorityUnchanged = await sameLifecycleReadAuthority({
+      cwd,
+      lifecycleKey: request.lifecycleKey,
+      resolveProjectRoot: setup.resolveProjectRoot,
+      authority: setup.authority,
+    });
+    throwIfAborted(signal);
+    if (!authorityUnchanged) return lifecycleReadFailure("lifecycle_read_authority_changed");
+
+    const results = orderedLifecycleReadDescriptors(records);
+    if (!results) return lifecycleReadFailure("lifecycle_read_verification_failed");
+    return boundedLifecycleReadResult({
+      schemaVersion: 1,
+      status: "completed" as const,
+      lifecycleKey: request.lifecycleKey,
+      results: results.slice(0, request.limit),
+    });
+  } catch {
+    throwIfAborted(signal);
+    return unexpectedLifecycleReadFailure();
+  }
+};
+
+export const coordinateLifecycleGet = async (
+  requestValue: unknown,
+  supplied?: LifecycleIntegrationDependencies,
+  signal?: AbortSignal,
+) => {
+  const request = lifecycleReadGetRequest(requestValue);
+  if (!request) return lifecycleReadFailure("lifecycle_read_request_invalid");
+  try {
+    throwIfAborted(signal);
+    const setup = await lifecycleReadSetup({ lifecycleKey: request.lifecycleKey, supplied, signal });
+    throwIfAborted(signal);
+    if ("status" in setup) return setup;
+    const cwd = supplied?.cwd;
+    if (typeof cwd !== "string") return lifecycleReadFailure("lifecycle_read_authority_unavailable");
+    const nativeReference = await lifecycleReadNativeReference({ request, setup });
+    throwIfAborted(signal);
+    if (!nativeReference) {
+      return lifecycleReadFailure("lifecycle_read_verification_failed", {
+        stage: "verification",
+        code: "get_reference_projection_failed",
+      });
+    }
+    const authorityUnchangedBeforeRead = await sameLifecycleReadAuthority({
+      cwd,
+      lifecycleKey: request.lifecycleKey,
+      resolveProjectRoot: setup.resolveProjectRoot,
+      authority: setup.authority,
+    });
+    throwIfAborted(signal);
+    if (!authorityUnchangedBeforeRead) return lifecycleReadFailure("lifecycle_read_authority_changed");
+
+    const read = setup.authority.kind === "pinned"
+      ? await routePinnedLifecycleGet({
+        routing: setup.routing,
+        pin: setup.authority.pin,
+        reference: nativeReference,
+        signal,
+      })
+      : await routeLifecycleGet({
+        routing: setup.routing,
+        provider: "qdrant",
+        reference: nativeReference,
+        signal,
+      });
+    throwIfAborted(signal);
+    if (read.status !== "verified") {
+      const failure = lifecycleReadRouteFailure(read);
+      return lifecycleReadFailure(failure.code, failure.diagnostic);
+    }
+    const record = verifyRoutedLifecycleReadRecord(read.record, {
+      lifecycleKey: request.lifecycleKey,
+      phase: request.phase,
+    });
+    if (!record) {
+      return lifecycleReadFailure("lifecycle_read_verification_failed", {
+        stage: "verification",
+        code: "get_record_verification_failed",
+      });
+    }
+    const descriptor = lifecycleReadDescriptor(record);
+    if (!descriptor) {
+      return lifecycleReadFailure("lifecycle_read_verification_failed", {
+        stage: "verification",
+        code: "get_descriptor_projection_failed",
+      });
+    }
+    if (
+      descriptor.artifactId !== request.artifactId
+      || descriptor.recordKey !== request.recordKey
+      || descriptor.contentHash !== request.contentHash
+      || !sameLifecycleReadReference(record, request.reference)
+    ) {
+      return lifecycleReadFailure("lifecycle_read_verification_failed", {
+        stage: "verification",
+        code: "get_descriptor_mismatch",
+      });
+    }
+    const authorityUnchangedAfterRead = await sameLifecycleReadAuthority({
+      cwd,
+      lifecycleKey: request.lifecycleKey,
+      resolveProjectRoot: setup.resolveProjectRoot,
+      authority: setup.authority,
+    });
+    throwIfAborted(signal);
+    if (!authorityUnchangedAfterRead) return lifecycleReadFailure("lifecycle_read_authority_changed");
+
+    return boundedLifecycleReadResult({
+      schemaVersion: 1,
+      status: "completed" as const,
+      ...descriptor,
+      artifact: record.artifact,
+    });
+  } catch {
+    throwIfAborted(signal);
+    return unexpectedLifecycleReadFailure();
+  }
+};
+
 export const recallLifecycle = async (
   query: string,
   cwd?: string,
@@ -2479,6 +3315,65 @@ const LIFECYCLE_TOOL_PARAMETERS = Type.Object({
   pinAttemptId: Type.Optional(Type.String({ pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89ab][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$", description: "Checkout-local pre-persistence authorization identifier from an interactive cycle start." })),
 }, { additionalProperties: false });
 
+const LIFECYCLE_READ_PHASE_PARAMETERS = StringEnum([
+  "plan",
+  "implementation",
+  "test",
+  "review",
+  "resolution",
+  "rereview",
+  "document",
+  "decision",
+  "closeout",
+] as const, { description: "Exact persisted lifecycle phase. document never expands to closeout in this public read surface." });
+
+const LIFECYCLE_READ_REFERENCE_PARAMETERS = Type.Union([
+  Type.Object({
+    schemaVersion: Type.Literal(1),
+    fingerprint: Type.String({ pattern: "^[a-f0-9]{64}$" }),
+    nonce: Type.String({ pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" }),
+    contentHash: Type.Optional(Type.String({ pattern: "^[a-f0-9]{64}$" })),
+  }, { additionalProperties: false }),
+  Type.Object({
+    schemaVersion: Type.Literal(1),
+    fingerprint: Type.String({ pattern: "^[a-f0-9]{64}$" }),
+    logicalId: Type.String({ pattern: "^[a-f0-9]{64}$" }),
+    requestHash: Type.String({ pattern: "^[a-f0-9]{64}$" }),
+    canonicalHash: Type.String({ pattern: "^[a-f0-9]{64}$" }),
+  }, { additionalProperties: false }),
+  Type.Object({
+    schemaVersion: Type.Literal(1),
+    fingerprint: Type.String({ pattern: "^[a-f0-9]{64}$" }),
+    checkoutFingerprint: Type.String({ pattern: "^[a-f0-9]{64}$", description: "Markdown checkout binding; never an absolute path." }),
+    receiptHash: Type.String({ pattern: "^[a-f0-9]{64}$" }),
+  }, { additionalProperties: false }),
+  Type.Object({
+    schemaVersion: Type.Literal(1),
+    fingerprint: Type.String({ pattern: "^[a-f0-9]{64}$" }),
+    pageId: Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
+    originFingerprint: Type.String({ pattern: "^[a-f0-9]{64}$" }),
+    pageHash: Type.String({ pattern: "^[a-f0-9]{64}$" }),
+    revisionCount: Type.Integer({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
+    updatedAt: Type.String({ minLength: 1, maxLength: 1_024, pattern: CONTROL_SAFE_STRING_PATTERN }),
+  }, { additionalProperties: false }),
+]);
+
+const LIFECYCLE_RECALL_TOOL_PARAMETERS = Type.Object({
+  lifecycleKey: Type.String({ minLength: 1, maxLength: 512, pattern: CONTROL_SAFE_STRING_PATTERN, description: "Exact lifecycle key. Provider and checkout are derived from trusted local authority." }),
+  phase: Type.Optional(LIFECYCLE_READ_PHASE_PARAMETERS),
+  limit: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_LIFECYCLE_READ_RESULTS, description: "Maximum verified descriptors; defaults to 20." })),
+}, { additionalProperties: false });
+
+const LIFECYCLE_GET_TOOL_PARAMETERS = Type.Object({
+  lifecycleKey: Type.String({ minLength: 1, maxLength: 512, pattern: CONTROL_SAFE_STRING_PATTERN }),
+  phase: LIFECYCLE_READ_PHASE_PARAMETERS,
+  artifactId: Type.String({ pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" }),
+  recordKey: Type.String({ minLength: 1, maxLength: 512, pattern: CONTROL_SAFE_STRING_PATTERN }),
+  contentHash: Type.String({ pattern: "^[a-f0-9]{64}$" }),
+  reference: LIFECYCLE_READ_REFERENCE_PARAMETERS,
+  summary: Type.Optional(Type.String({ minLength: 1, maxLength: MAX_LIFECYCLE_READ_SUMMARY_BYTES, pattern: CONTROL_SAFE_STRING_PATTERN })),
+}, { additionalProperties: false });
+
 const BOOKSTACK_LIFECYCLE_RECOVERY_PARAMETERS = Type.Object({
   request: Type.Object({
     type: Type.String(),
@@ -2566,6 +3461,26 @@ export default function integrations(pi: ExtensionAPI) {
     }, signal);
     return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
   } });
+  pi.registerTool({
+    name: "ima_lifecycle_recall",
+    label: "Recall IMA lifecycle artifacts",
+    description: "Read-only lifecycle recall. Returns at most 20 complete-identity descriptors from the checkout's pinned provider, or exact all-phase historical Qdrant authority when genuinely unpinned. It never selects a provider, writes, pins, falls back, or exposes native provider locations.",
+    parameters: LIFECYCLE_RECALL_TOOL_PARAMETERS,
+    execute: async (_id, request, signal, _update, ctx) => {
+      const result = await coordinateLifecycleRecall(request, { cwd: ctx.cwd }, signal);
+      return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
+    },
+  });
+  pi.registerTool({
+    name: "ima_lifecycle_get",
+    label: "Get one IMA lifecycle artifact",
+    description: "Read one complete verified lifecycle artifact using a saved descriptor returned by ima_lifecycle_recall; no prior recall or cache is required. Provider, checkout, endpoint, and resource authority are derived internally; the descriptor contains only bounded non-authority verification proof. This tool never writes, pins, falls back, or returns partial content.",
+    parameters: LIFECYCLE_GET_TOOL_PARAMETERS,
+    execute: async (_id, request, signal, _update, ctx) => {
+      const result = await coordinateLifecycleGet(request, { cwd: ctx.cwd }, signal);
+      return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
+    },
+  });
   pi.registerTool({
     name: "ima_bookstack_lifecycle_recover",
     label: "Recover BookStack lifecycle write",

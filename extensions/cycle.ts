@@ -11,6 +11,7 @@ import {
   coordinateLifecycle,
   mcpResultData,
   recallLifecycle,
+  resolveLifecycleLineage,
   type LifecycleRoutingOptions,
 } from "./integrations.ts";
 import {
@@ -125,6 +126,10 @@ export type {
 export const coordinateCycleClose = async (input: CycleCloseInput) =>
   coordinateCycleCloseCore({
     ...input,
+    resolveLineage: input.resolveLineage ?? ((lifecycleKey) => resolveLifecycleLineage(
+      lifecycleKey,
+      input.cwd ? { cwd: input.cwd } : undefined,
+    )),
     lifecycle: input.lifecycle ?? ((request) => coordinateLifecycle(
       request,
       input.cwd ? { cwd: input.cwd } : undefined,
@@ -596,7 +601,8 @@ export type CycleExtensionDependencies = {
   expandPrompt: (value: string, cwd: string) => Promise<string>;
   createPhaseRuntime: typeof createCyclePhaseRuntime;
   readPhaseSettlement: typeof readCyclePhaseSettlement;
-  recall: (query: string, cwd?: string) => Promise<unknown>;
+  recall: (query: string, cwd?: string, signal?: AbortSignal) => Promise<unknown>;
+  resolveLifecycleLineage: typeof resolveLifecycleLineage;
   lifecycle: (request: PlanApprovalPersistenceRequest, options?: LifecycleRoutingOptions) => Promise<unknown>;
   resolveProjectRoot: ResolveCycleProjectRoot;
   loadDurableState: (cwd: string) => Promise<CycleState | null>;
@@ -609,7 +615,8 @@ const defaultCycleExtensionDependencies: CycleExtensionDependencies = {
   expandPrompt: expandCyclePromptFromResources,
   createPhaseRuntime: createCyclePhaseRuntime,
   readPhaseSettlement: readCyclePhaseSettlement,
-  recall: (query, cwd) => recallLifecycle(query, cwd),
+  recall: (query, cwd, signal) => recallLifecycle(query, cwd, undefined, signal),
+  resolveLifecycleLineage,
   lifecycle: (request, options) => coordinateLifecycle(request, options),
   resolveProjectRoot: defaultResolveCycleProjectRoot,
   loadDurableState: loadDurableStateWith(defaultResolveCycleProjectRoot),
@@ -1252,7 +1259,7 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
     signal?: AbortSignal,
   ) => coordinateCyclePlanAdoption({
     state: candidate,
-    recall: async (query) => mcpResultData(await dependencies.recall(query, ctx.cwd)),
+    recall: async (query) => mcpResultData(await dependencies.recall(query, ctx.cwd, signal)),
     interactive: interactive && ctx.mode === "tui",
     ...(interactive && ctx.mode === "tui"
       ? {
@@ -1323,20 +1330,24 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
     appendState: CycleAppend,
     signal?: AbortSignal,
   ): Promise<CycleAdoptionRecoveryResult> => {
-    if (!current(isCurrent)) return { ok: false, state: candidate, code: "cycle_operation_cancelled" };
+    if (!current(isCurrent) || signal?.aborted) return { ok: false, state: candidate, code: "cycle_operation_cancelled" };
     const planReference = await revalidateImportedPlanReference({
       state: candidate,
-      recall: async (query) => mcpResultData(await dependencies.recall(query, ctx.cwd)),
+      recall: async (query) => mcpResultData(await dependencies.recall(query, ctx.cwd, signal)),
       isCurrent,
       signal,
     });
-    if (!current(isCurrent) || planReference.kind === "cancelled") {
+    if (!current(isCurrent) || signal?.aborted || planReference.kind === "cancelled") {
       return { ok: false, state: candidate, code: "cycle_operation_cancelled" };
     }
     if (planReference.kind === "blocked") return { ok: false, state: candidate, code: planReference.code };
     const result = await coordinateCycleRecovery({
       state: candidate,
-      recall: (query) => dependencies.recall(query, ctx.cwd),
+      recall: async (query) => {
+        if (!current(isCurrent) || signal?.aborted) return null;
+        const recalled = await dependencies.recall(query, ctx.cwd, signal);
+        return current(isCurrent) && !signal?.aborted ? recalled : null;
+      },
       appendState,
       readExecutionSettlement: async (recoveryState) => {
         const execution = recoveryState.execution;
@@ -1351,7 +1362,7 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
       validateRecall: validateImportedPlanLineage,
       isCurrent,
     });
-    if (!current(isCurrent)) return { ok: false, state: candidate, code: "cycle_operation_cancelled" };
+    if (!current(isCurrent) || signal?.aborted) return { ok: false, state: candidate, code: "cycle_operation_cancelled" };
     return result.ok
       ? { ok: true, state: result.state }
       : {
@@ -1865,6 +1876,10 @@ export function registerCycleExtension(pi: ExtensionAPI, overrides: Partial<Cycl
           commitPrep: parsed.commitPrep,
           confirmed,
           run: (program, commandArgs) => pi.exec(program, commandArgs),
+          resolveLineage: (lifecycleKey) => dependencies.resolveLifecycleLineage(
+            lifecycleKey,
+            lifecycleRoutingOptions(ctx),
+          ),
           lifecycle: (request) => dependencies.lifecycle({
             ...request,
             ...(state.lifecycleProvider ? { provider: state.lifecycleProvider } : {}),

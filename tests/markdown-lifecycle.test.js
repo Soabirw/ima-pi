@@ -28,6 +28,7 @@ import {
   containsRecognizedMarkdownLifecycleSecret,
   createMarkdownLifecycleRecord,
   markdownLifecycleArtifactName,
+  markdownLifecycleCheckoutFingerprint,
   markdownLifecycleDirectoryName,
   markdownLifecycleReceiptName,
   markdownLifecycleReferenceFor,
@@ -170,6 +171,17 @@ const snapshotTree = async (root) => {
   await visit(root, ".");
   return entries;
 };
+
+test("derives an opaque stable checkout fingerprint for closed public read proofs", async (t) => {
+  const root = await createCheckout(t);
+  const first = markdownLifecycleCheckoutFingerprint(root);
+  const second = markdownLifecycleCheckoutFingerprint(root);
+  assert.match(first, /^[a-f0-9]{64}$/);
+  assert.equal(first, second);
+  assert.equal(first.includes(root), false);
+  assert.equal(markdownLifecycleCheckoutFingerprint(`${root}/.`), null);
+  assert.equal(markdownLifecycleCheckoutFingerprint("relative-checkout"), null);
+});
 
 const writeOverflowEntries = async (directory) => {
   const total = MAX_MARKDOWN_LIFECYCLE_ENUMERATION + 1;
@@ -483,6 +495,26 @@ test("isolates lifecycle keys, filters phases, and applies bounded recall limits
     assertBlocked(await adapter.recall({ lifecycleKey: LIFECYCLE_KEY, limit }), "markdown_selection_invalid");
   }
   assert.deepEqual(await snapshotTree(root), beforeInvalidSelection);
+});
+
+test("fails closed when a phase has more than the public twenty-record recall bound", async (t) => {
+  const root = await createCheckout(t, "ima-markdown-read-bound-");
+  const adapter = createMarkdownLifecycleAdapter({ checkoutRoot: root });
+  for (let index = 0; index < MAX_MARKDOWN_LIFECYCLE_RECALL_LIMIT + 1; index += 1) {
+    const fixture = fixtureFor({
+      phase: "plan",
+      payload: `# Plan\n\nBounded synthetic lifecycle evidence ${index + 1}.`,
+    });
+    const stored = await adapter.persist(fixture.request);
+    assert.equal(stored.status, "verified", String(index + 1));
+  }
+  const before = await snapshotTree(root);
+  assertBlocked(await adapter.recall({
+    lifecycleKey: LIFECYCLE_KEY,
+    phase: "plan",
+    limit: 1,
+  }), "markdown_recall_unverifiable");
+  assert.deepEqual(await snapshotTree(root), before);
 });
 
 test("preserves ordinary files and leaves read-only get and recall tree snapshots unchanged", async (t) => {
