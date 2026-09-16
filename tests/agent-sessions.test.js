@@ -48,6 +48,7 @@ const fakeSession = (overrides = {}) => {
 const continuation = ({
   record = makeRecord(),
   definition = agent,
+  brief = "Fix the retained finding",
   fake = fakeSession(),
   modelRuntime = runtime,
   exists = true,
@@ -62,7 +63,7 @@ const continuation = ({
   let opened = 0;
   let created = 0;
   const promise = runFocusedContinuation({
-    record, agent: definition, brief: "Fix the retained finding", runtime: modelRuntime, cwd, sessionStore: store, onSessionRecord,
+    record, agent: definition, brief, runtime: modelRuntime, cwd, sessionStore: store, onSessionRecord,
     dependencies: {
       fileExists: () => exists,
       openManager: (path) => {
@@ -145,6 +146,47 @@ test("refuses fingerprint drift, non-succeeded status, missing file, and unavail
   }
 });
 
+test("admits only the fingerprinted persisted scope before a continuation lease or prompt", async () => {
+  const drifted = makeRecord();
+  drifted.writeScope.push("sibling/blocked.ts");
+  let acquired = 0;
+  const rejected = continuation({
+    record: drifted,
+    acquireSessionLock: async () => {
+      acquired += 1;
+      return { target: drifted.sessionFile, release: async () => undefined };
+    },
+  });
+  const rejectedResult = await rejected.promise;
+  assert.equal(rejectedResult.error, "agent_contract_drift");
+  assert.equal(acquired, 0);
+  assert.deepEqual(rejected.counts(), { opened: 0, created: 0 });
+  assert.equal(rejected.fake.state.prompts.length, 0);
+
+  const record = makeRecord();
+  let releaseLock;
+  const lockGate = new Promise((resolveLock) => { releaseLock = resolveLock; });
+  let admittedScope;
+  const accepted = continuation({
+    record,
+    brief: "Free text cannot grant sibling/blocked.ts authority.",
+    acquireSessionLock: async (path) => {
+      await lockGate;
+      return { target: path, release: async () => undefined };
+    },
+    scopedTools: (input) => {
+      admittedScope = input.assignment.writeScope;
+      return [];
+    },
+  });
+  record.writeScope.push("sibling/blocked.ts");
+  releaseLock();
+  assert.equal((await accepted.promise).status, "succeeded");
+  assert.deepEqual(admittedScope, ["lib/a"]);
+  assert.equal(Object.isFrozen(admittedScope), true);
+  assert.match(accepted.fake.state.prompts[0], /Free text cannot grant sibling\/blocked\.ts authority/);
+});
+
 test("refuses agent identity mismatch and preserves reviewer/vision isolation with no side effects", async () => {
   const reviewer = { ...agent, name: "reviewer", authority: "review-read", tools: ["read"], result: { kind: "review", requiredSections: ["findings"] }, independence: { freshInitial: true, followUpAllowed: true } };
   const vision = { ...agent, name: "vision-handoff", authority: "vision-read", tier: "vision", tools: ["read"], result: { kind: "vision", requiredSections: ["findings"] } };
@@ -181,10 +223,10 @@ test("refuses manager, model, thinking, session ID, and session-file drift befor
   }
 });
 
-test("normalizes native @ mutation paths in continued-agent observers", async () => {
+test("missing correlated mutation evidence remains unsafe in continued-agent observers", async () => {
   const cases = [
-    { path: "@lib/a/file.ts", status: "succeeded" },
-    { path: "@/repo/lib/a/file.ts", status: "succeeded" },
+    { path: "@lib/a/file.ts", status: "failed" },
+    { path: "@/repo/lib/a/file.ts", status: "failed" },
     { path: "@@lib/a/file.ts", status: "failed" },
     { path: "@outside/file.ts", status: "failed" },
   ];
@@ -198,6 +240,58 @@ test("normalizes native @ mutation paths in continued-agent observers", async ()
     const result = await run.promise;
     assert.equal(result.status, scenario.status, scenario.path);
     assert.equal(fake.state.prompts.length, 1, scenario.path);
+  }
+});
+
+test("unsettled valid scoped starts in continued prompt or idle rejection invalidate records without retry", async () => {
+  const cases = [
+    { name: "prompt rejection", rejection: "prompt" },
+    { name: "idle rejection", rejection: "idle" },
+  ];
+  for (const scenario of cases) {
+    const record = makeRecord();
+    const persisted = [];
+    let rejectIdle = scenario.rejection === "idle";
+    const fake = fakeSession({
+      prompt: async ({ listeners }) => {
+        for (const listener of listeners) {
+          listener({
+            type: "tool_execution_start",
+            toolCallId: `continued-unsettled-${scenario.rejection}`,
+            toolName: "write",
+            args: { path: "lib/a/result.ts" },
+          });
+        }
+        if (scenario.rejection === "prompt") throw new Error("provider timeout");
+      },
+      waitForIdle: async () => {
+        if (!rejectIdle) return;
+        rejectIdle = false;
+        throw new Error("provider timeout");
+      },
+    });
+    const run = continuation({
+      record,
+      fake,
+      onSessionRecord: async (updated) => { persisted.push(updated); },
+    });
+    const result = await run.promise;
+
+    assert.equal(result.status, "failed", scenario.name);
+    assert.equal(result.error, "unsafe-partial-state", scenario.name);
+    assert.equal(result.failure, "unsafe-partial-state", scenario.name);
+    assert.equal(result.attempts, 1, scenario.name);
+    assert.equal(result.session, null, scenario.name);
+    assert.equal(fake.state.prompts.length, 1, scenario.name);
+    assert.ok(fake.state.aborts >= 1, scenario.name);
+    assert.deepEqual(persisted.map(({ status }) => status), ["failed"], scenario.name);
+    assert.equal(run.store.get(record.reference).status, "failed", scenario.name);
+    assert.equal(canResumeSession({
+      record: run.store.get(record.reference),
+      agent,
+      purpose: "implementation-follow-up",
+      sessionFileExists: true,
+    }), false, scenario.name);
   }
 });
 
@@ -278,7 +372,7 @@ test("focused continuation recovers a contained absolute exact-edit failure with
   }
 });
 
-test("focused continuation invalidates a record after an operation-level ownership violation", async () => {
+test("focused continuation recovers a trusted operation-level ownership denial", async () => {
   const root = await mkdtemp(join(tmpdir(), "ima-agent-continuation-ownership-"));
   const target = join(root, "sibling", "blocked.txt");
   const sessionFile = join(root, "continued.jsonl");
@@ -316,13 +410,73 @@ test("focused continuation invalidates a record after an operation-level ownersh
       onSessionRecord: async (updated) => { persisted.push(updated); },
     });
     const result = await run.promise;
+    assert.equal(result.status, "succeeded");
+    assert.equal(result.error, undefined);
+    assert.equal(result.attempts, 1);
+    assert.equal(result.session?.resumeReference, record.reference);
+    assert.equal(run.store.get(record.reference).status, "succeeded");
+    assert.equal(persisted[0].status, "succeeded");
+    assert.equal(lease.releases(), 1);
+    assert.equal(fake.state.aborts, 0);
+    assert.equal(existsSync(target), false);
+    assert.equal(canResumeSession({
+      record: run.store.get(record.reference),
+      agent,
+      purpose: "implementation-follow-up",
+      sessionFileExists: true,
+    }), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("continuation retains its lease when a trusted pre-entry denial lacks its matching end", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ima-agent-continuation-unsettled-denial-"));
+  const target = join(root, "sibling", "blocked.txt");
+  const sessionFile = join(root, "continued.jsonl");
+  const record = makeRecord({ writeScope: ["owned"], sessionFile });
+  record.contractFingerprint = agentContractFingerprint(agent, record.writeScope);
+  const lease = trackedLease();
+  const persisted = [];
+  let tools;
+  await mkdir(join(root, "owned"));
+  await mkdir(join(root, "sibling"));
+  await writeFile(sessionFile, "session\n");
+  const fake = fakeSession({ sessionFile, prompt: async ({ listeners }) => {
+    const write = tools.find((tool) => tool.name === "write");
+    for (const listener of listeners) {
+      listener({ type: "tool_execution_start", toolCallId: "continued-unsettled-denial", toolName: "write", args: { path: "sibling/blocked.txt" } });
+    }
+    await assert.rejects(write.execute("continued-unsettled-denial", {
+      path: "sibling/blocked.txt",
+      content: "blocked",
+    }, undefined, undefined, {}), { message: "ownership_target_out_of_scope" });
+    throw new Error("provider timeout");
+  } });
+  try {
+    const run = continuation({
+      record,
+      fake,
+      cwd: root,
+      acquireSessionLock: lease.acquireSessionLock,
+      scopedTools: (input) => {
+        tools = createScopedTools(input);
+        return tools;
+      },
+      onSessionRecord: async (updated) => {
+        persisted.push(updated);
+        throw new Error("invalidation_persistence_unverified");
+      },
+    });
+    const result = await run.promise;
     assert.equal(result.status, "failed");
     assert.equal(result.error, "unsafe-partial-state");
+    assert.equal(result.failure, "unsafe-partial-state");
     assert.equal(result.attempts, 1);
     assert.equal(result.session, null);
     assert.equal(run.store.get(record.reference).status, "failed");
-    assert.equal(persisted[0].status, "failed");
-    assert.equal(lease.releases(), 1);
+    assert.deepEqual(persisted.map(({ status }) => status), ["failed"]);
+    assert.equal(lease.releases(), 0);
     assert.ok(fake.state.aborts >= 1);
     assert.equal(existsSync(target), false);
     assert.equal(canResumeSession({
@@ -331,6 +485,13 @@ test("focused continuation invalidates a record after an operation-level ownersh
       purpose: "implementation-follow-up",
       sessionFileExists: true,
     }), false);
+
+    const blocked = continuation({
+      record: { ...record, reference: "unsettled-denial-alias" },
+      cwd: root,
+      acquireSessionLock: lease.acquireSessionLock,
+    });
+    assert.equal((await blocked.promise).error, "session_follow_up_busy");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -417,7 +578,7 @@ test("focused continuation retains its lease when an unsafe edit invalidation ca
   }
 });
 
-test("focused documenter continuation invalidates a canonical code alias", async () => {
+test("focused documenter continuation recovers a canonical code-alias denial", async () => {
   const root = await mkdtemp(join(tmpdir(), "ima-documenter-continuation-alias-"));
   const modulePath = join(root, "lib", "module.ts");
   const moduleContent = "export const value = 'before';\n";
@@ -459,28 +620,28 @@ test("focused documenter continuation invalidates a canonical code alias", async
       onSessionRecord: async (updated) => { persisted.push(updated); },
     });
     const result = await run.promise;
-    assert.equal(result.status, "failed");
-    assert.equal(result.error, "unsafe-partial-state");
+    assert.equal(result.status, "succeeded");
+    assert.equal(result.error, undefined);
     assert.equal(result.attempts, 1);
-    assert.equal(result.session, null);
+    assert.equal(result.session?.resumeReference, record.reference);
     assert.deepEqual(run.counts(), { opened: 1, created: 1 });
-    assert.equal(run.store.get(record.reference).status, "failed");
-    assert.equal(persisted[0].status, "failed");
+    assert.equal(run.store.get(record.reference).status, "succeeded");
+    assert.equal(persisted[0].status, "succeeded");
     assert.equal(lease.releases(), 1);
-    assert.ok(fake.state.aborts >= 1);
+    assert.equal(fake.state.aborts, 0);
     assert.equal(await readFile(modulePath, "utf8"), moduleContent);
     assert.equal(canResumeSession({
       record: run.store.get(record.reference),
       agent: documenter,
       purpose: "implementation-follow-up",
       sessionFileExists: true,
-    }), false);
+    }), true);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("focused documenter continuation retains its lease when canonical alias invalidation cannot persist", async () => {
+test("focused documenter continuation releases its lease after a recoverable alias denial", async () => {
   const root = await mkdtemp(join(tmpdir(), "ima-documenter-continuation-lease-"));
   const modulePath = join(root, "lib", "module.ts");
   const moduleContent = "export const value = 'before';\n";
@@ -526,28 +687,30 @@ test("focused documenter continuation retains its lease when canonical alias inv
     });
     const result = await run.promise;
     assert.equal(result.status, "failed");
-    assert.equal(result.error, "unsafe-partial-state");
+    assert.equal(result.error, "documentation_target_required");
+    assert.equal(result.failure, "terminal");
     assert.equal(result.attempts, 1);
     assert.equal(result.session, null);
-    assert.equal(run.store.get(record.reference).status, "failed");
-    assert.equal(persisted[0].status, "failed");
-    assert.equal(lease.releases(), 0);
-    assert.ok(fake.state.aborts >= 1);
+    assert.equal(run.store.get(record.reference).status, "succeeded");
+    assert.equal(persisted[0].status, "succeeded");
+    assert.equal(lease.releases(), 1);
+    assert.equal(fake.state.aborts, 0);
     assert.equal(await readFile(modulePath, "utf8"), moduleContent);
     assert.equal(canResumeSession({
       record: run.store.get(record.reference),
       agent: documenter,
       purpose: "implementation-follow-up",
       sessionFileExists: true,
-    }), false);
+    }), true);
 
-    const blocked = continuation({
+    const reusable = continuation({
       record: { ...record, reference: "alias" },
       definition: documenter,
+      fake: fakeSession({ sessionFile, text: "## Local-changes\nnone" }),
       cwd: root,
       acquireSessionLock: lease.acquireSessionLock,
     });
-    assert.equal((await blocked.promise).error, "session_follow_up_busy");
+    assert.equal((await reusable.promise).status, "succeeded");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -11,6 +11,8 @@ import {
   createDelegationResult,
   decideRecovery,
   deriveToolAuthority,
+  isDocumentationTarget,
+  normalizeOwnershipTarget,
   sanitizeDelegationError,
   validateDelegationCompletion,
   type DelegationAssignment,
@@ -68,20 +70,32 @@ const normalizedToolCallId = (value: unknown) => typeof value === "string"
   : "";
 const normalizedToolName = (value: unknown) => typeof value === "string" ? value : "";
 
+type AuthorizationOutcome = "pending" | "allowed" | "denied";
+type MutationEntry = "not-entered" | "entered";
+type OperationStage = "authorization" | "effect" | "settled";
+
 export type ScopedToolOperationEvidenceSnapshot = {
   toolCallId: string;
   toolName: string;
   attempt: number;
+  eventStarted: boolean;
+  eventEnded: boolean;
   operations: Array<{
     name: string;
     mutation: boolean;
     entered: boolean;
+    mutationEntry: MutationEntry;
     completed: boolean;
     failed: boolean;
+    authorization: AuthorizationOutcome;
+    safeRelativePath: string | null;
+    stage: OperationStage;
+    allowlistedCause: string | null;
   }>;
   mutationEntered: boolean;
   operationFailed: boolean;
   preExecutionBashDenial: string | null;
+  firstSafeCause: string | null;
   unsafe: boolean;
 };
 
@@ -95,8 +109,30 @@ const recoverableBashDenials = new Set([
   "destructive_command",
   "unrecognized_command",
 ]);
+const recoverableAuthorizationDenials = new Set([
+  "documentation_target_required",
+  "ownership_scope_symlink_escape",
+  "ownership_symlink_escape",
+  "ownership_target_out_of_scope",
+  "ownership_target_outside_project",
+]);
+const MAX_SAFE_CAUSE_LENGTH = 120;
 export const isScopedMutationTool = (value: unknown) =>
   typeof value === "string" && scopedMutationToolNames.has(value);
+
+const safeRelativeOperationPath = (value: unknown) => {
+  const path = normalizeOwnershipTarget(value);
+  return path && path.length <= 1_024 ? path : null;
+};
+const errorMessage = (error: unknown) => error instanceof Error
+  ? error.message
+  : typeof error === "string"
+    ? error
+    : "";
+const allowlistedAuthorizationCause = (error: unknown) => {
+  const cause = errorMessage(error);
+  return recoverableAuthorizationDenials.has(cause) ? cause : null;
+};
 
 export type ScopedToolOperationEvidence = {
   runTool: <Value>(
@@ -107,33 +143,54 @@ export type ScopedToolOperationEvidence = {
   runOperation: <Value>(input: {
     name: string;
     mutation: boolean;
+    safeRelativePath?: string | null;
     authorize: () => void | Promise<void>;
     effect: () => Value | Promise<Value>;
   }) => Promise<Value>;
+  observeToolStart: (input: {
+    toolCallId: unknown;
+    toolName: unknown;
+  }) => void;
   denyBashBeforeExecution: (reason: unknown) => void;
   isUnsafeToolFailure: (input: {
     toolCallId: unknown;
     toolName: unknown;
     signalAborted: boolean;
+    isError?: boolean;
   }) => boolean;
   hasPossibleMutation: () => boolean;
+  hasUnsettledToolExecution: () => boolean;
+  firstSafeCause: () => string | null;
   snapshot: () => ScopedToolOperationEvidenceSnapshot[];
 };
 
-// SKYNET-222: native tool events report a call boundary, while these records prove which
-// authorized filesystem operation actually ran. A failure without that proof is unsafe.
+// Native tool events establish the correlation boundary. Operation records then prove whether a
+// denied call stopped before a mutation entered; any missing or ambiguous evidence stays unsafe.
 export function createScopedToolOperationEvidence(input: {
   attempt: number;
   onUnsafe?: () => void;
 }): ScopedToolOperationEvidence {
   const calls = new Map<string, ToolCallOperationEvidence>();
+  const starts = new Map<string, number>();
   const storage = new AsyncLocalStorage<ToolCallOperationEvidence>();
   const attempt = Number.isSafeInteger(input.attempt) && input.attempt > 0 ? input.attempt : 0;
+  let unattributedUnsafe = false;
+  let firstSafeCause: string | null = null;
   const keyFor = (toolCallId: string, toolName: string) => `${toolCallId}\u0000${toolName}`;
+  const latchUnattributedUnsafe = () => {
+    if (unattributedUnsafe) return;
+    unattributedUnsafe = true;
+    try { input.onUnsafe?.(); } catch {}
+  };
   const latchUnsafe = (call: ToolCallOperationEvidence) => {
     if (call.unsafe) return;
     call.unsafe = true;
     try { input.onUnsafe?.(); } catch {}
+  };
+  const rememberSafeCause = (call: ToolCallOperationEvidence, cause: string) => {
+    const bounded = cause.slice(0, MAX_SAFE_CAUSE_LENGTH);
+    if (!call.firstSafeCause) call.firstSafeCause = bounded;
+    if (!firstSafeCause) firstSafeCause = bounded;
   };
   const currentCall = () => {
     const call = storage.getStore();
@@ -141,13 +198,33 @@ export function createScopedToolOperationEvidence(input: {
     return call;
   };
   const completeEditRead = (call: ToolCallOperationEvidence) => {
-    const names = call.operations.map(({ name }) => name);
-    const access = call.operations.find(({ name }) => name === "access");
-    const readFile = call.operations.find(({ name }) => name === "readFile");
+    const operations = call.operations.filter(({ name }) => name !== "edit.authorization");
+    const names = operations.map(({ name }) => name);
+    const access = operations.find(({ name }) => name === "access");
+    const readFile = operations.find(({ name }) => name === "readFile");
     return names.length === 2
       && names.every((name) => name === "access" || name === "readFile")
       && access?.completed === true
       && readFile?.completed === true;
+  };
+  const trustedPreEntryDenial = (call: ToolCallOperationEvidence) => {
+    const failed = call.operations.filter(({ failed }) => failed);
+    const denial = failed[0];
+    return !call.unsafe
+      && !call.mutationEntered
+      && failed.length === 1
+      && call.operations.every(({ mutationEntry }) => mutationEntry === "not-entered")
+      && denial?.authorization === "denied"
+      && denial.stage === "authorization"
+      && denial.entered === false
+      && Boolean(denial.allowlistedCause)
+      && recoverableAuthorizationDenials.has(denial.allowlistedCause ?? "");
+  };
+  const verifiedToolSuccess = (call: ToolCallOperationEvidence) => {
+    if (call.unsafe || call.operationFailed || !call.operations.length) return false;
+    if (!call.operations.every(({ completed, failed }) => completed && !failed)) return false;
+    if (call.toolName === "bash") return call.operations.some(({ name }) => name === "bash.exec");
+    return call.operations.some(({ mutation, mutationEntry }) => mutation && mutationEntry === "entered");
   };
 
   return {
@@ -155,72 +232,135 @@ export function createScopedToolOperationEvidence(input: {
       const id = normalizedToolCallId(toolCallId);
       const name = normalizedToolName(toolName);
       const key = keyFor(id, name);
+      const existing = calls.get(key);
+      if (existing) {
+        latchUnsafe(existing);
+        return storage.run(existing, effect);
+      }
       const call: ToolCallOperationEvidence = {
         toolCallId: id,
         toolName: name,
         attempt,
+        eventStarted: starts.get(key) === 1,
+        eventEnded: false,
         operations: [],
         mutationEntered: false,
         operationFailed: false,
         preExecutionBashDenial: null,
+        firstSafeCause: null,
         unsafe: false,
       };
-      const duplicate = calls.has(key);
       calls.set(key, call);
-      if (!id || !isScopedMutationTool(name) || duplicate) latchUnsafe(call);
+      if (!id || !isScopedMutationTool(name) || (starts.get(key) ?? 0) > 1) latchUnsafe(call);
       return storage.run(call, effect);
     },
-    async runOperation({ name, mutation, authorize, effect }) {
+    async runOperation({ name, mutation, safeRelativePath, authorize, effect }) {
       const call = currentCall();
       const operation: ToolOperation = {
         name,
         mutation,
         entered: false,
+        mutationEntry: "not-entered",
         completed: false,
         failed: false,
+        authorization: "pending",
+        safeRelativePath: safeRelativeOperationPath(safeRelativePath),
+        stage: "authorization",
+        allowlistedCause: null,
       };
       call.operations.push(operation);
       try {
         await authorize();
+        operation.authorization = "allowed";
+        operation.stage = "effect";
         // Mark entry before waiting so a rejected or interrupted effect remains unsafe.
         operation.entered = true;
-        if (mutation) call.mutationEntered = true;
+        if (mutation) {
+          operation.mutationEntry = "entered";
+          call.mutationEntered = true;
+        }
         const result = await effect();
         operation.completed = true;
+        operation.stage = "settled";
         return result;
       } catch (error) {
         operation.failed = true;
         call.operationFailed = true;
-        latchUnsafe(call);
+        if (operation.authorization === "pending") {
+          operation.authorization = "denied";
+          operation.stage = "authorization";
+          operation.allowlistedCause = allowlistedAuthorizationCause(error);
+          const recoverableWithoutTarget = operation.allowlistedCause === "ownership_target_outside_project";
+          if (operation.allowlistedCause && (operation.safeRelativePath || recoverableWithoutTarget)) {
+            rememberSafeCause(call, operation.allowlistedCause);
+          } else {
+            latchUnsafe(call);
+          }
+        } else {
+          latchUnsafe(call);
+        }
         throw error;
       }
+    },
+    observeToolStart({ toolCallId, toolName }) {
+      const id = normalizedToolCallId(toolCallId);
+      const name = normalizedToolName(toolName);
+      const key = keyFor(id, name);
+      if (!id || !isScopedMutationTool(name)) {
+        latchUnattributedUnsafe();
+        return;
+      }
+      const count = (starts.get(key) ?? 0) + 1;
+      starts.set(key, count);
+      const call = calls.get(key);
+      if (count > 1) {
+        if (call) latchUnsafe(call);
+        else latchUnattributedUnsafe();
+        return;
+      }
+      if (call) call.eventStarted = true;
     },
     denyBashBeforeExecution(reason) {
       const call = currentCall();
       const denial = typeof reason === "string" ? reason : "";
       call.preExecutionBashDenial = denial || null;
-      if (!recoverableBashDenials.has(denial)) latchUnsafe(call);
+      if (recoverableBashDenials.has(denial)) rememberSafeCause(call, denial);
+      else latchUnsafe(call);
     },
-    isUnsafeToolFailure({ toolCallId, toolName, signalAborted }) {
+    isUnsafeToolFailure({ toolCallId, toolName, signalAborted, isError = true }) {
       const id = normalizedToolCallId(toolCallId);
       const name = normalizedToolName(toolName);
       const call = calls.get(keyFor(id, name));
-      if (!call || call.toolName !== name || signalAborted) return true;
-      if (call.unsafe || call.operationFailed || call.mutationEntered) return true;
-      if (name === "edit") return !completeEditRead(call);
-      if (name === "bash") {
-        return !call.preExecutionBashDenial
-          || !recoverableBashDenials.has(call.preExecutionBashDenial);
+      if (!call || call.toolName !== name || signalAborted || !call.eventStarted || call.eventEnded) return true;
+      call.eventEnded = true;
+      if (!isError) return !verifiedToolSuccess(call);
+      if (call.unsafe || call.mutationEntered) return true;
+      if (name === "edit" && !call.operationFailed) return !completeEditRead(call);
+      if (name === "bash" && call.preExecutionBashDenial) {
+        return !recoverableBashDenials.has(call.preExecutionBashDenial);
       }
-      return true;
+      return !trustedPreEntryDenial(call);
     },
     hasPossibleMutation: () => [...calls.values()].some(({ mutationEntered }) => mutationEntered),
+    hasUnsettledToolExecution: () => unattributedUnsafe
+      || [...starts.keys()].some((key) => !calls.get(key)?.eventEnded)
+      || [...calls.values()].some((call) => !call.eventStarted || !call.eventEnded),
+    firstSafeCause: () => firstSafeCause,
     snapshot: () => [...calls.values()].map((call) => ({
       ...call,
       operations: call.operations.map((operation) => ({ ...operation })),
     })),
   };
 }
+
+const immutablePersistedWriteScope = (value: unknown, agent: AgentDefinition) => {
+  if (!Array.isArray(value)) return null;
+  const scope = value.map((entry) => normalizeOwnershipTarget(entry));
+  if (scope.some((entry, index) => !entry || entry !== value[index])) return null;
+  if (agent.authority === "document-write" && scope.some((entry) => !isDocumentationTarget(entry))) return null;
+  return Object.freeze([...scope]) as unknown as string[];
+};
+
 const samePath = (left: unknown, right: unknown) => {
   const first = text(left);
   const second = text(right);
@@ -278,19 +418,24 @@ const settleAndDispose = async (session: any, settled: boolean, unsubscribe: () 
 };
 
 export async function runFocusedAgentContinuation(input: FocusedContinuationInput) {
-  const record = structuredClone(input.record);
+  const persistedRecord = structuredClone(input.record);
+  const writeScope = immutablePersistedWriteScope(persistedRecord.writeScope, input.agent);
+  if (!writeScope) {
+    return createDelegationResult({ id: persistedRecord.reference, status: "refused", attempts: 0, error: "session_not_reusable", session: null });
+  }
+  const record = { ...persistedRecord, writeScope };
   const cwd = resolve(input.cwd);
   const purpose = input.agent.authority === "review-read"
     ? "finding-follow-up"
     : input.agent.authority === "vision-read"
       ? "vision-follow-up"
       : "implementation-follow-up";
+  if (record.contractFingerprint !== agentContractFingerprint(input.agent, record.writeScope)) {
+    return createDelegationResult({ id: record.reference, status: "refused", attempts: 0, error: "agent_contract_drift", session: null });
+  }
   const fileExists = input.dependencies.fileExists ?? existsSync;
   if (!canResumeSession({ record, agent: input.agent, purpose, sessionFileExists: fileExists(record.sessionFile) })) {
     return createDelegationResult({ id: record.reference, status: "refused", attempts: 0, error: "session_not_reusable", session: null });
-  }
-  if (record.contractFingerprint !== agentContractFingerprint(input.agent, record.writeScope)) {
-    return createDelegationResult({ id: record.reference, status: "refused", attempts: 0, error: "agent_contract_drift", session: null });
   }
   const model = input.runtime.getModel(record.provider, record.model);
   if (!model) return createDelegationResult({ id: record.reference, status: "refused", attempts: 0, error: "model_unavailable", session: null });
@@ -359,6 +504,7 @@ export async function runFocusedAgentContinuation(input: FocusedContinuationInpu
         session: null,
       });
     };
+    let firstSafeCause: string | null = null;
 
     for (let attempt = 0; attempt < 2; attempt += 1) {
       let session: any;
@@ -386,6 +532,11 @@ export async function runFocusedAgentContinuation(input: FocusedContinuationInpu
         attempt: attempt + 1,
         onUnsafe: latchUnsafe,
       });
+      const rememberSafeCause = () => {
+        const cause = operationEvidence.firstSafeCause();
+        if (!firstSafeCause && cause) firstSafeCause = cause;
+        return firstSafeCause;
+      };
       const onAbort = () => {
         cancelled = true;
         requestAbort();
@@ -423,24 +574,30 @@ export async function runFocusedAgentContinuation(input: FocusedContinuationInpu
         }
         unsubscribe = session.subscribe?.((event: unknown) => {
           try {
-            if (input.dependencies.mutationAttemptUnsafe(
-              event,
-              { writeScope: record.writeScope } as DelegationAssignment,
-              cwd,
-            )) latchUnsafe();
             const toolEvent = event as {
               type?: unknown;
               toolCallId?: unknown;
               toolName?: unknown;
               isError?: unknown;
             };
+            if (toolEvent?.type === "tool_execution_start" && isScopedMutationTool(toolEvent.toolName)) {
+              operationEvidence.observeToolStart({
+                toolCallId: toolEvent.toolCallId,
+                toolName: toolEvent.toolName,
+              });
+            }
+            if (input.dependencies.mutationAttemptUnsafe(
+              event,
+              { writeScope: record.writeScope } as DelegationAssignment,
+              cwd,
+            )) latchUnsafe();
             if (toolEvent?.type === "tool_execution_end"
-              && toolEvent.isError === true
               && isScopedMutationTool(toolEvent.toolName)
               && operationEvidence.isUnsafeToolFailure({
                 toolCallId: toolEvent.toolCallId,
                 toolName: toolEvent.toolName,
                 signalAborted: cancelled || input.signal?.aborted === true,
+                isError: toolEvent.isError === true,
               })) latchUnsafe();
           } catch {
             latchUnsafe();
@@ -457,6 +614,8 @@ export async function runFocusedAgentContinuation(input: FocusedContinuationInpu
         await session.prompt(prompt, { expandPromptTemplates: false });
         await session.waitForIdle();
         childSettled = true;
+        if (operationEvidence.hasUnsettledToolExecution()) latchUnsafe();
+        rememberSafeCause();
         if (cancelled && operationEvidence.hasPossibleMutation()) latchUnsafe();
         if (unsafe) return await unsafeResult(attempt + 1);
         if (cancelled) {
@@ -481,9 +640,12 @@ export async function runFocusedAgentContinuation(input: FocusedContinuationInpu
         if (!completion.ok) {
           if (operationEvidence.hasPossibleMutation()) latchUnsafe();
           if (unsafe) return await unsafeResult(attempt + 1);
+          const safeCause = rememberSafeCause();
           const failure = final?.errorMessage ? classifyChildFailure(final.errorMessage) : "agent-contract";
           if (attempt === 0 && decideRecovery({ failure, retries: 0 }).retry) continue;
-          const detail = final?.errorMessage ? sanitizeDelegationError(final.errorMessage) : completion.failures.join(",");
+          const detail = safeCause ?? (final?.errorMessage
+            ? sanitizeDelegationError(final.errorMessage)
+            : completion.failures.join(","));
           const unverifiedReport = report.trim();
           return createDelegationResult({
             id: record.reference,
@@ -513,15 +675,16 @@ export async function runFocusedAgentContinuation(input: FocusedContinuationInpu
           session: { id: observed.sessionId, file: observed.sessionFile, resumeReference: record.reference },
         });
       } catch (error) {
-        if (!unsafe && operationEvidence.hasPossibleMutation()) latchUnsafe();
+        if (!unsafe && (operationEvidence.hasUnsettledToolExecution() || operationEvidence.hasPossibleMutation())) latchUnsafe();
         if (unsafe) return await unsafeResult(attempt + 1);
+        const safeCause = rememberSafeCause();
         const failure = classifyChildFailure(error);
         if (!durableUpdateStarted && attempt === 0 && decideRecovery({ failure, retries: 0 }).retry) continue;
         return createDelegationResult({
           id: record.reference,
           status: "failed",
           attempts: attempt + 1,
-          error: sanitizeDelegationError(error),
+          error: safeCause ?? sanitizeDelegationError(error),
           failure,
           session: null,
         });

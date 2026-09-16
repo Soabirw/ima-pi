@@ -42,6 +42,7 @@ import {
   deriveToolAuthority,
   isDocumentationTarget,
   isOwnedTarget,
+  normalizeOwnershipTarget,
   reduceDelegationEvent,
   resolveAgentRoute,
   sanitizeDelegationError,
@@ -118,23 +119,36 @@ const errorCode = (error: unknown) => {
   return typeof code === "string" ? code : "";
 };
 
-async function canonicalPath(path: string): Promise<string> {
+type CanonicalPathOperations = {
+  lstat: typeof lstat;
+  realpath: typeof realpath;
+};
+
+const canonicalPathOperations: CanonicalPathOperations = { lstat, realpath };
+
+async function canonicalPath(path: string, operations: CanonicalPathOperations): Promise<string> {
   let current = resolve(path);
   const missing: string[] = [];
+  let observedExistingRetry = false;
   while (true) {
     try {
-      const base = await realpath(current);
+      const base = await operations.realpath(current);
       return resolve(base, ...missing.reverse());
     } catch (error) {
       if (errorCode(error) !== "ENOENT") throw new Error("ownership_path_unresolved");
       let missingEntry = false;
       try {
-        await lstat(current);
+        await operations.lstat(current);
       } catch (probeError) {
         if (errorCode(probeError) === "ENOENT") missingEntry = true;
         else throw new Error("ownership_path_unresolved");
       }
-      if (!missingEntry) throw new Error("ownership_path_unresolved");
+      if (!missingEntry) {
+        // The entry appeared after realpath failed; retry canonical resolution once, never lexically.
+        if (observedExistingRetry) throw new Error("ownership_path_unresolved");
+        observedExistingRetry = true;
+        continue;
+      }
       const parent = dirname(current);
       if (parent === current) throw new Error("ownership_path_unresolved");
       missing.push(current.slice(parent.length + 1));
@@ -144,16 +158,22 @@ async function canonicalPath(path: string): Promise<string> {
 }
 
 // REVIEW-001: symlink-safe ownership check used by every mutating operation before effects.
-export async function assertOwnedPath(cwd: string, absoluteTarget: string, writeScope: string[], allowOwnerAncestor = false): Promise<{ root: string; target: string }> {
+export async function assertOwnedPath(
+  cwd: string,
+  absoluteTarget: string,
+  writeScope: string[],
+  allowOwnerAncestor = false,
+  operations: CanonicalPathOperations = canonicalPathOperations,
+): Promise<{ root: string; target: string }> {
   const lexicalRoot = resolve(cwd);
-  const root = await realpath(lexicalRoot);
+  const root = await operations.realpath(lexicalRoot);
   const lexicalTarget = resolve(absoluteTarget);
   if (!withinRoot(lexicalRoot, lexicalTarget)) throw new Error("ownership_target_outside_project");
-  const target = await canonicalPath(lexicalTarget);
+  const target = await canonicalPath(lexicalTarget, operations);
   if (!withinRoot(root, target)) throw new Error("ownership_symlink_escape");
   const owners = await Promise.all(writeScope.map(async (entry) => {
     if (!isOwnedTarget(entry, [entry])) throw new Error("ownership_scope_invalid");
-    const owner = await canonicalPath(resolve(lexicalRoot, entry));
+    const owner = await canonicalPath(resolve(lexicalRoot, entry), operations);
     if (!withinRoot(root, owner)) throw new Error("ownership_scope_symlink_escape");
     return owner;
   }));
@@ -201,12 +221,34 @@ const validateNativeMutationToolInput = (toolName: string, input: unknown) => {
   assertSupportedNativeMutationPath((input as { path?: unknown }).path);
 };
 
-const withScopedToolEvidence = (tool: any, evidence: ScopedToolOperationEvidence): ToolDefinition => ({
+type AssignmentMutationQueue = <Value>(effect: () => Promise<Value>) => Promise<Value>;
+type ScopedToolEvidenceOptions = {
+  queue?: AssignmentMutationQueue;
+  beforeExecute?: (input: unknown) => Promise<void>;
+};
+
+const createAssignmentMutationQueue = (): AssignmentMutationQueue => {
+  let tail: Promise<void> = Promise.resolve();
+  return (effect) => {
+    const next = tail.then(effect, effect);
+    tail = next.then(() => undefined, () => undefined);
+    return next;
+  };
+};
+
+const withScopedToolEvidence = (
+  tool: any,
+  evidence: ScopedToolOperationEvidence,
+  options: ScopedToolEvidenceOptions = {},
+): ToolDefinition => ({
   ...tool,
   execute: async (toolCallId: string, input: unknown, signal: AbortSignal | undefined, onUpdate: unknown, ctx: unknown) => {
     validateNativeMutationToolInput(tool.name, input);
-    return evidence.runTool(toolCallId, tool.name, () =>
-      tool.execute(toolCallId, input, signal, onUpdate, ctx));
+    const execute = () => evidence.runTool(toolCallId, tool.name, async () => {
+      await options.beforeExecute?.(input);
+      return tool.execute(toolCallId, input, signal, onUpdate, ctx);
+    });
+    return options.queue ? options.queue(execute) : execute();
   },
 }) as ToolDefinition;
 
@@ -237,6 +279,35 @@ export function createScopedTools(input: ScopedToolInput): ToolDefinition[] {
   const authorizeParentDirectory = async (path: string) => {
     await assertOwnedPath(cwd, path, assignment.writeScope, true);
   };
+  const safeRelativePath = (path: string) => {
+    const root = resolve(cwd);
+    const target = resolve(path);
+    return withinRoot(root, target)
+      ? normalizeOwnershipTarget(relative(root, target))
+      : null;
+  };
+  const nativeMutationTarget = (toolInput: unknown) => {
+    if (!toolInput || typeof toolInput !== "object" || Array.isArray(toolInput)) return null;
+    const path = (toolInput as { path?: unknown }).path;
+    if (typeof path !== "string") return null;
+    return resolve(cwd, path.startsWith("@") ? path.slice(1) : path);
+  };
+  const authorizeNativeMutation = async (toolName: "write" | "edit", toolInput: unknown) => {
+    const target = nativeMutationTarget(toolInput);
+    if (!target) return;
+    await evidence.runOperation({
+      name: `${toolName}.authorization`,
+      mutation: false,
+      safeRelativePath: safeRelativePath(target),
+      authorize: () => authorize(target),
+      effect: async () => undefined,
+    });
+  };
+  const mutationQueue = createAssignmentMutationQueue();
+  const mutationToolOptions = (toolName: "write" | "edit") => ({
+    queue: mutationQueue,
+    beforeExecute: (toolInput: unknown) => authorizeNativeMutation(toolName, toolInput),
+  });
   const enabled = new Set(deriveToolAuthority(agent));
   const custom: ToolDefinition[] = [];
   if (enabled.has("write")) {
@@ -244,38 +315,43 @@ export function createScopedTools(input: ScopedToolInput): ToolDefinition[] {
       mkdir: async (path) => evidence.runOperation({
         name: "mkdir",
         mutation: true,
+        safeRelativePath: safeRelativePath(path),
         authorize: () => authorizeParentDirectory(path),
         effect: async () => { await filesystem.mkdir(path, { recursive: true }); },
       }),
       writeFile: async (path, content) => evidence.runOperation({
         name: "writeFile",
         mutation: true,
+        safeRelativePath: safeRelativePath(path),
         authorize: () => authorize(path),
         effect: async () => { await filesystem.writeFile(path, content); },
       }),
-    } }), evidence));
+    } }), evidence, mutationToolOptions("write")));
   }
   if (enabled.has("edit")) {
     custom.push(withScopedToolEvidence(createEditToolDefinition(cwd, { operations: {
       readFile: (path) => evidence.runOperation({
         name: "readFile",
         mutation: false,
+        safeRelativePath: safeRelativePath(path),
         authorize: () => authorize(path),
         effect: () => filesystem.readFile(path),
       }),
       access: async (path) => evidence.runOperation({
         name: "access",
         mutation: false,
+        safeRelativePath: safeRelativePath(path),
         authorize: () => authorize(path),
         effect: async () => { await filesystem.lstat(path); },
       }),
       writeFile: async (path, content) => evidence.runOperation({
         name: "writeFile",
         mutation: true,
+        safeRelativePath: safeRelativePath(path),
         authorize: () => authorize(path),
         effect: async () => { await filesystem.writeFile(path, content); },
       }),
-    } }), evidence));
+    } }), evidence, mutationToolOptions("edit")));
   }
   if (enabled.has("bash") || enabled.has("test")) {
     const local = input.operations?.bash ?? createLocalBashOperations();
@@ -287,16 +363,19 @@ export function createScopedTools(input: ScopedToolInput): ToolDefinition[] {
           throw new Error(`ownership_bash_denied:${classification.reason}`);
         }
         for (const path of classification.paths) {
+          const target = resolve(commandCwd, path);
           await evidence.runOperation({
             name: "bash.authorization",
             mutation: false,
-            authorize: () => authorize(resolve(commandCwd, path)),
+            safeRelativePath: safeRelativePath(target),
+            authorize: () => authorize(target),
             effect: async () => undefined,
           });
         }
         return evidence.runOperation({
           name: "bash.exec",
           mutation: classification.kind === "owned-mutation",
+          safeRelativePath: null,
           authorize: async () => undefined,
           effect: () => local.exec(command, commandCwd, options),
         });
@@ -348,10 +427,9 @@ const mutationAttemptUnsafe = (
 ) => {
   if (event?.type !== "tool_execution_start") return false;
   if (event.toolName === "write" || event.toolName === "edit") {
-    return !isOwnedTarget(
-      eventOwnershipTarget(cwd, event.args?.path),
-      assignment.writeScope,
-    );
+    // A safe lexical target may be denied by the trusted operation boundary before entry.
+    // Wait for that correlated proof; malformed paths remain immediately unsafe.
+    return eventOwnershipTarget(cwd, event.args?.path) === null;
   }
   if (event.toolName !== "bash") return false;
   const classification = classifyBashCommand(event.args?.command, assignment.writeScope);
@@ -480,6 +558,7 @@ export async function coordinateDelegation(input: CoordinatorInput) {
       return { id: assignment.id, status: "blocked", attempts: 0, error: blocker, failure: "agent-contract" as const, escalation: "correct the local visual source", resumeReference: null };
     }
     let attempt = 0;
+    let firstSafeCause: string | null = null;
     while (attempt < 2) {
       if (cancelled || unsafe) {
         const failure = "unsafe-partial-state" as const;
@@ -494,6 +573,11 @@ export async function coordinateDelegation(input: CoordinatorInput) {
         attempt,
         onUnsafe: () => markUnsafe(assignment),
       });
+      const rememberSafeCause = () => {
+        const cause = operationEvidence.firstSafeCause();
+        if (!firstSafeCause && cause) firstSafeCause = cause;
+        return firstSafeCause;
+      };
       try {
         state = reduceDelegationEvent(state, { type: "started", id: assignment.id });
         const created = await deps.createSession({
@@ -523,15 +607,23 @@ export async function coordinateDelegation(input: CoordinatorInput) {
           try {
             if (event?.type === "agent_start") emit({ type: "child-running", id: assignment.id, at: deps.activityClock(), attempt });
             if (event?.type === "agent_settled") emit({ type: "child-settled", id: assignment.id, at: deps.activityClock() });
-            if (event?.type === "tool_execution_start") emit({ type: "child-activity", id: assignment.id, at: deps.activityClock(), category: classifyDelegationActivity(event.toolName, event.args) });
+            if (event?.type === "tool_execution_start") {
+              emit({ type: "child-activity", id: assignment.id, at: deps.activityClock(), category: classifyDelegationActivity(event.toolName, event.args) });
+              if (isScopedMutationTool(event.toolName)) {
+                operationEvidence.observeToolStart({
+                  toolCallId: event.toolCallId,
+                  toolName: event.toolName,
+                });
+              }
+            }
             if (mutationAttemptUnsafe(event, assignment, input.cwd)) markUnsafe(assignment);
             if (event?.type === "tool_execution_end"
-              && event.isError === true
               && isScopedMutationTool(event.toolName)
               && operationEvidence.isUnsafeToolFailure({
                 toolCallId: event.toolCallId,
                 toolName: event.toolName,
                 signalAborted: cancelled || input.signal?.aborted === true,
+                isError: event.isError === true,
               })) markUnsafe(assignment);
           } catch {
             markUnsafe(assignment);
@@ -542,6 +634,8 @@ export async function coordinateDelegation(input: CoordinatorInput) {
         if (admitted.value.length) await session.prompt(brief, { images: admitted.value.map(({ attachment }) => attachment), expandPromptTemplates: false });
         else await session.prompt(brief);
         await session.waitForIdle();
+        if (operationEvidence.hasUnsettledToolExecution()) markUnsafe(assignment);
+        rememberSafeCause();
         if (cancelled && operationEvidence.hasPossibleMutation()) markUnsafe(assignment);
         if (cancelled || unsafe) throw new Error(cancelled ? "cancelled" : "unsafe-partial-state");
         const final = finalAssistant(session);
@@ -550,8 +644,11 @@ export async function coordinateDelegation(input: CoordinatorInput) {
         const completion = validateDelegationCompletion({ final, text: report, requiredSections: agent.result.requiredSections, expected: route.route, observed });
         if (!completion.ok) {
           if (operationEvidence.hasPossibleMutation()) markUnsafe(assignment);
+          const safeCause = rememberSafeCause();
           const providerError = final?.errorMessage;
-          const error = unsafe ? "unsafe-partial-state" : providerError || completion.failures.join(",");
+          const error = unsafe
+            ? "unsafe-partial-state"
+            : safeCause ?? providerError ?? completion.failures.join(",");
           const failure = unsafe
             ? "unsafe-partial-state"
             : providerError ? classifyChildFailure(providerError) : "agent-contract";
@@ -583,14 +680,19 @@ export async function coordinateDelegation(input: CoordinatorInput) {
         state = reduceDelegationEvent(state, { type: "succeeded", id: assignment.id });
         return { id: assignment.id, status: "succeeded", attempts: attempt, report, provider: record.provider, model: record.model, thinking: record.thinking, sessionId: record.sessionId, sessionFile: record.sessionFile, resumeReference: record.followUpAllowed ? record.reference : null };
       } catch (error) {
-        if (!unsafe && operationEvidence.hasPossibleMutation()) markUnsafe(assignment);
+        if (!unsafe && (operationEvidence.hasUnsettledToolExecution() || operationEvidence.hasPossibleMutation())) markUnsafe(assignment);
+        const safeCause = rememberSafeCause();
         const failure = unsafe ? "unsafe-partial-state" : cancelled ? "unsafe-partial-state" : classifyChildFailure(error);
         const recovery = decideRecovery({ failure, retries: attempt - 1 });
         if (recovery.retry && !cancelled && !unsafe) {
           emit({ type: "retrying", id: assignment.id, at: deps.activityClock(), attempt: 2, reason: failure });
           continue;
         }
-        const detail = unsafe ? "unsafe-partial-state" : cancelled ? "cancelled" : sanitizeDelegationError(error);
+        const detail = unsafe
+          ? "unsafe-partial-state"
+          : cancelled
+            ? "cancelled"
+            : safeCause ?? sanitizeDelegationError(error);
         const possibleWrites = assignment.writeScope.length > 0;
         emit({ type: cancelled || unsafe ? "cancelled" : "failed", id: assignment.id, at: deps.activityClock(), blocker: detail, possiblePartialWriteScopes: (cancelled || unsafe) && possibleWrites ? assignment.writeScope : [] });
         state = reduceDelegationEvent(state, { type: cancelled ? "cancelled" : "failed", id: assignment.id, detail, partialEffects: unsafe || (cancelled && possibleWrites) });

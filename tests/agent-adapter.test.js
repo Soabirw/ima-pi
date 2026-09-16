@@ -413,6 +413,62 @@ test("unexpected mutation marks unsafe partial state and aborts settled siblings
   assert.equal(unsafeChild.state.disposes, 1);
 });
 
+test("unsettled valid scoped starts during fresh prompt or idle rejection fail closed before retry", async () => {
+  const cases = [
+    { name: "prompt rejection", rejection: "prompt" },
+    { name: "idle rejection", rejection: "idle" },
+  ];
+  for (const scenario of cases) {
+    let signalSiblingReady;
+    const siblingReady = new Promise((resolve) => { signalSiblingReady = resolve; });
+    let releaseSibling;
+    const siblingGate = new Promise((resolve) => { releaseSibling = resolve; });
+    const emitUnsettledStart = (listeners) => {
+      for (const listener of listeners) {
+        listener({
+          type: "tool_execution_start",
+          toolCallId: `unsettled-${scenario.rejection}`,
+          toolName: "write",
+          args: { path: "owned/a/result.txt" },
+        });
+      }
+    };
+    const unsafeChild = fakeSession({
+      prompt: async ({ listeners }) => {
+        emitUnsettledStart(listeners);
+        await siblingReady;
+        if (scenario.rejection === "prompt") throw new Error("provider timeout");
+      },
+      waitForIdle: async () => {
+        if (scenario.rejection === "idle") throw new Error("provider timeout");
+      },
+    });
+    const sibling = fakeSession({
+      prompt: () => { signalSiblingReady(); },
+      waitForIdle: () => siblingGate,
+      abort: () => releaseSibling(),
+    });
+    const retry = fakeSession({ sessionId: `retry-${scenario.rejection}`, sessionFile: `/sessions/retry-${scenario.rejection}.jsonl` });
+    const sessionStore = new Map();
+    const result = await run({
+      assignments: [assignment("a", ["owned/a"]), assignment("b", ["owned/b"])],
+      sessions: [{ session: unsafeChild.session }, { session: sibling.session }, { session: retry.session }],
+      sessionStore,
+    });
+
+    assert.equal(result.status, "failed", scenario.name);
+    assert.equal(result.results[0].attempts, 1, scenario.name);
+    assert.equal(result.results[0].failure, "unsafe-partial-state", scenario.name);
+    assert.equal(result.results[0].session, null, scenario.name);
+    assert.equal(result.partialEffects, true, scenario.name);
+    assert.deepEqual(result.unsafeEvidence, [{ assignmentId: "a", writeScope: ["owned/a"] }], scenario.name);
+    assert.ok(sibling.state.aborts >= 1, scenario.name);
+    assert.equal(retry.state.prompts.length, 0, scenario.name);
+    assert.equal(sessionStore.size, 0, scenario.name);
+    assert.deepEqual(result.report.reusableSessionReferences, [], scenario.name);
+  }
+});
+
 test("pre-execution ambiguous bash denial remains recoverable without aborting sibling work", async () => {
   const root = await mkdtemp(join(tmpdir(), "ima-agent-ambiguous-bash-"));
   const diagnostic = "git status --short && printf '\\n-- candidates --\\n' && rg -l 'REVIEW-001|REVIEW-002' . | head -80";
@@ -538,7 +594,47 @@ test("mismatched trusted operation evidence fails closed after an otherwise non-
   }
 });
 
-test("operation-level ownership violations immediately latch unsafe fresh delegation", async () => {
+test("concurrent authorized scoped writes settle without false unsafe partial state", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ima-agent-concurrent-writes-"));
+  const toolSets = new Map();
+  await mkdir(join(root, "owned"));
+  const child = fakeSession({ prompt: async ({ listeners }) => {
+    const write = toolSets.get("a").find((tool) => tool.name === "write");
+    for (const listener of listeners) {
+      listener({ type: "tool_execution_start", toolCallId: "first-write", toolName: "write", args: { path: "owned/first.txt" } });
+      listener({ type: "tool_execution_start", toolCallId: "second-write", toolName: "write", args: { path: "owned/second.txt" } });
+    }
+    await Promise.all([
+      write.execute("first-write", { path: "owned/first.txt", content: "first" }, undefined, undefined, {}),
+      write.execute("second-write", { path: "owned/second.txt", content: "second" }, undefined, undefined, {}),
+    ]);
+    for (const listener of listeners) {
+      listener({ type: "tool_execution_end", toolCallId: "first-write", toolName: "write", isError: false });
+      listener({ type: "tool_execution_end", toolCallId: "second-write", toolName: "write", isError: false });
+    }
+  } });
+  try {
+    const result = await run({
+      cwd: root,
+      sessions: [{ session: child.session }],
+      scopedTools: (input) => {
+        const tools = createScopedTools(input);
+        toolSets.set(input.assignment.id, tools);
+        return tools;
+      },
+    });
+    assert.equal(result.status, "succeeded");
+    assert.equal(result.partialEffects, false);
+    assert.deepEqual(result.unsafeEvidence, []);
+    assert.equal(child.state.aborts, 0);
+    assert.equal(await readFile(join(root, "owned", "first.txt"), "utf8"), "first");
+    assert.equal(await readFile(join(root, "owned", "second.txt"), "utf8"), "second");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("trusted operation-level ownership denials remain recoverable in fresh delegation", async () => {
   const root = await mkdtemp(join(tmpdir(), "ima-agent-owned-failure-"));
   const target = join(root, "sibling", "unowned.txt");
   const toolSets = new Map();
@@ -567,12 +663,147 @@ test("operation-level ownership violations immediately latch unsafe fresh delega
         return tools;
       },
     });
+    assert.equal(result.status, "succeeded");
+    assert.equal(result.results[0].attempts, 1);
+    assert.equal(result.results[0].failure, undefined);
+    assert.equal(result.partialEffects, false);
+    assert.equal(child.state.aborts, 0);
+    assert.deepEqual(result.unsafeEvidence, []);
+    assert.equal(existsSync(target), false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("fresh exceptional exit fails closed when a trusted pre-entry denial has no matching end", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ima-agent-unsettled-denial-"));
+  const target = join(root, "sibling", "blocked.txt");
+  const toolSets = new Map();
+  const child = fakeSession({ prompt: async ({ listeners }) => {
+    const write = toolSets.get("a").find((tool) => tool.name === "write");
+    for (const listener of listeners) {
+      listener({ type: "tool_execution_start", toolCallId: "unsettled-denial", toolName: "write", args: { path: "sibling/blocked.txt" } });
+    }
+    await assert.rejects(write.execute("unsettled-denial", {
+      path: "sibling/blocked.txt",
+      content: "blocked",
+    }, undefined, undefined, {}), { message: "ownership_target_out_of_scope" });
+    throw new Error("provider timeout");
+  } });
+  const retry = fakeSession({ sessionId: "unsettled-denial-retry", sessionFile: "/sessions/unsettled-denial-retry.jsonl" });
+  const sessionStore = new Map();
+  try {
+    await mkdir(join(root, "owned"));
+    await mkdir(join(root, "sibling"));
+    const result = await run({
+      cwd: root,
+      sessions: [{ session: child.session }, { session: retry.session }],
+      sessionStore,
+      scopedTools: (input) => {
+        const tools = createScopedTools(input);
+        toolSets.set(input.assignment.id, tools);
+        return tools;
+      },
+    });
     assert.equal(result.status, "failed");
     assert.equal(result.results[0].attempts, 1);
     assert.equal(result.results[0].failure, "unsafe-partial-state");
+    assert.equal(result.results[0].session, null);
     assert.equal(result.partialEffects, true);
     assert.ok(child.state.aborts >= 1);
+    assert.equal(retry.state.prompts.length, 0);
+    assert.equal(sessionStore.size, 0);
+    assert.deepEqual(result.report.reusableSessionReferences, []);
     assert.equal(existsSync(target), false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("trusted containment and symlink denials remain recoverable before mutation entry", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ima-agent-trusted-denials-"));
+  const outside = await mkdtemp(join(tmpdir(), "ima-agent-trusted-denials-outside-"));
+  try {
+    await mkdir(join(root, "owned"));
+    await symlink(outside, join(root, "owned", "escape"));
+    const cases = [
+      { name: "containment", path: `@${join(outside, "blocked.txt")}`, cause: "ownership_target_outside_project", target: join(outside, "blocked.txt") },
+      { name: "symlink", path: "owned/escape/blocked.txt", cause: "ownership_symlink_escape", target: join(outside, "blocked.txt") },
+    ];
+    for (const scenario of cases) {
+      const toolSets = new Map();
+      const child = fakeSession({ prompt: async ({ listeners }) => {
+        const write = toolSets.get("a").find((tool) => tool.name === "write");
+        for (const listener of listeners) {
+          listener({ type: "tool_execution_start", toolCallId: `${scenario.name}-write`, toolName: "write", args: { path: scenario.path } });
+        }
+        await assert.rejects(write.execute(`${scenario.name}-write`, {
+          path: scenario.path,
+          content: "blocked",
+        }, undefined, undefined, {}), { message: scenario.cause });
+        for (const listener of listeners) {
+          listener({ type: "tool_execution_end", toolCallId: `${scenario.name}-write`, toolName: "write", isError: true });
+        }
+      } });
+      const result = await run({
+        cwd: root,
+        sessions: [{ session: child.session }],
+        scopedTools: (input) => {
+          const tools = createScopedTools(input);
+          toolSets.set(input.assignment.id, tools);
+          return tools;
+        },
+      });
+      assert.equal(result.status, "succeeded", scenario.name);
+      assert.equal(result.partialEffects, false, scenario.name);
+      assert.deepEqual(result.unsafeEvidence, [], scenario.name);
+      assert.equal(existsSync(scenario.target), false, scenario.name);
+    }
+  } finally {
+    await Promise.all([
+      rm(root, { recursive: true, force: true }),
+      rm(outside, { recursive: true, force: true }),
+    ]);
+  }
+});
+
+test("fresh delegation retains the first trusted safe cause when the child later fails", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ima-agent-safe-cause-"));
+  const toolSets = new Map();
+  await mkdir(join(root, "owned"));
+  await mkdir(join(root, "sibling"));
+  const child = fakeSession({
+    text: "",
+    state: { messages: [{ role: "assistant", stopReason: "error", errorMessage: "child contract failed", content: [] }] },
+    prompt: async ({ listeners }) => {
+      const write = toolSets.get("a").find((tool) => tool.name === "write");
+      for (const listener of listeners) {
+        listener({ type: "tool_execution_start", toolCallId: "safe-cause-write", toolName: "write", args: { path: "sibling/blocked.txt" } });
+      }
+      await assert.rejects(write.execute("safe-cause-write", {
+        path: "sibling/blocked.txt",
+        content: "blocked",
+      }, undefined, undefined, {}));
+      for (const listener of listeners) {
+        listener({ type: "tool_execution_end", toolCallId: "safe-cause-write", toolName: "write", isError: true });
+      }
+    },
+  });
+  try {
+    const result = await run({
+      cwd: root,
+      sessions: [{ session: child.session }],
+      scopedTools: (input) => {
+        const tools = createScopedTools(input);
+        toolSets.set(input.assignment.id, tools);
+        return tools;
+      },
+    });
+    assert.equal(result.status, "failed");
+    assert.equal(result.results[0].error, "ownership_target_out_of_scope");
+    assert.equal(result.results[0].failure, "terminal");
+    assert.equal(result.partialEffects, false);
+    assert.deepEqual(result.unsafeEvidence, []);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -645,10 +876,10 @@ test("missing mutation-operation evidence fails closed in fresh delegation", asy
   assert.ok(child.state.aborts >= 1);
 });
 
-test("normalizes native @ mutation paths in fresh delegated-agent observers", async () => {
+test("missing correlated mutation evidence remains unsafe for fresh delegated-agent observers", async () => {
   const cases = [
-    { path: "@owned/file.txt", status: "succeeded", partialEffects: false },
-    { path: "@/repo/owned/file.txt", status: "succeeded", partialEffects: false },
+    { path: "@owned/file.txt", status: "failed", partialEffects: true },
+    { path: "@/repo/owned/file.txt", status: "failed", partialEffects: true },
     { path: "@@owned/file.txt", status: "failed", partialEffects: true },
     { path: "@outside/file.txt", status: "failed", partialEffects: true },
   ];
@@ -932,7 +1163,7 @@ test("documenter final-target authorization rejects code aliases and preserves d
   }
 });
 
-test("fresh documenter alias denial has no retry or reusable reference", async () => {
+test("fresh documenter alias denial is recoverable with no forbidden effect", async () => {
   const root = await mkdtemp(join(tmpdir(), "ima-documenter-fresh-alias-"));
   const modulePath = join(root, "lib", "module.ts");
   const moduleContent = "export const value = 'before';\n";
@@ -970,16 +1201,16 @@ test("fresh documenter alias denial has no retry or reusable reference", async (
         return { session: child.session };
       },
     });
-    assert.equal(result.status, "failed");
+    assert.equal(result.status, "succeeded");
     assert.equal(result.results[0].attempts, 1);
-    assert.equal(result.results[0].failure, "unsafe-partial-state");
-    assert.equal(result.results[0].session, null);
-    assert.equal(result.report.children[0].resumeReference, null);
-    assert.deepEqual(result.report.reusableSessionReferences, []);
-    assert.equal(result.partialEffects, true);
+    assert.equal(result.results[0].failure, undefined);
+    assert.equal(result.results[0].session?.resumeReference, "documenter");
+    assert.equal(result.report.children[0].resumeReference, "documenter");
+    assert.deepEqual(result.report.reusableSessionReferences, ["documenter"]);
+    assert.equal(result.partialEffects, false);
     assert.equal(created, 1);
-    assert.equal(sessionStore.size, 0);
-    assert.ok(child.state.aborts >= 1);
+    assert.equal(sessionStore.size, 1);
+    assert.equal(child.state.aborts, 0);
     assert.equal(await readFile(modulePath, "utf8"), moduleContent);
   } finally {
     await rm(root, { recursive: true, force: true });
