@@ -4,10 +4,13 @@ import {
   agentContractFingerprint,
   buildChildBrief,
   classifyBashCommand,
+  composeDelegatedBashPrompt,
+  DELEGATED_BASH_PROMPT_GUIDANCE,
   createDelegationState,
   isOwnedTarget,
   normalizeOwnershipTarget,
   reduceDelegationEvent,
+  requiresDelegatedBashGuidance,
   validateDelegationCompletion,
   validateAdversarialAssignments,
   validateDelegationRequest,
@@ -97,6 +100,21 @@ test("builds a self-contained brief and immutable event state", () => {
   assert.equal(next.assignments[0].status, "running");
   assert.equal(failed.partialEffects, false);
   assert.equal(unsafe.partialEffects, true);
+});
+
+test("composes mandatory delegated-Bash guidance only for resolved Bash or test definitions", () => {
+  const original = "Original child brief.";
+  assert.equal(requiresDelegatedBashGuidance(["read", "write"]), false);
+  assert.equal(composeDelegatedBashPrompt(original, ["read", "write"]), original);
+
+  for (const tools of [["read", "bash"], ["read", "test"]]) {
+    const customAgent = { ...agent, tools, source: "project" };
+    const brief = buildChildBrief({ projectRoot: "/repo", assignment, agent: customAgent });
+    assert.equal(requiresDelegatedBashGuidance(tools), true);
+    assert.ok(brief.endsWith(DELEGATED_BASH_PROMPT_GUIDANCE));
+    assert.match(brief, /`&&` runs its right side only after its left succeeds/);
+    assert.match(brief, /Report unsupported verification to the parent; never claim it/);
+  }
 });
 
 test("accepts non-empty reports regardless of heading wording or order while preserving terminal and identity gates", () => {

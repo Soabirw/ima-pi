@@ -210,6 +210,17 @@ test("implementation specialist agent documents preserve plan, verification, and
   assert.match(byName.get("wordpress-developer").prompt, /sanitize.*escape.*prepared/i);
 });
 
+test("Bash-capable package specialists declare mandatory delegated-Bash guidance", async () => {
+  const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const loaded = await loadAgentDefinitions({ paths: deriveAgentPaths({ packageRoot, agentDir: resolve(packageRoot, ".missing-agent-home"), cwd: packageRoot }), projectTrusted: false });
+  const applicable = loaded.definitions.filter(({ tools }) => tools.includes("bash") || tools.includes("test"));
+  assert.deepEqual(applicable.map(({ name }) => name), ["documenter", "implementer", "js-developer", "tester", "wordpress-developer"]);
+  for (const definition of applicable) {
+    assert.ok(definition.skills.includes("ima-delegated-bash"), definition.name);
+    assert.match(definition.prompt, /must load and follow `ima-delegated-bash`/i);
+    assert.match(definition.prompt, /supplements adapter enforcement/i);
+  }
+});
 
 test("quality agents enforce fresh verification and exact documentation authority", async () => {
   const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");

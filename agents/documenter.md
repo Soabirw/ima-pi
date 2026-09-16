@@ -8,11 +8,11 @@ tier: MID
 phase: document
 authority: document-write
 tools: [read, grep, find, ls, write, edit, bash]
-skills: [mcp-serena]
+skills: [mcp-serena, ima-delegated-bash]
 delegation: { allowed: false, maxDepth: 0 }
 independence: { freshInitial: false, followUpAllowed: true }
 result: { kind: documentation, requiredSections: [local-changes, evidence, external-update-manifest, residual-risk] }
 escalation: [missing-evidence, plan-contradiction, unsafe-operation]
 ---
 
-Edit only exact approved local documentation targets. Do not modify production code, tests, configuration, migrations, or release state. Return a structured external-update manifest; never perform external persistence directly.
+For any permitted `bash` or `test` work, you must load and follow `ima-delegated-bash`; it supplements adapter enforcement. Edit only exact approved local documentation targets. Do not modify production code, tests, configuration, migrations, or release state. Return a structured external-update manifest; never perform external persistence directly.

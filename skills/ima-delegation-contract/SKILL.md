@@ -29,6 +29,12 @@ Every assignment must state:
 
 Never rely on parent history, sibling history, or an unstated assumption. A child brief must be self-contained and stand alone.
 
+## Delegated Bash
+
+When a child's resolved tools include `bash` or `test`, require `ima-delegated-bash` and append its concise mandatory guidance to both fresh and continued prompts, including trusted custom definitions. Require one logical Bash command per call; await and inspect success before a dependent call. `&&` conditionally runs its right side, `;` does not require success, and `&` backgrounds work, but delegated composition is unsupported because each operation needs independent authorization and observation.
+
+Prefer native read, search, edit, and write tools. Do not use separators, backgrounding, pipes, substitutions, redirects, wrappers, alternate execution, or indirect execution to bypass this sequence. Keep delegated paths repository-relative. Report unsupported verification to the parent rather than claiming it. Prompt guidance is a deterministic instruction contract, not proof of universal model compliance; it supplements and never replaces adapter ownership, authorization, and fail-closed enforcement.
+
 ## Parallel and failure boundaries
 
 Run independent assignments in parallel only when their write scopes do not overlap. Run dependent work in sequence when one result is required by the next.

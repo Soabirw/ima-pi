@@ -4,7 +4,7 @@ Pi-native IMA agent harness, packaged through Pi's standard Git/npm package mode
 
 ## Features
 
-- **59 packaged skills and 37 `/ima:*` prompt templates** for engineering, web, WordPress, IMA, MCP, research, and operational workflows.
+- **60 packaged skills and 37 `/ima:*` prompt templates** for engineering, web, WordPress, IMA, MCP, research, and operational workflows.
 - **Pi-native package resources**—prompts, skills, agents, extensions, policies, and configuration guidance—distributed through Pi's normal Git/npm package model.
 - **Memory-aware project work:** Pi's active global `AGENTS.md` carries current user preferences, Serena provides stable project context, Vestige retains only cited legacy evidence and T7 migration sources, and BookStack, Qdrant, Serena, and Markdown are the lifecycle authorities. None are bundled services.
 - **A guided development lifecycle with bounded autonomy:** use the manual phases or the explicit, user-gated `/ima:cycle`; autonomous progression requires an approved bounded, conflict-free, low-risk plan and verified evidence, and it stops at `document`.
@@ -153,6 +153,7 @@ Pi discovers these package skills directly:
 /skill:ruby-fp
 /skill:rg
 /skill:ima-git
+/skill:ima-delegated-bash
 /skill:gh-cli
 /skill:tea-gitea
 ```

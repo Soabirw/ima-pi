@@ -10,6 +10,24 @@ export type DelegationEvent = { type: "started" | "succeeded" | "failed" | "canc
 export type SessionRecord = { reference: string; agent: string; role: string; resultKind: string; provider: string; model: string; thinking?: string; sessionId: string; sessionFile: string; writeScope: string[]; contractFingerprint: string; status: "running" | "succeeded" | "failed" | "cancelled"; fresh: boolean; followUpAllowed: boolean; createdAt: string; updatedAt: string };
 export type BashClassification = { kind: "read-only" | "owned-mutation" | "unsafe-ambiguous"; paths: string[]; reason?: string };
 export type CompletionFailureCode = "assistant_missing" | "assistant_error" | "assistant_aborted" | "assistant_truncated" | "assistant_tool_use" | "assistant_not_terminal" | "report_empty" | "runtime_identity_missing" | "runtime_identity_mismatch" | "session_identity_missing" | "session_identity_mismatch";
+
+const delegatedBashTools = new Set(["bash", "test"]);
+
+export const DELEGATED_BASH_PROMPT_GUIDANCE = [
+  "Mandatory delegated-Bash guidance: use one logical command per call; await and inspect success before a dependent call.",
+  "`&&` runs its right side only after its left succeeds; `;` runs the next regardless; `&` backgrounds work. Delegated composition is unsupported because operations require independent authorization and observation.",
+  "Prefer native read/search/edit/write. Do not bypass with separators, backgrounding, pipes, substitutions, redirects, shell wrappers, or alternate/indirect execution.",
+  "Keep paths repository-relative. Report unsupported verification to the parent; never claim it. This supplements adapter enforcement.",
+].join(" ");
+
+export const requiresDelegatedBashGuidance = (tools: readonly string[]) =>
+  tools.some((tool) => delegatedBashTools.has(tool));
+
+export const composeDelegatedBashPrompt = (prompt: string, tools: readonly string[]) =>
+  requiresDelegatedBashGuidance(tools)
+    ? `${prompt}\n\n${DELEGATED_BASH_PROMPT_GUIDANCE}`
+    : prompt;
+
 const clean = (value: unknown) => typeof value === "string" ? value.trim() : value instanceof Error ? value.message.trim() : "";
 const invalidSegments = (path: string) => path.split("/").some((segment) => !segment || segment === "." || segment === "..");
 const safeRelative = (path: string) => !!path && path !== "." && path !== "/" && !path.startsWith("/") && !path.includes("\\") && !invalidSegments(path);
@@ -62,7 +80,7 @@ export function validateDelegationRequest(request: DelegationRequest, agents: Ag
 
 export function buildChildBrief(input: { projectRoot: string; assignment: DelegationAssignment; agent: AgentDefinition; images?: Array<{ id: string; sourceLabel: string; mimeType: string; byteLength: number }> }) {
   const { assignment, agent } = input;
-  return [
+  const brief = [
     `You are the ${agent.name} specialist.`, `Goal: ${assignment.goal}`, `Project root: ${input.projectRoot}`, `Relevant paths: ${assignment.paths.join(", ") || "none"}`, `Context and prior decisions: ${assignment.context}`,
     `Constraints: ${assignment.constraints.join("; ") || "none"}`, `Non-goals: ${assignment.nonGoals.join("; ") || "none"}`, `Expected output: ${assignment.expectedOutput}`,
     `Phase route: ${agent.phase ?? "tier-routed"}.`,
@@ -70,6 +88,7 @@ export function buildChildBrief(input: { projectRoot: string; assignment: Delega
     ...(input.images?.length ? [`Attached visual evidence only: ${input.images.map((image) => `${image.id} (${image.sourceLabel}, ${image.mimeType}, ${image.byteLength} bytes)`).join("; ")}. Analyze only those identities; report direct visual facts, exact legible text, uncertainty, and missing/ambiguous evidence. Do not include paths, bytes, or implementation decisions.`] : []),
     "Other work may run concurrently. Do not edit outside your ownership, rely on parent chat, or delegate further.", `Escalate: ${agent.escalation.join(", ")}.`, `Report sections: ${agent.result.requiredSections.join(", ")}.`, agent.prompt,
   ].join("\n\n");
+  return composeDelegatedBashPrompt(brief, deriveToolAuthority(agent));
 }
 
 type AgentRouteSelection = {

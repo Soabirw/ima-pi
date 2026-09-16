@@ -38,6 +38,11 @@ FNR-3020 reuses `explore` as the fast read-only exploration target. `explore` is
 
 The production tool remains authoritative for the actual assignment contract and routing. `implementer`, `js-developer`, and `wordpress-developer` use `implement`; `tester` uses `test`; `reviewer` uses `review`; and `document-assessor` plus `documenter` use `document`. Phase routing selects the configured phase mapping while `tier` remains the capability and authority boundary.
 
+## Delegated Bash
+
+`implementer`, `js-developer`, `wordpress-developer`, `tester`, and `documenter` declare `ima-delegated-bash`. Whenever a resolved definition—including a trusted custom definition—contains `bash` or `test`, fresh and focused-continuation prompts receive the same concise mandatory sequencing guidance. It requires one logical Bash command per call, independent observation before dependent work, repository-relative paths, native tools where possible, and reporting unsupported verification rather than claiming it.
+
+The deterministic prompt contract does not prove universal model compliance. Adapter ownership and fail-closed Bash enforcement remain authoritative; the guidance does not expand available tools or authorize separators, backgrounding, pipes, substitutions, redirects, wrappers, or indirect execution.
 
 ## Visual evidence
 

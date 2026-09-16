@@ -141,6 +141,45 @@ test("TEST-004 scoped tools preserve supported native paths and fail closed on u
   }
 });
 
+test("adapter denies composed delegated Bash before any command executes", async () => {
+  let executions = 0;
+  const tools = createScopedTools({
+    cwd: "/repo",
+    assignment: assignment("composed-bash"),
+    agent,
+    operations: {
+      bash: {
+        exec: async () => {
+          executions += 1;
+          return { exitCode: 0 };
+        },
+      },
+    },
+  });
+  const bash = tools.find((tool) => tool.name === "bash");
+  const nativeBashContext = {
+    sessionManager: {
+      getSessionId: () => "composed-bash-test",
+      getSessionFile: () => undefined,
+    },
+  };
+  const commands = [
+    "git status --short && git diff --check",
+    "git status --short; git diff --check",
+    "git status --short &",
+    "git status --short | cat",
+    "echo $(git status --short)",
+  ];
+
+  for (const [index, command] of commands.entries()) {
+    await assert.rejects(
+      bash.execute(`composed-bash-${index}`, { command }, undefined, undefined, nativeBashContext),
+      { message: "ownership_bash_denied:shell_composition" },
+    );
+  }
+  assert.equal(executions, 0);
+});
+
 test("uses Pi trust as authoritative and only falls back to the environment decision when unavailable", () => {
   assert.equal(resolveProjectTrust({ isProjectTrusted: () => true }, false), true);
   assert.equal(resolveProjectTrust({ isProjectTrusted: () => false }, true), false);

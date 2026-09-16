@@ -7,6 +7,7 @@ import {
   agentContractFingerprint,
   canResumeSession,
   classifyChildFailure,
+  composeDelegatedBashPrompt,
   createDelegationResult,
   decideRecovery,
   deriveToolAuthority,
@@ -449,7 +450,11 @@ export async function runFocusedAgentContinuation(input: FocusedContinuationInpu
         if (cancelled) {
           return createDelegationResult({ id: record.reference, status: "failed", attempts: attempt + 1, error: "cancelled", failure: "unsafe-partial-state", session: null });
         }
-        await session.prompt(input.brief, { expandPromptTemplates: false });
+        const prompt = composeDelegatedBashPrompt(
+          input.brief,
+          deriveToolAuthority(input.agent),
+        );
+        await session.prompt(prompt, { expandPromptTemplates: false });
         await session.waitForIdle();
         childSettled = true;
         if (cancelled && operationEvidence.hasPossibleMutation()) latchUnsafe();

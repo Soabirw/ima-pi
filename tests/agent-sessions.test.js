@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { createScopedTools, runFocusedContinuation } from "../extensions/agents.ts";
-import { agentContractFingerprint, canResumeSession } from "../lib/ima-delegation.ts";
+import { DELEGATED_BASH_PROMPT_GUIDANCE, agentContractFingerprint, canResumeSession } from "../lib/ima-delegation.ts";
 
 const agent = {
   schemaVersion: 1, name: "implementer", description: "Implement", tier: "MID", authority: "write",
@@ -105,6 +105,25 @@ test("reopens exact persisted session, executes focused brief, validates identit
   assert.equal(run.store.get("a").updatedAt, "new");
   assert.equal(run.fake.state.disposes, 1);
   assert.equal(run.fake.state.unsubscribes, 1);
+});
+
+test("adds mandatory delegated-Bash guidance to focused continuations with Bash or test tools", async () => {
+  const cases = [
+    { name: "Bash", tools: ["read", "bash"] },
+    { name: "test-only", tools: ["test"] },
+  ];
+  for (const scenario of cases) {
+    const definition = { ...agent, tools: scenario.tools };
+    const record = makeRecord();
+    record.contractFingerprint = agentContractFingerprint(definition, record.writeScope);
+    const run = continuation({ record, definition });
+    assert.equal((await run.promise).status, "succeeded", scenario.name);
+    assert.deepEqual(
+      run.fake.state.prompts,
+      [`Fix the retained finding\n\n${DELEGATED_BASH_PROMPT_GUIDANCE}`],
+      scenario.name,
+    );
+  }
 });
 
 test("refuses fingerprint drift, non-succeeded status, missing file, and unavailable model before session side effects", async () => {
