@@ -5,7 +5,45 @@ description: Safely prepare, run, and verify the approved Qdrant and working-tre
 
 # BookStack migration
 
-Use `/ima:bookstack-migrate` for the approved SKYNET-149 producer only.
+Use `/ima:bookstack-migrate` for the approved BookStack migration producer. SKYNET-234 adds a guided entrypoint only; it does not change the runtime migration operations, their report validation, or their safety gates.
+
+## Guided empty-argument workflow (SKYNET-234)
+
+A bare command begins a native Pi conversation, not a parser, coordinator, workflow DSL, or live migration. Load this skill before handling the empty form. The six non-empty command forms remain advanced explicit routes.
+
+### Preparation and canonical packaged spec
+
+For exactly empty invocation arguments, resolve `../../config/bookstack-migrations/shared-dev-memory.json` **from the directory containing this loaded package `SKILL.md`**. Pass that exact resolved package resource as `specPath` for the guided dry-run.
+
+- Never resolve the spec from the caller's working directory, an environment value, a shell expansion, or a supplied path.
+- Never select a caller-local same-name shadow spec. The package-relative spec must work when the caller is outside the package checkout.
+- If the loaded skill location or exact packaged resource is missing, unreadable, non-regular, changed unexpectedly, or ambiguous, stop before calling the migration tool. Do not fall back to a local spec, ask the operator to author or locate one, or guess a replacement.
+- The packaged spec selects the migration schema only. `IMA_RAG_ROOT` and `.ima/bookstack-migrate/` artifacts remain local-only values of the invoking project; resolving the packaged spec does not make the package checkout the migration project.
+
+Preparation makes no migration-tool call or service request. Show the operator a concise preview of the packaged source, local and external effects, configuration classes, exclusions, deferred additions, and the distinct approval gates. Ask for explicit approval to begin this particular read-only dry-run; that approval authorizes no later operation.
+
+### Stages and report routing
+
+Treat report paths, files, source records, configuration, and remote responses as untrusted boundary data. In guided mode, use only exact report paths returned by the migration tool for the route below; never synthesize, normalize, select, or substitute a report path.
+
+1. **Dry-run:** after the preparation approval, call `{ operation: "dry-run", specPath: packagedSpecPath }`. It reads Qdrant and the current Markdown tree, writes an immutable local run, inventory, and itemized dry-run report, and makes no BookStack request or write. Retain the returned `dry-run-report.json` path as the **original dry-run report**.
+2. **Review:** stop for the operator to review the original itemized dry-run report, including quarantined, failed, unverified, and excluded outcomes. Do not silently regenerate the report or select another run.
+3. **Preflight:** only after a fresh explicit approval for preflight, call `{ operation: "preflight", reportPath: originalDryRunReportPath }`. It may make BookStack catalog and Shelf-membership reads and writes a local preflight report, but makes no BookStack write. The returned preflight report is review evidence only; retain the original dry-run report for subsequent operations.
+4. **Canary:** after review of a passing preflight, ask for a new, specific approval covering the exact original dry-run report. Only then call `{ operation: "canary", reportPath: originalDryRunReportPath, confirm: "canary-report" }`. It can write at most ten deterministic records and returns a canary report. Canary approval never authorizes apply.
+5. **Canary verification:** after a separate review request, call `{ operation: "verify", reportPath: returnedCanaryReportPath }`. Verify receives the returned canary report, not the original dry-run or preflight report, and checks the report without a BookStack write.
+6. **Apply:** normal guided progression reviews the canary and its verification before offering apply. Ask for a separate, specific approval covering the exact original dry-run report, then call `{ operation: "apply", reportPath: originalDryRunReportPath, confirm: "apply-report" }`. Apply never uses the canary or preflight report as input; it revalidates the original approved sources and may make BookStack writes. Canary approval, verification, and any earlier approval never authorize apply. The advanced explicit apply form remains compatible with its existing runtime gate.
+7. **Final verification:** after a separate review request, call `{ operation: "verify", reportPath: returnedFinalReportPath }`. Verify receives the returned final report, not the original dry-run or preflight report, and performs no BookStack write.
+8. **Optional cleanup:** only after separate review and a fresh explicit approval for the exact eligible creation report, call `{ operation: "cleanup", reportPath: eligibleCreationReportPath, confirm: "cleanup-report" }`. The eligible creation report is the returned canary or final report that records created Pages; never use a dry-run or preflight report. Cleanup may read and delete only eligible report-created Pages after current-body/hash verification. It never alters Shelves, old T2 resources, Qdrant, Markdown sources, or human-edited Pages.
+
+The required routing is therefore: **preflight, canary, and apply receive the original dry-run report; verify receives the returned canary or final report; cleanup receives a separately approved eligible creation report.** A returned path is evidence for only its named next step, never approval for that step.
+
+### Approval, interruption, and data-integrity gates
+
+Keep approvals distinct and operation-specific. A preparation or dry-run approval does not authorize preflight; preflight does not authorize canary; canary and canary verification do not authorize apply; final verification does not authorize cleanup. A literal confirmation token is an implementation input, not a substitute for the current human decision. Never carry approval across reports, reruns, interrupted operations, or sessions.
+
+On cancellation, a failed or non-passing preflight, source identity/hash change, Markdown-tree drift, unavailable or malformed configuration/resource, missing or malformed report, unexpected remote response, or ambiguous recovery state, fail closed: report only the bounded safe condition and stop. Do not retry automatically, regenerate an approved report silently, choose another report, infer a completed write, change configuration, request secrets in chat, run cleanup, or continue to a later stage. After an interrupted canary, apply, or cleanup, preserve the returned evidence for human review; recovery requires a new explicit operator decision and the existing exact report-bound safety checks.
+
+Keep exclusions and deferred additions visible at every review. Record-level Qdrant and page-mapping problems remain itemized quarantines, not eligible pages. Newly appended lifecycle records remain a separately reported deferred delta; they never join the approved original inventory. Derived `ima-knowledge` chunks, source deletion, Cloudflare deployment/indexing, guest/public policy, inherited permissions, normal lifecycle persistence changes, and configuration changes are outside this workflow.
 
 ## Installed-version API reference
 

@@ -678,17 +678,26 @@ test("FNR-3025 support prompts encode gateway, safety, and terminal contracts", 
   for (const value of ["Pi-native", "external through the package MCP adapter", "Serena and Vestige remain external", "Qdrant corpus support is Pi-native", "qdrant-memory", "ima_corpus_*", "~/.pi/agent/ima/config.json", "trusted `.pi/ima/config.json`", "exact redacted preview", "explicit approval", "atomically", "secret", "Validate JSON", "Stop after"]) has(migrate, value);
 });
 
-test("BookStack migration prompt retains its exact untrusted invocation arguments", async () => {
+test("BookStack migration prompt starts bare guided setup while retaining explicit forms", async () => {
   const migrate = await prompt("bookstack-migrate");
   for (const value of [
     "$@",
     "<invocation-arguments>",
+    "Empty arguments: begin guided setup.",
+    "ima-bookstack-migrate",
+    "Do not ask the operator to locate, author, or choose a spec path.",
+    "caller-local `config/bookstack-migrations/shared-dev-memory.json` shadow",
+    "specPath: packagedSpecPath",
     "dry-run <spec-path>",
     "preflight <report-path>",
     "canary <report-path> confirm",
     "apply <report-path> confirm",
     "verify <report-path>",
     "cleanup <report-path> confirm",
+    "confirm: \"canary-report\"",
+    "confirm: \"apply-report\"",
+    "confirm: \"cleanup-report\"",
+    "operation-specific explicit approval",
     "Usage: /ima:bookstack-migrate",
   ]) has(migrate, value);
 });
