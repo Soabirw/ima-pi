@@ -32,6 +32,283 @@ export type BookStackClientInput = {
   fetch?: typeof globalThis.fetch;
   signal?: AbortSignal;
   timeoutMs?: number;
+  requestIntervalMs?: number;
+  now?: () => number;
+  wait?: (milliseconds: number, signal?: AbortSignal) => Promise<void> | void;
+};
+
+type BookStackWait = NonNullable<BookStackClientInput["wait"]>;
+type ScheduledRequest = {
+  issue: (markStarted: () => void) => Promise<Response>;
+  resolve: (response: Response | PromiseLike<Response>) => void;
+  reject: (error: Error) => void;
+  queued: boolean;
+  detachAbort: () => void;
+};
+
+const DEFAULT_REQUEST_INTERVAL_MS = 1_100;
+const MAX_REQUEST_INTERVAL_MS = 120_000;
+const MAX_EARLY_WAKES = 100;
+
+const transportFailure = () => new Error("bookstack_transport_failed");
+
+const defaultWait: BookStackWait = (milliseconds, signal) => new Promise<void>((resolve, reject) => {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let settled = false;
+  let onAbort: () => void = () => undefined;
+  const finish = (callback: () => void) => {
+    if (settled) return;
+    settled = true;
+    if (timer !== null) clearTimeout(timer);
+    try {
+      signal?.removeEventListener("abort", onAbort);
+    } catch {
+      // The caller will fail closed if an injected signal is unusable.
+    }
+    callback();
+  };
+  onAbort = () => finish(() => reject(transportFailure()));
+  try {
+    signal?.addEventListener("abort", onAbort, { once: true });
+  } catch {
+    finish(() => reject(transportFailure()));
+    return;
+  }
+  if (signal?.aborted) {
+    onAbort();
+    return;
+  }
+  try {
+    timer = setTimeout(() => finish(() => resolve()), milliseconds);
+  } catch {
+    finish(() => reject(transportFailure()));
+  }
+});
+
+const validRequestInterval = (value: unknown) => {
+  const intervalMs = value === undefined ? DEFAULT_REQUEST_INTERVAL_MS : value;
+  if (typeof intervalMs !== "number" || !Number.isSafeInteger(intervalMs)
+    || intervalMs <= 0 || intervalMs > MAX_REQUEST_INTERVAL_MS) {
+    throw new Error("bookstack_pacing_invalid");
+  }
+  return intervalMs;
+};
+
+const validNow = (value: unknown): (() => number) => {
+  const performanceNow = globalThis.performance?.now;
+  const now = value === undefined
+    ? typeof performanceNow === "function" ? performanceNow.bind(globalThis.performance) : null
+    : value;
+  if (typeof now !== "function") throw new Error("bookstack_pacing_invalid");
+  return now as () => number;
+};
+
+const validWait = (value: unknown): BookStackWait => {
+  const wait = value === undefined ? defaultWait : value;
+  if (typeof wait !== "function") throw new Error("bookstack_pacing_invalid");
+  return wait as BookStackWait;
+};
+
+const validAbortSignal = (value: unknown): AbortSignal | undefined => {
+  if (value === undefined) return undefined;
+  try {
+    if (!value || typeof value !== "object") throw new Error();
+    const signal = value as AbortSignal;
+    if (typeof signal.aborted !== "boolean"
+      || typeof signal.addEventListener !== "function"
+      || typeof signal.removeEventListener !== "function") {
+      throw new Error();
+    }
+    return signal;
+  } catch {
+    throw new Error("bookstack_pacing_invalid");
+  }
+};
+
+const createRequestStartSchedule = (input: {
+  intervalMs: number;
+  now: () => number;
+  wait: BookStackWait;
+  signal?: AbortSignal;
+}) => {
+  const pending: ScheduledRequest[] = [];
+  const signal = input.signal;
+  let draining = false;
+  let scheduleFailed = false;
+  let lastStartedAt: number | null = null;
+  let lastObservedAt: number | null = null;
+
+  const checkCancellation = () => {
+    if (signal?.aborted) throw transportFailure();
+  };
+
+  const observeNow = () => {
+    let observed: unknown;
+    try {
+      observed = input.now();
+    } catch {
+      throw transportFailure();
+    }
+    if (typeof observed !== "number" || !Number.isFinite(observed) || observed < 0
+      || (lastObservedAt !== null && observed < lastObservedAt)) {
+      throw transportFailure();
+    }
+    lastObservedAt = observed;
+    return observed;
+  };
+
+  const waitForDelay = async (delayMs: number) => {
+    if (!Number.isFinite(delayMs) || delayMs <= 0) {
+      if (delayMs === 0) return;
+      throw transportFailure();
+    }
+    checkCancellation();
+    const pendingWait = Promise.resolve().then(() => {
+      checkCancellation();
+      return input.wait(delayMs, signal);
+    });
+    if (!signal) {
+      try {
+        await pendingWait;
+      } catch {
+        throw transportFailure();
+      }
+      return;
+    }
+
+    let rejectAbort: ((reason?: unknown) => void) | undefined;
+    const onAbort = () => rejectAbort?.(transportFailure());
+    const aborted = new Promise<never>((_resolve, reject) => {
+      rejectAbort = reject;
+    });
+    try {
+      signal.addEventListener("abort", onAbort, { once: true });
+      if (signal.aborted) onAbort();
+      await Promise.race([pendingWait, aborted]);
+    } catch {
+      throw transportFailure();
+    } finally {
+      try {
+        signal.removeEventListener("abort", onAbort);
+      } catch {
+        // The caller will fail closed if an injected signal is unusable.
+      }
+    }
+    checkCancellation();
+  };
+
+  const waitForDueStart = async () => {
+    let earlyWakes = 0;
+    if (scheduleFailed) throw transportFailure();
+    if (lastStartedAt === null) return;
+    for (;;) {
+      checkCancellation();
+      const observed = observeNow();
+      const elapsed = observed - lastStartedAt;
+      const delayMs = input.intervalMs - elapsed;
+      if (!Number.isFinite(elapsed) || elapsed < 0 || !Number.isFinite(delayMs)) {
+        throw transportFailure();
+      }
+      if (delayMs <= 0) return;
+      if (earlyWakes >= MAX_EARLY_WAKES) throw transportFailure();
+      earlyWakes += 1;
+      await waitForDelay(delayMs);
+      checkCancellation();
+    }
+  };
+
+  const recordRequestStart = () => {
+    checkCancellation();
+    const startedAt = observeNow();
+    if (lastStartedAt !== null) {
+      const elapsed = startedAt - lastStartedAt;
+      if (!Number.isFinite(elapsed) || elapsed < input.intervalMs) throw transportFailure();
+    }
+    lastStartedAt = startedAt;
+  };
+
+  const drain = async (): Promise<void> => {
+    if (draining) return;
+    draining = true;
+    try {
+      while (pending.length > 0) {
+        const entry = pending.shift();
+        if (!entry) continue;
+        entry.queued = false;
+        try {
+          await waitForDueStart();
+          checkCancellation();
+        } catch {
+          if (!signal?.aborted) scheduleFailed = true;
+          entry.reject(transportFailure());
+          entry.detachAbort();
+          continue;
+        }
+        let requestStarted = false;
+        try {
+          const response = entry.issue(() => {
+            recordRequestStart();
+            requestStarted = true;
+          });
+          if (!requestStarted) throw transportFailure();
+          entry.resolve(response);
+        } catch {
+          if (!requestStarted && !signal?.aborted) scheduleFailed = true;
+          entry.reject(transportFailure());
+        }
+        entry.detachAbort();
+      }
+    } finally {
+      draining = false;
+      if (pending.length > 0) void drain();
+    }
+  };
+
+  return (issue: (markStarted: () => void) => Promise<Response>) => {
+    if (scheduleFailed || signal?.aborted) return Promise.reject(transportFailure());
+    return new Promise<Response>((resolve, reject) => {
+      const entry: ScheduledRequest = {
+        issue,
+        resolve,
+        reject,
+        queued: false,
+        detachAbort: () => undefined,
+      };
+      const onAbort = () => {
+        if (!entry.queued) return;
+        const index = pending.indexOf(entry);
+        if (index < 0) return;
+        pending.splice(index, 1);
+        entry.queued = false;
+        entry.detachAbort();
+        reject(transportFailure());
+      };
+      if (signal) {
+        entry.detachAbort = () => {
+          try {
+            signal.removeEventListener("abort", onAbort);
+          } catch {
+            // The caller will fail closed if an injected signal is unusable.
+          }
+        };
+        try {
+          signal.addEventListener("abort", onAbort, { once: true });
+          if (signal.aborted) {
+            entry.detachAbort();
+            reject(transportFailure());
+            return;
+          }
+        } catch {
+          entry.detachAbort();
+          reject(transportFailure());
+          return;
+        }
+      }
+      entry.queued = true;
+      pending.push(entry);
+      void drain();
+    });
+  };
 };
 
 export type BookStackClient = ReturnType<typeof createBookStackClient>;
@@ -46,22 +323,37 @@ export function createBookStackClient(input: BookStackClientInput) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120_000) {
     throw new Error("bookstack_timeout_invalid");
   }
+  const signal = validAbortSignal(input.signal);
+  const scheduleRequestStart = createRequestStartSchedule({
+    intervalMs: validRequestInterval(input.requestIntervalMs),
+    now: validNow(input.now),
+    wait: validWait(input.wait),
+    signal,
+  });
   const request = async (path: string, options: RequestInit = {}, expectJson = true) => {
     let response: Response;
-    const requestSignal = input.signal
-      ? AbortSignal.any([input.signal, AbortSignal.timeout(timeoutMs)])
-      : AbortSignal.timeout(timeoutMs);
     try {
-      response = await fetcher(new URL(`/api/${path.replace(/^\//, "")}`, `${origin}/`), {
-        ...options,
-        redirect: "error",
-        signal: options.signal ?? requestSignal,
-        headers: {
-          accept: "application/json",
-          authorization: `Token ${input.tokenId}:${input.tokenSecret}`,
-          ...(options.body ? { "content-type": "application/json" } : {}),
-          ...(options.headers ?? {}),
-        },
+      response = await scheduleRequestStart((markStarted) => {
+        if (signal?.aborted) throw transportFailure();
+        const requestSignal = signal
+          ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
+          : AbortSignal.timeout(timeoutMs);
+        const url = new URL(`/api/${path.replace(/^\//, "")}`, `${origin}/`);
+        const requestOptions: RequestInit = {
+          ...options,
+          redirect: "error" as const,
+          signal: options.signal ?? requestSignal,
+          headers: {
+            accept: "application/json",
+            authorization: `Token ${input.tokenId}:${input.tokenSecret}`,
+            ...(options.body ? { "content-type": "application/json" } : {}),
+            ...(options.headers ?? {}),
+          },
+        };
+        if (signal?.aborted) throw transportFailure();
+        markStarted();
+        if (signal?.aborted) throw transportFailure();
+        return fetcher(url, requestOptions);
       });
     } catch {
       throw new Error("bookstack_transport_failed");

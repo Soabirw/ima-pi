@@ -116,7 +116,7 @@ export function registerBookStackMigrateTools(pi: Pick<ExtensionAPI, "registerTo
         }
         if (request.operation === "cleanup") {
           if (request.confirm !== "cleanup-report") throw new Error("cleanup_confirmation_required");
-          const result = await cleanupBookStackMigration({ projectRoot: ctx.cwd, reportPath, bookStack });
+          const result = await cleanupBookStackMigration({ projectRoot: ctx.cwd, reportPath, bookStack, signal });
           return resultText({ deletedPageIds: result.deleted });
         }
         if (request.confirm !== "apply-report") throw new Error("apply_confirmation_required");

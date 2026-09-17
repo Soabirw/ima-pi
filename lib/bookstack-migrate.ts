@@ -302,6 +302,7 @@ export async function cleanupBookStackMigration(input: {
   projectRoot: string;
   reportPath: string;
   bookStack: MigrationClientInput;
+  signal?: AbortSignal;
 }) {
   const report = parseBookStackMigrationReport(parseJson(
     await readProjectArtifact(input.projectRoot, input.reportPath),
@@ -312,7 +313,13 @@ export async function cleanupBookStackMigration(input: {
   if (runDirectory === input.reportPath) throw new Error("migration_report_path_invalid");
   const inventory = await readBookStackInventory(input.projectRoot, `${runDirectory}/inventory.json`);
   const bySourceId = new Map(inventory.map((page) => [page.sourceId, page]));
-  const client = createBookStackClient(input.bookStack);
+  const cleanupSignal = input.signal && input.bookStack.signal
+    ? AbortSignal.any([input.signal, input.bookStack.signal])
+    : input.signal ?? input.bookStack.signal;
+  const client = createBookStackClient({
+    ...input.bookStack,
+    signal: cleanupSignal,
+  });
   const deleted: number[] = [];
   for (const outcome of report.outcomes) {
     if (outcome.status !== "created" || outcome.targetId === undefined) continue;

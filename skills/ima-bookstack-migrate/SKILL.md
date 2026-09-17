@@ -19,9 +19,19 @@ Before changing BookStack request or response handling, consult the sanitized lo
 
 Configuration classification:
 
-- **Non-secret variables:** `IMA_QDRANT_URL`, primary `BOOKSTACK_BASE_URL`, and backward-compatible `BOOKSTACK_ORIGIN` alias. Conflicting BookStack URL values fail closed.
+- **Non-secret variables:** `IMA_QDRANT_URL`; BookStack origin through primary `BOOKSTACK_BASE_URL` or backward-compatible `BOOKSTACK_ORIGIN`; and direct client inputs `requestIntervalMs` and `timeoutMs`. Conflicting BookStack URL values fail closed. `requestIntervalMs` defaults to `1,100` ms and must be a positive safe integer no greater than `120,000` ms. `timeoutMs` defaults to `30,000` ms and must be a safe integer from `1` through `120,000` ms. The registered migration tool does not map either client input from an environment variable.
 - **Secrets:** `BOOKSTACK_TOKEN_ID`, `BOOKSTACK_TOKEN_SECRET`; keep them outside Git, reports, and chat.
-- **Platform binding:** `SYNC_COORDINATOR` belongs to the Worker session, not this tool.
-- **Local-only values:** `IMA_RAG_ROOT`, `.ima/bookstack-migrate/` report paths, and inventory manifests/parts.
+- **Platform binding:** none introduced by this migration tool; `SYNC_COORDINATOR` remains a Worker-session binding outside it.
+- **Local-only values:** `IMA_RAG_ROOT`, migration report paths, inventory manifests/parts, and migration locks under `.ima/bookstack-migrate/`.
+
+## Request pacing and operational limits
+
+Each `createBookStackClient` owns one FIFO request-start schedule. The first admitted request starts immediately; later starts default to at least `1,100` ms after the previous start, and idle time does not accumulate burst credits. Concurrent callers of the same client share that schedule. Every client request path shares it, including paginated lists and catalog reads, Shelf reads and writes, page/chapter/book writes, post-write read-backs, and cleanup reads/deletes.
+
+The `1,100` ms default is an operator-selected provisional starting policy inspired by Plane. It is not evidence of an unknown BookStack or proxy quota and does not guarantee avoidance of HTTP `429`. Scheduling is per client only: it does not coordinate independent client instances, processes, migration runs, or unrelated BookStack traffic. For a request count of `n`, minimum pacing alone is approximately `(n - 1) × 1.1 seconds`, plus processing and network time.
+
+The scheduler uses monotonic `performance.now()` by default and supports an injectable clock, strictly positive interval, and abort-aware wait. Timing faults, unsuccessful waits, and cancellation fail closed. Cancellation is checked before admission, after waits, and immediately before fetch; each network timeout starts when its request is issued, not while queued. Cleanup composes its operation and client cancellation signals.
+
+An unexpected HTTP `429` fails closed. During apply, it records the failure and trips the existing systemic-failure breaker for remaining pages; there is no retry or automatic interval adjustment. The synthetic 1,566-page model (all unchanged, zero writes, zero synthetic-quota violations, 1,575 starts) is test-only evidence, not a verified deployed quota or a live migration.
 
 Never import the derived `ima-knowledge` chunks. Eligible current Markdown files under `IMA_RAG_ROOT` are the source regardless of Git status; immutable inventory hashes and repeat enumeration reject source drift. Apply uses one bounded target catalog, preserves and deduplicates Shelf membership updates, records recoverable item conflicts, and stops further writes after systemic authorization, rate-limit, transport, server, or response failures. Guest/public policy and inherited content permissions are operator-owned environment configuration and are not inspected or changed by the migrator. Never delete Qdrant or working-tree Markdown source material. Separately confirmed, report-bound cleanup may delete only BookStack Pages created by a final or canary report after inventory/hash and current-body verification.
