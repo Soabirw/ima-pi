@@ -100,6 +100,14 @@ const expectedResource = (value: unknown, id?: number) => {
   return resource;
 };
 
+const hasStrictlyAscendingPositiveIds = (
+  resources: BookStackResource[],
+  previousId: number,
+) => resources.every((resource, index) =>
+  positiveId(resource.id)
+    && resource.id > (index === 0 ? previousId : resources[index - 1].id),
+);
+
 export type BookStackLifecycleClientInput = BookStackHttpClientInput;
 
 export const createBookStackLifecycleClient = (input: BookStackLifecycleClientInput) => {
@@ -107,22 +115,33 @@ export const createBookStackLifecycleClient = (input: BookStackLifecycleClientIn
   const list = async (resource: "shelves" | "books" | "chapters" | "pages") => {
     const entries: BookStackResource[] = [];
     let expectedTotal: number | null = null;
+    let previousId = 0;
     for (let offset = 0; ; offset += PAGE_SIZE) {
       const response = object(await http.request(resource, {}, new URLSearchParams({
         count: String(PAGE_SIZE),
         offset: String(offset),
+        sort: "+id",
       })));
       const total = response?.total;
       if (!Number.isSafeInteger(total) || Number(total) < 0 || Number(total) > MAX_LIST_ENTRIES) {
         throw new Error("bookstack_pagination_invalid");
       }
-      if (expectedTotal === null) expectedTotal = Number(total);
-      if (Number(total) !== expectedTotal || !Array.isArray(response?.data) || response.data.length > PAGE_SIZE) {
+      const currentTotal = Number(total);
+      if (expectedTotal !== null && currentTotal < expectedTotal) {
+        throw new Error("bookstack_pagination_invalid");
+      }
+      expectedTotal = currentTotal;
+      if (!Array.isArray(response?.data) || response.data.length > PAGE_SIZE) {
         throw new Error("bookstack_pagination_invalid");
       }
       const page = response.data.map((entry) => parseResource(entry, resource === "pages"));
       if (page.some((entry) => entry === null)) throw new Error("bookstack_response_invalid");
-      entries.push(...page as BookStackResource[]);
+      const resources = page as BookStackResource[];
+      if (!hasStrictlyAscendingPositiveIds(resources, previousId)) {
+        throw new Error("bookstack_pagination_invalid");
+      }
+      entries.push(...resources);
+      previousId = resources.at(-1)?.id ?? previousId;
       if (new Set(entries.map((entry) => entry.id)).size !== entries.length || entries.length > expectedTotal) {
         throw new Error("bookstack_pagination_invalid");
       }

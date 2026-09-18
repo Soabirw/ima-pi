@@ -282,6 +282,15 @@ test("ordinary persistence treats target-named noncanonical drafts as conflicts"
   }
 });
 
+test("failed page discovery does not issue a lifecycle-page POST", async () => {
+  const fake = createClient();
+  fake.listPages = async () => { throw new Error("bookstack_pagination_invalid"); };
+  const result = await createBookStackLifecycleProvider({ client: fake }).persist({ request, placement });
+  assert.equal(result.status, "blocked");
+  assert.equal(result.code, "bookstack_pagination_invalid");
+  assert.equal(fake.creates(), 0);
+});
+
 test("same-attempt recovery preserves empty-slug discovery entries and cannot repeat a checkpointed POST", async () => {
   const fake = createClient({ origin: "https://BOOKSTACK.example/" });
   const listPages = fake.listPages;

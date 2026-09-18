@@ -33,7 +33,7 @@ test("client uses bounded paths and verifies ordered shelf membership", async ()
   });
   assert.equal((await client.listShelves())[0].slug, "lifecycle-artifacts");
   await client.replaceShelfBooks({ shelfId: 1, shelfName: "Lifecycle", expectedBooks: [2, 3] });
-  assert.match(calls[0].url, /\/api\/shelves\?count=500&offset=0$/);
+  assert.match(calls[0].url, /\/api\/shelves\?count=500&offset=0&sort=%2Bid$/);
   assert.equal(calls[0].options.redirect, "error");
   assert.equal(calls[0].options.headers.authorization, "Token id:secret");
   assert.deepEqual(shelfBooks, [2, 3]);
@@ -126,17 +126,48 @@ test("non-page lists reject empty slugs at nonzero indexes and later pagination"
   }
 });
 
-test("pagination requires one stable exact total and rejects incomplete authority", async () => {
+test("pagination rejects incomplete, malformed, shrinking, and unordered authority", async () => {
+  const batch = (firstId = 1) => Array.from(
+    { length: 500 },
+    (_, index) => resource({ id: firstId + index }),
+  );
   const cases = [
     { name: "missing total", pages: [{ data: [] }] },
     { name: "premature short page", pages: [{ data: [resource()], total: 2 }] },
     { name: "total overflow", pages: [{ data: [], total: 10_001 }] },
     { name: "oversized batch", pages: [{ data: Array.from({ length: 501 }, (_, index) => resource({ id: index + 1 })), total: 501 }] },
-    { name: "duplicate ids", pages: [{ data: [resource(), resource()], total: 2 }] },
     {
-      name: "changing total",
+      name: "malformed resource",
+      pages: [{ data: [resource({ id: 0 })], total: 1 }],
+      expectedError: /bookstack_response_invalid/,
+    },
+    { name: "duplicate IDs", pages: [{ data: [resource(), resource()], total: 2 }] },
+    { name: "descending IDs in one batch", pages: [{ data: [resource({ id: 2 }), resource({ id: 1 })], total: 2 }] },
+    {
+      name: "overlapping IDs across batches",
       pages: [
-        { data: Array.from({ length: 500 }, (_, index) => resource({ id: index + 1 })), total: 501 },
+        { data: batch(), total: 502 },
+        { data: [resource({ id: 500 }), resource({ id: 502 })], total: 502 },
+      ],
+    },
+    {
+      name: "reordered IDs across batches",
+      pages: [
+        { data: batch(2), total: 502 },
+        { data: [resource({ id: 1 }), resource({ id: 502 })], total: 502 },
+      ],
+    },
+    {
+      name: "incomplete page after growth",
+      pages: [
+        { data: batch(), total: 501 },
+        { data: [resource({ id: 501 })], total: 502 },
+      ],
+    },
+    {
+      name: "shrinking total",
+      pages: [
+        { data: batch(), total: 501 },
         { data: [resource({ id: 501 })], total: 500 },
       ],
     },
@@ -144,8 +175,54 @@ test("pagination requires one stable exact total and rejects incomplete authorit
   for (const scenario of cases) {
     let call = 0;
     const client = clientWith(async () => json(scenario.pages[call++] ?? scenario.pages.at(-1)));
-    await assert.rejects(client.listBooks(), /bookstack_pagination_invalid/, scenario.name);
+    await assert.rejects(
+      client.listBooks(),
+      scenario.expectedError ?? /bookstack_pagination_invalid/,
+      scenario.name,
+    );
   }
+});
+
+test("pagination accepts concurrent append-only growth under explicit ID ordering", async () => {
+  const offsets = [];
+  const client = clientWith(async (url) => {
+    const parsed = new URL(url);
+    const offset = Number(parsed.searchParams.get("offset"));
+    offsets.push(offset);
+    assert.equal(parsed.searchParams.get("sort"), "+id");
+    return json(offset === 0
+      ? {
+        data: Array.from({ length: 500 }, (_, index) => resource({ id: index + 1 })),
+        total: 501,
+      }
+      : {
+        data: [resource({ id: 501 }), resource({ id: 502 })],
+        total: 502,
+      });
+  });
+  assert.equal((await client.listPages()).length, 502);
+  assert.deepEqual(offsets, [0, 500]);
+});
+
+test("pagination accepts strictly ascending ID gaps across batches", async () => {
+  const offsets = [];
+  const client = clientWith(async (url) => {
+    const offset = Number(new URL(url).searchParams.get("offset"));
+    offsets.push(offset);
+    return json(offset === 0
+      ? {
+        data: Array.from({ length: 500 }, (_, index) => resource({ id: index + 1 })),
+        total: 502,
+      }
+      : {
+        data: [resource({ id: 502 }), resource({ id: 1_000 })],
+        total: 502,
+      });
+  });
+  const pages = await client.listBooks();
+  assert.equal(pages.length, 502);
+  assert.deepEqual(pages.slice(-2).map((page) => page.id), [502, 1_000]);
+  assert.deepEqual(offsets, [0, 500]);
 });
 
 test("pagination accepts exact 500-entry and 10,000-entry boundaries", async () => {
