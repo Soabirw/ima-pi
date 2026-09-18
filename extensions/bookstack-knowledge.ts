@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
+  MAX_BOOKSTACK_PAGE_URL_BYTES,
   buildFrontmatterEnvelope,
   detectUpdateConflict,
   parseSourceId,
@@ -45,8 +46,21 @@ const searchParameters = Type.Object({
 }, { additionalProperties: false });
 
 const readParameters = Type.Object({
-  sourceId: Type.String({ minLength: 1, maxLength: 128 }),
-}, { additionalProperties: false });
+  sourceId: Type.Optional(Type.String({
+    minLength: 1,
+    maxLength: 128,
+    description: "BookStack source ID; mutually exclusive with url.",
+  })),
+  url: Type.Optional(Type.String({
+    minLength: 1,
+    maxLength: MAX_BOOKSTACK_PAGE_URL_BYTES,
+    description: "Configured BookStack book/page URL; mutually exclusive with sourceId.",
+  })),
+}, {
+  additionalProperties: false,
+  minProperties: 1,
+  maxProperties: 1,
+});
 
 const writeParameters = Type.Object({
   corpus: Type.Union([Type.Literal("lifecycle"), Type.Literal("ima-knowledge")]),
@@ -64,6 +78,23 @@ const resultText = (value: unknown) => ({
   content: [{ type: "text" as const, text: JSON.stringify(value) }],
   details: value,
 });
+
+type ReadTarget =
+  | { kind: "source"; value: unknown }
+  | { kind: "url"; value: unknown };
+
+const readTarget = (value: unknown): ReadTarget => {
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).length !== 1) {
+    throw new Error("bookstack_read_input_invalid");
+  }
+  const request = value as Record<string, unknown>;
+  const hasSourceId = Object.hasOwn(request, "sourceId");
+  const hasUrl = Object.hasOwn(request, "url");
+  if (hasSourceId === hasUrl) throw new Error("bookstack_read_input_invalid");
+  return hasSourceId
+    ? { kind: "source", value: request.sourceId }
+    : { kind: "url", value: request.url };
+};
 
 const stableFailure = (error: unknown): never => {
   const code = error instanceof Error && /^[a-z][a-z0-9_]*$/.test(error.message)
@@ -159,13 +190,16 @@ export function registerBookStackKnowledgeTools(
   pi.registerTool({
     name: "ima_bookstack_read",
     label: "Read authoritative BookStack page",
-    description: "Read an authoritative current BookStack page by its shared-memory source ID and return bounded content with provenance.",
+    description: "Read an authoritative current BookStack page by its shared-memory source ID or configured book/page URL and return bounded content with provenance.",
     parameters: readParameters,
     async execute(_id, request, signal) {
       try {
-        const pageId = parseSourceId(request.sourceId);
+        const target = readTarget(request);
+        const pageId = target.kind === "source" ? parseSourceId(target.value) : undefined;
         const client = knowledgeClientFor(environment, createKnowledgeClient, signal);
-        const page = await client.readPage(pageId);
+        const page = pageId === undefined
+          ? await client.readPageByUrl(target.value)
+          : await client.readPage(pageId);
         return resultText({ ...provenance(client, page), content: page.markdown });
       } catch (error) {
         return stableFailure(error);

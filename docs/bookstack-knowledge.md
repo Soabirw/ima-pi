@@ -37,7 +37,7 @@ Both creation and updates require a valid approved destination/book context, aut
 | Operation | Shared-service prerequisites | Owner role | Stop gate |
 | --- | --- | --- | --- |
 | Candidate discovery | Private Cloudflare search configuration and authorization | Shared-service administrator and developer | Missing access, configuration, or usable candidate stops discovery. |
-| Authoritative current read | A candidate `sourceId` or known source plus authorized BookStack access | Authorized developer | A denied or unverifiable read stops the claim. |
+| Authoritative current read | A candidate `sourceId` or a supported URL plus authorized BookStack access | Authorized developer | A denied or unverifiable read stops the claim. |
 | Create a BookStack page | `sourceId`, `expectedRevisionCount`, and `expectedUpdatedAt` are all absent | Authorized BookStack author | Stop if any of those fields is supplied or a common authoring control fails; do not substitute lifecycle persistence. |
 | Update an existing BookStack page | Exact `sourceId`, `expectedRevisionCount`, and `expectedUpdatedAt`; the expected revision values match the reread page | Authorized BookStack author | Stop on missing or mismatched concurrency proof or a common authoring control failure; do not substitute lifecycle persistence. |
 | Managed lifecycle persistence | User-confirmed provider selection or valid pin and that provider's prerequisites | Lifecycle operator and provider owner | Use the [lifecycle authority contract](guide.md#lifecycle-authority-memory-and-integrations); no fallback, repin, or provider mixing. |
@@ -69,6 +69,16 @@ lifecycle_key: shared-dev-memory:manual:human-ai-memory-system:2026-08-31
 Search accepts a natural-language query plus optional exact filters over the five indexed fields: `corpus`, `project`, `artifact_type`, `lifecycle_hash`, and `source_id`. Filter values are limited to a 64 UTF-8-byte prefix. Search returns only bounded excerpts, score, metadata, `source_id`, and a BookStack `/link/<page-id>` canonical URL.
 
 Use `ima_bookstack_read` with the returned `sourceId` when current content matters. It returns bounded Markdown and provenance: canonical URL, title, book/page IDs, creator/updater IDs, revision count, and update time. Do not treat a Cloudflare excerpt as authoritative.
+
+### URL reads
+
+`ima_bookstack_read` preserves existing `sourceId` reads and also accepts one `url` target. Supply exactly one of `sourceId` or `url`; provider-facing schema exposes both bounded properties, while local validation rejects missing or combined targets.
+
+The only supported URL path is `/books/{bookSlug}/page/{pageSlug}` at the exact configured HTTPS BookStack origin. That origin is the credential-free **non-secret variable** `BOOKSTACK_BASE_URL`, or the compatible **non-secret variable** `BOOKSTACK_ORIGIN`; if both are set, they must match. The UI URL is parsed and validated before I/O, but is never fetched.
+
+Authenticated BookStack API page listings are directly filtered by the exact page slug. Pagination covers matching slugs only—there is no global page scan. The resolver selects the exact book/page identity and verifies authoritative page and book detail before it returns bounded content and provenance. A bounded book-first fallback is permitted only after a complete, valid filtered result contains zero exact targets.
+
+BookStack account and group authorization remain the authority for access. Malformed, ambiguous, draft, unauthorized, redirected, rate-limited, cancelled, timed-out, oversized, contradictory, or incomplete evidence fails closed and never starts fallback. URL reads do not fetch arbitrary URLs, support `/link/{id}`, scrape HTML, use Cloudflare as fallback, retry, cache, or represent the result as an atomic snapshot.
 
 ## Safe local verification
 
