@@ -8,6 +8,8 @@ import {
   normalizeComment,
   normalizeCreateWorkItemFields,
   normalizeCreateWorkItemInput,
+  normalizeExplicitAssigneeIds,
+  normalizeMemberId,
   normalizeUpdateWorkItemDescriptionInput,
   normalizeProject,
   normalizeProjectScope,
@@ -24,6 +26,7 @@ import {
   parsePlaneReference,
   readPlaneApiKey,
   readPlaneConfig,
+  resolveWorkspaceMemberById,
   validateCreatedWorkItemRelation,
 } from "./plane-contract.mjs";
 import {
@@ -70,6 +73,7 @@ const publicMessages = Object.freeze({
   DESCRIPTION_ERROR: "Plane description could not be represented safely.",
   PAGINATION_ERROR: "Plane pagination could not be completed safely.",
   COMMENT_ERROR: "Plane comments must contain non-whitespace plain text.",
+  MEMBER_ERROR: "Plane workspace member could not be resolved.",
   STATE_ERROR: "Plane state must be one exact state UUID from the selected project.",
   PROJECT_ERROR: "Plane project work-item input is invalid.",
   CREATE_ERROR: "Plane work-item creation input is invalid.",
@@ -86,6 +90,9 @@ const pathForHumanReference = (reference) =>
 
 const pathForWorkspaceProjects = ({ workspace }) =>
   `workspaces/${encodePathSegment(workspace)}/projects/`;
+
+const pathForWorkspaceMembers = ({ workspace }) =>
+  `workspaces/${encodePathSegment(workspace)}/members/`;
 
 const pathForProjectStates = ({ workspace, projectId }) =>
   `workspaces/${encodePathSegment(workspace)}/projects/${encodePathSegment(projectId)}/states/`;
@@ -161,6 +168,26 @@ const mutationIdentityFrom = (rawResponse, workItem) => {
       ? null
       : normalizeUuid(rawResponse.state),
   };
+};
+
+const assignmentWorkItemFrom = (rawWorkItem, projectId) => {
+  const workItem = normalizeWorkItem(rawWorkItem);
+  if (workItem.projectId !== projectId) fail("RESPONSE_ERROR");
+
+  return {
+    ...workItem,
+    assigneeIds: normalizeExplicitAssigneeIds(rawWorkItem),
+  };
+};
+
+const canonicalProjectWorkItemReference = (reference, workItem) =>
+  `plane:${reference.workspace}:${reference.projectIdentifier}-${workItem.sequenceId}`;
+
+const verifyAssignmentResponse = (rawResponse, workItem, memberId) => {
+  mutationIdentityFrom(rawResponse, workItem);
+  const assigneeIds = normalizeExplicitAssigneeIds(rawResponse);
+
+  if (assigneeIds.length !== 1 || assigneeIds[0] !== memberId) fail("RESPONSE_ERROR");
 };
 
 const selectState = (states, stateId) => {
@@ -338,6 +365,19 @@ export const createPlaneClient = ({
     return matches[0];
   };
 
+  const resolveWorkspaceMember = async ({ workspace, memberId }) => {
+    const rawMembers = await requestJson({ path: pathForWorkspaceMembers({ workspace }) });
+    return resolveWorkspaceMemberById(rawMembers, memberId);
+  };
+
+  const listProjectWorkItemsForAssignment = ({ workspace, projectId }) =>
+    collectCursorPages({
+      fetchPage: (cursor) => requestJson({
+        path: paginatedPath(pathForProjectWorkItems({ workspace, projectId }), cursor),
+      }),
+      normalizeItem: (rawWorkItem) => assignmentWorkItemFrom(rawWorkItem, projectId),
+    });
+
   const listProjectItemsByExternalSource = async (lookupInput) => {
     const lookup = projectExternalSourceLookup(lookupInput);
     const workItems = await collectCursorPages({
@@ -440,6 +480,50 @@ export const createPlaneClient = ({
         sequenceId: workItem.sequenceId,
         name: workItem.name,
         stateId: workItem.stateId,
+      }, normalizedApiKey);
+    },
+
+    assignUnassigned: async (projectReferenceValue, memberIdValue) => {
+      const reference = parsePlaneProjectReference(projectReferenceValue);
+      const memberId = normalizeMemberId(memberIdValue);
+      const project = await resolveProjectByIdentifier(reference);
+      await resolveWorkspaceMember({ workspace: reference.workspace, memberId });
+      const workItems = await listProjectWorkItemsForAssignment({
+        workspace: reference.workspace,
+        projectId: project.id,
+      });
+      const unassignedWorkItems = workItems.filter((workItem) => workItem.assigneeIds.length === 0);
+      const assignedReferences = [];
+      const skippedChangedReferences = [];
+
+      for (const workItem of unassignedWorkItems) {
+        const workItemReference = canonicalProjectWorkItemReference(reference, workItem);
+        const rawCurrentWorkItem = await requestJson({
+          path: pathForWorkItem(reference, project.id, workItem.id),
+        });
+        const currentWorkItem = assignmentWorkItemFrom(rawCurrentWorkItem, project.id);
+
+        if (currentWorkItem.id !== workItem.id) fail("RESPONSE_ERROR");
+        if (currentWorkItem.assigneeIds.length !== 0) {
+          skippedChangedReferences.push(workItemReference);
+          continue;
+        }
+
+        const rawResponse = await requestJson({
+          path: pathForWorkItem(reference, project.id, workItem.id),
+          method: "PATCH",
+          body: { assignees: [memberId] },
+        });
+        verifyAssignmentResponse(rawResponse, workItem, memberId);
+        assignedReferences.push(workItemReference);
+      }
+
+      return redactSecret({
+        projectReference: reference.canonical,
+        memberId,
+        assignedCount: assignedReferences.length,
+        assignedReferences,
+        skippedChangedReferences,
       }, normalizedApiKey);
     },
 

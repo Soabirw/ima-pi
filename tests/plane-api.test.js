@@ -27,6 +27,7 @@ const NEXT_STATE_ID = "44444444-4444-4444-8444-444444444444";
 const ASSIGNEE_ID = "55555555-5555-4555-8555-555555555555";
 const LABEL_ID = "66666666-6666-4666-8666-666666666666";
 const COMMENT_ID = "77777777-7777-4777-8777-777777777777";
+const SECOND_WORK_ITEM_ID = "88888888-8888-4888-8888-888888888888";
 
 const project = (overrides = {}) => ({
   id: PROJECT_ID,
@@ -48,6 +49,11 @@ const workItem = (overrides = {}) => ({
   labels: [LABEL_ID],
   created_at: "2026-09-01T00:00:00Z",
   updated_at: "2026-09-01T01:00:00Z",
+  ...overrides,
+});
+
+const workspaceMember = (overrides = {}) => ({
+  id: ASSIGNEE_ID,
   ...overrides,
 });
 
@@ -477,6 +483,258 @@ test("rejects unknown states and malformed responses before a dependent write", 
   const malformedItem = clientFor([jsonResponse(workItem({ id: "not-a-uuid" }))]);
   await assertErrorCode(malformedItem.client.listComments(REFERENCE), "RESPONSE_ERROR");
   assert.equal(malformedItem.calls.length, 1);
+});
+
+test("assigns preflight-unassigned items only after all project cursor pages are read", async () => {
+  const secondWorkItem = workItem({
+    id: SECOND_WORK_ITEM_ID,
+    sequence_id: 124,
+    assignees: [],
+  });
+  const alreadyAssignedWorkItem = workItem({
+    id: LABEL_ID,
+    sequence_id: 125,
+    assignees: [LABEL_ID],
+  });
+  const { client, calls } = clientFor([
+    jsonResponse({ results: [project()], next_page_results: false, next_cursor: null }),
+    jsonResponse([workspaceMember()]),
+    jsonResponse({
+      results: [workItem({ assignees: [] }), alreadyAssignedWorkItem],
+      next_page_results: true,
+      next_cursor: "second-page",
+    }),
+    jsonResponse({ results: [secondWorkItem], next_page_results: false, next_cursor: null }),
+    jsonResponse(workItem({ assignees: [] })),
+    jsonResponse(workItem({ assignees: [ASSIGNEE_ID] })),
+    jsonResponse(secondWorkItem),
+    jsonResponse(workItem({
+      id: SECOND_WORK_ITEM_ID,
+      sequence_id: 124,
+      assignees: [ASSIGNEE_ID],
+    })),
+  ]);
+
+  const result = await client.assignUnassigned(PROJECT_REFERENCE, ASSIGNEE_ID);
+
+  assert.deepEqual(result, {
+    projectReference: PROJECT_REFERENCE,
+    memberId: ASSIGNEE_ID,
+    assignedCount: 2,
+    assignedReferences: [REFERENCE, "plane:acme:PROJ-124"],
+    skippedChangedReferences: [],
+  });
+  assert.deepEqual(
+    calls.slice(0, 4).map((call) => call.options.method),
+    ["GET", "GET", "GET", "GET"],
+  );
+  assert.deepEqual(
+    calls.slice(4).map((call) => call.options.method),
+    ["GET", "PATCH", "GET", "PATCH"],
+  );
+  assert.equal(calls[1].url, `${BASE_URL}/api/v1/workspaces/acme/members/`);
+  assert.equal(
+    calls[2].url,
+    `${BASE_URL}/api/v1/workspaces/acme/projects/${PROJECT_ID}/work-items/?per_page=100`,
+  );
+  assert.equal(
+    calls[3].url.endsWith("?per_page=100&cursor=second-page"), true);
+
+  const patchCalls = calls.filter((call) => call.options.method === "PATCH");
+  assert.equal(patchCalls.length, 2);
+  assert.deepEqual(
+    patchCalls.map((call) => call.url),
+    [
+      `${BASE_URL}/api/v1/workspaces/acme/projects/${PROJECT_ID}/work-items/${WORK_ITEM_ID}/`,
+      `${BASE_URL}/api/v1/workspaces/acme/projects/${PROJECT_ID}/work-items/${SECOND_WORK_ITEM_ID}/`,
+    ],
+  );
+  assert.deepEqual(
+    patchCalls.map((call) => JSON.parse(call.options.body)),
+    [{ assignees: [ASSIGNEE_ID] }, { assignees: [ASSIGNEE_ID] }],
+  );
+});
+
+test("requires literal assignment confirmation before configuration or network access", async () => {
+  for (const argv of [
+    ["plane:assign-unassigned", PROJECT_REFERENCE, ASSIGNEE_ID],
+    ["plane:assign-unassigned", PROJECT_REFERENCE, ASSIGNEE_ID, "Confirm"],
+    ["plane:assign-unassigned", PROJECT_REFERENCE, ASSIGNEE_ID, "confirm", "extra"],
+  ]) {
+    const stdout = outputWriter();
+    const stderr = outputWriter();
+    let fetchCalls = 0;
+    const env = new Proxy({}, {
+      get: () => { throw new Error("configuration must not be read"); },
+    });
+    const exitCode = await runPlaneApi({
+      argv,
+      env,
+      stdout: stdout.writer,
+      stderr: stderr.writer,
+      fetchImpl: async () => { fetchCalls += 1; },
+    });
+
+    assert.equal(exitCode, 2);
+    assert.equal(JSON.parse(stderr.output()).error.code, "USAGE_ERROR");
+    assert.equal(stdout.output(), "");
+    assert.equal(fetchCalls, 0);
+  }
+});
+
+test("fails closed for invalid or ambiguous target members before project-item writes", async () => {
+  const invalidReference = clientFor([]);
+  await assertErrorCode(
+    invalidReference.client.assignUnassigned("plane:acme:PROJ-1", ASSIGNEE_ID),
+    "REFERENCE_ERROR",
+  );
+  assert.equal(invalidReference.calls.length, 0);
+
+  const invalidMemberId = clientFor([]);
+  await assertErrorCode(
+    invalidMemberId.client.assignUnassigned(PROJECT_REFERENCE, "not-a-uuid"),
+    "MEMBER_ERROR",
+  );
+  assert.equal(invalidMemberId.calls.length, 0);
+
+  for (const members of [
+    [],
+    [workspaceMember(), workspaceMember()],
+    [{ id: { id: ASSIGNEE_ID } }],
+    [workspaceMember(), { id: { id: LABEL_ID } }],
+    { results: [workspaceMember()] },
+  ]) {
+    const { client, calls } = clientFor([
+      jsonResponse({ results: [project()], next_page_results: false, next_cursor: null }),
+      jsonResponse(members),
+    ]);
+
+    await assertErrorCode(client.assignUnassigned(PROJECT_REFERENCE, ASSIGNEE_ID), "MEMBER_ERROR");
+    assert.equal(calls.length, 2);
+    assert.equal(calls.some((call) => call.options.method === "PATCH"), false);
+  }
+});
+
+test("fails before a write when preflight assignees are absent or malformed", async () => {
+  const { assignees: omittedAssignees, ...withoutAssignees } = workItem();
+
+  for (const rawWorkItem of [
+    withoutAssignees,
+    workItem({ assignees: null }),
+    workItem({ assignees: "not-an-array" }),
+    workItem({ assignees: ["not-a-uuid"] }),
+    workItem({ project: LABEL_ID, assignees: [] }),
+  ]) {
+    const { client, calls } = clientFor([
+      jsonResponse({ results: [project()], next_page_results: false, next_cursor: null }),
+      jsonResponse([workspaceMember()]),
+      jsonResponse({ results: [rawWorkItem], next_page_results: false, next_cursor: null }),
+    ]);
+
+    await assertErrorCode(client.assignUnassigned(PROJECT_REFERENCE, ASSIGNEE_ID), "RESPONSE_ERROR");
+    assert.equal(calls.length, 3);
+    assert.equal(calls.some((call) => call.options.method === "PATCH"), false);
+  }
+
+  assert.deepEqual(omittedAssignees, [ASSIGNEE_ID]);
+});
+
+test("skips an item assigned between preflight and its reread", async () => {
+  const { client, calls } = clientFor([
+    jsonResponse({ results: [project()], next_page_results: false, next_cursor: null }),
+    jsonResponse([workspaceMember()]),
+    jsonResponse({ results: [workItem({ assignees: [] })], next_page_results: false, next_cursor: null }),
+    jsonResponse(workItem({ assignees: [LABEL_ID] })),
+  ]);
+
+  const result = await client.assignUnassigned(PROJECT_REFERENCE, ASSIGNEE_ID);
+
+  assert.deepEqual(result, {
+    projectReference: PROJECT_REFERENCE,
+    memberId: ASSIGNEE_ID,
+    assignedCount: 0,
+    assignedReferences: [],
+    skippedChangedReferences: [REFERENCE],
+  });
+  assert.equal(calls.length, 4);
+  assert.equal(calls.some((call) => call.options.method === "PATCH"), false);
+});
+
+test("fails before PATCH when a reread changes identity or lacks explicit assignees", async () => {
+  for (const rereadWorkItem of [
+    workItem({ id: SECOND_WORK_ITEM_ID, assignees: [] }),
+    workItem({ project: LABEL_ID, assignees: [] }),
+    workItem({ assignees: null }),
+  ]) {
+    const { client, calls } = clientFor([
+      jsonResponse({ results: [project()], next_page_results: false, next_cursor: null }),
+      jsonResponse([workspaceMember()]),
+      jsonResponse({ results: [workItem({ assignees: [] })], next_page_results: false, next_cursor: null }),
+      jsonResponse(rereadWorkItem),
+    ]);
+
+    await assertErrorCode(client.assignUnassigned(PROJECT_REFERENCE, ASSIGNEE_ID), "RESPONSE_ERROR");
+    assert.equal(calls.length, 4);
+    assert.equal(calls.some((call) => call.options.method === "PATCH"), false);
+  }
+});
+
+test("requires each assignment PATCH response to confirm only the target member", async () => {
+  const { assignees: omittedAssignees, ...withoutAssignees } = workItem();
+
+  for (const patchResponse of [
+    withoutAssignees,
+    workItem({ assignees: [] }),
+    workItem({ assignees: [LABEL_ID] }),
+    workItem({ assignees: [ASSIGNEE_ID, ASSIGNEE_ID] }),
+  ]) {
+    const { client, calls } = clientFor([
+      jsonResponse({ results: [project()], next_page_results: false, next_cursor: null }),
+      jsonResponse([workspaceMember()]),
+      jsonResponse({ results: [workItem({ assignees: [] })], next_page_results: false, next_cursor: null }),
+      jsonResponse(workItem({ assignees: [] })),
+      jsonResponse(patchResponse),
+    ]);
+
+    await assertErrorCode(client.assignUnassigned(PROJECT_REFERENCE, ASSIGNEE_ID), "RESPONSE_ERROR");
+    assert.equal(calls.length, 5);
+    assert.deepEqual(JSON.parse(calls[4].options.body), { assignees: [ASSIGNEE_ID] });
+  }
+
+  assert.deepEqual(omittedAssignees, [ASSIGNEE_ID]);
+});
+
+test("CLI emits the confirmed assignment envelope", async () => {
+  const queue = queuedFetch([
+    jsonResponse({ results: [project()], next_page_results: false, next_cursor: null }),
+    jsonResponse([workspaceMember()]),
+    jsonResponse({ results: [workItem({ assignees: [] })], next_page_results: false, next_cursor: null }),
+    jsonResponse(workItem({ assignees: [] })),
+    jsonResponse(workItem({ assignees: [ASSIGNEE_ID] })),
+  ]);
+  const stdout = outputWriter();
+  const stderr = outputWriter();
+  const exitCode = await runPlaneApi({
+    argv: ["plane:assign-unassigned", PROJECT_REFERENCE, ASSIGNEE_ID, "confirm"],
+    env: { PLANE_BASE_URL: BASE_URL, PLANE_API_KEY: API_KEY },
+    stdout: stdout.writer,
+    stderr: stderr.writer,
+    fetchImpl: queue.fetchImpl,
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(JSON.parse(stdout.output()), {
+    success: true,
+    data: {
+      projectReference: PROJECT_REFERENCE,
+      memberId: ASSIGNEE_ID,
+      assignedCount: 1,
+      assignedReferences: [REFERENCE],
+      skippedChangedReferences: [],
+    },
+  });
+  assert.equal(stderr.output(), "");
+  assert.deepEqual(JSON.parse(queue.calls[4].options.body), { assignees: [ASSIGNEE_ID] });
 });
 
 test("CLI emits stable envelopes without a write-level confirmation flag", async () => {

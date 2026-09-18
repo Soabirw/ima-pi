@@ -15,11 +15,14 @@ export const usage = `Usage:
   plane-api.mjs plane:comment plane:<workspace>:PROJ-123 "Plain-text comment"
   plane-api.mjs plane:set-state plane:<workspace>:PROJ-123 STATE_UUID
   plane-api.mjs plane:create plane:<workspace>:PROJECT "Title" [description] [priority]
+  plane-api.mjs plane:assign-unassigned plane:<workspace>:PROJECT MEMBER_UUID confirm
 `;
 
 const oneArgument = (args) => args.length === 1 ? args : null;
 const commentArguments = (args) => args.length >= 2 ? [args[0], args.slice(1).join(" ")] : null;
 const twoArguments = (args) => args.length === 2 ? args : null;
+const assignUnassignedArguments = (args) =>
+  args.length === 3 && args[2] === "confirm" ? [args[0], args[1]] : null;
 const createArguments = (args) => args.length >= 2 && args.length <= 4 ? args : null;
 
 const commands = Object.freeze({
@@ -50,6 +53,11 @@ const commands = Object.freeze({
   "plane:set-state": {
     parseArgs: twoArguments,
     run: (client, [reference, stateId]) => client.setState(reference, stateId),
+  },
+  "plane:assign-unassigned": {
+    parseArgs: assignUnassignedArguments,
+    run: (client, [projectReference, memberId]) =>
+      client.assignUnassigned(projectReference, memberId),
   },
 });
 

@@ -69,6 +69,36 @@ export const normalizeIdList = (value, code = "RESPONSE_ERROR") => {
   return value.map((entry) => normalizeUuid(entry, code));
 };
 
+export const normalizeExplicitAssigneeIds = (rawWorkItem, code = "RESPONSE_ERROR") => {
+  const workItem = requireRecord(rawWorkItem, code);
+  if (!Object.hasOwn(workItem, "assignees") || !Array.isArray(workItem.assignees)) fail(code);
+  return workItem.assignees.map((entry) => normalizeUuid(entry, code));
+};
+
+export const normalizeMemberId = (value) => {
+  if (typeof value !== "string") fail("MEMBER_ERROR");
+  return normalizeUuid(value, "MEMBER_ERROR");
+};
+
+export const normalizeWorkspaceMember = (rawMember) => {
+  const member = requireRecord(rawMember, "MEMBER_ERROR");
+  if (!Object.hasOwn(member, "id") || typeof member.id !== "string") fail("MEMBER_ERROR");
+
+  return { id: normalizeMemberId(member.id) };
+};
+
+export const resolveWorkspaceMemberById = (rawMembers, memberId) => {
+  if (!Array.isArray(rawMembers)) fail("MEMBER_ERROR");
+
+  const requestedMemberId = normalizeMemberId(memberId);
+  const matches = rawMembers
+    .map((rawMember) => normalizeWorkspaceMember(rawMember))
+    .filter((member) => member.id === requestedMemberId);
+
+  if (matches.length !== 1) fail("MEMBER_ERROR");
+  return matches[0];
+};
+
 export const normalizePositiveSequenceId = (value, code = "RESPONSE_ERROR") => {
   const text = typeof value === "number" ? String(value) : value;
   if (typeof text !== "string" || !/^[1-9]\d*$/.test(text)) fail(code);

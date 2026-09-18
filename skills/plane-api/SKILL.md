@@ -1,11 +1,11 @@
 ---
 name: plane-api
-description: Direct self-hosted Plane REST helper for approved work-item creation, state, and comment operations.
+description: Direct self-hosted Plane REST helper for approved work-item creation, state, comment, and one operator-confirmed best-effort assignment operation.
 ---
 
 # Plane REST helper
 
-Use this packaged helper for the approved self-hosted Plane work-item surface. It talks directly to the configured REST API; it does not require, register, or fall back to an external MCP server. To create a Plane work item on an explicit user request or approved lifecycle plan, use `plane:create`; never use browser control, Chrome DevTools, or the Plane website. Never create from inferred intent.
+Use this packaged helper for the approved self-hosted Plane work-item surface. It talks directly to the configured REST API; it does not require, register, or fall back to an external MCP server. To create a Plane work item on an explicit user request or approved lifecycle plan, use `plane:create`. To assign every currently unassigned item in one exact project to one exact workspace-member UUID, use `plane:assign-unassigned` only for an explicit operator-confirmed best-effort request. Never use browser control, Chrome DevTools, or the Plane website. Never create from inferred intent.
 
 Resolve scripts relative to this skill directory:
 
@@ -16,6 +16,7 @@ node scripts/plane-api.mjs plane:comments plane:<workspace>:PROJ-123
 node scripts/plane-api.mjs plane:comment plane:<workspace>:PROJ-123 "Plain-text comment"
 node scripts/plane-api.mjs plane:set-state plane:<workspace>:PROJ-123 STATE_UUID
 node scripts/plane-api.mjs plane:create plane:<workspace>:PROJECT "Title" [description] [priority]
+node scripts/plane-api.mjs plane:assign-unassigned plane:<workspace>:PROJECT MEMBER_UUID confirm
 ```
 
 ## Configuration
@@ -39,6 +40,9 @@ export PLANE_API_KEY="<configured-personal-access-token>"
 - `plane:comment` validates non-empty plain text, escapes it to `comment_html`, rereads the selected item immediately before the POST, and creates a comment only on that item's UUID path.
 - `plane:set-state` resolves the item, reads its project's states, requires one exact state UUID, and PATCHes only `{ "state": "STATE_UUID" }` on that item's UUID path.
 - `plane:create` resolves one token-visible non-archived project by workspace and identifier, requires exactly one match, and sends a single POST with `name` plus optional escaped description and allowlisted priority. It uses the project's default backlog state and never retries an ambiguous POST failure.
+- `plane:assign-unassigned` accepts only `plane:<workspace>:PROJECT MEMBER_UUID confirm`. The literal case-sensitive `confirm` is required before configuration or network access. It resolves one non-archived project, then exactly one member from the direct-array workspace-members response by UUID, validates all bounded project-item pages before a write, processes selected items sequentially, and PATCHes only `{ "assignees": ["member-uuid"] }` on each selected UUID route. It rereads each candidate immediately before PATCH and skips it when already assigned. This is best effort: Plane has no documented conditional-assignment operation (for example, If-Match/version CAS), so a concurrent update after the reread and before PATCH can still be overwritten. It requires explicit operator authorization of that limitation and is not a generic member-list, project-list, or update surface.
+
+Successful assignment data contains only `projectReference`, `memberId`, `assignedCount`, `assignedReferences`, and `skippedChangedReferences`; item references are canonical and upstream member/item records are never emitted.
 
 ### Description fidelity
 
@@ -50,13 +54,13 @@ Migration creates and description-backfill PATCHes generate escaped `description
 
 Run the helper from an installed package checkout. Its parser-backed description support requires the package dependencies, including `html-to-text` and `htmlparser2`, to be installed through `npm install`.
 
-The calling lifecycle plan or operator establishes approval for the requested work-item creation, comment, or state action. The helper does not add a write-level `--confirm` prompt, and it exposes no generic URL, method, or JSON-body passthrough. It never creates cycles, modules, milestones, projects, or states; it creates work items and comments only for the explicitly requested action.
+The calling lifecycle plan or operator establishes approval for the requested work-item creation, comment, state, or operator-confirmed best-effort assignment action. The helper exposes no generic URL, method, or JSON-body passthrough. It never creates cycles, modules, milestones, projects, or states; it creates work items and comments only for explicitly requested actions and changes assignees only through the narrow confirmed assignment command.
 
-Read API metadata before every write. Every request rejects HTTP redirects rather than following or replaying an authenticated operation. State names are never accepted in place of a state UUID. Missing or invalid configuration, references, responses, pagination cursors, comments, and states fail before an unsafe dependent request. Errors do not expose request URLs, response bodies, raw fetch failures, headers, or credentials.
+Read API metadata before every write. Every request rejects HTTP redirects rather than following or replaying an authenticated operation. State names are never accepted in place of a state UUID. Missing or invalid configuration, references, responses, pagination cursors, members, assignees, comments, and states fail before an unsafe dependent request. Errors do not expose request URLs, response bodies, raw fetch failures, headers, or credentials.
 
 ## Dedicated Taskwarrior migration runner
 
-The approved Taskwarrior-to-Plane migration uses its own runner. It does not widen the general `plane:*` CLI surface beyond reads, work-item creation, comment creation, and state operations.
+The approved Taskwarrior-to-Plane migration uses its own runner. It does not widen the general `plane:*` CLI surface beyond approved reads, work-item creation, comment creation, state operations, and the separate operator-confirmed best-effort assignment operation.
 
 Run it from the repository root with credentials only in the invoking shell:
 
@@ -125,4 +129,4 @@ node skills/plane-api/scripts/plane-api.mjs plane:states plane:<workspace>:PROJ-
 node skills/plane-api/scripts/plane-api.mjs plane:comments plane:<workspace>:PROJ-123
 ```
 
-Run live comment or state mutations only after selecting the exact item and action, record the original state before a temporary state change, reread the selected item afterward, and restore it when appropriate.
+Run live comment, state, or assignment mutations only after selecting the exact action. An assignment requires explicit operator authorization plus the literal `confirm` argument. Its reread can skip an item assigned before PATCH, but cannot prevent a concurrent overwrite after that reread because Plane has no documented conditional-assignment operation. Record the original state before a temporary state change, reread the selected item afterward, and restore it when appropriate.
