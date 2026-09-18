@@ -7,7 +7,7 @@ import {
 import { utf8ByteLength } from "./qdrant-corpus.ts";
 
 export const CONTEXT_SCHEMA_VERSION = 1;
-export const STANDARD_MEMORIES = ["core", "conventions", "tech_stack", "suggested_commands", "task_completion"] as const;
+export const STANDARD_MEMORIES = ["core", "conventions", "tech_stack", "suggested_commands", "task_completion", "memory_maintenance"] as const;
 
 type MemoryName = typeof STANDARD_MEMORIES[number];
 export type ContextSource =

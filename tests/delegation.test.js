@@ -7,7 +7,6 @@ import test from "node:test";
 import {
   NONCE_MARKER,
   RESEARCH_URL,
-  SERENA_ACTIVATE_TOOL,
   assistantExecutionFailed,
   childIdentityVerified,
   buildFollowUpBrief,
@@ -24,13 +23,14 @@ import {
   sanitizeError,
   withResultWriteFailure,
 } from "../extensions/delegation-probe.ts";
+import { SERENA_BOOTSTRAP_TOOL } from "../extensions/mcp.ts";
 
 const requiredTools = [
   { tool: "read", category: "file-read" },
   { tool: "write", category: "file-write" },
   { tool: "bash", category: "shell" },
   { tool: "bash", category: "research" },
-  { tool: "mcp", category: "integration" },
+  { tool: SERENA_BOOTSTRAP_TOOL, category: "integration" },
 ];
 
 test("parseModelSelector splits provider and model", () => {
@@ -90,7 +90,7 @@ test("parseDelegationProbeArgs rejects unsupported modes and extra arguments", (
   }
 });
 
-test("buildStartBrief contains fixed operations and safety boundaries", () => {
+test("buildStartBrief contains fixed operations and keeps the package-owned checkout out of child instructions", () => {
   const brief = buildStartBrief({
     workspace: "/tmp/workspace",
     repoPath: "/home/eric/IMA/dev/ima-pi",
@@ -99,16 +99,18 @@ test("buildStartBrief contains fixed operations and safety boundaries", () => {
 
   for (const expected of [
     "/tmp/workspace",
-    "/home/eric/IMA/dev/ima-pi",
     "01234567-89ab-cdef-0123-456789abcdef",
     RESEARCH_URL,
-    SERENA_ACTIVATE_TOOL,
+    SERENA_BOOTSTRAP_TOOL,
     "Do not modify the IMA Pi repository",
     "Do not run destructive commands",
   ]) {
     assert.match(brief, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
-  assert.match(brief, /Use the mcp tool exactly once/);
+  assert.match(brief, /Use the ima_serena_bootstrap tool exactly once with an empty object/);
+  assert.match(brief, /Do not call a Serena MCP tool directly/);
+  assert.doesNotMatch(brief, /\/home\/eric\/IMA\/dev\/ima-pi/);
+  assert.doesNotMatch(brief, /Use the mcp tool exactly once/);
 });
 
 test("openFollowUpSession uses the persisted header cwd", async () => {
@@ -168,7 +170,7 @@ test("classifyToolEvent grants categories only for exact controlled paths and co
     { toolName: "write", args: { path: "/workspace/marker.txt", content: "secret" } },
     { toolName: "bash", args: { command: "pwd" } },
     { toolName: "bash", args: { command: `curl -fsSL --max-time 20 ${RESEARCH_URL}` } },
-    { toolName: "mcp", args: { server: "serena", tool: SERENA_ACTIVATE_TOOL, args: { project: "/repo" } } },
+    { toolName: SERENA_BOOTSTRAP_TOOL, args: {} },
     { toolName: "bash", args: { command: "env" } },
   ];
 
@@ -179,7 +181,7 @@ test("classifyToolEvent grants categories only for exact controlled paths and co
       { tool: "write", category: "file-write" },
       { tool: "bash", category: "shell" },
       { tool: "bash", category: "research" },
-      { tool: "mcp", category: "integration" },
+      { tool: SERENA_BOOTSTRAP_TOOL, category: "integration" },
       { tool: "bash", category: "other" },
     ],
   );
@@ -200,11 +202,12 @@ test("classifyToolEvent rejects off-target paths and commands", () => {
     { toolName: "write", args: { path: "/workspace/other.txt", content: "x" } },
     { toolName: "bash", args: { command: "curl -fsSL https://evil.example" } },
     { toolName: "bash", args: { command: "printf hi" } },
-    { toolName: "mcp", args: { server: "serena", tool: SERENA_ACTIVATE_TOOL, args: { project: "/repo", extra: true } } },
+    { toolName: SERENA_BOOTSTRAP_TOOL, args: { extra: true } },
+    { toolName: "mcp", args: { server: "serena", tool: "serena_activate_project", args: { project: "/repo" } } },
   ];
   assert.deepEqual(
     offTarget.map((event) => classifyToolEvent(event, context).category),
-    ["other", "other", "other", "other", "other"],
+    ["other", "other", "other", "other", "other", "other"],
   );
 });
 

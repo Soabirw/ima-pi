@@ -24,9 +24,9 @@ import {
   SessionManager,
   type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
-import type {
-  McpPolicyOperation,
-  createMcpChildRuntime as CreateMcpChildRuntime,
+import {
+  SERENA_BOOTSTRAP_TOOL,
+  type createMcpChildRuntime as CreateMcpChildRuntime,
 } from "./mcp.ts";
 
 type McpChildRuntime = Awaited<ReturnType<typeof CreateMcpChildRuntime>>;
@@ -44,7 +44,7 @@ export const RESULT_ENV_VAR = "IMA_PI_DELEGATION_RESULT";
 export const SCHEMA_VERSION = 1;
 export const STORY = "FNR-3009";
 
-const CHILD_TOOLS = ["read", "write", "bash", "mcp"] as const;
+const CHILD_TOOLS = ["read", "write", "bash", SERENA_BOOTSTRAP_TOOL] as const;
 const FOLLOW_UP_TOOLS: string[] = [];
 
 /* ------------------------------------------------------------------ *
@@ -161,7 +161,8 @@ export function buildStartBrief(input: StartBriefInput): string {
     `2. Use the write tool to create ${markerPath} whose entire contents are exactly the nonce value ${input.nonce} with no extra text.`,
     `3. Use the bash tool to run exactly: ${LOCAL_SHELL_COMMAND}`,
     `4. Use the bash tool to fetch one fixed documentation URL over HTTPS with a timeout: curl -fsSL --max-time 20 ${RESEARCH_URL}`,
-    `5. Use the mcp tool exactly once with server "serena", tool "${SERENA_ACTIVATE_TOOL}", and args {"project":"${input.repoPath}"}.`,
+    `5. Use the ${SERENA_BOOTSTRAP_TOOL} tool exactly once with an empty object.`,
+    "   Do not call a Serena MCP tool directly.",
     "6. Reply with one short sentence confirming the steps you completed.",
     "",
     "Boundaries you must respect:",
@@ -241,16 +242,8 @@ export function classifyToolEvent(
     if (command === LOCAL_SHELL_COMMAND) return { tool, category: "shell" };
     return { tool, category: "other" };
   }
-  if (tool === "mcp") {
-    const server = typeof args.server === "string" ? args.server : "";
-    const mcpTool = typeof args.tool === "string" ? args.tool : "";
-    const project = args.args && typeof args.args === "object"
-      ? (args.args as { project?: unknown }).project
-      : undefined;
-    const exactProject = args.args && typeof args.args === "object"
-      && Object.keys(args.args).length === 1
-      && project === context.repoPath;
-    return server === "serena" && mcpTool === SERENA_ACTIVATE_TOOL && exactProject
+  if (tool === SERENA_BOOTSTRAP_TOOL) {
+    return args && typeof args === "object" && !Array.isArray(args) && Object.keys(args).length === 0
       ? { tool, category: "integration" }
       : { tool, category: "other" };
   }
@@ -507,18 +500,13 @@ async function runStartProbe(input: StartInput): Promise<DelegationProbeResult> 
   let childRuntime: McpChildRuntime;
   try {
     const { createMcpChildRuntime } = await import("./mcp.ts");
-    const mcpPolicy: McpPolicyOperation[] = [{
-      server: "serena",
-      tool: SERENA_ACTIVATE_TOOL,
-      args: { project: input.repoPath },
-    }];
     childRuntime = await createMcpChildRuntime({
       cwd: workspace,
       model,
       modelRuntime,
       tools: CHILD_TOOLS,
       sessionManager: SessionManager.create(workspace, sessionDir),
-      mcpPolicy,
+      serenaBootstrapProject: input.repoPath,
     });
   } catch (error) {
     return { ...base, error: sanitizeError("child_creation_failed", error) };

@@ -297,20 +297,28 @@ When test reports `DEFECTS`, require stable `TEST-NNN` evidence containing the a
 ## Phase handoff discipline
 
 Before each phase, summarize the inherited plan outcome, non-goals, exact target boundary,
-acceptance criteria, prior evidence, and the one decision the specialist is authorized to make. In
-every fresh coordinator or specialist session, recall descriptors for the exact lifecycle key with
-`ima_lifecycle_recall` before using prior evidence, then pass every selected required descriptor
-unchanged to `ima_lifecycle_get`; descriptors alone never authorize a phase. The public pair derives
-pinned or genuinely unpinned historical-Qdrant authority. Pending, inaccessible, unavailable,
-corrupt, mismatched, overflowed, or cancelled reads block the phase without a retry, fallback,
-provider-native read, `ima_corpus_*` substitution, or provider change. Before a continuation phase,
-use complete verified evidence to resolve P/R/S and hand off exact R/S with the canonical source;
-`priorArtifactIds`, a latest receipt, or a tracker never derives or replaces them. A rootless
-non-plan authority blocks without repair. After each report, check that it addresses the requested
-boundary and has not introduced a material contradiction. If a child report is partial, stale, or
-lacks observable evidence, request a bounded clarification through the existing child reference where
-available; otherwise stop and surface the gap. Do not silently re-run a phase under a different
-authority.
+acceptance criteria, prior evidence, and the one decision the specialist is authorized to make.
+Immediately before each `ima_delegate` delegation, the current-session soft-cycle orchestrator must
+freshly recall descriptors for the exact lifecycle key with `ima_lifecycle_recall`, then pass every
+selected required descriptor unchanged to `ima_lifecycle_get`. It may delegate only after it verifies
+each complete required artifact's lifecycle/source identity, phase, terminal outcome,
+`artifactId`/`recordKey`, content hash, read reference, and phase-specific prerequisite semantics.
+It then supplies the specialist a bounded complete verified evidence packet needed for its
+assignment; descriptors, summaries, handoff pointers, or caches alone never authorize a phase. An
+`ima_delegate` specialist leaf receives no `ima_lifecycle`, `ima_lifecycle_recall`, or
+`ima_lifecycle_get` authority, must not call them, must not act on descriptors or summaries alone,
+and reports its bounded result against that verified packet. A full `/ima:cycle` phase host is
+distinct from a delegated specialist leaf and retains its own fresh lifecycle public-read-pair
+requirement. The public pair derives pinned or genuinely unpinned historical-Qdrant authority.
+Pending, inaccessible, unavailable, corrupt, mismatched, overflowed, or cancelled reads block the
+phase without a retry, fallback, provider-native read, `ima_corpus_*` substitution, or provider
+change. Before a continuation phase, use complete verified evidence to resolve P/R/S and hand off
+exact R/S with the canonical source in that verified packet; `priorArtifactIds`, a latest receipt,
+or a tracker never derives or replaces them. A rootless non-plan authority blocks without repair.
+After each report, check that it addresses the requested boundary and has not introduced a material
+contradiction. If a child report is partial, stale, or lacks observable evidence, request a bounded
+clarification through the existing child reference where available; otherwise stop and surface the
+gap. Do not silently re-run a phase under a different authority.
 
 ## Review and second opinion
 

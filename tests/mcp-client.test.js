@@ -11,13 +11,18 @@ const integrationsPath = pathToFileURL(resolve("extensions/integrations.ts")).hr
 const toolServer = `
   import { Server } from "@modelcontextprotocol/sdk/server/index.js";
   import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-  import { CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+  import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 
   const server = new Server(
     { name: "ima-pi-test-server", version: "1.0.0" },
     { capabilities: { tools: {} } },
   );
   let calls = 0;
+  let discovered = false;
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    discovered = true;
+    return { tools: [] };
+  });
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (request.params.name === "wait") {
       await new Promise((resolve) => setTimeout(resolve, Number(request.params.arguments?.delay ?? 0)));
@@ -29,6 +34,7 @@ const toolServer = `
         type: "text",
         text: JSON.stringify({
           calls,
+          discovered,
           secret: process.env.IMA_PI_MCP_TEST_SECRET ?? null,
           hasHome: Boolean(process.env.HOME),
           hasPath: Boolean(process.env.PATH),
@@ -91,6 +97,24 @@ test("MCP sessions reuse one connection for multiple tool calls", async () => {
 
   const counts = results.map((result) => JSON.parse(result.content[0].text).calls);
   assert.deepEqual(counts, [1, 2]);
+});
+
+test("MCP discovery and tool calls share one connection", async () => {
+  const result = await withMcpSession(
+    {
+      command: "node",
+      args: ["--input-type=module", "--eval", toolServer],
+    },
+    async (call, listTools) => ({
+      advertised: await listTools(5_000),
+      tool: await call("inspect-environment", {}, 5_000),
+    }),
+  );
+
+  assert.deepEqual(result.advertised.tools, []);
+  const observation = JSON.parse(result.tool.content[0].text);
+  assert.equal(observation.discovered, true);
+  assert.equal(observation.calls, 1);
 });
 
 test("MCP sessions close after callback and tool failures", async () => {

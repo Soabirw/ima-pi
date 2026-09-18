@@ -11,7 +11,7 @@ const REFERENCE = "plane:ima:SKYNET-190";
 const WORK_ITEM_ID = "11111111-1111-4111-8111-111111111111";
 const PROJECT_ID = "22222222-2222-4222-8222-222222222222";
 const STATE_ID = "33333333-3333-4333-8333-333333333333";
-const STANDARD_MEMORIES = ["core", "conventions", "tech_stack", "suggested_commands", "task_completion"];
+const STANDARD_MEMORIES = ["core", "conventions", "tech_stack", "suggested_commands", "task_completion", "memory_maintenance"];
 
 const rawWorkItem = (overrides = {}) => ({
   id: WORK_ITEM_ID,
@@ -73,10 +73,15 @@ const outputWriter = () => {
   };
 };
 
+const serenaActivationReceipt = (projectPath) =>
+  `The project with name 'synthetic' at ${projectPath} is activated.`;
+
 const serenaSession = async (server, callback) => {
   assert.equal(server, "serena");
   return callback(async (name, args) => {
-    if (name === "activate_project") return { content: [{ type: "text", text: "activated" }] };
+    if (name === "activate_project") {
+      return { content: [{ type: "text", text: serenaActivationReceipt(args.project) }] };
+    }
     if (name === "initial_instructions") return { content: [{ type: "text", text: "instructions" }] };
     if (name === "list_memories") return { content: [{ type: "text", text: JSON.stringify({ memories: STANDARD_MEMORIES }) }] };
     if (name === "read_memory") return { content: [{ type: "text", text: `${args.memory_name} memory` }] };

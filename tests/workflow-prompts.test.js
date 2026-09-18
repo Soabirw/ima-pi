@@ -393,6 +393,30 @@ test("soft-cycle is a prompt-only delegating SDLC orchestrator with bounded auto
   );
 });
 
+test("soft-cycle keeps lifecycle reads parent-owned for delegated leaves", async () => {
+  const text = await prompt("soft-cycle");
+  assert.match(
+    text,
+    /Immediately before each `ima_delegate` delegation, the current-session soft-cycle orchestrator must[\s\S]*?`ima_lifecycle_recall`[\s\S]*?`ima_lifecycle_get`[\s\S]*?It may delegate only after it verifies[\s\S]*?bounded complete verified evidence packet needed for its\s+assignment/i,
+  );
+  assert.match(
+    text,
+    /An\s+`ima_delegate` specialist leaf receives no `ima_lifecycle`, `ima_lifecycle_recall`, or\s+`ima_lifecycle_get` authority, must not call them, must not act on descriptors or summaries alone,\s+and reports its bounded result against that verified packet/i,
+  );
+  assert.doesNotMatch(
+    text,
+    /every fresh coordinator or specialist session,[\s\S]*?`ima_lifecycle_recall`[\s\S]*?`ima_lifecycle_get`/i,
+  );
+  assert.doesNotMatch(
+    text,
+    /delegated specialist leaf[^.\n]*\b(?:must|shall|is required to)\s+(?!not\b)[^.\n]*`ima_lifecycle(?:_recall|_get)?`/i,
+  );
+  assert.match(
+    text,
+    /A full `\/ima:cycle` phase host is\s+distinct from a delegated specialist leaf and retains its own fresh lifecycle public-read-pair\s+requirement/i,
+  );
+});
+
 test("soft-cycle user documentation explains flexible input and manual identity gates", async () => {
   const [readme, guide] = await Promise.all([
     readFile(join(root, "README.md"), "utf8"),

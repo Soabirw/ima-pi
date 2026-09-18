@@ -16,11 +16,15 @@ export type McpToolCaller = (
   timeoutMs: number,
 ) => Promise<unknown>;
 
+export type McpToolDiscovery = ((timeoutMs: number) => Promise<unknown>) & {
+  readonly initialization?: unknown;
+};
+
 const clientInfo = { name: "ima-pi", version: "1.9.0" };
 
 export async function withMcpSession<Result>(
   server: McpServer,
-  callback: (call: McpToolCaller) => Promise<Result>,
+  callback: (call: McpToolCaller, listTools: McpToolDiscovery) => Promise<Result>,
   signal?: AbortSignal,
 ): Promise<Result> {
   const [{ Client }, { StdioClientTransport }] = await Promise.all([
@@ -28,6 +32,23 @@ export async function withMcpSession<Result>(
     import("@modelcontextprotocol/sdk/client/stdio.js"),
   ]);
   const client = new Client(clientInfo);
+  let initialization: unknown;
+  const requestClient = client as unknown as {
+    request: (...arguments_: unknown[]) => Promise<unknown>;
+  };
+  const request = requestClient.request.bind(client);
+  requestClient.request = async (...arguments_) => {
+    const result = await request(...arguments_);
+    const requestBody = arguments_[0];
+    if (
+      requestBody
+      && typeof requestBody === "object"
+      && !Array.isArray(requestBody)
+      && Object.hasOwn(requestBody, "method")
+      && (requestBody as { method?: unknown }).method === "initialize"
+    ) initialization = result;
+    return result;
+  };
 
   try {
     const transport = new StdioClientTransport({
@@ -37,11 +58,23 @@ export async function withMcpSession<Result>(
     });
 
     await client.connect(transport, { signal });
-    return await callback((name, arguments_, timeoutMs) => client.callTool(
-      { name, arguments: arguments_ },
+    const listTools = ((timeoutMs: number) => client.listTools(
       undefined,
       { timeout: timeoutMs, signal },
-    ));
+    )) as McpToolDiscovery;
+    Object.defineProperty(listTools, "initialization", {
+      value: initialization,
+      enumerable: false,
+      writable: false,
+    });
+    return await callback(
+      (name, arguments_, timeoutMs) => client.callTool(
+        { name, arguments: arguments_ },
+        undefined,
+        { timeout: timeoutMs, signal },
+      ),
+      listTools,
+    );
   } finally {
     await client.close();
   }

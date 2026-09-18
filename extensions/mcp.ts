@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   createAgentSessionFromServices,
@@ -12,9 +12,14 @@ import {
   type CreateAgentSessionRuntimeFactory,
   type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
+import { createSerenaMcpSession } from "../lib/serena-mcp-session.ts";
+import { withConfiguredMcpSession } from "./integrations.ts";
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const MCP_POLICY_BLOCK_REASON = "MCP operation is not authorized for this child.";
+const SERENA_BOOTSTRAP_TIMEOUT_MS = 300_000;
+export const SERENA_BOOTSTRAP_TOOL = "ima_serena_bootstrap";
 
 export const configuredMcpAdapter = async (pi: ExtensionAPI) => {
   const { createMcpAdapter } = await import("pi-mcp-adapter");
@@ -48,6 +53,7 @@ type McpChildRuntimeInput = {
   tools: readonly string[];
   sessionManager: SessionManager;
   mcpPolicy?: readonly McpPolicyOperation[];
+  serenaBootstrapProject?: string;
 };
 
 const object = (value: unknown): Record<string, unknown> | null =>
@@ -66,6 +72,139 @@ const validMcpPolicyOperation = (operation: unknown): operation is McpPolicyOper
     && object(value.args),
   );
 };
+
+const ownDataRecord = (value: unknown): Record<string, unknown> | null => {
+  try {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const keys = Reflect.ownKeys(value);
+    if (keys.length > 16 || keys.some((key) => typeof key !== "string")) return null;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    if (keys.some((key) => {
+      const descriptor = descriptors[key as string];
+      return !descriptor
+        || descriptor.get
+        || descriptor.set
+        || !descriptor.enumerable
+        || !Object.hasOwn(descriptor, "value");
+    })) return null;
+    return Object.fromEntries(keys.map((key) => [key, descriptors[key as string].value]));
+  } catch {
+    return null;
+  }
+};
+
+const safeSerenaBootstrapProject = (value: unknown): string | null =>
+  typeof value === "string"
+  && value.length > 0
+  && value.length <= 4_096
+  && isAbsolute(value)
+  && !/[\u0000-\u001f\u007f-\u009f]/.test(value)
+  && !value.includes("//")
+  && !value.split("/").some((segment) => segment === "." || segment === "..")
+    ? value
+    : null;
+
+const textToolResponse = (value: unknown): string | null => {
+  const response = ownDataRecord(value);
+  if (
+    !response
+    || response.isError === true
+    || (Object.hasOwn(response, "isError") && response.isError !== false)
+    || !Array.isArray(response.content)
+    || response.content.length !== 1
+  ) return null;
+  const block = ownDataRecord(response.content[0]);
+  return block && block.type === "text" && typeof block.text === "string" && block.text.length <= 300_000
+    ? block.text
+    : null;
+};
+
+const activationReceiptFor = (value: unknown, project: string): boolean => {
+  const text = textToolResponse(value);
+  if (text === null) return false;
+  const firstLine = text.split("\n", 1)[0];
+  const escapedProject = project.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`^The project with name '[^'\\r\\n]+' at ${escapedProject} is activated\\.$`)
+    .test(firstLine);
+};
+
+export const runSerenaBootstrap = async (
+  project: unknown,
+  signal?: AbortSignal,
+): Promise<boolean> => {
+  const expectedProject = safeSerenaBootstrapProject(project);
+  if (!expectedProject || signal?.aborted) return false;
+
+  try {
+    const completed = await withConfiguredMcpSession("serena", async (call, listTools) => {
+      if (!listTools) return false;
+      let advertisedTools: unknown;
+      try {
+        advertisedTools = await listTools(SERENA_BOOTSTRAP_TIMEOUT_MS);
+      } catch {
+        return false;
+      }
+      if (signal?.aborted) return false;
+
+      const created = createSerenaMcpSession({
+        call,
+        advertisedTools,
+        initialization: listTools.initialization,
+      });
+      if (!created.success || !created.capabilities.contextSupported) return false;
+
+      const prepared = await created.session.prepare(SERENA_BOOTSTRAP_TIMEOUT_MS, signal);
+      if (!prepared.success || signal?.aborted) return false;
+
+      let response: unknown;
+      try {
+        response = await created.session.activateProject(
+          expectedProject,
+          SERENA_BOOTSTRAP_TIMEOUT_MS,
+          signal,
+        );
+      } catch {
+        return false;
+      }
+      if (signal?.aborted || !activationReceiptFor(response, expectedProject)) return false;
+      if (prepared.instructionsLoaded) return true;
+
+      try {
+        response = await created.session.initialInstructions(
+          SERENA_BOOTSTRAP_TIMEOUT_MS,
+          signal,
+        );
+      } catch {
+        return false;
+      }
+      return !signal?.aborted && textToolResponse(response) !== null;
+    }, signal);
+    return completed === true;
+  } catch {
+    return false;
+  }
+};
+
+const serenaBootstrapExtension = (project: string) => ({
+  name: "ima-serena-bootstrap",
+  factory: (pi: ExtensionAPI) => {
+    pi.registerTool({
+      name: SERENA_BOOTSTRAP_TOOL,
+      label: "IMA Serena bootstrap",
+      description: "Run the package-owned Serena bootstrap for the fixed delegated checkout.",
+      parameters: Type.Object({}, { additionalProperties: false }),
+      execute: async (_toolCallId, _params, signal) => {
+        if (!await runSerenaBootstrap(project, signal)) {
+          throw new Error("serena_bootstrap_failed");
+        }
+        return {
+          content: [{ type: "text" as const, text: "Serena bootstrap completed." }],
+          details: { status: "completed" },
+        };
+      },
+    });
+  },
+});
 
 const cloneMcpPolicyOperation = (operation: McpPolicyOperation): McpPolicyOperation => ({
   server: operation.server,
@@ -140,11 +279,21 @@ const mcpPolicyExtension = (initialState: McpPolicyState) => ({
 
 export async function createMcpChildRuntime(input: McpChildRuntimeInput) {
   const mcpEnabled = input.tools.includes("mcp");
+  const serenaBootstrapEnabled = input.tools.includes(SERENA_BOOTSTRAP_TOOL);
+  const serenaBootstrapProject = serenaBootstrapEnabled
+    ? safeSerenaBootstrapProject(input.serenaBootstrapProject)
+    : null;
   if (mcpEnabled && input.mcpPolicy === undefined) {
     throw new Error("mcp_policy_required");
   }
   if (!mcpEnabled && input.mcpPolicy !== undefined) {
     throw new Error("mcp_policy_without_tool");
+  }
+  if (serenaBootstrapEnabled && !serenaBootstrapProject) {
+    throw new Error("serena_bootstrap_project_required");
+  }
+  if (!serenaBootstrapEnabled && input.serenaBootstrapProject !== undefined) {
+    throw new Error("serena_bootstrap_without_tool");
   }
 
   const policy = mcpEnabled
@@ -165,7 +314,8 @@ export async function createMcpChildRuntime(input: McpChildRuntimeInput) {
       resourceLoaderOptions: {
         extensionFactories: [
           ...(policy ? [mcpPolicyExtension(policy)] : []),
-          { name: "mcp", factory: configuredMcpAdapter },
+          ...(serenaBootstrapProject ? [serenaBootstrapExtension(serenaBootstrapProject)] : []),
+          ...(mcpEnabled ? [{ name: "mcp", factory: configuredMcpAdapter }] : []),
         ],
         noExtensions: true,
         noSkills: true,

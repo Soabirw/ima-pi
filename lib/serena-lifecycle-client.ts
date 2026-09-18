@@ -4,6 +4,11 @@ import { join } from "node:path";
 import { parse } from "yaml";
 import type { McpToolCaller } from "./mcp-client.ts";
 import {
+  createSerenaMcpSession,
+  supportsSerenaMcpLifecycleSchemas,
+  type SerenaMcpSession,
+} from "./serena-mcp-session.ts";
+import {
   MAX_SERENA_LIFECYCLE_MEMORY_BYTES,
   MAX_SERENA_LIFECYCLE_MEMORY_CHARACTERS,
   isSerenaLifecycleMemoryName,
@@ -25,7 +30,8 @@ export type SerenaLifecycleClientFailureCode =
   | "serena_memory_write_unknown"
   | "serena_project_mismatch"
   | "serena_project_unavailable"
-  | "serena_protocol_unsupported";
+  | "serena_protocol_unsupported"
+  | "serena_session_unavailable";
 
 export type SerenaLifecycleClientResult<Data> =
   | { success: true; data: Data }
@@ -67,6 +73,7 @@ export type SerenaLifecycleClient = {
     input: { memoryName: unknown; content: unknown },
     signal?: AbortSignal,
   ) => Promise<SerenaLifecycleWriteResult>;
+  isSupported?: () => boolean;
 };
 
 export type SerenaLifecycleProjectInspector = (
@@ -110,28 +117,6 @@ export type SerenaLifecycleProjectInspection = {
 const MAX_PROJECT_CONFIGURATION_BYTES = 256_000;
 const MAX_MCP_TEXT_BYTES = 300_000;
 const DEFAULT_PROJECT_SERENA_FOLDER_LOCATION = "$projectDir/.serena";
-const REQUIRED_TOOLS = {
-  activate_project: {
-    required: { project: "string" },
-    optional: {},
-  },
-  list_memories: {
-    required: {},
-    optional: { topic: "string" },
-  },
-  read_memory: {
-    required: { memory_name: "string" },
-    optional: {},
-  },
-  write_memory: {
-    required: {
-      memory_name: "string",
-      content: "string",
-    },
-    optional: { max_chars: "integer" },
-  },
-} as const;
-
 type FilesystemNode = {
   dev: number;
   ino: number;
@@ -263,64 +248,8 @@ const writeSettled = (): SerenaLifecycleWriteResult => ({
 });
 const aborted = (signal?: AbortSignal) => signal?.aborted === true;
 
-const objectProperty = (value: Record<string, unknown>, key: string): unknown =>
-  Object.hasOwn(value, key) ? value[key] : undefined;
-
-const matchesToolSchema = (
-  inputSchema: unknown,
-  contract: {
-    required: Readonly<Record<string, string>>;
-    optional: Readonly<Record<string, string>>;
-  },
-): boolean => {
-  const schema = ownDataRecord(inputSchema);
-  if (!schema || schema.type !== "object") return false;
-
-  const properties = ownDataRecord(objectProperty(schema, "properties"));
-  const required = objectProperty(schema, "required") === undefined
-    ? []
-    : ownDataArray(objectProperty(schema, "required"), 32);
-  if (!properties || !required || !required.every((field) => typeof field === "string")) return false;
-
-  const requiredFields = Object.keys(contract.required);
-  const optionalFields = Object.keys(contract.optional);
-  const expectedFields = [...requiredFields, ...optionalFields];
-  const propertyFields = Object.keys(properties);
-  if (
-    required.length !== requiredFields.length
-    || !requiredFields.every((field) => required.includes(field))
-    || propertyFields.length !== expectedFields.length
-    || !expectedFields.every((field) => Object.hasOwn(properties, field))
-  ) return false;
-
-  return expectedFields.every((field) => {
-    const property = ownDataRecord(properties[field]);
-    const expectedType = Object.hasOwn(contract.required, field)
-      ? contract.required[field]
-      : contract.optional[field];
-    return property?.type === expectedType;
-  });
-};
-
-export const supportsSerenaLifecycleToolSchemas = (value: unknown): boolean => {
-  const result = ownDataRecord(value);
-  if (!result || Object.keys(result).some((key) => key !== "tools")) return false;
-  const tools = ownDataArray(objectProperty(result, "tools"), 256);
-  if (!tools) return false;
-
-  const found = new Map<string, unknown>();
-  for (const toolValue of tools) {
-    const tool = ownDataRecord(toolValue);
-    const name = tool ? text(tool.name, 256) : null;
-    if (!tool || !name || !Object.hasOwn(REQUIRED_TOOLS, name)) continue;
-    if (found.has(name)) return false;
-    found.set(name, tool.inputSchema);
-  }
-
-  return Object.entries(REQUIRED_TOOLS).every(([name, contract]) =>
-    found.has(name) && matchesToolSchema(found.get(name), contract),
-  );
-};
+export const supportsSerenaLifecycleToolSchemas = (value: unknown): boolean =>
+  supportsSerenaMcpLifecycleSchemas(value);
 
 const textToolResponse = (value: unknown): string | null => {
   const response = ownDataRecord(value);
@@ -657,20 +586,52 @@ const validTimeout = (value: unknown): number | null =>
 
 export const createSerenaLifecycleClient = (input: {
   call: McpToolCaller;
-  advertisedTools: unknown;
+  advertisedTools?: unknown;
   project: unknown;
   inspectProject?: SerenaLifecycleProjectInspector;
   inspectMemory?: SerenaLifecycleMemoryInspector;
   timeoutMs?: number;
+  initialization?: unknown;
+  mcpSession?: SerenaMcpSession;
 }): SerenaLifecycleClient => {
   const project = normalizeSerenaLifecycleProject(input.project);
-  const supported = supportsSerenaLifecycleToolSchemas(input.advertisedTools);
+  const createdSession = input.mcpSession === undefined
+    ? createSerenaMcpSession({
+      call: input.call,
+      advertisedTools: input.advertisedTools,
+      initialization: input.initialization,
+    })
+    : null;
+  const mcpSession = input.mcpSession
+    ?? (createdSession?.success ? createdSession.session : null);
+  const sessionFailure = createdSession && !createdSession.success
+    ? createdSession.code
+    : null;
+  const unsupported = (): SerenaLifecycleClientFailureCode =>
+    sessionFailure ?? "serena_protocol_unsupported";
+  const supported = Boolean(
+    mcpSession
+    && mcpSession.capabilities.lifecycleSupported
+    && (input.mcpSession !== undefined || supportsSerenaLifecycleToolSchemas(input.advertisedTools)),
+  );
   const timeoutMs = validTimeout(input.timeoutMs ?? SERENA_LIFECYCLE_MCP_TIMEOUT_MS);
   const inspectProject = input.inspectProject ?? inspectExistingSerenaLifecycleProject;
   const inspectMemory = input.inspectMemory ?? inspectExistingSerenaLifecycleMemory;
 
   const unavailable = <Data>(code: SerenaLifecycleClientFailureCode): SerenaLifecycleClientResult<Data> =>
     failure(code);
+
+  const prepareSession = async (
+    signal?: AbortSignal,
+  ): Promise<SerenaLifecycleClientFailureCode | null> => {
+    if (!mcpSession || !supported || !timeoutMs) return unsupported();
+    try {
+      const prepared = await mcpSession.prepare(timeoutMs, signal);
+      return prepared.success ? null : prepared.code;
+    } catch {
+      return aborted(signal) ? "aborted" : "serena_session_unavailable";
+    }
+  };
 
   const activate = async (
     value: unknown,
@@ -680,7 +641,7 @@ export const createSerenaLifecycleClient = (input: {
     if (!project || !expected || !sameProject(project, expected)) {
       return unavailable("serena_project_mismatch");
     }
-    if (!supported || !timeoutMs) return unavailable("serena_protocol_unsupported");
+    if (!supported || !timeoutMs) return unavailable(unsupported());
     if (aborted(signal)) return unavailable("aborted");
 
     let inspected: SerenaLifecycleProject | null;
@@ -696,11 +657,14 @@ export const createSerenaLifecycleClient = (input: {
       return unavailable("serena_project_unavailable");
     }
 
+    const preparationFailure = await prepareSession(signal);
+    if (preparationFailure) return unavailable(preparationFailure);
+
     let response: unknown;
     try {
-      response = await input.call("activate_project", { project: project.projectPath }, timeoutMs);
+      response = await mcpSession!.activateProject(project.projectPath, timeoutMs, signal);
     } catch {
-      return unavailable("serena_project_unavailable");
+      return unavailable(aborted(signal) ? "aborted" : "serena_project_unavailable");
     }
     if (aborted(signal)) return unavailable("aborted");
     const receipt = textToolResponse(response);
@@ -712,7 +676,7 @@ export const createSerenaLifecycleClient = (input: {
   const listMemoryNames = async (
     signal?: AbortSignal,
   ): Promise<SerenaLifecycleClientResult<string[]>> => {
-    if (!project || !supported || !timeoutMs) return unavailable("serena_protocol_unsupported");
+    if (!project || !supported || !timeoutMs) return unavailable(unsupported());
     if (aborted(signal)) return unavailable("aborted");
 
     let inspected: SerenaLifecycleProject | null;
@@ -728,11 +692,14 @@ export const createSerenaLifecycleClient = (input: {
       return unavailable("serena_project_unavailable");
     }
 
+    const preparationFailure = await prepareSession(signal);
+    if (preparationFailure) return unavailable(preparationFailure);
+
     let response: unknown;
     try {
-      response = await input.call("list_memories", {}, timeoutMs);
+      response = await mcpSession!.listMemories(timeoutMs, signal);
     } catch {
-      return unavailable("serena_memory_listing_unverifiable");
+      return unavailable(aborted(signal) ? "aborted" : "serena_memory_listing_unverifiable");
     }
     if (aborted(signal)) return unavailable("aborted");
     const names = textToolResponse(response);
@@ -746,7 +713,7 @@ export const createSerenaLifecycleClient = (input: {
   ): Promise<SerenaLifecycleClientResult<string>> => {
     const memoryName = isSerenaLifecycleMemoryName(value) ? value : null;
     if (!memoryName) return unavailable("serena_memory_read_unverifiable");
-    if (!project || !supported || !timeoutMs) return unavailable("serena_protocol_unsupported");
+    if (!project || !supported || !timeoutMs) return unavailable(unsupported());
     if (aborted(signal)) return unavailable("aborted");
 
     let inspected: SerenaLifecycleProject | null;
@@ -764,11 +731,14 @@ export const createSerenaLifecycleClient = (input: {
       return unavailable("serena_memory_read_unavailable");
     }
 
+    const preparationFailure = await prepareSession(signal);
+    if (preparationFailure) return unavailable(preparationFailure);
+
     let response: unknown;
     try {
-      response = await input.call("read_memory", { memory_name: memoryName }, timeoutMs);
+      response = await mcpSession!.readMemory(memoryName, timeoutMs, signal);
     } catch {
-      return unavailable("serena_memory_read_unavailable");
+      return unavailable(aborted(signal) ? "aborted" : "serena_memory_read_unavailable");
     }
     if (aborted(signal)) return unavailable("aborted");
     const content = textToolResponse(response);
@@ -794,7 +764,7 @@ export const createSerenaLifecycleClient = (input: {
       ? writeInput.content
       : null;
     if (!memoryName || content === null) return writePreDispatchFailure("serena_memory_write_unknown");
-    if (!project || !supported || !timeoutMs) return writePreDispatchFailure("serena_protocol_unsupported");
+    if (!project || !supported || !timeoutMs) return writePreDispatchFailure(unsupported());
     if (aborted(signal)) return writePreDispatchFailure("aborted");
 
     let inspected: SerenaLifecycleProject | null;
@@ -812,14 +782,14 @@ export const createSerenaLifecycleClient = (input: {
       return writePreDispatchFailure("serena_memory_write_unknown");
     }
 
+    const preparationFailure = await prepareSession(signal);
+    if (preparationFailure) return writePreDispatchFailure(preparationFailure);
+
     let response: unknown;
     try {
-      response = await input.call("write_memory", {
-        memory_name: memoryName,
-        content,
-      }, timeoutMs);
+      response = await mcpSession!.writeMemory({ memoryName, content }, timeoutMs, signal);
     } catch {
-      return writeUnknown("serena_memory_write_unknown");
+      return writeUnknown(aborted(signal) ? "aborted" : "serena_memory_write_unknown");
     }
     if (aborted(signal)) return writeUnknown("aborted");
     const receipt = textToolResponse(response);
@@ -828,5 +798,11 @@ export const createSerenaLifecycleClient = (input: {
       : writeUnknown("serena_memory_write_unknown");
   };
 
-  return { activate, listMemoryNames, readMemory, writeMemory };
+  return {
+    activate,
+    listMemoryNames,
+    readMemory,
+    writeMemory,
+    isSupported: () => supported && timeoutMs !== null,
+  };
 };

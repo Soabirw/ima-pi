@@ -38,7 +38,11 @@ import {
   type ValidLifecycleRequest,
 } from "../lib/ima-lifecycle.ts";
 import { storeInstitutionalManifest } from "../lib/qdrant-corpus.ts";
-import { withMcpSession } from "../lib/mcp-client.ts";
+import {
+  withMcpSession,
+  type McpToolDiscovery,
+  type McpToolCaller,
+} from "../lib/mcp-client.ts";
 import { createQdrantCorpusClient, type QdrantCorpusClient } from "../lib/qdrant-http.ts";
 import { createQdrantLifecycleProvider } from "../lib/qdrant-lifecycle.ts";
 import {
@@ -60,6 +64,11 @@ import {
 import { resolveBookStackOrigin } from "../lib/bookstack-migrate-config.ts";
 import { createMarkdownLifecycleAdapter } from "../lib/markdown-lifecycle.ts";
 import { createSerenaLifecycleClient } from "../lib/serena-lifecycle-client.ts";
+import {
+  createLegacySerenaMcpSession,
+  createSerenaMcpSession,
+  type SerenaMcpSession,
+} from "../lib/serena-mcp-session.ts";
 import { createSerenaLifecycleProvider } from "../lib/serena-lifecycle.ts";
 import { createSerenaLifecycleProject } from "../lib/serena-lifecycle-record.ts";
 import {
@@ -367,15 +376,11 @@ const mcpServer = async (name: string) => {
   }
 };
 
-export type McpToolCaller = (
-  name: string,
-  arguments_: Record<string, unknown>,
-  timeoutMs: number,
-) => Promise<unknown>;
+export type { McpToolCaller } from "../lib/mcp-client.ts";
 
 export type McpSession = <Result>(
   serverName: string,
-  callback: (call: McpToolCaller) => Promise<Result>,
+  callback: (call: McpToolCaller, listTools?: McpToolDiscovery) => Promise<Result>,
   signal?: AbortSignal,
 ) => Promise<Result | null>;
 
@@ -758,6 +763,13 @@ const directResult = (value: unknown) => {
 
   return null;
 };
+const serenaActivationMatchesRoot = (value: string, root: string) => {
+  const firstLine = value.split("\n", 1)[0];
+  const escapedRoot = root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`^The project with name '[^'\\r\\n]+' at ${escapedRoot} is activated\\.$`)
+    .test(firstLine);
+};
+
 const listedMemoryNames = (value: string | null) => {
   if (value === null) return null;
 
@@ -769,16 +781,49 @@ const listedMemoryNames = (value: string | null) => {
     return null;
   }
 };
-const safeToolCall = async (
+type SerenaMcpSessionResolution =
+  | { success: true; session: SerenaMcpSession }
+  | { success: false; code: string };
+
+const resolveSerenaMcpSession = async (
   call: McpToolCaller,
-  name: string,
-  arguments_: Record<string, unknown>,
-  timeoutMs: number,
+  listTools: McpToolDiscovery | undefined,
+  signal?: AbortSignal,
+): Promise<SerenaMcpSessionResolution> => {
+  if (signal?.aborted) return { success: false, code: "aborted" };
+  if (!listTools) {
+    const legacy = createLegacySerenaMcpSession(call);
+    return legacy.success
+      ? { success: true, session: legacy.session }
+      : { success: false, code: legacy.code };
+  }
+
+  let advertisedTools: unknown;
+  try {
+    advertisedTools = await listTools(MCP_TIMEOUT);
+  } catch {
+    throwIfAborted(signal);
+    return { success: false, code: "serena_capability_discovery_failed" };
+  }
+  if (signal?.aborted) return { success: false, code: "aborted" };
+
+  const created = createSerenaMcpSession({
+    call,
+    advertisedTools,
+    initialization: listTools.initialization,
+  });
+  return created.success
+    ? { success: true, session: created.session }
+    : { success: false, code: created.code };
+};
+
+const safeSerenaToolCall = async (
+  operation: () => Promise<unknown>,
   signal?: AbortSignal,
 ) => {
   throwIfAborted(signal);
   try {
-    const result = await call(name, arguments_, timeoutMs);
+    const result = await operation();
     throwIfAborted(signal);
     return result;
   } catch {
@@ -786,6 +831,7 @@ const safeToolCall = async (
     return null;
   }
 };
+
 const serenaFailure = (
   activated: boolean,
   instructionsLoaded: boolean,
@@ -803,34 +849,43 @@ async function serena(
 ) {
   throwIfAborted(signal);
   try {
-    const setup = await deps.session("serena", async (call) => {
-      const activation = directResult(await safeToolCall(
-        call,
-        "activate_project",
-        { project: root },
-        MCP_TIMEOUT,
+    const setup = await deps.session("serena", async (call, listTools) => {
+      const resolved = await resolveSerenaMcpSession(call, listTools, signal);
+      if (!resolved.success) return serenaFailure(false, false, false, resolved.code);
+      if (!resolved.session.capabilities.contextSupported) {
+        return serenaFailure(false, false, false, "serena_protocol_unsupported");
+      }
+
+      const preparation = await resolved.session.prepare(MCP_TIMEOUT, signal);
+      if (!preparation.success) {
+        return serenaFailure(false, false, false, preparation.code);
+      }
+
+      const activation = directResult(await safeSerenaToolCall(
+        () => resolved.session.activateProject(root, MCP_TIMEOUT, signal),
         signal,
       ));
-      if (activation === null) return serenaFailure(false, false, false, "serena_activation_failed");
+      if (
+        activation === null
+        || !serenaActivationMatchesRoot(activation, root)
+      ) return serenaFailure(false, preparation.instructionsLoaded, false, "serena_activation_failed");
 
-      const instructions = directResult(await safeToolCall(
-        call,
-        "initial_instructions",
-        {},
-        MCP_TIMEOUT,
-        signal,
-      ));
-      if (instructions === null) return serenaFailure(true, false, false, "serena_instructions_failed");
+      let instructionsLoaded = preparation.instructionsLoaded;
+      if (!instructionsLoaded) {
+        const instructions = directResult(await safeSerenaToolCall(
+          () => resolved.session.initialInstructions(MCP_TIMEOUT, signal),
+          signal,
+        ));
+        if (instructions === null) return serenaFailure(true, false, false, "serena_instructions_failed");
+        instructionsLoaded = true;
+      }
 
-      const listing = directResult(await safeToolCall(
-        call,
-        "list_memories",
-        {},
-        MCP_TIMEOUT,
+      const listing = directResult(await safeSerenaToolCall(
+        () => resolved.session.listMemories(MCP_TIMEOUT, signal),
         signal,
       ));
       const names = listedMemoryNames(listing);
-      if (!names) return serenaFailure(true, true, false, "serena_memory_list_failed");
+      if (!names) return serenaFailure(true, instructionsLoaded, false, "serena_memory_list_failed");
 
       const memories: Record<string, string | null | "failed"> = {};
       for (const name of STANDARD_MEMORIES) {
@@ -839,11 +894,8 @@ async function serena(
           continue;
         }
 
-        const content = directResult(await safeToolCall(
-          call,
-          "read_memory",
-          { memory_name: name },
-          MCP_TIMEOUT,
+        const content = directResult(await safeSerenaToolCall(
+          () => resolved.session.readMemory(name, MCP_TIMEOUT, signal),
           signal,
         ));
         memories[name] = text(content) || "failed";
@@ -852,7 +904,7 @@ async function serena(
       return {
         bootstrap: evaluateSerenaBootstrap({
           activated: true,
-          instructionsLoaded: true,
+          instructionsLoaded,
           memoryListLoaded: true,
           memories,
         }),
@@ -1364,14 +1416,6 @@ const coordinateQdrantLifecycle = async (
 };
 
 const LIFECYCLE_REQUEST_FIELDS = ["type", "identity", "summary", "artifact", "provider", "pinAttemptId"] as const;
-const SERENA_LIFECYCLE_TOOL_SCHEMAS = {
-  tools: [
-    { name: "activate_project", inputSchema: { type: "object", properties: { project: { type: "string" } }, required: ["project"] } },
-    { name: "list_memories", inputSchema: { type: "object", properties: { topic: { type: "string" } }, required: [] } },
-    { name: "read_memory", inputSchema: { type: "object", properties: { memory_name: { type: "string" } }, required: ["memory_name"] } },
-    { name: "write_memory", inputSchema: { type: "object", properties: { memory_name: { type: "string" }, content: { type: "string" }, max_chars: { type: "integer" } }, required: ["memory_name", "content"] } },
-  ],
-};
 
 const lifecycleRequestEnvelope = (value: unknown): {
   request: ValidLifecycleRequest;
@@ -1813,6 +1857,10 @@ const serenaProject = async (
   }
 };
 
+type SerenaLifecycleProviderResolution<Result> =
+  | { success: true; result: Result }
+  | { success: false; code: string };
+
 const serenaLifecycleAdapter = (
   checkoutRoot: string,
   deps: ReturnType<typeof depsFor>,
@@ -1820,31 +1868,51 @@ const serenaLifecycleAdapter = (
   const withProvider = async <Result>(
     signal: AbortSignal | undefined,
     operation: (provider: ReturnType<typeof createSerenaLifecycleProvider>) => Promise<Result>,
-  ): Promise<Result | null> => {
+  ): Promise<SerenaLifecycleProviderResolution<Result>> => {
     const project = await serenaProject(checkoutRoot, deps);
-    if (!project || signal?.aborted) return null;
-    return deps.session("serena", async (call) => operation(createSerenaLifecycleProvider({
-      project,
-      client: createSerenaLifecycleClient({
-        call,
-        project,
-        advertisedTools: SERENA_LIFECYCLE_TOOL_SCHEMAS,
-      }),
-    })), signal);
+    if (!project) return { success: false, code: "serena_project_unavailable" };
+    if (signal?.aborted) return { success: false, code: "aborted" };
+
+    try {
+      const scoped = await deps.session("serena", async (call, listTools) => {
+        const resolved = await resolveSerenaMcpSession(call, listTools, signal);
+        if (!resolved.success) return resolved;
+        if (!resolved.session.capabilities.lifecycleSupported) {
+          return { success: false as const, code: "serena_protocol_unsupported" };
+        }
+        return {
+          success: true as const,
+          result: await operation(createSerenaLifecycleProvider({
+            project,
+            client: createSerenaLifecycleClient({
+              call,
+              project,
+              mcpSession: resolved.session,
+            }),
+          })),
+        };
+      }, signal);
+      return scoped ?? { success: false, code: "serena_project_unavailable" };
+    } catch {
+      throwIfAborted(signal);
+      return { success: false, code: "serena_project_unavailable" };
+    }
   };
   const persist = async (request: ValidLifecycleRequest, signal?: AbortSignal): Promise<RoutedLifecyclePersistResult> => {
-    const result = await withProvider(
+    const scoped = await withProvider(
       signal,
       (provider) => provider.persist(projectLifecyclePersistenceRequest(request), signal),
     );
-    if (!result) return blockedPersist("serena", { code: "serena_project_unavailable" }, "no-write");
+    if (!scoped.success) return blockedPersist("serena", { code: scoped.code }, "no-write");
+    const result = scoped.result;
     if (result.status !== "verified") return blockedPersist("serena", result);
     const record = routedRecord({ provider: "serena", value: result, reference: result.reference });
     return record ? { status: "verified", record } : blockedPersist("serena", null);
   };
   const read = async (reference: Record<string, unknown>, signal?: AbortSignal): Promise<RoutedLifecyclePersistResult> => {
-    const result = await withProvider(signal, (provider) => provider.get(reference, signal));
-    if (!result) return blockedPersist("serena", { code: "serena_project_unavailable" }, "no-write");
+    const scoped = await withProvider(signal, (provider) => provider.get(reference, signal));
+    if (!scoped.success) return blockedPersist("serena", { code: scoped.code }, "no-write");
+    const result = scoped.result;
     if (result.status !== "verified") return blockedPersist("serena", result, "no-write");
     const record = routedRecord({ provider: "serena", value: result, reference: result.reference });
     return record ? { status: "verified", record } : blockedPersist("serena", null, "no-write");
@@ -1854,19 +1922,21 @@ const serenaLifecycleAdapter = (
     persist,
     get: read,
     reconcile: async (reference, signal) => {
-      const result = await withProvider(signal, (provider) => provider.reconcile(reference, signal));
-      if (!result) return blockedPersist("serena", { code: "serena_project_unavailable" }, "no-write");
+      const scoped = await withProvider(signal, (provider) => provider.reconcile(reference, signal));
+      if (!scoped.success) return blockedPersist("serena", { code: scoped.code }, "no-write");
+      const result = scoped.result;
       if (result.status !== "verified") return blockedPersist("serena", result, "no-write");
       const record = routedRecord({ provider: "serena", value: result, reference: result.reference });
       return record ? { status: "verified", record } : blockedPersist("serena", null, "no-write");
     },
     recall: async (selection, signal) => {
-      const result = await withProvider(signal, (provider) => provider.recall({
+      const scoped = await withProvider(signal, (provider) => provider.recall({
         lifecycleKey: selection.lifecycleKey,
         ...(selection.phase ? { phase: selection.phase } : {}),
         limit: selection.limit,
       }, signal));
-      if (!result) return { status: "blocked", provider: "serena", code: "serena_project_unavailable" };
+      if (!scoped.success) return { status: "blocked", provider: "serena", code: scoped.code };
+      const result = scoped.result;
       if (!Array.isArray(result)) {
         return { status: "blocked", provider: "serena", code: lifecycleCode(result.code, "lifecycle_provider_recall_failed") };
       }

@@ -187,11 +187,17 @@ test("normalizes direct and hydrated sources into the common source shape", () =
 test("Serena evidence explicitly distinguishes missing and failed memories", () => {
   const bootstrap = evaluateSerenaBootstrap({ activated: true, instructionsLoaded: true, memoryListLoaded: true, memories: { core: "Core", conventions: null, tech_stack: "failed" } });
   assert.equal(bootstrap.memories.core.status, "loaded"); assert.equal(bootstrap.memories.conventions.status, "missing"); assert.equal(bootstrap.memories.tech_stack.status, "failed");
-  assert.deepEqual(bootstrap.missingRequiredMemories, ["conventions", "tech_stack", "suggested_commands", "task_completion"]);
+  assert.deepEqual(bootstrap.missingRequiredMemories, [
+    "conventions",
+    "tech_stack",
+    "suggested_commands",
+    "task_completion",
+    "memory_maintenance",
+  ]);
 });
 test("derives ready, degraded, and failed contexts without mutating inputs", () => {
   const source = normalizeSourcePayload({ source: sources[4], payload: null });
-  const ready = evaluateSerenaBootstrap({ activated: true, instructionsLoaded: true, memoryListLoaded: true, memories: Object.fromEntries(["core", "conventions", "tech_stack", "suggested_commands", "task_completion"].map((name) => [name, name])) });
+  const ready = evaluateSerenaBootstrap({ activated: true, instructionsLoaded: true, memoryListLoaded: true, memories: Object.fromEntries(["core", "conventions", "tech_stack", "suggested_commands", "task_completion", "memory_maintenance"].map((name) => [name, name])) });
   assert.equal(derivePhaseContext({ cwd: "/repo", serenaProjectPath: "/repo", source, serena: ready }).status, "ready");
   assert.equal(derivePhaseContext({ cwd: "/repo", serenaProjectPath: "/repo", source, serena: { ...ready, missingRequiredMemories: ["core"] } }).status, "degraded");
   assert.equal(derivePhaseContext({ cwd: "/repo", serenaProjectPath: "/repo", source: null, serena: ready }).status, "failed");

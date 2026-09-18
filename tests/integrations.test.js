@@ -176,13 +176,15 @@ const createCorpus = (overrides = {}) => {
 };
 
 const direct = (result) => ({ content: [{ type: "text", text: result }] });
-const standardMemories = ["core", "conventions", "tech_stack", "suggested_commands", "task_completion"];
+const standardMemories = ["core", "conventions", "tech_stack", "suggested_commands", "task_completion", "memory_maintenance"];
+const serenaActivationReceipt = (projectPath) =>
+  `The project with name 'synthetic' at ${projectPath} is activated.`;
 
 const serenaSession = (calls = []) => async (server, callback) => {
   assert.equal(server, "serena");
   return callback(async (name, args) => {
     calls.push([server, name, args]);
-    if (name === "activate_project") return direct("activated");
+    if (name === "activate_project") return direct(serenaActivationReceipt(args.project));
     if (name === "initial_instructions") return direct("instructions");
     if (name === "list_memories") return direct(JSON.stringify({ memories: standardMemories }));
     if (name === "read_memory") return direct(`${args.memory_name} memory`);

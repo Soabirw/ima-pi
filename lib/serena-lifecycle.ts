@@ -169,6 +169,7 @@ const CLIENT_FAILURE_CODES = new Set<SerenaLifecycleClientFailureCode>([
   "serena_project_mismatch",
   "serena_project_unavailable",
   "serena_protocol_unsupported",
+  "serena_session_unavailable",
 ]);
 const CONTROL_CHARACTER = /[\u0000-\u001f\u007f-\u009f]/;
 
@@ -329,6 +330,14 @@ const blocked = (
 });
 
 const isAborted = (signal?: AbortSignal) => signal?.aborted === true;
+
+const clientSupported = (client: SerenaLifecycleClient): boolean => {
+  try {
+    return client.isSupported?.() !== false;
+  } catch {
+    return false;
+  }
+};
 
 const lifecycleFailureCode = (value: unknown): SerenaLifecycleFailureCode =>
   typeof value === "string" && LIFECYCLE_FAILURE_CODES.has(value as SerenaLifecycleFailureCode)
@@ -506,6 +515,7 @@ export const createSerenaLifecycleProvider = (input: {
     signal?: AbortSignal,
   ): Promise<SerenaLifecycleProject | SerenaLifecycleBlockedResult> => {
     if (!project) return blocked("serena_project_mismatch");
+    if (!clientSupported(client)) return blocked("serena_protocol_unsupported");
     if (isAborted(signal)) return blocked("aborted");
 
     let response: unknown;
@@ -705,6 +715,7 @@ export const createSerenaLifecycleProvider = (input: {
 
     const target = preparedTarget(snapshot.request);
     if (!target) return blocked("serena_record_invalid");
+    if (!clientSupported(client)) return blocked("serena_protocol_unsupported");
 
     let lease: SerenaLifecycleProjectLease | null;
     try {
