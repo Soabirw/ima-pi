@@ -124,6 +124,56 @@ const optionalRecovery = (value: unknown, fields: readonly string[]) => {
   }
 };
 
+type BookStackRecallSelection = {
+  placement: LifecyclePlacement;
+  lifecycleKey: string;
+  sourceRef: string;
+  phase?: BookStackLifecycleRecord["phase"];
+};
+
+const recallSelection = (value: unknown): BookStackRecallSelection | null => {
+  try {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const required = ["placement", "lifecycleKey", "sourceRef"];
+    const allowed = [...required, "phase"];
+    const keys = Reflect.ownKeys(value);
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    if (
+      keys.some((key) => typeof key !== "string")
+      || !required.every((field) => keys.includes(field))
+      || keys.some((key) => !allowed.includes(key as string))
+      || keys.some((key) => {
+        const descriptor = descriptors[key as string];
+        return !descriptor
+          || descriptor.get
+          || descriptor.set
+          || !descriptor.enumerable
+          || !Object.hasOwn(descriptor, "value");
+      })
+    ) return null;
+    const placement = projectLifecyclePlacement(descriptors.placement?.value);
+    const phase = Object.hasOwn(descriptors, "phase")
+      ? typeof descriptors.phase?.value === "string" && VALID_PHASES.has(descriptors.phase.value)
+        ? descriptors.phase.value as BookStackLifecycleRecord["phase"]
+        : null
+      : undefined;
+    if (
+      !placement
+      || phase === null
+      || descriptors.lifecycleKey?.value !== placement.lifecycleKey
+      || descriptors.sourceRef?.value !== placement.sourceRef
+    ) return null;
+    return {
+      placement,
+      lifecycleKey: placement.lifecycleKey,
+      sourceRef: placement.sourceRef,
+      ...(phase ? { phase } : {}),
+    };
+  } catch {
+    return null;
+  }
+};
+
 const blocked = (
   error: unknown,
   fallback: string,
@@ -164,29 +214,82 @@ const verifiedPageMetadata = (page: BookStackResource) => {
   };
 };
 
+type VerifiedHierarchy = {
+  shelf: BookStackResource;
+  book: BookStackResource;
+  chapter: BookStackResource;
+};
+
+const hierarchyMatches = (input: {
+  hierarchy: VerifiedHierarchy;
+  placement: LifecyclePlacement;
+  page?: BookStackResource;
+}) => {
+  const { shelf, book, chapter } = input.hierarchy;
+  return shelf.id === input.placement.shelfId
+    && book.id === input.placement.bookId
+    && chapter.id === input.placement.chapterId
+    && shelf.slug === input.placement.shelfSlug
+    && book.slug === input.placement.bookSlug
+    && chapter.slug === input.placement.chapterSlug
+    && chapter.bookId === book.id
+    && Boolean(shelf.books?.includes(book.id))
+    && (!input.page || (
+      input.page.chapterId === chapter.id
+      && input.page.bookId === book.id
+    ));
+};
+
 const verifyHierarchy = async (input: {
   client: BookStackLifecycleClient;
   placement: LifecyclePlacement;
   page?: BookStackResource;
-}) => {
+}): Promise<VerifiedHierarchy> => {
   const [shelf, book, chapter] = await Promise.all([
     input.client.readShelf(input.placement.shelfId),
     input.client.readBook(input.placement.bookId),
     input.client.readChapter(input.placement.chapterId),
   ]);
-  if (shelf.id !== input.placement.shelfId
-    || book.id !== input.placement.bookId
-    || chapter.id !== input.placement.chapterId
-    || shelf.slug !== input.placement.shelfSlug
-    || book.slug !== input.placement.bookSlug
-    || chapter.slug !== input.placement.chapterSlug
-    || chapter.bookId !== book.id
-    || !shelf.books?.includes(book.id)
-    || (input.page && (
-      input.page.chapterId !== chapter.id
-      || input.page.bookId !== book.id
-    ))) throw new Error("bookstack_placement_conflict");
-  return { shelf, book, chapter };
+  const hierarchy = { shelf, book, chapter };
+  if (!hierarchyMatches({ hierarchy, placement: input.placement, page: input.page })) {
+    throw new Error("bookstack_placement_conflict");
+  }
+  return hierarchy;
+};
+
+const verifiedPageRecord = async (input: {
+  client: BookStackLifecycleClient;
+  pageId: number;
+  placement: LifecyclePlacement;
+  expected?: BookStackLifecycleRecord;
+  hierarchy?: VerifiedHierarchy;
+  signal?: AbortSignal;
+}) => {
+  throwIfAborted(input.signal);
+  const page = await input.client.readPage(input.pageId);
+  throwIfAborted(input.signal);
+  if (page.id !== input.pageId) throw new Error("bookstack_verification_failed");
+  const hierarchy = input.hierarchy ?? await verifyHierarchy({
+    client: input.client,
+    placement: input.placement,
+    page,
+  });
+  throwIfAborted(input.signal);
+  if (!hierarchyMatches({ hierarchy, placement: input.placement, page })) {
+    throw new Error("bookstack_placement_conflict");
+  }
+  const metadata = verifiedPageMetadata(page);
+  const record = parseLifecycleRecord(page.markdown);
+  if (!record
+    || page.slug !== pageName(record)
+    || !hierarchyMatches({ hierarchy, placement: record.placement, page })
+    || (input.expected && (
+      record.pageMarkdown !== input.expected.pageMarkdown
+      || record.artifactId !== input.expected.artifactId
+      || record.contentHash !== input.expected.contentHash
+      || record.recordKey !== input.expected.recordKey
+    ))) throw new Error("bookstack_verification_failed");
+  return { page, record, metadata, pageHash: digestBookStackValue(page.markdown!) };
 };
 
 const verifiedPage = async (input: {
@@ -195,21 +298,11 @@ const verifiedPage = async (input: {
   placement: LifecyclePlacement;
   expected?: BookStackLifecycleRecord;
 }) => {
-  const page = await input.client.readPage(input.pageId);
-  if (page.id !== input.pageId) throw new Error("bookstack_verification_failed");
-  await verifyHierarchy({ client: input.client, placement: input.placement, page });
-  const metadata = verifiedPageMetadata(page);
-  const record = parseLifecycleRecord(page.markdown);
-  if (!record
-    || page.slug !== pageName(record)
-    || !placementMatches(record.placement, input.placement)
-    || (input.expected && (
-      record.pageMarkdown !== input.expected.pageMarkdown
-      || record.artifactId !== input.expected.artifactId
-      || record.contentHash !== input.expected.contentHash
-      || record.recordKey !== input.expected.recordKey
-    ))) throw new Error("bookstack_verification_failed");
-  return { page, record, metadata, pageHash: digestBookStackValue(page.markdown!) };
+  const verified = await verifiedPageRecord(input);
+  if (!placementMatches(verified.record.placement, input.placement)) {
+    throw new Error("bookstack_verification_failed");
+  }
+  return verified;
 };
 
 export const projectLocator = (value: unknown, normalizedOrigin: string): LifecycleLocator | null => {
@@ -671,26 +764,42 @@ export const createBookStackLifecycleProvider = (input: {
     }
   };
 
-  const recall = async (value: unknown): Promise<VerifiedResult[] | BlockedResult> => {
-    const selection = dataRecord(value, ["placement", "lifecycleKey", "sourceRef"]);
-    const placement = projectLifecyclePlacement(selection?.placement);
-    if (!selection || !placement || selection.lifecycleKey !== placement.lifecycleKey || selection.sourceRef !== placement.sourceRef) {
-      return blocked("bookstack_placement_invalid", "bookstack_placement_invalid");
-    }
+  const recall = async (
+    value: unknown,
+    signal?: AbortSignal,
+  ): Promise<VerifiedResult[] | BlockedResult> => {
+    const selection = recallSelection(value);
+    if (!selection) return blocked("bookstack_placement_invalid", "bookstack_placement_invalid");
     try {
-      await verifyHierarchy({ client: input.client, placement });
-      const chapterPages = (await input.client.listPages()).filter((page) => page.chapterId === placement.chapterId);
-      const records = await Promise.all(chapterPages.map(async (page) => {
-        const pageRecord = parseLifecycleRecord((await input.client.readPage(page.id)).markdown);
-        if (!pageRecord) throw new Error("bookstack_verification_failed");
-        const verified = await verifiedPage({ client: input.client, pageId: page.id, placement: pageRecord.placement });
-        return placementMatches(pageRecord.placement, placement)
-          && verified.record.lifecycleKey === placement.lifecycleKey
-          && verified.record.identity.sourceRefs.includes(placement.sourceRef)
-          ? receipt({ client: input.client, verified, disposition: "unchanged" })
-          : null;
-      }));
-      return records.filter((record): record is VerifiedResult => record !== null);
+      throwIfAborted(signal);
+      const hierarchy = await verifyHierarchy({ client: input.client, placement: selection.placement });
+      throwIfAborted(signal);
+      const candidates = (await input.client.listPages())
+        .filter((page) => page.chapterId === selection.placement.chapterId);
+      throwIfAborted(signal);
+      const records: VerifiedResult[] = [];
+      for (const candidate of candidates) {
+        if (!positiveId(candidate.id)) throw new Error("bookstack_verification_failed");
+        throwIfAborted(signal);
+        const verified = await verifiedPageRecord({
+          client: input.client,
+          pageId: candidate.id,
+          placement: selection.placement,
+          hierarchy,
+          signal,
+        });
+        throwIfAborted(signal);
+        if (
+          placementMatches(verified.record.placement, selection.placement)
+          && verified.record.lifecycleKey === selection.lifecycleKey
+          && verified.record.identity.sourceRefs.includes(selection.sourceRef)
+          && (selection.phase === undefined || verified.record.phase === selection.phase)
+        ) {
+          records.push(receipt({ client: input.client, verified, disposition: "unchanged" }));
+        }
+      }
+      throwIfAborted(signal);
+      return records;
     } catch (error) {
       return blocked(error, "bookstack_recall_unavailable");
     }

@@ -191,6 +191,47 @@ one-line outcome, lifecycle key, and the latest `artifactId` plus `recordKey`. P
 provider-native reference in the inherited lifecycle evidence, not by duplicating the detailed
 artifact or prescribing the destination phase's work.
 
+## Lifecycle content screening
+
+`ima_lifecycle` screens the complete bounded tool input locally before provider selection,
+provider confirmation, corpus access, pin access, or any provider effect. The screen is ordered
+**block > warn > allow**. Ordinary conceptual API and security prose is allowed silently. Definite
+or strongly credential-shaped material is blocked with no override. Explicit non-value placeholders
+remain allowed; synthetic bearer-shaped markers are ambiguous and require adjudication rather than
+being silently accepted.
+
+A warning returns a safe `pending` result containing only an opaque adjudication handle, closed
+`continue_after_review`/`reject` decision values, and safe findings: a closed category plus field,
+array index when applicable, line, and column. Each disclosed warning binding has its own opaque
+finding handle and its correlated safe findings. Continue only through the existing `ima_lifecycle`
+tool with the closed `contentAdjudication` handle and one explicit decision for every disclosed
+finding handle; do not resend the original request or suspected content. At most 16 warning
+findings may be disclosed for one operation. A seventeenth warning fails closed with a bounded
+`finding_overflow` diagnostic and creates no handle. An incomplete, duplicate, unknown, or malformed
+decision set is consumed and rejected. This works for manual and noninteractive callers as well as
+TUI callers.
+
+The process-memory pending operation is bounded and expiring, owner-and-checkout-bound, atomically
+consumed, and rejects replay, concurrent, expired, malformed, or mismatched decisions. It retains
+the exact operation only in process memory until consumption or expiry; it never returns, logs, or
+persists that operation. The stored operation is rescanned before one normal lifecycle-tool call
+resumes; ordinary pin and authority
+checks run again. An internal fingerprint binds the exact operation only in process memory: it is
+never returned, logged, persisted, or included in findings. This is not a phase, workflow, cycle,
+or agent continuation.
+
+Provider responses remain subject to post-write and post-read screening plus the existing integrity
+checks. A warning-tier read candidate is withheld and returns the same process-local read-only
+adjudication path; only an approved handle can re-run the exact read under fresh authority and
+integrity checks. For a multi-record recall, safe findings are collected for every warning binding
+before one pending result is issued. Any definite block in that final recall, in either provider
+order, takes precedence: warning candidates are discarded, no handle is created, and no
+continuation or re-read occurs. A read continuation never persists, pins, selects a provider, or
+changes history. Definite findings fail closed. An unexpected warning after a provider persistence
+attempt remains a safe `possible-write` diagnostic and never creates a persistence continuation. No
+screening path retries, falls back, changes provider authority, alters pins, or stores a screening
+decision durably.
+
 ## Configuration classification
 
 Lifecycle preferences and non-sensitive source, artifact, record, and provider identifiers are

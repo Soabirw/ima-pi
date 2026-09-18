@@ -9,6 +9,7 @@ import {
   lifecycleReadSourceIdentityFingerprint,
   routeLifecycleGet,
   routeLifecyclePersistence,
+  routeLifecycleRecall,
   routePinnedLifecycleGet,
   routePinnedLifecyclePersistence,
   routePinnedLifecycleRecall,
@@ -799,4 +800,337 @@ test("blocks existing rootless non-plan pins before recall or continuation persi
     writeState: "no-write",
   });
   assert.deepEqual(calls, ["reconcile", "reconcile"]);
+});
+
+test("keeps safe post-write screening diagnostics and possible-write state", async () => {
+  const request = requestFor();
+  const screenedRecord = {
+    ...recordFor(request),
+    artifact: "token=not-a-placeholder",
+  };
+  const routing = createLifecycleRouting([{
+    provider: "qdrant",
+    persist: async () => ({ status: "verified", record: screenedRecord }),
+    recall: async () => ({ status: "verified", provider: "qdrant", records: [screenedRecord] }),
+  }]);
+
+  const persisted = await routeLifecyclePersistence({
+    routing,
+    provider: "qdrant",
+    request,
+  });
+  assert.deepEqual(persisted, {
+    status: "blocked",
+    provider: "qdrant",
+    code: "lifecycle_provider_response_invalid",
+    writeState: "possible-write",
+    diagnostic: {
+      reason: "record_artifact_secret_named",
+      findings: [{
+        category: "credential_assignment",
+        field: "artifact",
+        index: null,
+        line: 1,
+        column: 1,
+      }],
+    },
+  });
+
+  const recalled = await routeLifecycleRecall({
+    routing,
+    provider: "qdrant",
+    lifecycleKey,
+    limit: 1,
+  });
+  assert.deepEqual(recalled, {
+    status: "blocked",
+    provider: "qdrant",
+    code: "lifecycle_provider_record_artifact_secret_named_invalid",
+    readPhase: "plan",
+    diagnostic: persisted.diagnostic,
+  });
+  assert.doesNotMatch(JSON.stringify({ persisted, recalled }), /not-a-placeholder/);
+});
+
+test("allows exact comma-delimited bearer-role prose in a valid routed record", async () => {
+  const exactText = "AC1: HTTPS, query-token webhook, bearer administrator, internal coordinator...";
+  const request = validateLifecycleWriteRequest({
+    type: "plan",
+    identity,
+    summary: exactText,
+    artifact: exactText,
+  });
+  assert.equal(request.valid, true);
+  if (!request.valid) throw new Error("comma-delimited prose fixture request is invalid");
+  const record = recordFor(request);
+  const routing = createLifecycleRouting([{
+    provider: "qdrant",
+    persist: async () => ({ status: "verified", record }),
+    recall: async () => ({ status: "verified", provider: "qdrant", records: [record] }),
+  }]);
+  let captures = 0;
+  const result = await routeLifecycleRecall({
+    routing,
+    provider: "qdrant",
+    lifecycleKey,
+    limit: 1,
+    captureWarningBindings: () => { captures += 1; },
+  });
+  assert.equal(result.status, "verified");
+  assert.equal(captures, 0);
+});
+
+test("handles combined summary and artifact warning bounds before projection", async () => {
+  const warningText = (count) => Array.from(
+    { length: count },
+    (_unused, index) => `Bearer test-warning-${index + 1}`,
+  ).join("; ");
+  const recordForCounts = (summaryCount, artifactCount) => {
+    const request = validateLifecycleWriteRequest({
+      type: "plan",
+      identity,
+      summary: warningText(summaryCount),
+      artifact: warningText(artifactCount),
+    });
+    assert.equal(request.valid, true);
+    if (!request.valid) throw new Error("combined warning fixture request is invalid");
+    return recordFor(request);
+  };
+  const withinBound = recordForCounts(8, 8);
+  const withinRouting = createLifecycleRouting([{
+    provider: "qdrant",
+    persist: async () => ({ status: "verified", record: withinBound }),
+    recall: async () => ({ status: "verified", provider: "qdrant", records: [withinBound] }),
+  }]);
+  let warnings = [];
+  const warning = await routeLifecycleRecall({
+    routing: withinRouting,
+    provider: "qdrant",
+    lifecycleKey,
+    limit: 1,
+    captureWarningBindings: (captured) => { warnings = [...captured]; },
+  });
+  assert.equal(warning.status, "blocked");
+  assert.equal(warnings.length, 1);
+  assert.equal(warnings[0].findings.length, 16);
+
+  const overflow = recordForCounts(8, 9);
+  const overflowRouting = createLifecycleRouting([{
+    provider: "qdrant",
+    persist: async () => ({ status: "verified", record: overflow }),
+    recall: async () => ({ status: "verified", provider: "qdrant", records: [overflow] }),
+  }]);
+  let captured = 0;
+  const blocked = await routeLifecycleRecall({
+    routing: overflowRouting,
+    provider: "qdrant",
+    lifecycleKey,
+    limit: 1,
+    captureWarningBindings: () => { captured += 1; },
+  });
+  assert.equal(blocked.status, "blocked");
+  assert.equal(captured, 0);
+  assert.deepEqual(
+    blocked.status === "blocked"
+      ? blocked.diagnostic?.findings.map(({ category, field, index }) => ({ category, field, index }))
+      : [],
+    [{ category: "finding_overflow", field: "artifact", index: null }],
+  );
+
+  const definiteAfterOverflowRequest = validateLifecycleWriteRequest({
+    type: "plan",
+    identity,
+    summary: warningText(17),
+    artifact: "Bearer opaque-value",
+  });
+  assert.equal(definiteAfterOverflowRequest.valid, true);
+  if (!definiteAfterOverflowRequest.valid) throw new Error("definite overflow fixture request is invalid");
+  const definiteAfterOverflow = recordFor(definiteAfterOverflowRequest);
+  const definiteAfterOverflowRouting = createLifecycleRouting([{
+    provider: "qdrant",
+    persist: async () => ({ status: "verified", record: definiteAfterOverflow }),
+    recall: async () => ({ status: "verified", provider: "qdrant", records: [definiteAfterOverflow] }),
+  }]);
+  let definiteCapture = 0;
+  const definiteAfter = await routeLifecycleRecall({
+    routing: definiteAfterOverflowRouting,
+    provider: "qdrant",
+    lifecycleKey,
+    limit: 1,
+    captureWarningBindings: () => { definiteCapture += 1; },
+  });
+  assert.equal(definiteAfter.status, "blocked");
+  assert.equal(definiteCapture, 0);
+  assert.equal(
+    definiteAfter.status === "blocked" ? definiteAfter.diagnostic?.findings[0].category : null,
+    "bearer_credential",
+  );
+});
+
+test("screens every valid routed artifact above the request character bound", async () => {
+  const artifactFor = (suffix) => `${"x".repeat(127_900)}\n${suffix}`;
+  const request = validateLifecycleWriteRequest({
+    type: "plan",
+    identity,
+    summary: "Large routed lifecycle screening evidence remains bounded.",
+    artifact: artifactFor("Bearer test-token-value"),
+  });
+  assert.equal(request.valid, true);
+  if (!request.valid) throw new Error("large warning fixture request is invalid");
+  const prepared = prepareLifecycleArtifact(request);
+  assert.equal(prepared.valid, true);
+  if (!prepared.valid) throw new Error("large warning fixture artifact is invalid");
+  assert.equal(Buffer.byteLength(prepared.data.artifact, "utf8") > 128_000, true);
+  assert.equal(Buffer.byteLength(prepared.data.artifact, "utf8") <= 160_000, true);
+  const warningRecord = recordFor(request);
+  const warningRouting = createLifecycleRouting([{
+    provider: "qdrant",
+    persist: async () => ({ status: "verified", record: warningRecord }),
+    recall: async () => ({ status: "verified", provider: "qdrant", records: [warningRecord] }),
+  }]);
+  let warnings = [];
+  const warning = await routeLifecycleRecall({
+    routing: warningRouting,
+    provider: "qdrant",
+    lifecycleKey,
+    limit: 1,
+    captureWarningBindings: (captured) => { warnings = [...captured]; },
+  });
+  assert.equal(warning.status, "blocked");
+  assert.deepEqual(warnings.map(({ findings }) =>
+    findings.map(({ category, field }) => ({ category, field }))), [[
+    { category: "synthetic_bearer", field: "artifact" },
+  ]]);
+
+  const definiteRequest = validateLifecycleWriteRequest({
+    type: "plan",
+    identity,
+    summary: "Large definite lifecycle screening evidence remains bounded.",
+    artifact: artifactFor("Bearer opaque-value"),
+  });
+  assert.equal(definiteRequest.valid, true);
+  if (!definiteRequest.valid) throw new Error("large definite fixture request is invalid");
+  const definiteRecord = recordFor(definiteRequest);
+  const definiteRouting = createLifecycleRouting([{
+    provider: "qdrant",
+    persist: async () => ({ status: "verified", record: definiteRecord }),
+    recall: async () => ({ status: "verified", provider: "qdrant", records: [definiteRecord] }),
+  }]);
+  const definite = await routeLifecycleRecall({
+    routing: definiteRouting,
+    provider: "qdrant",
+    lifecycleKey,
+    limit: 1,
+  });
+  assert.equal(definite.status, "blocked");
+  assert.equal(definite.status === "blocked" ? definite.diagnostic?.findings[0].category : null, "bearer_credential");
+  assert.doesNotMatch(JSON.stringify(definite), /opaque-value/);
+});
+
+test("retains a projected warning diagnostic when pinned persistence rejects a mismatch", async () => {
+  const initial = recordFor(requestFor("plan"));
+  const pin = pinFor(initial);
+  const request = requestFor("implementation", initial.artifactId);
+  const changed = {
+    ...recordFor(request),
+    summary: "Bearer test-token-value",
+  };
+  const routing = createLifecycleRouting([{
+    provider: "qdrant",
+    reconcile: async () => ({ status: "verified", record: initial }),
+    persist: async () => ({ status: "verified", record: changed }),
+    recall: async () => ({ status: "verified", provider: "qdrant", records: [] }),
+  }]);
+
+  const result = await routePinnedLifecyclePersistence({
+    routing,
+    pin,
+    request,
+    allowWarnings: true,
+  });
+  assert.deepEqual(result, {
+    status: "blocked",
+    provider: "qdrant",
+    code: "lifecycle_provider_response_invalid",
+    writeState: "possible-write",
+    diagnostic: {
+      reason: "record_summary_invalid",
+      findings: [{
+        category: "synthetic_bearer",
+        field: "summary",
+        index: null,
+        line: 1,
+        column: 1,
+      }],
+    },
+  });
+  assert.doesNotMatch(JSON.stringify(result), /test-token-value/);
+});
+
+test("withholds warning-tier provider content until an internal continuation binding permits it", async () => {
+  const request = validateLifecycleWriteRequest({
+    type: "plan",
+    identity,
+    summary: "The Bearer authentication scheme is documented for this API.",
+    artifact: "Bearer test-token-value",
+  });
+  assert.equal(request.valid, true);
+  if (!request.valid) throw new Error("synthetic bearer fixture request is invalid");
+  const record = recordFor(request);
+  const routing = createLifecycleRouting([{
+    provider: "qdrant",
+    persist: async () => ({ status: "verified", record }),
+    recall: async () => ({ status: "verified", provider: "qdrant", records: [record] }),
+  }]);
+
+  const unexpectedWrite = await routeLifecyclePersistence({
+    routing,
+    provider: "qdrant",
+    request,
+  });
+  assert.equal(unexpectedWrite.status, "blocked");
+  assert.equal(unexpectedWrite.writeState, "possible-write");
+  assert.equal(
+    unexpectedWrite.status === "blocked" ? unexpectedWrite.diagnostic?.reason : null,
+    "record_artifact_secret_bearer_placeholder",
+  );
+  assert.deepEqual(
+    unexpectedWrite.status === "blocked"
+      ? unexpectedWrite.diagnostic?.findings.map(({ category, field, index }) => ({ category, field, index }))
+      : [],
+    [{ category: "synthetic_bearer", field: "artifact", index: null }],
+  );
+
+  const approvedWrite = await routeLifecyclePersistence({
+    routing,
+    provider: "qdrant",
+    request,
+    allowWarnings: true,
+  });
+  assert.equal(approvedWrite.status, "verified");
+
+  let warnings = [];
+  const withheldRead = await routeLifecycleRecall({
+    routing,
+    provider: "qdrant",
+    lifecycleKey,
+    limit: 1,
+    captureWarningBindings: (captured) => { warnings = [...captured]; },
+  });
+  assert.equal(withheldRead.status, "blocked");
+  assert.equal(warnings.length, 1);
+  assert.deepEqual(warnings.map(({ findings }) =>
+    findings.map(({ category, field }) => ({ category, field }))), [[
+    { category: "synthetic_bearer", field: "artifact" },
+  ]]);
+
+  const approvedRead = await routeLifecycleRecall({
+    routing,
+    provider: "qdrant",
+    lifecycleKey,
+    limit: 1,
+    approvedWarningBindings: warnings.map(({ binding }) => binding),
+  });
+  assert.equal(approvedRead.status, "verified");
+  assert.equal(approvedRead.status === "verified" ? approvedRead.records.length : 0, 1);
 });

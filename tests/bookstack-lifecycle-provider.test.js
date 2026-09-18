@@ -38,15 +38,25 @@ const createClient = (options = {}) => {
   let nextPageId = 42;
   let reads = 0;
   let lists = 0;
+  let hierarchyReads = 0;
   return {
     origin: options.origin ?? "https://bookstack.example",
     listPages: async () => {
       lists += 1;
       return pages.map((page) => ({ ...page }));
     },
-    readShelf: async () => ({ ...shelf, books: [...shelf.books] }),
-    readBook: async () => ({ ...book }),
-    readChapter: async () => ({ ...chapter }),
+    readShelf: async () => {
+      hierarchyReads += 1;
+      return { ...shelf, books: [...shelf.books] };
+    },
+    readBook: async () => {
+      hierarchyReads += 1;
+      return { ...book };
+    },
+    readChapter: async () => {
+      hierarchyReads += 1;
+      return { ...chapter };
+    },
     readPage: async (id) => {
       reads += 1;
       return { ...pages.find((page) => page.id === id) };
@@ -79,8 +89,44 @@ const createClient = (options = {}) => {
     pageIds: () => pages.map((page) => page.id),
     lists: () => lists,
     reads: () => reads,
+    hierarchyReads: () => hierarchyReads,
   };
 };
+
+const pageForLifecycleRecord = (id, record, chapterId = placement.chapterId) => ({
+  id,
+  name: `${record.phase}-${record.artifactId}`,
+  slug: `${record.phase}-${record.artifactId}`,
+  bookId: placement.bookId,
+  chapterId,
+  markdown: record.pageMarkdown,
+  revisionCount: 1,
+  updatedAt: "2026-09-11T00:00:00Z",
+  creatorId: 7,
+  updaterId: 8,
+});
+
+const continuationRecord = (phase, rootArtifactId, label) => createLifecycleRecord({
+  request: {
+    ...request,
+    type: phase,
+    identity: {
+      ...identity,
+      lifecycleRootMemoryId: rootArtifactId,
+      priorArtifactIds: [...identity.priorArtifactIds, rootArtifactId],
+    },
+    summary: `${phase} lifecycle evidence ${label}.`,
+    artifact: `# ${phase}\n\nLifecycle evidence ${label}.`,
+  },
+  placement,
+});
+
+const recallInput = (phase) => ({
+  placement: structuredClone(placement),
+  lifecycleKey: identity.lifecycleKey,
+  sourceRef,
+  ...(phase === undefined ? {} : { phase }),
+});
 
 const createPlacementClient = () => {
   const shelves = [];
@@ -225,6 +271,267 @@ test("TEST-006 BookStack recall accepts the exact placement projection and rejec
   assert.equal(mismatchedEvidence.status, "blocked");
   assert.equal(mismatchedEvidence.code, "bookstack_verification_failed");
   assert.equal(fake.creates(), writesBeforeRecall);
+});
+
+test("BookStack recall accepts only a strict optional phase selector", async () => {
+  const plan = createLifecycleRecord({ request, placement });
+  const implementation = continuationRecord("implementation", plan.artifactId, "strict-phase");
+  const fake = createClient({ pages: [
+    pageForLifecycleRecord(61, plan),
+    pageForLifecycleRecord(62, implementation),
+  ] });
+  const provider = createBookStackLifecycleProvider({ client: fake });
+  const before = {
+    hierarchy: fake.hierarchyReads(),
+    lists: fake.lists(),
+    reads: fake.reads(),
+  };
+
+  for (const invalid of [
+    { ...recallInput("plan"), phase: "not-a-lifecycle-phase" },
+    { ...recallInput("plan"), phase: ["plan"] },
+    { ...recallInput("plan"), phase: undefined },
+    { ...recallInput("plan"), extra: true },
+  ]) {
+    const result = await provider.recall(invalid);
+    assert.equal(Array.isArray(result), false);
+    if (Array.isArray(result)) continue;
+    assert.equal(result.code, "bookstack_placement_invalid");
+  }
+  assert.equal(fake.hierarchyReads(), before.hierarchy);
+  assert.equal(fake.lists(), before.lists);
+  assert.equal(fake.reads(), before.reads);
+
+  const selected = await provider.recall(recallInput("implementation"));
+  assert.equal(Array.isArray(selected), true);
+  if (!Array.isArray(selected)) return;
+  assert.deepEqual(selected.map(({ phase }) => phase), ["implementation"]);
+
+  const all = await provider.recall(recallInput());
+  assert.equal(Array.isArray(all), true);
+  if (Array.isArray(all)) assert.deepEqual(all.map(({ phase }) => phase), ["plan", "implementation"]);
+});
+
+test("BookStack recall fully verifies phase candidates with exactly 3 + L + N requests", async () => {
+  const plan = createLifecycleRecord({ request, placement });
+  const implementation = continuationRecord("implementation", plan.artifactId, "request-count");
+  const fake = createClient({ pages: [
+    pageForLifecycleRecord(71, plan),
+    pageForLifecycleRecord(72, implementation),
+    pageForLifecycleRecord(73, plan, 99),
+  ] });
+  const provider = createBookStackLifecycleProvider({ client: fake });
+  const requestedPageIds = [];
+  const readPage = fake.readPage;
+  fake.readPage = async (id) => {
+    requestedPageIds.push(id);
+    return readPage(id);
+  };
+  const before = {
+    hierarchy: fake.hierarchyReads(),
+    lists: fake.lists(),
+    reads: fake.reads(),
+  };
+
+  const result = await provider.recall(recallInput("implementation"));
+  assert.equal(Array.isArray(result), true);
+  if (!Array.isArray(result)) return;
+  assert.deepEqual(result.map(({ phase }) => phase), ["implementation"]);
+  assert.deepEqual(requestedPageIds, [71, 72]);
+
+  const hierarchyRequests = fake.hierarchyReads() - before.hierarchy;
+  const listRequests = fake.lists() - before.lists;
+  const candidateReads = fake.reads() - before.reads;
+  const L = 1;
+  const N = 2;
+  assert.equal(hierarchyRequests, 3);
+  assert.equal(listRequests, L);
+  assert.equal(candidateReads, N);
+  assert.equal(hierarchyRequests + listRequests + candidateReads, 3 + L + N);
+});
+
+test("BookStack recall reads phase candidates sequentially before filtering", async () => {
+  const plan = createLifecycleRecord({ request, placement });
+  const implementation = continuationRecord("implementation", plan.artifactId, "sequential");
+  const fake = createClient({ pages: [
+    pageForLifecycleRecord(81, plan),
+    pageForLifecycleRecord(82, implementation),
+  ] });
+  const provider = createBookStackLifecycleProvider({ client: fake });
+  const readIds = [];
+  let firstReadStarted;
+  const firstRead = new Promise((resolve) => { firstReadStarted = resolve; });
+  let releaseFirstRead;
+  const release = new Promise((resolve) => { releaseFirstRead = resolve; });
+  const readPage = fake.readPage;
+  fake.readPage = async (id) => {
+    readIds.push(id);
+    if (id === 81) {
+      firstReadStarted();
+      await release;
+    }
+    return readPage(id);
+  };
+
+  const pending = provider.recall(recallInput("implementation"));
+  await firstRead;
+  assert.deepEqual(readIds, [81]);
+  releaseFirstRead();
+  const result = await pending;
+  assert.equal(Array.isArray(result), true);
+  if (Array.isArray(result)) assert.deepEqual(result.map(({ phase }) => phase), ["implementation"]);
+  assert.deepEqual(readIds, [81, 82]);
+});
+
+test("BookStack recall observes cancellation boundaries without returning partial evidence", async () => {
+  const plan = createLifecycleRecord({ request, placement });
+  const implementation = continuationRecord("implementation", plan.artifactId, "cancellation");
+  const preAborted = new AbortController();
+  preAborted.abort(new Error("recall cancelled before start"));
+  const untouched = createClient({ pages: [
+    pageForLifecycleRecord(91, plan),
+    pageForLifecycleRecord(92, implementation),
+  ] });
+  const untouchedResult = await createBookStackLifecycleProvider({ client: untouched })
+    .recall(recallInput(), preAborted.signal);
+  assert.equal(Array.isArray(untouchedResult), false);
+  assert.equal(untouched.hierarchyReads(), 0);
+  assert.equal(untouched.lists(), 0);
+  assert.equal(untouched.reads(), 0);
+
+  const controller = new AbortController();
+  const fake = createClient({ pages: [
+    pageForLifecycleRecord(93, plan),
+    pageForLifecycleRecord(94, implementation),
+  ] });
+  const readIds = [];
+  const readPage = fake.readPage;
+  fake.readPage = async (id) => {
+    readIds.push(id);
+    const page = await readPage(id);
+    if (id === 93) controller.abort(new Error("recall cancelled after one candidate"));
+    return page;
+  };
+
+  const result = await createBookStackLifecycleProvider({ client: fake })
+    .recall(recallInput(), controller.signal);
+  assert.equal(Array.isArray(result), false);
+  if (Array.isArray(result)) return;
+  assert.equal(result.status, "blocked");
+  assert.equal(result.category, "unavailable");
+  assert.equal(Object.hasOwn(result, "artifact"), false);
+  assert.deepEqual(readIds, [93]);
+});
+
+test("BookStack recall rejects embedded placement conflicts before filtering without partial evidence", async () => {
+  const plan = createLifecycleRecord({ request, placement });
+  const conflictingSource = "taskwarrior:other-memory:dd4755dd-67bf-49a6-8e2d-6563d080dde1";
+  const conflictingPlacement = {
+    projectSlug: "other-memory",
+    sourceRef: conflictingSource,
+    lifecycleKey: "other-memory:manual:test",
+    shelfId: 11,
+    shelfSlug: "lifecycle-artifacts",
+    bookId: 12,
+    bookSlug: "other-memory",
+    chapterId: 13,
+    chapterSlug: "taskwarrior-dd4755dd-67bf-49a6-8e2d-6563d080dde1",
+  };
+  const conflictingRecord = createLifecycleRecord({
+    request: {
+      type: "plan",
+      identity: {
+        project: "other-memory",
+        lifecycleKey: conflictingPlacement.lifecycleKey,
+        lifecycleRootMemoryId: "root",
+        taskwarriorProject: "other-memory",
+        taskwarriorTask: "T14",
+        taskwarriorUuid: "dd4755dd-67bf-49a6-8e2d-6563d080dde1",
+        jiraKey: "",
+        sourceRefs: [conflictingSource],
+        priorArtifactIds: [],
+      },
+      summary: "Conflicting physical placement evidence.",
+      artifact: "# Plan\n\nConflicting physical placement evidence.",
+    },
+    placement: conflictingPlacement,
+  });
+  const scenarios = [
+    {
+      name: "selected conflict",
+      pages: [pageForLifecycleRecord(101, conflictingRecord)],
+      phase: "plan",
+      expectedReadIds: [101],
+    },
+    {
+      name: "nonselected conflict",
+      pages: [pageForLifecycleRecord(102, conflictingRecord)],
+      phase: "implementation",
+      expectedReadIds: [102],
+    },
+    {
+      name: "conflict after valid candidate",
+      pages: [
+        pageForLifecycleRecord(103, plan),
+        pageForLifecycleRecord(104, conflictingRecord),
+      ],
+      phase: "plan",
+      expectedReadIds: [103, 104],
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const fake = createClient({ pages: scenario.pages });
+    const provider = createBookStackLifecycleProvider({ client: fake });
+    const readIds = [];
+    const readPage = fake.readPage;
+    fake.readPage = async (id) => {
+      readIds.push(id);
+      return readPage(id);
+    };
+    const result = await provider.recall(recallInput(scenario.phase));
+    assert.equal(Array.isArray(result), false, scenario.name);
+    if (Array.isArray(result)) continue;
+    assert.equal(result.status, "blocked", scenario.name);
+    assert.equal(result.code, "bookstack_verification_failed", scenario.name);
+    assert.equal(Object.hasOwn(result, "artifact"), false, scenario.name);
+    assert.deepEqual(readIds, scenario.expectedReadIds, scenario.name);
+    assert.equal(fake.hierarchyReads(), 3, scenario.name);
+    assert.equal(fake.lists(), 1, scenario.name);
+    assert.equal(fake.reads(), scenario.expectedReadIds.length, scenario.name);
+  }
+});
+
+test("BookStack recall filters a physically valid sibling lifecycle record", async () => {
+  const plan = createLifecycleRecord({ request, placement });
+  const siblingPlacement = {
+    ...placement,
+    lifecycleKey: "shared-dev-memory:manual:sibling",
+  };
+  const sibling = createLifecycleRecord({
+    request: {
+      ...request,
+      identity: {
+        ...identity,
+        lifecycleKey: siblingPlacement.lifecycleKey,
+      },
+      summary: "Sibling lifecycle evidence remains physically valid.",
+      artifact: "# Plan\n\nSibling lifecycle evidence remains physically valid.",
+    },
+    placement: siblingPlacement,
+  });
+  const fake = createClient({ pages: [
+    pageForLifecycleRecord(111, plan),
+    pageForLifecycleRecord(112, sibling),
+  ] });
+  const result = await createBookStackLifecycleProvider({ client: fake })
+    .recall(recallInput("plan"));
+  assert.equal(Array.isArray(result), true);
+  if (!Array.isArray(result)) return;
+  assert.deepEqual(result.map(({ lifecycleKey }) => lifecycleKey), [identity.lifecycleKey]);
+  assert.equal(fake.hierarchyReads(), 3);
+  assert.equal(fake.lists(), 1);
+  assert.equal(fake.reads(), 2);
 });
 
 test("ordinary persistence treats target-named noncanonical drafts as conflicts", async () => {

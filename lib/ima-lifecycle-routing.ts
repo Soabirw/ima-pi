@@ -19,6 +19,14 @@ import {
   normalizeLifecycleProvider,
   type LifecycleProviderName,
 } from "./ima-lifecycle-selection.ts";
+import {
+  lifecycleContentBinding,
+  MAX_LIFECYCLE_CONTENT_FINDINGS,
+  screenLifecycleContent,
+  type LifecycleContentFinding,
+} from "./ima-lifecycle-security.ts";
+
+export { containsRecognizedLifecycleContent as containsRecognizedLifecycleSecret } from "./ima-lifecycle-security.ts";
 
 export type LifecycleRouteWriteState = "no-write" | "possible-write";
 
@@ -34,9 +42,36 @@ export type RoutedLifecycleRecord = {
   createdAt: string | null;
 };
 
+export type LifecycleContentScreeningDiagnostic = {
+  reason:
+    | "record_summary_invalid"
+    | "record_artifact_secret_bearer_placeholder"
+    | "record_artifact_secret_bearer_value"
+    | "record_artifact_secret_named"
+    | "record_artifact_secret_private_key";
+  findings: readonly LifecycleContentFinding[];
+};
+
+export type LifecycleContentWarningCandidate = {
+  binding: string;
+  findings: readonly LifecycleContentFinding[];
+};
+
+export type LifecycleContentWarningOptions = {
+  allowWarnings?: boolean;
+  approvedWarningBindings?: readonly string[];
+  captureWarningBindings?: (warnings: readonly LifecycleContentWarningCandidate[]) => void;
+};
+
 export type RoutedLifecyclePersistResult =
   | { status: "verified"; record: RoutedLifecycleRecord }
-  | { status: "blocked"; provider: LifecycleProviderName; code: string; writeState: LifecycleRouteWriteState };
+  | {
+    status: "blocked";
+    provider: LifecycleProviderName;
+    code: string;
+    writeState: LifecycleRouteWriteState;
+    diagnostic?: LifecycleContentScreeningDiagnostic;
+  };
 
 export type RoutedLifecycleRecallResult =
   | { status: "verified"; provider: LifecycleProviderName; records: RoutedLifecycleRecord[] }
@@ -46,6 +81,7 @@ export type RoutedLifecycleRecallResult =
     code: string;
     readStep?: "authority" | "recall";
     readPhase?: LifecyclePhase;
+    diagnostic?: LifecycleContentScreeningDiagnostic;
   };
 
 export type LifecycleSourceIdentity = {
@@ -69,7 +105,12 @@ export type PinnedLifecycleLineage = {
 
 export type PinnedLifecycleLineageResult =
   | { status: "verified"; provider: LifecycleProviderName; lineage: PinnedLifecycleLineage }
-  | { status: "blocked"; provider: LifecycleProviderName; code: string };
+  | {
+    status: "blocked";
+    provider: LifecycleProviderName;
+    code: string;
+    diagnostic?: LifecycleContentScreeningDiagnostic;
+  };
 
 export type LifecycleReadReference =
   | {
@@ -153,43 +194,6 @@ const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
 const SAFE_CODE = /^[a-z][a-z0-9_:-]{0,127}$/;
 const MAX_LIFECYCLE_ARTIFACT_BYTES = 160_000;
 const MAX_LIFECYCLE_REFERENCES = 64;
-const RECOGNIZED_SECRET = /(?:\b(?:authorization|token|secret|password|api[_ -]?key|access[_ -]?token|client[_ -]?secret|private(?:[_ -]?key))\b\s*[:=]\s*(?:bearer\s+)?\S+|\bbearer\s+\S+|-----BEGIN(?: [A-Z0-9]+)? PRIVATE KEY-----)/i;
-type RecognizedLifecycleSecretKind =
-  | "bearer_placeholder"
-  | "bearer_value"
-  | "named"
-  | "private_key";
-const bearerPlaceholder = (value: string) => {
-  if (/^(?:tokens?[.,;:)]?|credentials?[.,;:)]?|values?[.,;:)]?|headers?[.,;:)]?|authentication[.,;:)]?|authorization[.,;:)]?|secrets?[.,;:)]?|api[-_]?keys?[.,;:)]?|access[-_]?tokens?[.,;:)]?|placeholders?[.,;:)]?|<[^>]+>|\[[^\]]+\]|\{[^}]+\}|\$\{[^}]+\}|\[redacted\]|redacted|(?:test|synthetic|example|sample|placeholder|dummy|fake)[_-][a-z0-9._-]{1,128})$/i.test(value)) {
-    return true;
-  }
-  const candidate = value.replace(/[.,;)]$/, "");
-  return candidate.split(":").every((part) =>
-    /^(?:<[^>]+>|\[[^\]]+\]|\{[^}]+\}|\$\{[^}]+\}|process\.env\.[A-Z][A-Z0-9_]{1,127})$/.test(part),
-  );
-};
-const recognizedLifecycleSecretKind = (value: unknown): RecognizedLifecycleSecretKind | null => {
-  if (typeof value !== "string") return null;
-  let hasBearerPlaceholder = false;
-  for (const match of value.matchAll(new RegExp(RECOGNIZED_SECRET.source, "gi"))) {
-    const matched = match[0];
-    if (/^bearer\s+/i.test(matched)) {
-      const bearerValue = matched.replace(/^bearer\s+/i, "");
-      if (bearerPlaceholder(bearerValue)) {
-        hasBearerPlaceholder = true;
-        continue;
-      }
-      return "bearer_value";
-    }
-    if (/^-----BEGIN/i.test(matched)) return "private_key";
-    return "named";
-  }
-  return hasBearerPlaceholder ? "bearer_placeholder" : null;
-};
-export const containsRecognizedLifecycleSecret = (value: unknown) => {
-  const kind = recognizedLifecycleSecretKind(value);
-  return kind !== null && kind !== "bearer_placeholder";
-};
 const ROUTED_LIFECYCLE_RECORD_FIELDS = [
   "provider",
   "artifactId",
@@ -409,11 +413,81 @@ type RoutedLifecycleRecordProjection =
       | "structure"
       | "summary";
     phase?: LifecyclePhase;
+    diagnostic?: LifecycleContentScreeningDiagnostic;
+    warning?: true;
+    warningBinding?: string;
   };
+
+type ArtifactScreeningCode =
+  | "artifact_secret_bearer_placeholder"
+  | "artifact_secret_bearer_value"
+  | "artifact_secret_named"
+  | "artifact_secret_private_key";
+
+const artifactScreeningCode = (
+  screening: ReturnType<typeof screenLifecycleContent>,
+): ArtifactScreeningCode => {
+  const category = screening.findings[0]?.category;
+  if (category === "private_key") return "artifact_secret_private_key";
+  if (category === "synthetic_bearer") return "artifact_secret_bearer_placeholder";
+  if (category === "credential_assignment" || category === "ambiguous_assignment") {
+    return "artifact_secret_named";
+  }
+  return "artifact_secret_bearer_value";
+};
+
+const screeningDiagnosticForRecord = (
+  record: RoutedLifecycleRecord,
+): LifecycleContentScreeningDiagnostic | undefined => {
+  const screening = screenLifecycleContent({ summary: record.summary, artifact: record.artifact });
+  if (screening.tier === "allow") return undefined;
+  if (screening.findings.some(({ field }) => field === "summary")) {
+    return { reason: "record_summary_invalid", findings: screening.findings };
+  }
+  const code = artifactScreeningCode(screening);
+  return {
+    reason: code === "artifact_secret_private_key"
+      ? "record_artifact_secret_private_key"
+      : code === "artifact_secret_named"
+        ? "record_artifact_secret_named"
+        : code === "artifact_secret_bearer_placeholder"
+          ? "record_artifact_secret_bearer_placeholder"
+          : "record_artifact_secret_bearer_value",
+    findings: screening.findings,
+  };
+};
+
+const warningBindingForRecord = (record: RoutedLifecycleRecord) => lifecycleContentBinding({
+  provider: record.provider,
+  artifactId: record.artifactId,
+  recordKey: record.recordKey,
+  lifecycleKey: record.lifecycleKey,
+  phase: record.phase,
+  summary: record.summary,
+  artifact: record.artifact,
+});
+
+const warningAllowed = (
+  binding: string | null,
+  options: LifecycleContentWarningOptions | undefined,
+) => Boolean(options?.allowWarnings || binding && options?.approvedWarningBindings?.includes(binding));
+
+const captureWarningCandidates = (
+  candidates: readonly LifecycleContentWarningCandidate[],
+  options: LifecycleContentWarningOptions | undefined,
+) => {
+  if (!candidates.length || !options?.captureWarningBindings) return;
+  try {
+    options.captureWarningBindings(candidates);
+  } catch {
+    // Capture is advisory process-memory plumbing; a failure must not release content.
+  }
+};
 
 const projectRoutedLifecycleRecordResult = (
   value: unknown,
   expectedProvider?: LifecycleProviderName,
+  options?: LifecycleContentWarningOptions,
 ): RoutedLifecycleRecordProjection => {
   const record = ownDataRecord(value);
   if (!record) return { status: "blocked", code: "structure" };
@@ -456,7 +530,7 @@ const projectRoutedLifecycleRecordResult = (
     || typeof phase !== "string"
     || !["plan", "implementation", "test", "review", "resolution", "rereview", "document", "decision", "closeout"].includes(phase)
   ) return { status: "blocked", code: "identity", ...(safePhase ? { phase: safePhase } : {}) };
-  if (!summary || containsRecognizedLifecycleSecret(summary)) {
+  if (!summary) {
     return { status: "blocked", code: "summary", ...(safePhase ? { phase: safePhase } : {}) };
   }
   if (!artifact) return { status: "blocked", code: "artifact_missing", ...(safePhase ? { phase: safePhase } : {}) };
@@ -464,39 +538,69 @@ const projectRoutedLifecycleRecordResult = (
   if (artifactBytes === null || artifactBytes > MAX_LIFECYCLE_ARTIFACT_BYTES) {
     return { status: "blocked", code: "artifact_too_large", ...(safePhase ? { phase: safePhase } : {}) };
   }
-  const artifactSecretKind = recognizedLifecycleSecretKind(artifact);
-  if (artifactSecretKind && artifactSecretKind !== "bearer_placeholder") {
-    return {
-      status: "blocked",
-      code: `artifact_secret_${artifactSecretKind}`,
-      ...(safePhase ? { phase: safePhase } : {}),
-    };
-  }
   if (!reference) return { status: "blocked", code: "reference", ...(safePhase ? { phase: safePhase } : {}) };
   if (createdAt !== null && (!TIMESTAMP.test(createdAt) || Number.isNaN(Date.parse(createdAt)))) {
     return { status: "blocked", code: "created_at", ...(safePhase ? { phase: safePhase } : {}) };
   }
-  return {
-    status: "verified",
-    record: {
-      provider,
-      artifactId: artifactId.toLowerCase(),
-      recordKey,
-      lifecycleKey,
-      phase,
-      summary,
-      artifact,
-      reference,
-      createdAt,
-    },
+  const projectedRecord: RoutedLifecycleRecord = {
+    provider,
+    artifactId: artifactId.toLowerCase(),
+    recordKey,
+    lifecycleKey,
+    phase,
+    summary,
+    artifact,
+    reference,
+    createdAt,
   };
+  const contentScreening = screenLifecycleContent({ summary, artifact });
+  if (contentScreening.tier === "block") {
+    const diagnostic = screeningDiagnosticForRecord(projectedRecord);
+    return {
+      status: "blocked",
+      code: diagnostic?.reason === "record_summary_invalid"
+        ? "summary"
+        : artifactScreeningCode(contentScreening),
+      ...(safePhase ? { phase: safePhase } : {}),
+      ...(diagnostic ? { diagnostic } : {}),
+    };
+  }
+  const summaryScreening = screenLifecycleContent({ summary });
+  const artifactScreening = screenLifecycleContent({ artifact });
+  if (contentScreening.tier === "warn") {
+    const binding = warningBindingForRecord(projectedRecord);
+    if (!warningAllowed(binding, options)) {
+      const summaryWarning = summaryScreening.tier === "warn";
+      const artifactCode = artifactScreeningCode(artifactScreening);
+      return {
+        status: "blocked",
+        code: summaryWarning ? "summary" : artifactCode,
+        ...(safePhase ? { phase: safePhase } : {}),
+        diagnostic: {
+          reason: summaryWarning
+            ? "record_summary_invalid"
+            : artifactCode === "artifact_secret_private_key"
+              ? "record_artifact_secret_private_key"
+              : artifactCode === "artifact_secret_named"
+                ? "record_artifact_secret_named"
+                : artifactCode === "artifact_secret_bearer_placeholder"
+                  ? "record_artifact_secret_bearer_placeholder"
+                  : "record_artifact_secret_bearer_value",
+          findings: contentScreening.findings,
+        },
+        ...(binding ? { warning: true as const, warningBinding: binding } : {}),
+      };
+    }
+  }
+  return { status: "verified", record: projectedRecord };
 };
 
 export const projectRoutedLifecycleRecord = (
   value: unknown,
   expectedProvider?: LifecycleProviderName,
+  options?: LifecycleContentWarningOptions,
 ): RoutedLifecycleRecord | null => {
-  const result = projectRoutedLifecycleRecordResult(value, expectedProvider);
+  const result = projectRoutedLifecycleRecordResult(value, expectedProvider, options);
   return result.status === "verified" ? result.record : null;
 };
 
@@ -633,9 +737,10 @@ export const verifyRoutedLifecycleReadRecord = (
     lifecycleKey?: string;
     phase?: LifecyclePhase;
   } = {},
+  options?: LifecycleContentWarningOptions,
 ): RoutedLifecycleRecord | null => {
   try {
-    const record = projectRoutedLifecycleRecord(value, expected.provider);
+    const record = projectRoutedLifecycleRecord(value, expected.provider, options);
     if (
       !record
       || expected.lifecycleKey !== undefined && record.lifecycleKey !== expected.lifecycleKey
@@ -697,8 +802,11 @@ export const verifyRoutedLifecycleReadRecord = (
   }
 };
 
-const lifecycleReadRequest = (value: unknown): ValidLifecycleRequest | null => {
-  const record = verifyRoutedLifecycleReadRecord(value);
+const lifecycleReadRequest = (
+  value: unknown,
+  options?: LifecycleContentWarningOptions,
+): ValidLifecycleRequest | null => {
+  const record = verifyRoutedLifecycleReadRecord(value, {}, options);
   if (!record) return null;
   const parsed = parsedRoutedLifecycleArtifact(record.artifact);
   if (!parsed) return null;
@@ -1116,8 +1224,9 @@ export const lifecycleReadNativeReferenceFor = (input: {
 
 export const lifecycleReadReferenceFor = (
   value: unknown,
+  options?: LifecycleContentWarningOptions,
 ): LifecycleReadReference | null => {
-  const record = verifyRoutedLifecycleReadRecord(value);
+  const record = verifyRoutedLifecycleReadRecord(value, {}, options);
   if (!record) return null;
   return lifecycleReadReferenceForNative({
     provider: record.provider,
@@ -1133,8 +1242,9 @@ export const lifecycleReadReferenceFor = (
 export const sameLifecycleReadReference = (
   record: unknown,
   reference: unknown,
+  options?: LifecycleContentWarningOptions,
 ) => {
-  const expected = lifecycleReadReferenceFor(record);
+  const expected = lifecycleReadReferenceFor(record, options);
   const supplied = projectLifecycleReadReference(reference);
   return Boolean(expected && supplied && sameLifecycleReadReferenceValue(expected, supplied));
 };
@@ -1142,12 +1252,30 @@ export const sameLifecycleReadReference = (
 export const projectRoutedLifecyclePersistResult = (
   value: unknown,
   expectedProvider?: LifecycleProviderName,
+  options?: LifecycleContentWarningOptions,
 ): RoutedLifecyclePersistResult | null => {
   const result = ownDataRecord(value);
   if (!result || typeof result.status !== "string") return null;
   if (result.status === "verified" && Object.keys(result).length === 2) {
-    const record = projectRoutedLifecycleRecord(result.record, expectedProvider);
-    return record ? { status: "verified", record } : null;
+    const projected = projectRoutedLifecycleRecordResult(result.record, expectedProvider, options);
+    if (projected.status === "verified") return { status: "verified", record: projected.record };
+    const record = ownDataRecord(result.record);
+    const provider = expectedProvider ?? normalizeLifecycleProvider(record?.provider);
+    if (projected.warningBinding && projected.diagnostic) {
+      captureWarningCandidates([{
+        binding: projected.warningBinding,
+        findings: projected.diagnostic.findings,
+      }], options);
+    }
+    return provider && projected.diagnostic
+      ? {
+        status: "blocked",
+        provider,
+        code: "lifecycle_provider_response_invalid",
+        writeState: "possible-write",
+        diagnostic: projected.diagnostic,
+      }
+      : null;
   }
   if (result.status === "blocked" && Object.keys(result).length === 4) {
     const provider = normalizeLifecycleProvider(result.provider);
@@ -1167,6 +1295,7 @@ export const projectRoutedLifecyclePersistResult = (
 export const projectRoutedLifecycleRecallResult = (
   value: unknown,
   expectedProvider?: LifecycleProviderName,
+  options?: LifecycleContentWarningOptions,
 ): RoutedLifecycleRecallResult | null => {
   const result = ownDataRecord(value);
   if (!result || typeof result.status !== "string") return null;
@@ -1180,14 +1309,68 @@ export const projectRoutedLifecycleRecallResult = (
   const provider = normalizeLifecycleProvider(result.provider);
   const records = ownDataArray(result.records, 20);
   if (!provider || expectedProvider && provider !== expectedProvider || !records) return null;
-  const projected = records.map((record) => projectRoutedLifecycleRecordResult(record, provider));
-  const invalid = projected.find((result) => result.status === "blocked");
+  const projected = records.map((record) => projectRoutedLifecycleRecordResult(record, provider, options));
+  const definite = projected.find((result) =>
+    result.status === "blocked"
+    && !result.warning
+    && !result.diagnostic?.findings.some(({ category }) => category === "finding_overflow"),
+  );
+  const invalid = definite ?? projected.find((result) => result.status === "blocked" && !result.warning);
   if (invalid?.status === "blocked") {
     return {
       status: "blocked",
       provider,
       code: `lifecycle_provider_record_${invalid.code}_invalid`,
       ...(invalid.phase ? { readPhase: invalid.phase } : {}),
+      ...(invalid.diagnostic ? { diagnostic: invalid.diagnostic } : {}),
+    };
+  }
+  const warnings = projected.filter((result): result is Extract<RoutedLifecycleRecordProjection, { status: "blocked" }> =>
+    result.status === "blocked" && result.warning === true,
+  );
+  const warningCandidates = warnings.flatMap(({ warningBinding, diagnostic, phase }) =>
+    warningBinding && diagnostic
+      ? [{ binding: warningBinding, findings: diagnostic.findings, phase }]
+      : [],
+  );
+  const warningFindings = warningCandidates.flatMap(({ findings }) => findings);
+  if (warningFindings.length > MAX_LIFECYCLE_CONTENT_FINDINGS) {
+    const firstUndisclosed = warningFindings[MAX_LIFECYCLE_CONTENT_FINDINGS];
+    const candidate = warningCandidates.find(({ findings }) => findings.includes(firstUndisclosed));
+    const diagnostic: LifecycleContentScreeningDiagnostic = {
+      reason: firstUndisclosed.field === "summary"
+        ? "record_summary_invalid"
+        : "record_artifact_secret_bearer_value",
+      findings: [{
+        category: "finding_overflow",
+        field: firstUndisclosed.field,
+        index: firstUndisclosed.index,
+        line: firstUndisclosed.line,
+        column: firstUndisclosed.column,
+      }],
+    };
+    return {
+      status: "blocked",
+      provider,
+      code: firstUndisclosed.field === "summary"
+        ? "lifecycle_provider_record_summary_invalid"
+        : "lifecycle_provider_record_artifact_secret_bearer_value_invalid",
+      ...(candidate?.phase ? { readPhase: candidate.phase } : {}),
+      diagnostic,
+    };
+  }
+  if (warnings.length > 0) {
+    captureWarningCandidates(
+      warningCandidates.map(({ binding, findings }) => ({ binding, findings })),
+      options,
+    );
+    const warning = warnings[0];
+    return {
+      status: "blocked",
+      provider,
+      code: `lifecycle_provider_record_${warning.code}_invalid`,
+      ...(warning.phase ? { readPhase: warning.phase } : {}),
+      ...(warning.diagnostic ? { diagnostic: warning.diagnostic } : {}),
     };
   }
   const verified = projected
@@ -1351,17 +1534,18 @@ const verifiedPinnedInitialReference = (input: {
 export const derivePinnedLifecycleLineage = (input: {
   pin: unknown;
   record: unknown;
+  warningOptions?: LifecycleContentWarningOptions;
 }): PinnedLifecycleLineage | null => {
   const pin = projectLifecycleProviderPin(input.pin);
   if (!pin) return null;
   const record = verifyRoutedLifecycleReadRecord(input.record, {
     provider: pin.provider,
     lifecycleKey: pin.lifecycleKey,
-  });
+  }, input.warningOptions);
   const expectedReference = projectLifecycleProviderReference(pin.provider, pin.initialReference);
   if (!record || !expectedReference) return null;
   const initialReference = verifiedPinnedInitialReference({ pin, expectedReference, record });
-  const request = lifecycleReadRequest(record);
+  const request = lifecycleReadRequest(record, input.warningOptions);
   const sourceIdentity = request && projectLifecycleSourceIdentity(request.identity);
   const rootArtifactId = request && deriveLifecycleRoot({
     phase: request.type,
@@ -1381,12 +1565,23 @@ export const derivePinnedLifecycleLineage = (input: {
 export const lifecycleRecordMatchesPinnedLineage = (input: {
   lineage: PinnedLifecycleLineage;
   record: unknown;
+  approvedWarningBindings?: readonly string[];
+  allowWarnings?: boolean;
 }): boolean => {
   const record = verifyRoutedLifecycleReadRecord(input.record, {
     provider: input.lineage.provider,
     lifecycleKey: input.lineage.sourceIdentity.lifecycleKey,
+  }, {
+    allowWarnings: input.allowWarnings,
+    approvedWarningBindings: input.approvedWarningBindings,
   });
-  const request = record && lifecycleReadRequest(record);
+  const request = record && lifecycleReadRequest(
+    record,
+    {
+      allowWarnings: input.allowWarnings,
+      approvedWarningBindings: input.approvedWarningBindings,
+    },
+  );
   const sourceIdentity = request && projectLifecycleSourceIdentity(request.identity);
   if (!record || !request || !sourceIdentity) return false;
   if (
@@ -1408,6 +1603,8 @@ export const lifecycleRecordMatchesPinnedLineage = (input: {
 export const resolvePinnedLifecycleLineage = async (input: {
   routing: LifecycleRouting;
   pin: unknown;
+  approvedWarningBindings?: readonly string[];
+  captureWarningBindings?: (warnings: readonly LifecycleContentWarningCandidate[]) => void;
   signal?: AbortSignal;
 }): Promise<PinnedLifecycleLineageResult> => {
   const pin = projectLifecycleProviderPin(input.pin);
@@ -1426,21 +1623,34 @@ export const resolvePinnedLifecycleLineage = async (input: {
     const result = projectRoutedLifecyclePersistResult(
       await verify(structuredClone(expectedReference), input.signal),
       pin.provider,
+      {
+        approvedWarningBindings: input.approvedWarningBindings,
+        captureWarningBindings: input.captureWarningBindings,
+      },
     );
     if (!result) {
       return { status: "blocked", provider: pin.provider, code: "pinned_provider_response_invalid" };
     }
     if (result.status !== "verified") {
-      return { status: "blocked", provider: pin.provider, code: result.code };
+      return {
+        status: "blocked",
+        provider: pin.provider,
+        code: result.code,
+        ...(result.diagnostic ? { diagnostic: result.diagnostic } : {}),
+      };
     }
     const record = verifyRoutedLifecycleReadRecord(result.record, {
       provider: pin.provider,
       lifecycleKey: pin.lifecycleKey,
-    });
+    }, { approvedWarningBindings: input.approvedWarningBindings });
     if (!record || !verifiedPinnedInitialReference({ pin, expectedReference, record })) {
       return { status: "blocked", provider: pin.provider, code: "pinned_provider_response_invalid" };
     }
-    const lineage = derivePinnedLifecycleLineage({ pin, record });
+    const lineage = derivePinnedLifecycleLineage({
+      pin,
+      record,
+      warningOptions: { approvedWarningBindings: input.approvedWarningBindings },
+    });
     return lineage
       ? { status: "verified", provider: pin.provider, lineage }
       : { status: "blocked", provider: pin.provider, code: "lifecycle_lineage_unresolved" };
@@ -1452,11 +1662,17 @@ export const resolvePinnedLifecycleLineage = async (input: {
 const verifiedPinnedReadAuthority = async (input: {
   routing: LifecycleRouting;
   pin: LifecycleProviderPin;
+  approvedWarningBindings?: readonly string[];
+  captureWarningBindings?: (warnings: readonly LifecycleContentWarningCandidate[]) => void;
   signal?: AbortSignal;
 }): Promise<{
   status: "verified";
   lineage: PinnedLifecycleLineage;
-} | { status: "blocked"; code: string }> => {
+} | {
+  status: "blocked";
+  code: string;
+  diagnostic?: LifecycleContentScreeningDiagnostic;
+}> => {
   const resolved = await resolvePinnedLifecycleLineage(input);
   if (resolved.status === "verified") return { status: "verified", lineage: resolved.lineage };
   return {
@@ -1464,6 +1680,7 @@ const verifiedPinnedReadAuthority = async (input: {
     code: resolved.code === "lifecycle_lineage_unresolved"
       ? "lifecycle_read_authority_invalid"
       : resolved.code,
+    ...(resolved.diagnostic ? { diagnostic: resolved.diagnostic } : {}),
   };
 };
 
@@ -1471,14 +1688,25 @@ const matchesPinnedPersistenceRecord = (input: {
   lineage: PinnedLifecycleLineage;
   request: ValidLifecycleRequest;
   record: unknown;
+  approvedWarningBindings?: readonly string[];
+  allowWarnings?: boolean;
 }) => {
   const record = verifyRoutedLifecycleReadRecord(input.record, {
     provider: input.lineage.provider,
     lifecycleKey: input.request.identity.lifecycleKey,
     phase: input.request.type,
+  }, {
+    allowWarnings: input.allowWarnings,
+    approvedWarningBindings: input.approvedWarningBindings,
   });
   const prepared = prepareLifecycleArtifact(input.request);
-  const recordRequest = record && lifecycleReadRequest(record);
+  const recordRequest = record && lifecycleReadRequest(
+    record,
+    {
+      allowWarnings: input.allowWarnings,
+      approvedWarningBindings: input.approvedWarningBindings,
+    },
+  );
   return Boolean(
     record
     && prepared.valid
@@ -1487,7 +1715,12 @@ const matchesPinnedPersistenceRecord = (input: {
     && record.recordKey === prepared.data.recordKey
     && recordRequest.summary === input.request.summary
     && JSON.stringify(recordRequest.identity) === JSON.stringify(input.request.identity)
-    && lifecycleRecordMatchesPinnedLineage({ lineage: input.lineage, record }),
+    && lifecycleRecordMatchesPinnedLineage({
+      lineage: input.lineage,
+      record,
+      allowWarnings: input.allowWarnings,
+      approvedWarningBindings: input.approvedWarningBindings,
+    }),
   );
 };
 
@@ -1495,6 +1728,8 @@ export const routeLifecyclePersistence = async (input: {
   routing: LifecycleRouting;
   provider: LifecycleProviderName;
   request: ValidLifecycleRequest;
+  approvedWarningBindings?: readonly string[];
+  allowWarnings?: boolean;
   signal?: AbortSignal;
 }): Promise<RoutedLifecyclePersistResult> => {
   const adapter = adapterFor(input.routing, input.provider);
@@ -1503,6 +1738,10 @@ export const routeLifecyclePersistence = async (input: {
     const result = projectRoutedLifecyclePersistResult(
       await adapter.persist(input.request, input.signal),
       input.provider,
+      {
+        allowWarnings: input.allowWarnings,
+        approvedWarningBindings: input.approvedWarningBindings,
+      },
     );
     return result ?? blockedPersist(input.provider, "lifecycle_provider_response_invalid");
   } catch {
@@ -1514,6 +1753,8 @@ export const routePinnedLifecyclePersistence = async (input: {
   routing: LifecycleRouting;
   pin: unknown;
   request: ValidLifecycleRequest;
+  approvedWarningBindings?: readonly string[];
+  allowWarnings?: boolean;
   signal?: AbortSignal;
 }): Promise<RoutedLifecyclePersistResult> => {
   const pin = projectLifecycleProviderPin(input.pin);
@@ -1543,16 +1784,26 @@ export const routePinnedLifecyclePersistence = async (input: {
         ? await adapter.persistPinned(input.request, resolved.lineage.initialReference, input.signal)
         : await adapter.persist(input.request, input.signal),
       pin.provider,
+      {
+        allowWarnings: input.allowWarnings,
+        approvedWarningBindings: input.approvedWarningBindings,
+      },
     );
     if (!result) return blockedPersist(pin.provider, "lifecycle_provider_response_invalid");
     if (result.status !== "verified") return result;
-    return matchesPinnedPersistenceRecord({
+    const matches = matchesPinnedPersistenceRecord({
       lineage: resolved.lineage,
       request: input.request,
       record: result.record,
-    })
-      ? result
-      : blockedPersist(pin.provider, "lifecycle_provider_response_invalid");
+      approvedWarningBindings: input.approvedWarningBindings,
+      allowWarnings: input.allowWarnings,
+    });
+    if (matches) return result;
+    const diagnostic = screeningDiagnosticForRecord(result.record);
+    return {
+      ...blockedPersist(pin.provider, "lifecycle_provider_response_invalid"),
+      ...(diagnostic ? { diagnostic } : {}),
+    };
   } catch {
     return blockedPersist(pin.provider, "lifecycle_provider_operation_failed");
   }
@@ -1565,6 +1816,8 @@ export const routeLifecycleRecall = async (input: {
   phase?: LifecyclePhase;
   limit: number;
   reference?: Record<string, unknown>;
+  approvedWarningBindings?: readonly string[];
+  captureWarningBindings?: (warnings: readonly LifecycleContentWarningCandidate[]) => void;
   signal?: AbortSignal;
 }): Promise<RoutedLifecycleRecallResult> => {
   const provider = normalizeLifecycleProvider(input.provider);
@@ -1596,19 +1849,23 @@ export const routeLifecycleRecall = async (input: {
         ...(reference ? { reference: structuredClone(reference) } : {}),
       }, input.signal),
       provider,
+      {
+        approvedWarningBindings: input.approvedWarningBindings,
+        captureWarningBindings: input.captureWarningBindings,
+      },
     );
     if (!result) {
       return { status: "blocked", provider, code: "lifecycle_provider_recall_envelope_invalid" };
     }
     if (result.status !== "verified") return result;
     if (result.records.length > selection.limit) {
-      return { status: "blocked", provider, code: "lifecycle_provider_recall_unverifiable" };
+      return { status: "blocked", provider, code: "lifecycle_provider_recall_overflow" };
     }
     const records = result.records.map((record) => verifyRoutedLifecycleReadRecord(record, {
       provider,
       lifecycleKey: selection.lifecycleKey,
       ...(selection.phase ? { phase: selection.phase } : {}),
-    }));
+    }, { approvedWarningBindings: input.approvedWarningBindings }));
     return records.some((record) => record === null)
       ? { status: "blocked", provider, code: "lifecycle_provider_record_verification_failed" }
       : { status: "verified", provider, records: records as RoutedLifecycleRecord[] };
@@ -1621,6 +1878,8 @@ export const routeLifecycleGet = async (input: {
   routing: LifecycleRouting;
   provider: LifecycleProviderName;
   reference: unknown;
+  approvedWarningBindings?: readonly string[];
+  captureWarningBindings?: (warnings: readonly LifecycleContentWarningCandidate[]) => void;
   signal?: AbortSignal;
 }): Promise<RoutedLifecyclePersistResult> => {
   const provider = normalizeLifecycleProvider(input.provider);
@@ -1634,12 +1893,20 @@ export const routeLifecycleGet = async (input: {
     const result = projectRoutedLifecyclePersistResult(
       await adapter.get(structuredClone(reference), input.signal),
       provider,
+      {
+        approvedWarningBindings: input.approvedWarningBindings,
+        captureWarningBindings: input.captureWarningBindings,
+      },
     );
     if (!result) return blockedPersist(provider, "lifecycle_provider_response_invalid", "no-write");
     if (result.status !== "verified") {
       return { ...result, writeState: "no-write" };
     }
-    const record = verifyRoutedLifecycleReadRecord(result.record, { provider });
+    const record = verifyRoutedLifecycleReadRecord(
+      result.record,
+      { provider },
+      { approvedWarningBindings: input.approvedWarningBindings },
+    );
     return record && recordMatchesNativeReference({ provider, record, reference })
       ? { status: "verified", record }
       : blockedPersist(provider, "lifecycle_provider_response_invalid", "no-write");
@@ -1652,6 +1919,8 @@ export const routePinnedLifecycleGet = async (input: {
   routing: LifecycleRouting;
   pin: unknown;
   reference: unknown;
+  approvedWarningBindings?: readonly string[];
+  captureWarningBindings?: (warnings: readonly LifecycleContentWarningCandidate[]) => void;
   signal?: AbortSignal;
 }): Promise<RoutedLifecyclePersistResult> => {
   const pin = projectLifecycleProviderPin(input.pin);
@@ -1670,10 +1939,15 @@ export const routePinnedLifecycleGet = async (input: {
   const authority = await verifiedPinnedReadAuthority({
     routing: input.routing,
     pin,
+    approvedWarningBindings: input.approvedWarningBindings,
+    captureWarningBindings: input.captureWarningBindings,
     signal: input.signal,
   });
   if (authority.status !== "verified") {
-    return blockedPersist(pin.provider, authority.code, "no-write");
+    return {
+      ...blockedPersist(pin.provider, authority.code, "no-write"),
+      ...(authority.diagnostic ? { diagnostic: authority.diagnostic } : {}),
+    };
   }
   if (!sameLifecycleProviderAuthority({
     provider: pin.provider,
@@ -1685,22 +1959,27 @@ export const routePinnedLifecycleGet = async (input: {
     routing: input.routing,
     provider: pin.provider,
     reference,
+    approvedWarningBindings: input.approvedWarningBindings,
+    captureWarningBindings: input.captureWarningBindings,
     signal: input.signal,
   });
   if (result.status !== "verified") return result;
   return lifecycleRecordMatchesPinnedLineage({
     lineage: authority.lineage,
     record: result.record,
+    approvedWarningBindings: input.approvedWarningBindings,
   })
     ? result
     : blockedPersist(pin.provider, "lifecycle_read_authority_invalid", "no-write");
 };
 
-const responseInvalidReadCode = (code: string) => [
+const providerReadStepCode = (code: string) => [
+  "bookstack_http_failed",
   "bookstack_pagination_invalid",
   "bookstack_response_invalid",
   "bookstack_response_too_large",
   "lifecycle_provider_recall_envelope_invalid",
+  "lifecycle_provider_recall_overflow",
   "lifecycle_provider_record_projection_invalid",
   "lifecycle_provider_record_artifact_missing_invalid",
   "lifecycle_provider_record_artifact_secret_bearer_placeholder_invalid",
@@ -1724,6 +2003,8 @@ export const routePinnedLifecycleRecall = async (input: {
   lifecycleKey: string;
   phase?: LifecyclePhase;
   limit: number;
+  approvedWarningBindings?: readonly string[];
+  captureWarningBindings?: (warnings: readonly LifecycleContentWarningCandidate[]) => void;
   signal?: AbortSignal;
 }): Promise<RoutedLifecycleRecallResult> => {
   const pin = projectLifecycleProviderPin(input.pin);
@@ -1733,11 +2014,18 @@ export const routePinnedLifecycleRecall = async (input: {
   const authority = await verifiedPinnedReadAuthority({
     routing: input.routing,
     pin,
+    approvedWarningBindings: input.approvedWarningBindings,
+    captureWarningBindings: input.captureWarningBindings,
     signal: input.signal,
   });
   if (authority.status !== "verified") {
-    const blocked = { status: "blocked" as const, provider: pin.provider, code: authority.code };
-    return responseInvalidReadCode(authority.code)
+    const blocked = {
+      status: "blocked" as const,
+      provider: pin.provider,
+      code: authority.code,
+      ...(authority.diagnostic ? { diagnostic: authority.diagnostic } : {}),
+    };
+    return providerReadStepCode(authority.code)
       ? { ...blocked, readStep: "authority" as const }
       : blocked;
   }
@@ -1749,16 +2037,19 @@ export const routePinnedLifecycleRecall = async (input: {
     ...(input.phase ? { phase: input.phase } : {}),
     limit: input.limit,
     reference: authority.lineage.initialReference,
+    approvedWarningBindings: input.approvedWarningBindings,
+    captureWarningBindings: input.captureWarningBindings,
     signal: input.signal,
   });
   if (result.status !== "verified") {
-    return responseInvalidReadCode(result.code)
+    return providerReadStepCode(result.code)
       ? { ...result, readStep: "recall" as const }
       : result;
   }
   return result.records.every((record) => lifecycleRecordMatchesPinnedLineage({
     lineage: authority.lineage,
     record,
+    approvedWarningBindings: input.approvedWarningBindings,
   }))
     ? result
     : { status: "blocked", provider: pin.provider, code: "lifecycle_read_authority_invalid" };

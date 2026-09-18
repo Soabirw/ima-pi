@@ -11,6 +11,9 @@ import integrations, {
   coordinateLifecycle,
   coordinateLifecycleGet,
   coordinateLifecycleRecall,
+  beginLifecycleContentAdjudication,
+  continueLifecycleContentAdjudication,
+  dispatchLifecycleContentRead,
   recallCorpusLifecycle,
   recallLifecycle,
   resolveLifecycleLineage,
@@ -44,6 +47,7 @@ import {
 import {
   createLifecycleRouting,
   lifecycleReadReferenceFor,
+  routeLifecycleRecall,
 } from "../lib/ima-lifecycle-routing.ts";
 import {
   createSerenaLifecycleProject,
@@ -52,6 +56,7 @@ import {
 import { createBookStackLifecycleProvider } from "../lib/bookstack-lifecycle.ts";
 import { createLifecycleRecord, digestBookStackValue } from "../lib/bookstack-lifecycle-record.ts";
 import { originFingerprint } from "../lib/bookstack-lifecycle-recovery.ts";
+import { lifecycleContentBinding } from "../lib/ima-lifecycle-security.ts";
 
 const success = (data) => ({ success: true, data });
 const failure = (code) => corpusFailure(code);
@@ -308,6 +313,25 @@ test("registers strict lifecycle summary schema alongside Serena-first context",
     summary: "Completed implementation.",
     artifact: "Detailed artifact",
     extra: true,
+  }), false);
+  assert.equal(Check(lifecycle.parameters, {
+    contentAdjudication: {
+      handle: "00000000-0000-4000-8000-000000000237",
+      decisions: [{
+        finding: "00000000-0000-4000-8000-000000000238",
+        decision: "continue_after_review",
+      }],
+    },
+  }), true);
+  assert.equal(Check(lifecycle.parameters, {
+    contentAdjudication: {
+      handle: "00000000-0000-4000-8000-000000000237",
+      decisions: [{
+        finding: "00000000-0000-4000-8000-000000000238",
+        decision: "reject",
+      }],
+    },
+    artifact: "must-not-be-accepted",
   }), false);
   assert.equal(Check(lifecycleRecall.parameters, {
     lifecycleKey,
@@ -1621,6 +1645,8 @@ const bookStackPublicReadFixture = async (t) => {
   return {
     root,
     registry,
+    placement,
+    initialRecord,
     before: await readFile(registry, "utf8"),
     environment: {
       BOOKSTACK_BASE_URL: origin,
@@ -1789,6 +1815,94 @@ test("does not reinterpret symlink-rejected lifecycle pin authority as historica
   assert.equal(access.calls(), 0);
 });
 
+test("lifecycle context blocks pending and corrupt pin anchors before provider effects", async (t) => {
+  for (const scenario of ["pending", "corrupt"]) {
+    const root = await pinTestRoot(t);
+    if (scenario === "pending") {
+      await authorizedPinAttempt(root);
+    } else {
+      await mkdir(join(root, ".ima-cycle"), { recursive: true });
+      await writeFile(join(root, ".ima-cycle", "provider-pins.json"), "{", "utf8");
+    }
+    const access = corpusAccessCounter();
+    let sessionCalls = 0;
+    const result = await coordinateContext({
+      source: { type: "lifecycle", key: lifecycleKey },
+    }, root, {
+      canonical: async (path) => path,
+      corpus: access.corpus,
+      resolveProjectRoot: async () => root,
+      session: async () => {
+        sessionCalls += 1;
+        throw new Error("Serena must not run for an invalid pin anchor");
+      },
+    });
+
+    assert.equal(result.status, "failed", scenario);
+    assert.equal(result.source, null, scenario);
+    assert.deepEqual(result.diagnostics, [{
+      code: "pinned_provider_unavailable",
+      stage: "lifecycle",
+      message: "Pinned lifecycle provider could not verify authoritative evidence.",
+    }], scenario);
+    assert.equal(access.calls(), 0, scenario);
+    assert.equal(sessionCalls, 0, scenario);
+  }
+});
+
+test("lifecycle context cancellation stops an in-flight pin-anchor read without fallback", async (t) => {
+  const root = await pinTestRoot(t);
+  const initial = lifecycleReadRecordFor({
+    provider: "qdrant",
+    request: lifecycleReadRequestFor("plan", "context-anchor-cancellation"),
+    root,
+  });
+  await pinLifecycleReadAuthority(root, "qdrant", initial);
+  const registry = join(root, ".ima-cycle", "provider-pins.json");
+  const before = await readFile(registry, "utf8");
+  const access = corpusAccessCounter();
+  let sessionCalls = 0;
+  const controller = new AbortController();
+  const reason = new Error("context anchor read cancelled");
+  let startReconcile;
+  const reconcileStarted = new Promise((resolve) => { startReconcile = resolve; });
+  const route = lifecycleReadRoutingFor({
+    provider: "qdrant",
+    initial,
+    target: initial,
+    records: [initial],
+    onReconcile: async ({ signal }) => {
+      startReconcile();
+      if (!signal) throw new Error("missing lifecycle anchor signal");
+      await new Promise((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    },
+  });
+
+  const pending = coordinateContext({
+    source: { type: "lifecycle", key: SKYNET_230_LIFECYCLE_KEY },
+  }, root, {
+    canonical: async (path) => path,
+    corpus: access.corpus,
+    routing: route.routing,
+    resolveProjectRoot: async () => root,
+    session: async () => {
+      sessionCalls += 1;
+      throw new Error("Serena fallback is forbidden after anchor cancellation");
+    },
+  }, controller.signal);
+
+  await reconcileStarted;
+  controller.abort(reason);
+  await assert.rejects(pending, (error) => error === reason);
+  assert.deepEqual(route.calls.map(({ operation }) => operation), ["reconcile"]);
+  assert.deepEqual(route.fallbackCalls, []);
+  assert.equal(await readFile(registry, "utf8"), before);
+  assert.equal(access.calls(), 0);
+  assert.equal(sessionCalls, 0);
+});
+
 test("requires explicit user confirmation before BookStack selection and preserves an exact durable pin", async (t) => {
   const root = await pinTestRoot(t);
   const { routing, calls } = localRouting();
@@ -1898,6 +2012,7 @@ test("does not pin mismatched lifecycle identity or uncertain first persistence"
   }, localRoutingOptions(mismatchedRoot, mismatch.routing));
   assert.equal(mismatched.status, "failed");
   assert.equal(mismatched.error.code, "lifecycle_provider_verification_failed");
+  assert.equal(mismatched.writeState, "possible-write");
   const mismatchPin = await loadLifecyclePinStateWith(async () => mismatchedRoot)(mismatchedRoot, lifecycleKey);
   assert.equal(mismatchPin.status, "pending");
   if (mismatchPin.status !== "pending") return;
@@ -3035,7 +3150,7 @@ test("TEST-004 reconciles a checkpointed one-LF-normalized page into a pin-ready
   assert.notEqual(pinned.pin.initialReference.pageHash, digestBookStackValue(record.pageMarkdown));
 });
 
-test("TEST-006 recalls a valid pinned BookStack lifecycle through the exact placement projection", async (t) => {
+test("TEST-006 hydrates a valid pinned BookStack anchor and phase-reads its exact placement", async (t) => {
   const root = await pinTestRoot(t);
   const request = localLifecycleRequest();
   const record = createLifecycleRecord({ request, placement: bookStackRecoveryPlacement });
@@ -3051,20 +3166,6 @@ test("TEST-006 recalls a valid pinned BookStack lifecycle through the exact plac
     created_by: { id: 7 },
     updated_by: { id: 8 },
   };
-  const implementationRecord = createLifecycleRecord({
-    request: {
-      ...request,
-      type: "implementation",
-      identity: {
-        ...request.identity,
-        lifecycleRootMemoryId: record.artifactId,
-        priorArtifactIds: [...request.identity.priorArtifactIds, record.artifactId],
-      },
-      summary: "Synthetic implementation evidence shares the pinned lifecycle source.",
-      artifact: "# Implementation\n\nSynthetic implementation lifecycle provider evidence.",
-    },
-    placement: bookStackRecoveryPlacement,
-  });
   const pageFor = (id, lifecycleRecord) => ({
     id,
     name: `${lifecycleRecord.phase}-${lifecycleRecord.artifactId}`,
@@ -3077,8 +3178,29 @@ test("TEST-006 recalls a valid pinned BookStack lifecycle through the exact plac
     created_by: { id: 7 },
     updated_by: { id: 8 },
   });
-  const implementationPage = pageFor(1797, implementationRecord);
-  let listedPages = [page, implementationPage];
+  const continuationPageFor = (id, phase, index) => pageFor(id, createLifecycleRecord({
+    request: {
+      ...request,
+      type: phase,
+      identity: {
+        ...request.identity,
+        lifecycleRootMemoryId: record.artifactId,
+        priorArtifactIds: [...request.identity.priorArtifactIds, record.artifactId],
+      },
+      summary: `Synthetic ${phase} evidence ${index + 1} shares the pinned lifecycle source.`,
+      artifact: `# ${phase}\n\nSynthetic ${phase} lifecycle provider evidence ${index + 1}.`,
+    },
+    placement: bookStackRecoveryPlacement,
+  }));
+  const implementationPages = Array.from(
+    { length: 10 },
+    (_unused, index) => continuationPageFor(1797 + index, "implementation", index),
+  );
+  const testPages = Array.from(
+    { length: 10 },
+    (_unused, index) => continuationPageFor(1807 + index, "test", index),
+  );
+  let listedPages = [page, ...implementationPages, ...testPages];
   const locator = {
     ...bookStackRecoveryPlacement,
     pageId: page.id,
@@ -3162,7 +3284,7 @@ test("TEST-006 recalls a valid pinned BookStack lifecycle through the exact plac
   assert.equal(
     context.status,
     "degraded",
-    `valid BookStack pin must pass provider get and exact-placement recall: ${JSON.stringify(context.diagnostics)}`,
+    `valid BookStack pin must pass direct anchor authority: ${JSON.stringify(context.diagnostics)}`,
   );
   assert.deepEqual(context.source, {
     type: "lifecycle",
@@ -3180,9 +3302,8 @@ test("TEST-006 recalls a valid pinned BookStack lifecycle through the exact plac
     stage: "lifecycle",
     message: "Lifecycle hydration used the pinned provider.",
   }]);
-  assert.equal(calls.filter(({ pathname }) => pathname === "/api/pages").length, 1);
-  const firstRecallList = calls.findIndex(({ pathname }) => pathname === "/api/pages");
-  assert.equal(calls.slice(0, firstRecallList).some(({ pathname }) => pathname === "/api/pages/1796"), true);
+  assert.equal(calls.filter(({ pathname }) => pathname === "/api/pages").length, 0);
+  assert.equal(calls.some(({ pathname }) => pathname === "/api/pages/1796"), true);
   assert.equal(calls.every(({ origin }) => origin === "https://bookstack.test"), true);
   assert.equal(calls.every(({ method }) => method === "GET"), true);
   assert.equal(access.calls(), 0);
@@ -3195,6 +3316,10 @@ test("TEST-006 recalls a valid pinned BookStack lifecycle through the exact plac
     phase: "plan",
     recordKey: record.recordKey,
   }]);
+  const implementationRecalled = await recallLifecycle(`${lifecycleKey} implementation`, root, supplied);
+  assert.ok(implementationRecalled);
+  assert.equal(implementationRecalled.structuredContent.results.length, 10);
+  assert.equal(implementationRecalled.structuredContent.results.every(({ phase }) => phase === "implementation"), true);
 
   const overflowPages = Array.from({ length: 20 }, (_, index) => pageFor(
     1798 + index,
@@ -3211,8 +3336,9 @@ test("TEST-006 recalls a valid pinned BookStack lifecycle through the exact plac
   const listCallsBeforeOverflow = calls.filter(({ pathname }) => pathname === "/api/pages").length;
   assert.equal(await recallLifecycle(`${lifecycleKey} plan`, root, supplied), null);
   assert.equal(calls.filter(({ pathname }) => pathname === "/api/pages").length, listCallsBeforeOverflow + 1);
-  listedPages = [page, implementationPage];
+  listedPages = [page, ...implementationPages, ...testPages];
 
+  const listCallsBeforeMismatch = calls.filter(({ pathname }) => pathname === "/api/pages").length;
   page.markdown = page.markdown.replace("Synthetic lifecycle provider evidence.", "Tampered provider evidence.");
   const mismatched = await coordinateContext({
     source: { type: "lifecycle", key: lifecycleKey },
@@ -3225,6 +3351,7 @@ test("TEST-006 recalls a valid pinned BookStack lifecycle through the exact plac
     message: "Pinned lifecycle provider could not verify authoritative evidence.",
   }]);
   assert.equal(calls.every(({ method }) => method === "GET"), true);
+  assert.equal(calls.filter(({ pathname }) => pathname === "/api/pages").length, listCallsBeforeMismatch);
   assert.equal(access.calls(), 0);
   assert.equal(serenaCalls, 0);
   assert.equal(await readFile(registry, "utf8"), pinStateBeforeRecall);
@@ -3820,7 +3947,46 @@ test("hydrates an independently verified non-Serena pin as degraded context with
   assert.match(context.source.content, /Synthetic lifecycle provider evidence/);
   assert.equal(context.diagnostics[0].code, "lifecycle_pinned_provider_context");
   assert.equal(serenaCalls, 0);
-  assert.equal(calls.qdrant.some(({ operation }) => operation === "recall"), true);
+  assert.equal(calls.qdrant.filter(({ operation }) => operation === "recall").length, 0);
+  assert.equal(calls.qdrant.filter(({ operation }) => operation === "reconcile").length >= 2, true);
+});
+
+test("hydrates a pinned Serena lifecycle source through its direct anchor without recall", async (t) => {
+  const root = await pinTestRoot(t);
+  const initial = lifecycleReadRecordFor({
+    provider: "serena",
+    request: lifecycleReadRequestFor("plan", "context-serena-anchor"),
+    root,
+  });
+  await pinLifecycleReadAuthority(root, "serena", initial);
+  const route = lifecycleReadRoutingFor({
+    provider: "serena",
+    initial,
+    target: initial,
+    records: [initial],
+  });
+  const access = corpusAccessCounter();
+  const context = await coordinateContext({
+    source: { type: "lifecycle", key: SKYNET_230_LIFECYCLE_KEY },
+  }, root, {
+    canonical: async (path) => path,
+    corpus: access.corpus,
+    routing: route.routing,
+    resolveProjectRoot: async () => root,
+    session: serenaSession(),
+  });
+
+  assert.equal(context.status, "ready");
+  assert.equal(context.source.content, initial.artifact);
+  assert.deepEqual(route.calls.map(({ operation }) => operation), [
+    "reconcile",
+    "reconcile",
+    "reconcile",
+    "reconcile",
+  ]);
+  assert.deepEqual(route.calls.filter(({ operation }) => operation === "recall"), []);
+  assert.deepEqual(route.fallbackCalls, []);
+  assert.equal(access.calls(), 0);
 });
 
 test("retains verified historical Qdrant authority before unpinned provider selection", async (t) => {
@@ -4888,6 +5054,176 @@ test("TEST-008 registered public lifecycle reads expose a safe provider diagnost
   assert.doesNotMatch(JSON.stringify(result), /test-token-(?:id|secret)/);
 });
 
+test("public lifecycle reads expose a safe BookStack HTTP failure diagnostic", async (t) => {
+  const fixture = await bookStackPublicReadFixture(t);
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const calls = [];
+  globalThis.fetch = async (input, init = {}) => {
+    const url = new URL(String(input));
+    calls.push({ origin: url.origin, pathname: url.pathname, method: init.method ?? "GET" });
+    return new Response("upstream failure", { status: 502 });
+  };
+
+  const result = await coordinateLifecycleRecall({
+    lifecycleKey: SKYNET_230_LIFECYCLE_KEY,
+    phase: "implementation",
+    limit: 1,
+  }, {
+    cwd: fixture.root,
+    environment: fixture.environment,
+    resolveProjectRoot: async () => fixture.root,
+  });
+
+  assert.deepEqual(result, {
+    schemaVersion: 1,
+    status: "failed",
+    error: {
+      code: "lifecycle_read_unavailable",
+      message: "Lifecycle read is unavailable.",
+      diagnostic: {
+        stage: "provider",
+        code: "provider_unavailable",
+        step: "authority",
+        reason: "http_failed",
+      },
+    },
+  });
+  assert.deepEqual(calls, [{
+    origin: fixture.environment.BOOKSTACK_BASE_URL,
+    pathname: "/api/pages/1796",
+    method: "GET",
+  }]);
+  assert.doesNotMatch(JSON.stringify(result), /test-token-(?:id|secret)/);
+  assert.equal(await readFile(fixture.registry, "utf8"), fixture.before);
+});
+
+test("public lifecycle reads expose selected BookStack recall overflow safely", async (t) => {
+  const fixture = await bookStackPublicReadFixture(t);
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const overflowPages = Array.from({ length: 21 }, (_unused, index) => {
+    const request = lifecycleReadRequestFor("implementation", `bookstack-overflow-${index + 1}`, {
+      lifecycleRootMemoryId: fixture.initialRecord.artifactId,
+      priorArtifactIds: [fixture.initialRecord.artifactId],
+    });
+    const record = createLifecycleRecord({
+      request: {
+        type: request.type,
+        identity: request.identity,
+        summary: request.summary,
+        artifact: request.artifact,
+      },
+      placement: fixture.placement,
+    });
+    return {
+      id: 1900 + index,
+      name: `${record.phase}-${record.artifactId}`,
+      slug: `${record.phase}-${record.artifactId}`,
+      book_id: fixture.placement.bookId,
+      chapter_id: fixture.placement.chapterId,
+      markdown: record.pageMarkdown,
+      revision_count: 1,
+      updated_at: SKYNET_230_TIMESTAMP,
+      created_by: { id: 7 },
+      updated_by: { id: 8 },
+    };
+  });
+  fixture.pages.splice(0, fixture.pages.length, fixture.pages[0], ...overflowPages);
+  const transport = bookStackPublicReadTransport(fixture);
+  globalThis.fetch = transport.fetch;
+
+  const result = await coordinateLifecycleRecall({
+    lifecycleKey: SKYNET_230_LIFECYCLE_KEY,
+    phase: "implementation",
+    limit: 20,
+  }, {
+    cwd: fixture.root,
+    environment: fixture.environment,
+    resolveProjectRoot: async () => fixture.root,
+  });
+
+  assert.deepEqual(result, {
+    schemaVersion: 1,
+    status: "failed",
+    error: {
+      code: "lifecycle_read_unavailable",
+      message: "Lifecycle read is unavailable.",
+      diagnostic: {
+        stage: "provider",
+        code: "provider_verification_failed",
+        step: "recall",
+        reason: "recall_overflow",
+      },
+    },
+  });
+  assert.equal(transport.calls.filter(({ pathname }) => pathname === "/api/pages").length, 1);
+  assert.equal(await readFile(fixture.registry, "utf8"), fixture.before);
+  assert.doesNotMatch(JSON.stringify(result), /test-token-(?:id|secret)/);
+});
+
+test("lifecycle routing labels selected recall excess as a recall overflow", async (t) => {
+  const root = await pinTestRoot(t);
+  const plan = lifecycleReadRecordFor({
+    provider: "qdrant",
+    request: lifecycleReadRequestFor("plan", "overflow-root"),
+    root,
+  });
+  const first = lifecycleReadRecordFor({
+    provider: "qdrant",
+    request: lifecycleReadRequestFor("implementation", "overflow-first", {
+      lifecycleRootMemoryId: plan.artifactId,
+      priorArtifactIds: [plan.artifactId],
+    }),
+    root,
+  });
+  const second = lifecycleReadRecordFor({
+    provider: "qdrant",
+    request: lifecycleReadRequestFor("implementation", "overflow-second", {
+      lifecycleRootMemoryId: plan.artifactId,
+      priorArtifactIds: [plan.artifactId],
+    }),
+    root,
+  });
+  const selections = [];
+  const routing = createLifecycleRouting([{
+    provider: "qdrant",
+    persist: async () => ({
+      status: "blocked",
+      provider: "qdrant",
+      code: "read_only_fixture",
+      writeState: "no-write",
+    }),
+    recall: async (selection) => {
+      selections.push(structuredClone(selection));
+      return {
+        status: "verified",
+        provider: "qdrant",
+        records: [structuredClone(first), structuredClone(second)],
+      };
+    },
+  }]);
+
+  const result = await routeLifecycleRecall({
+    routing,
+    provider: "qdrant",
+    lifecycleKey: SKYNET_230_LIFECYCLE_KEY,
+    phase: "implementation",
+    limit: 1,
+  });
+
+  assert.deepEqual(result, {
+    status: "blocked",
+    provider: "qdrant",
+    code: "lifecycle_provider_recall_overflow",
+  });
+  assert.deepEqual(selections, [{
+    lifecycleKey: SKYNET_230_LIFECYCLE_KEY,
+    phase: "implementation",
+    limit: 1,
+  }]);
+});
+
 test("TEST-009 registered public lifecycle reads diagnose an unavailable BookStack adapter", async (t) => {
   const fixture = await bookStackPublicReadFixture(t);
   const environmentKeys = ["BOOKSTACK_BASE_URL", "BOOKSTACK_ORIGIN", "BOOKSTACK_TOKEN_ID", "BOOKSTACK_TOKEN_SECRET"];
@@ -5026,6 +5362,13 @@ test("TEST-011 public lifecycle recall reports a safe rejected-record field", as
         step: "recall",
         phase: "implementation",
         reason: "record_summary_invalid",
+        findings: [{
+          category: "bearer_credential",
+          field: "summary",
+          index: null,
+          line: 1,
+          column: 15,
+        }],
       },
     },
   });
@@ -5080,6 +5423,13 @@ test("TEST-012 public lifecycle recall reports a safe secret-shaped artifact", a
         step: "recall",
         phase: "implementation",
         reason: "record_artifact_secret_bearer_value",
+        findings: [{
+          category: "bearer_credential",
+          field: "artifact",
+          index: null,
+          line: 1,
+          column: 15,
+        }],
       },
     },
   });
@@ -5169,7 +5519,7 @@ test("TEST-014 public lifecycle recall accepts a composite Bearer placeholder", 
   assert.deepEqual(route.fallbackCalls, []);
 });
 
-test("TEST-015 public lifecycle recall accepts a synthetic Bearer placeholder", async (t) => {
+test("TEST-015 public lifecycle recall withholds a non-definitive synthetic bearer marker", async (t) => {
   const root = await pinTestRoot(t);
   const initial = lifecycleReadRecordFor({
     provider: "qdrant",
@@ -5200,13 +5550,596 @@ test("TEST-015 public lifecycle recall accepts a synthetic Bearer placeholder", 
     resolveProjectRoot: async () => root,
   });
 
-  assert.equal(result.status, "completed");
-  assert.deepEqual(result.results.map(({ artifactId }) => artifactId).sort(), [
-    initial.artifactId,
-    target.artifactId,
-  ].sort());
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.code, "lifecycle_read_unavailable");
+  assert.equal(result.error.diagnostic.reason, "record_summary_invalid");
+  assert.deepEqual(
+    result.error.diagnostic.findings.map(({ category, field, index }) => ({ category, field, index })),
+    [
+      { category: "synthetic_bearer", field: "summary", index: null },
+      { category: "synthetic_bearer", field: "artifact", index: null },
+    ],
+  );
+  assert.doesNotMatch(JSON.stringify(result), /test-token-value/);
   assert.deepEqual(route.calls.map(({ operation }) => operation), ["reconcile", "recall"]);
   assert.deepEqual(route.fallbackCalls, []);
+});
+
+test("TEST-015b captures a warning-tier read only for process-local continuation", async (t) => {
+  const root = await pinTestRoot(t);
+  const initial = lifecycleReadRecordFor({
+    provider: "qdrant",
+    request: lifecycleReadRequestFor("plan", "warning-capture-root"),
+    root,
+  });
+  const target = lifecycleReadRecordFor({
+    provider: "qdrant",
+    request: lifecycleReadRequestFor("implementation", "Bearer test-token-value", {
+      lifecycleRootMemoryId: initial.artifactId,
+    }),
+    root,
+  });
+  await pinLifecycleReadAuthority(root, "qdrant", initial);
+  const route = lifecycleReadRoutingFor({
+    provider: "qdrant",
+    initial,
+    target,
+    records: [initial, target],
+  });
+  let captured = null;
+  const result = await coordinateLifecycleRecall({
+    lifecycleKey: SKYNET_230_LIFECYCLE_KEY,
+    limit: 2,
+  }, {
+    cwd: root,
+    routing: route.routing,
+    resolveProjectRoot: async () => root,
+    captureContentWarning: (warning) => { captured = warning; },
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(captured?.kind, "read-recall");
+  assert.equal(captured?.warnings.length, 1);
+  assert.deepEqual(captured?.warnings.map(({ findings }) =>
+    findings.map(({ category, field }) => ({ category, field }))), [[
+    { category: "synthetic_bearer", field: "summary" },
+    { category: "synthetic_bearer", field: "artifact" },
+  ]]);
+  assert.doesNotMatch(JSON.stringify(result), /test-token-value/);
+});
+
+test("TEST-001 captures every warning binding with correlated safe findings", async (t) => {
+  const root = await pinTestRoot(t);
+  const initial = lifecycleReadRecordFor({
+    provider: "qdrant",
+    request: lifecycleReadRequestFor("plan", "multi-warning-root"),
+    root,
+  });
+  const summaryWarning = lifecycleReadRecordFor({
+    provider: "qdrant",
+    request: lifecycleReadRequestFor("implementation", "ordinary-artifact", {
+      lifecycleRootMemoryId: initial.artifactId,
+    }),
+    root,
+  });
+  const artifactWarning = lifecycleReadRecordFor({
+    provider: "qdrant",
+    request: lifecycleReadRequestFor("test", "Bearer test-token-value", {
+      lifecycleRootMemoryId: initial.artifactId,
+    }),
+    root,
+  });
+  const route = lifecycleReadRoutingFor({
+    provider: "qdrant",
+    initial,
+    target: summaryWarning,
+    records: [
+      initial,
+      artifactWarning,
+      { ...summaryWarning, summary: "Bearer test-token-value" },
+    ],
+  });
+  await pinLifecycleReadAuthority(root, "qdrant", initial);
+  let captured = null;
+  const result = await coordinateLifecycleRecall({
+    lifecycleKey: SKYNET_230_LIFECYCLE_KEY,
+    limit: 3,
+  }, {
+    cwd: root,
+    routing: route.routing,
+    resolveProjectRoot: async () => root,
+    captureContentWarning: (warning) => { captured = warning; },
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(captured?.kind, "read-recall");
+  assert.equal(captured?.warnings.length, 2);
+  assert.equal(new Set(captured?.warnings.map(({ binding }) => binding)).size, 2);
+  assert.deepEqual(captured?.warnings.map(({ findings }) =>
+    findings.map(({ field }) => field).sort()), [
+    ["artifact", "summary"],
+    ["summary"],
+  ]);
+  assert.doesNotMatch(JSON.stringify(result), /test-token-value/);
+});
+
+test("TEST-002 block precedence discards mixed warning candidates in either provider order", async (t) => {
+  for (const recordsOrder of ["warning-first", "block-first"]) {
+    const root = await pinTestRoot(t);
+    const initial = lifecycleReadRecordFor({
+      provider: "qdrant",
+      request: lifecycleReadRequestFor("plan", `${recordsOrder}-root`),
+      root,
+    });
+    const warning = lifecycleReadRecordFor({
+      provider: "qdrant",
+      request: lifecycleReadRequestFor("implementation", "Bearer test-token-value", {
+        lifecycleRootMemoryId: initial.artifactId,
+      }),
+      root,
+    });
+    const blocked = lifecycleReadRecordFor({
+      provider: "qdrant",
+      request: lifecycleReadRequestFor("test", "ordinary-block-artifact", {
+        lifecycleRootMemoryId: initial.artifactId,
+      }),
+      root,
+    });
+    const records = recordsOrder === "warning-first"
+      ? [initial, warning, { ...blocked, artifact: "token=not-a-placeholder" }]
+      : [initial, { ...blocked, artifact: "token=not-a-placeholder" }, warning];
+    await pinLifecycleReadAuthority(root, "qdrant", initial);
+    const registry = join(root, ".ima-cycle", "provider-pins.json");
+    const before = await readFile(registry, "utf8");
+    const route = lifecycleReadRoutingFor({
+      provider: "qdrant",
+      initial,
+      target: warning,
+      records,
+    });
+    let captured = null;
+    const result = await coordinateLifecycleRecall({
+      lifecycleKey: SKYNET_230_LIFECYCLE_KEY,
+      limit: 3,
+    }, {
+      cwd: root,
+      routing: route.routing,
+      resolveProjectRoot: async () => root,
+      captureContentWarning: (warningCapture) => { captured = warningCapture; },
+    });
+
+    assert.equal(result.status, "failed", recordsOrder);
+    assert.equal(result.error.code, "lifecycle_read_unavailable", recordsOrder);
+    assert.equal(result.error.diagnostic.reason, "record_artifact_secret_named", recordsOrder);
+    assert.equal(captured, null, recordsOrder);
+    assert.deepEqual(route.calls.map(({ operation }) => operation), ["reconcile", "recall"], recordsOrder);
+    assert.equal(await readFile(registry, "utf8"), before, recordsOrder);
+    assert.doesNotMatch(JSON.stringify(result), /not-a-placeholder|test-token-value/, recordsOrder);
+  }
+});
+
+test("read warning overflow is noncontinuable while exactly 16 findings remain disclosed", async (t) => {
+  const warningLines = (count) => Array.from(
+    { length: count },
+    (_unused, index) => `Bearer test-warning-${index + 1}`,
+  ).join("\n");
+  for (const count of [16, 17]) {
+    const root = await pinTestRoot(t);
+    const initial = lifecycleReadRecordFor({
+      provider: "qdrant",
+      request: lifecycleReadRequestFor("plan", `overflow-root-${count}`),
+      root,
+    });
+    const target = lifecycleReadRecordFor({
+      provider: "qdrant",
+      request: lifecycleReadRequestFor("implementation", "ordinary-overflow-artifact", {
+        lifecycleRootMemoryId: initial.artifactId,
+      }),
+      root,
+    });
+    await pinLifecycleReadAuthority(root, "qdrant", initial);
+    const registry = join(root, ".ima-cycle", "provider-pins.json");
+    const before = await readFile(registry, "utf8");
+    const route = lifecycleReadRoutingFor({
+      provider: "qdrant",
+      initial,
+      target,
+      records: [initial, { ...target, artifact: warningLines(count) }],
+    });
+    let captured = null;
+    const result = await coordinateLifecycleRecall({
+      lifecycleKey: SKYNET_230_LIFECYCLE_KEY,
+      limit: 2,
+    }, {
+      cwd: root,
+      routing: route.routing,
+      resolveProjectRoot: async () => root,
+      captureContentWarning: (warning) => { captured = warning; },
+    });
+
+    assert.equal(result.status, "failed", count);
+    assert.deepEqual(route.calls.map(({ operation }) => operation), ["reconcile", "recall"], count);
+    assert.equal(await readFile(registry, "utf8"), before, count);
+    if (count === 16) {
+      assert.equal(captured?.warnings.length, 1);
+      assert.equal(captured?.warnings[0].findings.length, 16);
+    } else {
+      assert.equal(captured, null);
+      assert.deepEqual(result.error.diagnostic.findings, [{
+        category: "finding_overflow",
+        field: "artifact",
+        index: null,
+        line: 17,
+        column: 1,
+      }]);
+    }
+  }
+});
+
+test("recall enforces warning bounds across records before capture and block precedence", async (t) => {
+  const warningRecordFor = (initial, root, index) => {
+    const record = lifecycleReadRecordFor({
+      provider: "qdrant",
+      request: lifecycleReadRequestFor("implementation", `ordinary-record-${index}`, {
+        lifecycleRootMemoryId: initial.artifactId,
+      }),
+      root,
+      pageId: index + 10,
+    });
+    return { ...record, artifact: `Bearer test-warning-${index}` };
+  };
+  for (const count of [16, 17]) {
+    const root = await pinTestRoot(t);
+    const initial = lifecycleReadRecordFor({
+      provider: "qdrant",
+      request: lifecycleReadRequestFor("plan", `batch-root-${count}`),
+      root,
+    });
+    const warnings = Array.from(
+      { length: count },
+      (_unused, index) => warningRecordFor(initial, root, index + 1),
+    );
+    await pinLifecycleReadAuthority(root, "qdrant", initial);
+    const registry = join(root, ".ima-cycle", "provider-pins.json");
+    const before = await readFile(registry, "utf8");
+    const route = lifecycleReadRoutingFor({
+      provider: "qdrant",
+      initial,
+      target: warnings[0],
+      records: [initial, ...warnings],
+    });
+    let captured = null;
+    const result = await coordinateLifecycleRecall({
+      lifecycleKey: SKYNET_230_LIFECYCLE_KEY,
+      limit: 20,
+    }, {
+      cwd: root,
+      routing: route.routing,
+      resolveProjectRoot: async () => root,
+      captureContentWarning: (warning) => { captured = warning; },
+    });
+    assert.equal(result.status, "failed", count);
+    assert.equal(await readFile(registry, "utf8"), before, count);
+    if (count === 16) {
+      assert.equal(captured?.warnings.length, 16);
+      assert.equal(captured?.warnings.flatMap(({ findings }) => findings).length, 16);
+    } else {
+      assert.equal(captured, null);
+      assert.deepEqual(result.error.diagnostic.findings, [{
+        category: "finding_overflow",
+        field: "artifact",
+        index: null,
+        line: 1,
+        column: 1,
+      }]);
+    }
+  }
+
+  for (const order of ["warnings-first", "block-first"]) {
+    const root = await pinTestRoot(t);
+    const initial = lifecycleReadRecordFor({
+      provider: "qdrant",
+      request: lifecycleReadRequestFor("plan", `batch-definite-${order}`),
+      root,
+    });
+    const warnings = Array.from(
+      { length: 17 },
+      (_unused, index) => warningRecordFor(initial, root, index + 1),
+    );
+    const definite = {
+      ...lifecycleReadRecordFor({
+        provider: "qdrant",
+        request: lifecycleReadRequestFor("test", `batch-definite-record-${order}`, {
+          lifecycleRootMemoryId: initial.artifactId,
+        }),
+        root,
+        pageId: 99,
+      }),
+      artifact: "token=not-a-placeholder",
+    };
+    await pinLifecycleReadAuthority(root, "qdrant", initial);
+    const registry = join(root, ".ima-cycle", "provider-pins.json");
+    const before = await readFile(registry, "utf8");
+    const route = lifecycleReadRoutingFor({
+      provider: "qdrant",
+      initial,
+      target: warnings[0],
+      records: order === "warnings-first"
+        ? [initial, ...warnings, definite]
+        : [initial, definite, ...warnings],
+    });
+    let captured = null;
+    const result = await coordinateLifecycleRecall({
+      lifecycleKey: SKYNET_230_LIFECYCLE_KEY,
+      limit: 20,
+    }, {
+      cwd: root,
+      routing: route.routing,
+      resolveProjectRoot: async () => root,
+      captureContentWarning: (warning) => { captured = warning; },
+    });
+    assert.equal(result.status, "failed", order);
+    assert.equal(result.error.diagnostic.reason, "record_artifact_secret_named", order);
+    assert.equal(captured, null, order);
+    assert.equal(await readFile(registry, "utf8"), before, order);
+  }
+});
+
+test("TEST-003 approved public recall decisions reach only fresh read dispatch", async (t) => {
+  const root = await pinTestRoot(t);
+  const initial = lifecycleReadRecordFor({
+    provider: "qdrant",
+    request: lifecycleReadRequestFor("plan", "test-003-recall-root"),
+    root,
+  });
+  const target = lifecycleReadRecordFor({
+    provider: "qdrant",
+    request: lifecycleReadRequestFor("implementation", "Bearer test-token-value", {
+      lifecycleRootMemoryId: initial.artifactId,
+    }),
+    root,
+  });
+  await pinLifecycleReadAuthority(root, "qdrant", initial);
+  const registry = join(root, ".ima-cycle", "provider-pins.json");
+  const before = await readFile(registry, "utf8");
+  const route = lifecycleReadRoutingFor({
+    provider: "qdrant",
+    initial,
+    target,
+    records: [initial, target],
+  });
+  const request = { lifecycleKey: SKYNET_230_LIFECYCLE_KEY, limit: 2 };
+  let captured = null;
+  const initialResult = await coordinateLifecycleRecall(request, {
+    cwd: root,
+    routing: route.routing,
+    resolveProjectRoot: async () => root,
+    captureContentWarning: (warning) => { captured = warning; },
+  });
+  assert.equal(initialResult.status, "failed");
+  assert.equal(captured?.warnings.length, 1);
+  const context = {
+    cwd: root,
+    sessionManager: { getSessionId: () => "test-003-recall-session" },
+  };
+  const operationFor = (finding) => ({
+    kind: "read-recall",
+    request,
+    warningDecisions: [{
+      finding,
+      findings: captured.warnings[0].findings,
+      binding: captured.warnings[0].binding,
+    }],
+    approvedWarningBindings: [captured.warnings[0].binding],
+  });
+  const screening = { tier: "warn", findings: captured.warnings[0].findings };
+
+  const incompletePending = beginLifecycleContentAdjudication({
+    ctx: context,
+    operation: operationFor("00000000-0000-4000-8000-000000000301"),
+    screening,
+  });
+  assert.equal(incompletePending.status, "pending");
+  const incomplete = continueLifecycleContentAdjudication({
+    ctx: context,
+    adjudication: {
+      handle: incompletePending.result.adjudication.handle,
+      decisions: [],
+    },
+  });
+  assert.equal(incomplete.status, "failed");
+  assert.equal(incomplete.result.error.code, "lifecycle_content_adjudication_invalid");
+
+  const foreignPending = beginLifecycleContentAdjudication({
+    ctx: context,
+    operation: operationFor("00000000-0000-4000-8000-000000000302"),
+    screening,
+  });
+  assert.equal(foreignPending.status, "pending");
+  const foreign = continueLifecycleContentAdjudication({
+    ctx: { ...context, sessionManager: { getSessionId: () => "foreign-session" } },
+    adjudication: {
+      handle: foreignPending.result.adjudication.handle,
+      decisions: foreignPending.result.adjudication.findings.map(({ finding }) => ({
+        finding,
+        decision: "continue_after_review",
+      })),
+    },
+  });
+  assert.equal(foreign.status, "failed");
+  assert.equal(foreign.result.error.code, "lifecycle_content_adjudication_mismatch");
+
+  const malformedPending = beginLifecycleContentAdjudication({
+    ctx: context,
+    operation: operationFor("00000000-0000-4000-8000-000000000305"),
+    screening,
+  });
+  assert.equal(malformedPending.status, "pending");
+  const malformed = continueLifecycleContentAdjudication({
+    ctx: context,
+    adjudication: {
+      handle: malformedPending.result.adjudication.handle,
+      decisions: [{
+        finding: "00000000-0000-4000-8000-000000000399",
+        decision: "continue_after_review",
+      }],
+    },
+  });
+  assert.equal(malformed.status, "failed");
+  assert.equal(malformed.result.error.code, "lifecycle_content_adjudication_invalid");
+
+  const pending = beginLifecycleContentAdjudication({
+    ctx: context,
+    operation: operationFor("00000000-0000-4000-8000-000000000303"),
+    screening,
+  });
+  assert.equal(pending.status, "pending");
+  const resumed = continueLifecycleContentAdjudication({
+    ctx: context,
+    adjudication: {
+      handle: pending.result.adjudication.handle,
+      decisions: pending.result.adjudication.findings.map(({ finding }) => ({
+        finding,
+        decision: "continue_after_review",
+      })),
+    },
+  });
+  assert.equal(resumed.status, "read");
+  if (resumed.status !== "read") throw new Error("read continuation did not resume");
+  const dispatched = await dispatchLifecycleContentRead({
+    operation: resumed.operation,
+    ctx: context,
+    admission: resumed.admission,
+    supplied: { routing: route.routing, resolveProjectRoot: async () => root },
+  });
+  assert.equal(dispatched.status, "completed");
+  assert.deepEqual(route.calls.map(({ operation }) => operation), [
+    "reconcile",
+    "recall",
+    "reconcile",
+    "recall",
+  ]);
+  assert.equal(await readFile(registry, "utf8"), before);
+  const replayed = continueLifecycleContentAdjudication({
+    ctx: context,
+    adjudication: {
+      handle: pending.result.adjudication.handle,
+      decisions: pending.result.adjudication.findings.map(({ finding }) => ({
+        finding,
+        decision: "continue_after_review",
+      })),
+    },
+  });
+  assert.equal(replayed.status, "failed");
+  assert.equal(replayed.result.error.code, "lifecycle_content_adjudication_invalid");
+});
+
+test("TEST-003 approved public get decisions reach only fresh read dispatch", async (t) => {
+  const root = await pinTestRoot(t);
+  const initial = lifecycleReadRecordFor({
+    provider: "qdrant",
+    request: lifecycleReadRequestFor("plan", "test-003-get-root"),
+    root,
+  });
+  const target = lifecycleReadRecordFor({
+    provider: "qdrant",
+    request: lifecycleReadRequestFor("implementation", "Bearer test-token-value", {
+      lifecycleRootMemoryId: initial.artifactId,
+    }),
+    root,
+  });
+  await pinLifecycleReadAuthority(root, "qdrant", initial);
+  const registry = join(root, ".ima-cycle", "provider-pins.json");
+  const before = await readFile(registry, "utf8");
+  const route = lifecycleReadRoutingFor({
+    provider: "qdrant",
+    initial,
+    target,
+    records: [initial, target],
+  });
+  const binding = lifecycleContentBinding({
+    provider: target.provider,
+    artifactId: target.artifactId,
+    recordKey: target.recordKey,
+    lifecycleKey: target.lifecycleKey,
+    phase: target.phase,
+    summary: target.summary,
+    artifact: target.artifact,
+  });
+  assert.ok(binding);
+  const reference = lifecycleReadReferenceFor(target, {
+    approvedWarningBindings: [binding],
+  });
+  assert.ok(reference);
+  const request = {
+    lifecycleKey: target.lifecycleKey,
+    phase: target.phase,
+    artifactId: target.artifactId,
+    recordKey: target.recordKey,
+    contentHash: createHash("sha256").update(target.artifact, "utf8").digest("hex"),
+    reference,
+    summary: target.summary,
+  };
+  assert.equal(request.summary, target.summary);
+  let captured = null;
+  const initialResult = await coordinateLifecycleGet(request, {
+    cwd: root,
+    routing: route.routing,
+    resolveProjectRoot: async () => root,
+    captureContentWarning: (warning) => { captured = warning; },
+  });
+  assert.equal(initialResult.status, "failed");
+  assert.equal(captured?.warnings.length, 1);
+  assert.deepEqual(captured?.warnings[0].findings.map(({ field }) => field), [
+    "summary",
+    "artifact",
+  ]);
+  const context = {
+    cwd: root,
+    sessionManager: { getSessionId: () => "test-003-get-session" },
+  };
+  const pending = beginLifecycleContentAdjudication({
+    ctx: context,
+    operation: {
+      kind: "read-get",
+      request,
+      warningDecisions: [{
+        finding: "00000000-0000-4000-8000-000000000304",
+        findings: captured.warnings[0].findings,
+        binding: captured.warnings[0].binding,
+      }],
+      approvedWarningBindings: [captured.warnings[0].binding],
+    },
+    screening: { tier: "warn", findings: captured.warnings[0].findings },
+  });
+  assert.equal(pending.status, "pending");
+  const resumed = continueLifecycleContentAdjudication({
+    ctx: context,
+    adjudication: {
+      handle: pending.result.adjudication.handle,
+      decisions: pending.result.adjudication.findings.map(({ finding }) => ({
+        finding,
+        decision: "continue_after_review",
+      })),
+    },
+  });
+  assert.equal(resumed.status, "read");
+  if (resumed.status !== "read") throw new Error("get continuation did not resume");
+  const dispatched = await dispatchLifecycleContentRead({
+    operation: resumed.operation,
+    ctx: context,
+    admission: resumed.admission,
+    supplied: { routing: route.routing, resolveProjectRoot: async () => root },
+  });
+  assert.equal(dispatched.status, "completed");
+  assert.equal(dispatched.artifactId, request.artifactId);
+  assert.deepEqual(route.calls.map(({ operation }) => operation), [
+    "reconcile",
+    "get",
+    "reconcile",
+    "get",
+  ]);
+  assert.equal(await readFile(registry, "utf8"), before);
 });
 
 test("TEST-016 public lifecycle recall accepts a plural Bearer placeholder", async (t) => {
@@ -5247,4 +6180,440 @@ test("TEST-016 public lifecycle recall accepts a plural Bearer placeholder", asy
   ].sort());
   assert.deepEqual(route.calls.map(({ operation }) => operation), ["reconcile", "recall"]);
   assert.deepEqual(route.fallbackCalls, []);
+});
+
+test("screens lifecycle content before corpus, provider, confirmation, or pin effects", async (t) => {
+  const root = await pinTestRoot(t);
+  const routed = localRouting();
+  let confirmations = 0;
+  const options = localRoutingOptions(root, routed.routing, {
+    confirmProvider: async () => {
+      confirmations += 1;
+      return true;
+    },
+  });
+
+  const blocked = await coordinateLifecycle({
+    ...localLifecycleRequest(),
+    provider: "qdrant",
+    artifact: "token=not-a-placeholder",
+  }, options);
+  assert.equal(blocked.status, "failed");
+  assert.equal(blocked.error.code, "lifecycle_content_blocked");
+  assert.deepEqual(blocked.error.findings, [{
+    category: "credential_assignment",
+    field: "artifact",
+    index: null,
+    line: 1,
+    column: 1,
+  }]);
+  assert.doesNotMatch(JSON.stringify(blocked), /not-a-placeholder/);
+
+  for (const [field, request] of [
+    ["summary", {
+      ...localLifecycleRequest(),
+      provider: "qdrant",
+      summary: "Authorization: Basic QmFzaWM6dGVzdA==",
+    }],
+    ["artifact", {
+      ...localLifecycleRequest(),
+      provider: "qdrant",
+      artifact: "Authorization: Basic QmFzaWM6dGVzdA==",
+    }],
+    ["identity.sourceRefs", {
+      ...localLifecycleRequest(),
+      provider: "qdrant",
+      identity: {
+        ...localLifecycleRequest().identity,
+        sourceRefs: ["Authorization: Basic QmFzaWM6dGVzdA=="],
+      },
+    }],
+  ]) {
+    const result = await coordinateLifecycle(request, options);
+    assert.equal(result.status, "failed", field);
+    assert.equal(result.error.code, "lifecycle_content_blocked", field);
+    assert.equal(result.error.findings[0].category, "basic_credential", field);
+    assert.equal(result.error.findings[0].field, field, field);
+    assert.doesNotMatch(JSON.stringify(result), /QmFzaWM6dGVzdA==/, field);
+  }
+
+  const basicFixture = "QmFzaWM6dGVzdA==";
+  const basicFields = ["summary", "artifact", "identity.sourceRefs"];
+  for (const [index, suffix] of ["", ".", "`", " ", ",", ")"].entries()) {
+    const field = basicFields[index % basicFields.length];
+    const value = `Basic ${basicFixture}${suffix}`;
+    const request = field === "summary"
+      ? { ...localLifecycleRequest(), provider: "qdrant", summary: value }
+      : field === "artifact"
+        ? { ...localLifecycleRequest(), provider: "qdrant", artifact: value }
+        : {
+          ...localLifecycleRequest(),
+          provider: "qdrant",
+          identity: {
+            ...localLifecycleRequest().identity,
+            sourceRefs: [value],
+          },
+        };
+    const result = await coordinateLifecycle(request, options);
+    assert.equal(result.status, "failed", `${field}:${suffix || "end"}`);
+    assert.equal(result.error.code, "lifecycle_content_blocked", `${field}:${suffix || "end"}`);
+    assert.equal(result.error.findings[0].category, "basic_credential", `${field}:${suffix || "end"}`);
+    assert.equal(result.error.findings[0].field, field, `${field}:${suffix || "end"}`);
+    assert.doesNotMatch(JSON.stringify(result), /QmFzaWM6dGVzdA==/, `${field}:${suffix || "end"}`);
+  }
+
+  const warned = await coordinateLifecycle({
+    ...localLifecycleRequest(),
+    provider: "qdrant",
+    artifact: "Bearer test-token-value",
+  }, options);
+  assert.equal(warned.status, "failed");
+  assert.equal(warned.error.code, "lifecycle_content_adjudication_required");
+  assert.deepEqual(warned.error.findings, [{
+    category: "synthetic_bearer",
+    field: "artifact",
+    index: null,
+    line: 1,
+    column: 1,
+  }]);
+  assert.doesNotMatch(JSON.stringify(warned), /test-token-value/);
+  assert.equal(confirmations, 0);
+  assert.deepEqual(routed.calls, { qdrant: [], markdown: [] });
+  assert.deepEqual(
+    await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey),
+    { status: "absent" },
+  );
+});
+
+test("write warning overflow returns no handle before provider or pin effects", async (t) => {
+  const root = await pinTestRoot(t);
+  const tools = [];
+  integrations({ registerTool: (tool) => tools.push(tool) });
+  const lifecycle = tools.find((tool) => tool.name === "ima_lifecycle");
+  assert.ok(lifecycle);
+  const artifact = Array.from(
+    { length: 17 },
+    (_unused, index) => `Bearer test-warning-${index + 1}`,
+  ).join("\n");
+  const result = await lifecycle.execute("warning-overflow-237", {
+    ...localLifecycleRequest(),
+    provider: "qdrant",
+    artifact,
+  }, undefined, undefined, {
+    cwd: root,
+    mode: "json",
+    hasUI: false,
+    sessionManager: { getSessionId: () => "warning-overflow-session" },
+    ui: {},
+  });
+
+  assert.equal(result.details.status, "failed");
+  assert.equal(result.details.error.code, "lifecycle_content_blocked");
+  assert.equal(Object.hasOwn(result.details, "adjudication"), false);
+  assert.deepEqual(result.details.error.findings, [{
+    category: "finding_overflow",
+    field: "artifact",
+    index: null,
+    line: 17,
+    column: 1,
+  }]);
+  assert.deepEqual(
+    await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey),
+    { status: "absent" },
+  );
+});
+
+test("registered lifecycle warning bound exposes all 16 findings before adjudication", async (t) => {
+  const root = await pinTestRoot(t);
+  const tools = [];
+  integrations({ registerTool: (tool) => tools.push(tool) });
+  const lifecycle = tools.find((tool) => tool.name === "ima_lifecycle");
+  assert.ok(lifecycle);
+  const artifact = Array.from(
+    { length: 16 },
+    (_unused, index) => `Bearer test-warning-${index + 1}`,
+  ).join("\n");
+  const context = {
+    cwd: root,
+    mode: "json",
+    hasUI: false,
+    sessionManager: { getSessionId: () => "warning-bound-session" },
+    ui: {},
+  };
+  const pending = await lifecycle.execute("warning-bound-237", {
+    ...localLifecycleRequest(),
+    provider: "qdrant",
+    artifact,
+  }, undefined, undefined, context);
+  assert.equal(pending.details.status, "pending");
+  assert.equal(pending.details.adjudication.findings.length, 16);
+  assert.doesNotMatch(JSON.stringify(pending.details), /test-warning-1/);
+  const rejected = await lifecycle.execute("warning-bound-reject-237", {
+    contentAdjudication: {
+      handle: pending.details.adjudication.handle,
+      decisions: pending.details.adjudication.findings.map(({ finding }) => ({
+        finding,
+        decision: "reject",
+      })),
+    },
+  }, undefined, undefined, context);
+  assert.equal(rejected.details.error.code, "lifecycle_content_adjudication_declined");
+  assert.deepEqual(
+    await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey),
+    { status: "absent" },
+  );
+});
+
+test("registered lifecycle warning rejection consumes an opaque manual handle without provider or pin effects", async (t) => {
+  const root = await pinTestRoot(t);
+  const tools = [];
+  integrations({ registerTool: (tool) => tools.push(tool) });
+  const lifecycle = tools.find((tool) => tool.name === "ima_lifecycle");
+  assert.ok(lifecycle);
+  const context = {
+    cwd: root,
+    mode: "json",
+    hasUI: false,
+    sessionManager: { getSessionId: () => "screening-denial-session-237" },
+    ui: {
+      select: async () => { throw new Error("provider selection must not run"); },
+      confirm: async () => { throw new Error("confirmation must not run"); },
+    },
+  };
+  const pending = await lifecycle.execute("screening-denial-237", {
+    ...localLifecycleRequest(),
+    provider: "qdrant",
+    artifact: "Bearer test-token-value",
+  }, undefined, undefined, context);
+
+  assert.equal(pending.details.status, "pending");
+  assert.equal(typeof pending.details.adjudication.handle, "string");
+  assert.deepEqual(pending.details.adjudication.decisionValues, ["continue_after_review", "reject"]);
+  assert.equal(pending.details.adjudication.findings.length, 1);
+  assert.doesNotMatch(JSON.stringify(pending.details), /test-token-value/);
+
+  const rejected = await lifecycle.execute("screening-denial-continuation-237", {
+    contentAdjudication: {
+      handle: pending.details.adjudication.handle,
+      decisions: pending.details.adjudication.findings.map(({ finding }) => ({
+        finding,
+        decision: "reject",
+      })),
+    },
+  }, undefined, undefined, context);
+  assert.equal(rejected.details.status, "failed");
+  assert.equal(rejected.details.error.code, "lifecycle_content_adjudication_declined");
+  assert.deepEqual(
+    await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey),
+    { status: "absent" },
+  );
+});
+
+test("registered lifecycle manual continuation resumes one noninteractive write call after rescan", async (t) => {
+  const root = await pinTestRoot(t);
+  const tools = [];
+  integrations({ registerTool: (tool) => tools.push(tool) });
+  const lifecycle = tools.find((tool) => tool.name === "ima_lifecycle");
+  assert.ok(lifecycle);
+  const context = {
+    cwd: root,
+    mode: "json",
+    hasUI: false,
+    sessionManager: { getSessionId: () => "screening-session-237" },
+    ui: {
+      select: async () => { throw new Error("provider selection must not run before root validation"); },
+      confirm: async () => { throw new Error("TUI confirmation must not run"); },
+    },
+  };
+  const pending = await lifecycle.execute("screening-tool-237", {
+    ...localLifecycleRequest("implementation"),
+    provider: "qdrant",
+    artifact: "Bearer test-token-value",
+  }, undefined, undefined, context);
+  assert.equal(pending.details.status, "pending");
+
+  const resumed = await lifecycle.execute("screening-tool-continuation-237", {
+    contentAdjudication: {
+      handle: pending.details.adjudication.handle,
+      decisions: pending.details.adjudication.findings.map(({ finding }) => ({
+        finding,
+        decision: "continue_after_review",
+      })),
+    },
+  }, undefined, undefined, context);
+
+  assert.equal(resumed.details.status, "failed");
+  assert.equal(resumed.details.error.code, "lifecycle_initial_root_required");
+  assert.doesNotMatch(JSON.stringify({ pending, resumed }), /test-token-value/);
+  assert.deepEqual(
+    await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey),
+    { status: "absent" },
+  );
+});
+
+test("requires a complete explicit decision for every disclosed warning finding", async (t) => {
+  const root = await pinTestRoot(t);
+  const tools = [];
+  integrations({ registerTool: (tool) => tools.push(tool) });
+  const lifecycle = tools.find((tool) => tool.name === "ima_lifecycle");
+  assert.ok(lifecycle);
+  const context = {
+    cwd: root,
+    mode: "json",
+    hasUI: false,
+    sessionManager: { getSessionId: () => "complete-decisions-session-237" },
+    ui: {},
+  };
+  const pending = await lifecycle.execute("complete-decisions-237", {
+    ...localLifecycleRequest(),
+    provider: "qdrant",
+    identity: {
+      ...identity,
+      sourceRefs: ["Bearer synthetic-reference"],
+    },
+    artifact: "Bearer test-token-value",
+  }, undefined, undefined, context);
+  assert.equal(pending.details.status, "pending");
+  assert.equal(pending.details.adjudication.findings.length, 2);
+  assert.equal(
+    new Set(pending.details.adjudication.findings.map(({ finding }) => finding)).size,
+    2,
+  );
+  assert.deepEqual(
+    pending.details.adjudication.findings.map(({ findings }) =>
+      findings.map(({ field }) => field)),
+    [["identity.sourceRefs"], ["artifact"]],
+  );
+
+  const incomplete = await lifecycle.execute("complete-decisions-continuation-237", {
+    contentAdjudication: {
+      handle: pending.details.adjudication.handle,
+      decisions: [{
+        finding: pending.details.adjudication.findings[0].finding,
+        decision: "continue_after_review",
+      }],
+    },
+  }, undefined, undefined, context);
+  assert.equal(incomplete.details.status, "failed");
+  assert.equal(incomplete.details.error.code, "lifecycle_content_adjudication_invalid");
+  assert.deepEqual(
+    await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey),
+    { status: "absent" },
+  );
+});
+
+test("registered lifecycle continuation accepts no returned or resubmitted content", async (t) => {
+  const root = await pinTestRoot(t);
+  const tools = [];
+  integrations({ registerTool: (tool) => tools.push(tool) });
+  const lifecycle = tools.find((tool) => tool.name === "ima_lifecycle");
+  assert.ok(lifecycle);
+  const context = {
+    cwd: root,
+    mode: "json",
+    hasUI: false,
+    sessionManager: { getSessionId: () => "screening-mutation-session-237" },
+    ui: {},
+  };
+  const pending = await lifecycle.execute("screening-mutation-237", {
+    ...localLifecycleRequest(),
+    provider: "qdrant",
+    artifact: "Bearer test-token-value",
+  }, undefined, undefined, context);
+  assert.equal(pending.details.status, "pending");
+
+  const invalid = await lifecycle.execute("screening-mutation-invalid-237", {
+    contentAdjudication: {
+      handle: pending.details.adjudication.handle,
+      decisions: pending.details.adjudication.findings.map(({ finding }) => ({
+        finding,
+        decision: "continue_after_review",
+      })),
+    },
+    artifact: "token=not-a-placeholder",
+  }, undefined, undefined, context);
+  assert.equal(invalid.details.status, "failed");
+  assert.equal(invalid.details.error.code, "lifecycle_content_adjudication_invalid");
+  assert.doesNotMatch(JSON.stringify(invalid.details), /not-a-placeholder|test-token-value/);
+
+  const rejected = await lifecycle.execute("screening-mutation-reject-237", {
+    contentAdjudication: {
+      handle: pending.details.adjudication.handle,
+      decisions: pending.details.adjudication.findings.map(({ finding }) => ({
+        finding,
+        decision: "reject",
+      })),
+    },
+  }, undefined, undefined, context);
+  assert.equal(rejected.details.error.code, "lifecycle_content_adjudication_declined");
+  assert.deepEqual(
+    await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey),
+    { status: "absent" },
+  );
+});
+
+test("projects a screened post-write record with its exact reason and possible-write state", async (t) => {
+  const root = await pinTestRoot(t);
+  const routed = localRouting({
+    persist: async (request) => ({
+      status: "verified",
+      record: routedQdrantRecord(request, { artifact: "token=not-a-placeholder" }),
+    }),
+  });
+  const result = await coordinateLifecycle({
+    ...localLifecycleRequest(),
+    provider: "qdrant",
+  }, localRoutingOptions(root, routed.routing));
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.code, "lifecycle_provider_response_invalid");
+  assert.equal(result.writeState, "possible-write");
+  assert.deepEqual(result.error.diagnostic, {
+    stage: "provider",
+    code: "provider_content_screening_failed",
+    reason: "record_artifact_secret_named",
+    findings: [{
+      category: "credential_assignment",
+      field: "artifact",
+      index: null,
+      line: 1,
+      column: 1,
+    }],
+  });
+  assert.doesNotMatch(JSON.stringify(result), /not-a-placeholder/);
+  assert.equal(routed.calls.qdrant.filter(({ operation }) => operation === "persist").length, 1);
+  assert.deepEqual(routed.calls.markdown, []);
+});
+
+test("withholds an unexpected post-write warning with a precise possible-write diagnostic", async (t) => {
+  const root = await pinTestRoot(t);
+  const routed = localRouting({
+    persist: async (request) => ({
+      status: "verified",
+      record: routedQdrantRecord(request, { artifact: "Bearer test-token-value" }),
+    }),
+  });
+  const result = await coordinateLifecycle({
+    ...localLifecycleRequest(),
+    provider: "qdrant",
+  }, localRoutingOptions(root, routed.routing));
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.code, "lifecycle_provider_response_invalid");
+  assert.equal(result.writeState, "possible-write");
+  assert.deepEqual(result.error.diagnostic, {
+    stage: "provider",
+    code: "provider_content_screening_failed",
+    reason: "record_artifact_secret_bearer_placeholder",
+    findings: [{
+      category: "synthetic_bearer",
+      field: "artifact",
+      index: null,
+      line: 1,
+      column: 1,
+    }],
+  });
+  assert.doesNotMatch(JSON.stringify(result), /test-token-value/);
+  assert.equal(routed.calls.qdrant.filter(({ operation }) => operation === "persist").length, 1);
+  assert.deepEqual(routed.calls.markdown, []);
 });

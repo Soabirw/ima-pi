@@ -227,6 +227,25 @@ test("manual closeout best-effort matches its source and uses one aggregate appr
   assert.doesNotMatch(text, /individually confirms|Do not batch confirmations|Proposal approval is not authority|requires its own immediate confirmation/i);
 });
 
+test("manual closeout partitions recall evidence by phase and blocks each exact twenty-result phase", async () => {
+  const text = await prompt("closeout");
+  for (const value of [
+    "call `ima_lifecycle_recall` separately for each required phase",
+    "exact `phase`, and `limit: 20`",
+    "always `plan`, `implementation`, `test`, `decision`, and `document`",
+    "the final approval path's `review` or `rereview`",
+    "The `phase: decision` recall is separate evidence",
+    "When idempotency or prior terminal evidence requires it",
+    "optional, separate `phase: closeout` recall for prior closeout evidence",
+    "it is not document evidence and must never be relabeled as `document`",
+    "including `decision` and optional prior `closeout`",
+    "for every selected descriptor from that phase, pass it unchanged to `ima_lifecycle_get`",
+    "If **any one phase-specific** recall returns exactly 20 descriptors",
+    "More than 20 descriptors across distinct phase calls is acceptable only when every individual phase call returned fewer than 20",
+  ]) has(text, value);
+  assert.match(text, /Do not make one aggregate lifecycle-wide recall/i);
+});
+
 test("active documentation assigns lifecycle artifacts to Qdrant, current preferences to Pi global AGENTS, and Vestige to legacy boundaries", async () => {
   const [readme, guide, workflow, lifecycle, vestige, conventions, completion] = await Promise.all([
     readFile(join(root, "README.md"), "utf8"),

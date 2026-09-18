@@ -208,6 +208,7 @@ const KNOWN_CODES = new Set([
   "bookstack_locator_invalid",
   "bookstack_locator_mismatch",
   "bookstack_markdown_missing",
+  "bookstack_http_failed",
   "bookstack_pagination_invalid",
   "bookstack_placement_conflict",
   "bookstack_placement_invalid",
@@ -234,7 +235,12 @@ const categoryFor = (code: string): FailureCategory => {
   if (code.includes("approval")) return "approval";
   if (code.includes("access_denied")) return "denied";
   if (code.includes("conflict") || code.includes("ambiguous")) return "conflict";
-  if (code.includes("transport") || code.includes("unavailable") || code.includes("write_unknown")) return "unavailable";
+  if (
+    code.includes("transport")
+    || code.includes("http")
+    || code.includes("unavailable")
+    || code.includes("write_unknown")
+  ) return "unavailable";
   if (code.includes("recovery")) return "recovery";
   if (code.includes("verification") || code.includes("markdown") || code.includes("pagination")) return "unverifiable";
   return "validation";
