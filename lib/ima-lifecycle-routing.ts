@@ -1976,6 +1976,7 @@ export const routePinnedLifecycleGet = async (input: {
 const providerReadStepCode = (code: string) => [
   "bookstack_http_failed",
   "bookstack_pagination_invalid",
+  "bookstack_rate_limited",
   "bookstack_response_invalid",
   "bookstack_response_too_large",
   "lifecycle_provider_recall_envelope_invalid",

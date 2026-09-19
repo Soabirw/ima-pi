@@ -50,6 +50,7 @@ import {
   type BookStackLifecycleClient,
 } from "../lib/bookstack-lifecycle-client.ts";
 import {
+  bookStackLifecycleResultIsNoWrite,
   createBookStackLifecycleProvider,
   type BookStackRecoveryDiscovery,
 } from "../lib/bookstack-lifecycle.ts";
@@ -1672,6 +1673,7 @@ const bookStackLifecycleProviderFor = (input: {
 
 const bookStackLifecycleAdapter = (input: {
   environment: Record<string, string | undefined>;
+  client?: BookStackLifecycleClient;
   confirmPlacement?: LifecycleRoutingOptions["confirmBookStackPlacement"];
   signal?: AbortSignal;
 }): LifecycleRoutingAdapter | null => {
@@ -1680,12 +1682,22 @@ const bookStackLifecycleAdapter = (input: {
   const persistAtPlacement = async (
     request: ValidLifecycleRequest,
     placement: LifecyclePlacement,
+    signal?: AbortSignal,
+    placementWasReadOnly = true,
   ): Promise<RoutedLifecyclePersistResult> => {
     const result = await provider.persist({
       request: projectLifecyclePersistenceRequest(request),
       placement,
-    });
-    if (result.status !== "verified") return blockedPersist("bookstack", result);
+    }, signal);
+    if (result.status !== "verified") {
+      return blockedPersist(
+        "bookstack",
+        result,
+        placementWasReadOnly && bookStackLifecycleResultIsNoWrite(result)
+          ? "no-write"
+          : "possible-write",
+      );
+    }
     const record = routedRecord({
       provider: "bookstack",
       value: result,
@@ -1707,9 +1719,17 @@ const bookStackLifecycleAdapter = (input: {
       sourceRef,
       lifecycleKey: request.identity.lifecycleKey,
     };
-    const placement = await provider.ensurePlacement(location);
+    const placement = await provider.ensurePlacement(location, signal);
     if (placement.status !== "verified") return blockedPersist("bookstack", placement);
-    return persistAtPlacement(request, placement.placement);
+    const placementWasReadOnly = placement.preview.creates.length === 0;
+    if (signal?.aborted) {
+      return blockedPersist(
+        "bookstack",
+        { code: "aborted" },
+        placementWasReadOnly ? "no-write" : "possible-write",
+      );
+    }
+    return persistAtPlacement(request, placement.placement, signal, placementWasReadOnly);
   };
   const persistPinned = async (
     request: ValidLifecycleRequest,
@@ -1731,11 +1751,11 @@ const bookStackLifecycleAdapter = (input: {
     if (!verifiedPlacement || !placementMatchesRequest(verifiedPlacement, request)) {
       return blockedPersist("bookstack", { code: "bookstack_placement_invalid" }, "no-write");
     }
-    return persistAtPlacement(request, verifiedPlacement);
+    return persistAtPlacement(request, verifiedPlacement, signal);
   };
   const read = async (reference: Record<string, unknown>, signal?: AbortSignal): Promise<RoutedLifecyclePersistResult> => {
     if (signal?.aborted) return blockedPersist("bookstack", { code: "aborted" }, "no-write");
-    const result = await provider.get(reference);
+    const result = await provider.get(reference, signal);
     if (signal?.aborted) return blockedPersist("bookstack", { code: "aborted" }, "no-write");
     if (result.status !== "verified") return blockedPersist("bookstack", result, "no-write");
     const record = routedRecord({ provider: "bookstack", value: result, reference: result.locator, createdAt: null });
@@ -1751,7 +1771,7 @@ const bookStackLifecycleAdapter = (input: {
       if (signal?.aborted || !selection.reference) {
         return { status: "blocked", provider: "bookstack", code: signal?.aborted ? "aborted" : "pinned_provider_reference_missing" };
       }
-      const initial = await provider.get(selection.reference);
+      const initial = await provider.get(selection.reference, signal);
       if (signal?.aborted) {
         return { status: "blocked", provider: "bookstack", code: "aborted" };
       }
@@ -1951,11 +1971,13 @@ const serenaLifecycleAdapter = (
 const lifecycleRouting = (input: {
   checkoutRoot: string;
   dependencies: ReturnType<typeof depsFor>;
+  bookStackLifecycleClient?: BookStackLifecycleClient;
   confirmBookStackPlacement?: LifecycleRoutingOptions["confirmBookStackPlacement"];
   environment?: Record<string, string | undefined>;
 }) => {
   const bookstack = bookStackLifecycleAdapter({
     environment: input.environment ?? process.env,
+    client: input.bookStackLifecycleClient,
     confirmPlacement: input.confirmBookStackPlacement,
   });
   return createLifecycleRouting([
@@ -2188,6 +2210,7 @@ export async function coordinateLifecycle(
   const routing = supplied.routing ?? lifecycleRouting({
     checkoutRoot: root,
     dependencies,
+    bookStackLifecycleClient: supplied.bookStackLifecycleClient,
     confirmBookStackPlacement: supplied.confirmBookStackPlacement,
     environment: supplied.environment,
   });
@@ -2624,7 +2647,7 @@ export async function coordinateBookStackLifecycleRecovery(
     request: projectLifecyclePersistenceRequest(envelope.request),
     placement: projectBookStackRecoveryPlacement(envelope.placement),
   };
-  const discovered = await provider.discoverSameAttemptRecovery(recoveryInput);
+  const discovered = await provider.discoverSameAttemptRecovery(recoveryInput, signal);
   throwIfAborted(signal);
   if (discovered.status !== "ready") {
     return failedLifecycleRoute({
@@ -2677,7 +2700,7 @@ export async function coordinateBookStackLifecycleRecovery(
       code: bookStackRecoveryAttemptFailure(recheckedPin),
     });
   }
-  const rechecked = await provider.discoverSameAttemptRecovery(recoveryInput);
+  const rechecked = await provider.discoverSameAttemptRecovery(recoveryInput, signal);
   throwIfAborted(signal);
   if (rechecked.status !== "ready") {
     return failedLifecycleRoute({
@@ -3053,6 +3076,7 @@ type LifecycleReadProviderDiagnosticCode =
   | "provider_access_denied"
   | "provider_adapter_unavailable"
   | "provider_operation_failed"
+  | "provider_rate_limited"
   | "provider_response_invalid"
   | "provider_transport_failed"
   | "provider_unavailable"
@@ -3133,6 +3157,7 @@ const lifecycleReadProviderDiagnosticCode = (
   code: string | null,
 ): LifecycleReadProviderDiagnosticCode => {
   if (code === "bookstack_access_denied") return "provider_access_denied";
+  if (code === "bookstack_rate_limited") return "provider_rate_limited";
   if (code === "bookstack_transport_failed") return "provider_transport_failed";
   if (["lifecycle_provider_unavailable", "pinned_provider_unavailable"].includes(code ?? "")) {
     return "provider_adapter_unavailable";

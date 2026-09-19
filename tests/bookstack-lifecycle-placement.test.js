@@ -262,3 +262,71 @@ test("stale membership, unrelated existing books, and nonliteral approval write 
     assert.doesNotMatch(JSON.stringify(result), /secret/);
   }
 });
+
+test("placement discovery issues hierarchy lists sequentially", async () => {
+  let releaseShelves;
+  let shelvesStarted;
+  const shelfStarted = new Promise((resolve) => { shelvesStarted = resolve; });
+  const shelfRelease = new Promise((resolve) => { releaseShelves = resolve; });
+  const calls = [];
+  const client = createClient();
+  client.listShelves = async () => {
+    calls.push("shelves");
+    shelvesStarted();
+    await shelfRelease;
+    return [];
+  };
+  client.listBooks = async () => {
+    calls.push("books");
+    return [];
+  };
+  client.listChapters = async () => {
+    calls.push("chapters");
+    return [];
+  };
+
+  const pending = planPlacement(client, source);
+  await shelfStarted;
+  assert.deepEqual(calls, ["shelves"]);
+  releaseShelves();
+  const preview = await pending;
+
+  assert.deepEqual(calls, ["shelves", "books", "chapters"]);
+  assert.deepEqual(preview.creates, ["shelf", "book", "chapter"]);
+});
+
+test("a blocked placement list prevents later list, approval, and write work", async () => {
+  const calls = [];
+  let approvals = 0;
+  const client = {
+    origin: "https://bookstack.example",
+    listShelves: async () => {
+      calls.push("shelves");
+      return [];
+    },
+    listBooks: async () => {
+      calls.push("books");
+      throw new Error("bookstack_rate_limited");
+    },
+    listChapters: async () => {
+      calls.push("chapters");
+      return [];
+    },
+    createShelf: async () => { calls.push("create-shelf"); },
+  };
+
+  const result = await ensurePlacement({
+    client,
+    placement: source,
+    approve: () => {
+      approvals += 1;
+      return true;
+    },
+  });
+
+  assert.equal(result.status, "blocked");
+  assert.equal(result.code, "bookstack_rate_limited");
+  assert.equal(result.category, "unavailable");
+  assert.deepEqual(calls, ["shelves", "books"]);
+  assert.equal(approvals, 0);
+});

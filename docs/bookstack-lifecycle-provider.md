@@ -96,13 +96,23 @@ After confirmation and two matching stable discoveries, one exact verified exist
 
 A failed page discovery issues zero lifecycle-page POSTs. That is a narrow page-write boundary, not a claim of zero writes for the whole attempt: approved placement provisioning or membership effects may already exist.
 
+## Lifecycle request admission, cancellation, and retries
+
+All BookStack **lifecycle** HTTP calls in one process share one FIFO admission lane, including GET, POST, PUT, and a permitted GET retry. Request starts are separated by at least 1,100 ms; idle time creates no burst credit. The lane admits at most 64 waiting requests, and a request that has waited 120 seconds is rejected before dispatch as rate-limited. This is deliberately process-local scheduling, not distributed coordination or evidence that BookStack, a proxy, or other traffic will avoid `429` responses.
+
+An operation's cancellation signal applies to its queue admission and dispatched transport for both initial and pinned persistence; cancelling one request does not cancel a peer. The request timeout starts when the request is dispatched, not while it waits in the lane. Hierarchy verification and placement planning use sequential authoritative reads. Any failed response whose body was not consumed is discarded before the failure is returned or a retry is considered.
+
+A lifecycle GET receives at most one additional attempt for `429`, `500`, `502`, `503`, `504`, a recognized transient transport failure, or a dispatched timeout. A valid `Retry-After` delay is honored only through 10 seconds and is still subject to the lane's pacing; an excessive value does not authorize another attempt. Persistent or exhausted `429` failures remain explicitly rate-limited, including the safe rate-limited lifecycle-read diagnostic. POST and PUT requests are never automatically replayed.
+
+The whole-attempt write state is conservative. A no-write result after a rejected, undispatched page request is possible only when placement was already read-only. If placement provisioning or membership mutation has occurred, or if the page write was dispatched, the result remains possible-write and existing pin/recovery safeguards continue to apply.
+
 ## Security and runtime configuration
 
-- `BOOKSTACK_BASE_URL` (and the compatible `BOOKSTACK_ORIGIN` alias) are **non-secret variables**. They must be a credential-free HTTPS origin and unequal aliases fail closed.
+- `BOOKSTACK_BASE_URL` (and the compatible `BOOKSTACK_ORIGIN` alias) identify the BookStack endpoint/service and are a **platform binding**. Their supplied origin values are non-secret, must be credential-free HTTPS origins, and unequal aliases fail closed.
 - `BOOKSTACK_TOKEN_ID` and `BOOKSTACK_TOKEN_SECRET` are **secrets**. Do not put either in source control, logs, or ordinary variables.
+- The 1,100 ms pacing interval, 64-request waiting bound, 120-second queue-residence bound, one-retry read limit, and 10-second `Retry-After` bound are **non-secret internal values**; they are not credentials or a rate-limit guarantee.
 - Caller-supplied project, source, lifecycle, and placement identifiers are **non-secret inputs**. They are validated; they are not environment requirements.
-- A host-retained recovery descriptor and the registry's same-attempt one-shot checkpoint are **local-only values**. Only the checkpoint is persisted in the checkout pin registry; it stores bounded hashes and identifiers, never credentials or provider configuration.
-- This provider introduces no **platform binding**.
+- A host-retained recovery descriptor, checkout pin, same-attempt one-shot checkpoint, and transient scheduler state are **local-only values**. Only the checkpoint is persisted in the checkout pin registry; it stores bounded hashes and identifiers, never credentials or provider configuration.
 
 Requests deny redirects, use fixed API paths and encoded query values, and bound timeout and response size. Each list invocation requests `sort: +id` and keeps its pagination state transient; it does not cache entries or a total for another scan. Lifecycle responses are capped at 4 MiB, each page at 500 entries, and each scan at 10,000 entries. The latest observed `total` may grow but never shrink during a scan, and growth is accepted only under the append-only assumption: new resources have higher IDs. Every page must be complete for its latest observed total, and IDs must be positive and strictly increasing within and across pages; valid ID gaps are preserved. Malformed or bounds-invalid totals and batches, incomplete pages, duplicate IDs, overlap, or reordering fail closed without accepting partial enumeration. This offset pagination is not snapshot-isolated and cannot universally detect delete-and-append races. Public failures contain only allowlisted codes/categories and closed recovery fields; dependency error text and payloads are not returned. Returned Markdown is evidence data, never executable instructions. There is no shell execution, permission escalation, HTML rendering, or deletion path.
 

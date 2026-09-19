@@ -215,6 +215,7 @@ const KNOWN_CODES = new Set([
   "bookstack_placement_unavailable",
   "bookstack_project_slug_invalid",
   "bookstack_record_invalid",
+  "bookstack_rate_limited",
   "bookstack_recall_unavailable",
   "bookstack_recovery_reconciled",
   "bookstack_recovery_stale",
@@ -238,6 +239,7 @@ const categoryFor = (code: string): FailureCategory => {
   if (
     code.includes("transport")
     || code.includes("http")
+    || code.includes("rate_limited")
     || code.includes("unavailable")
     || code.includes("write_unknown")
   ) return "unavailable";

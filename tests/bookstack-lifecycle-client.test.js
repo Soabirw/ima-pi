@@ -1,17 +1,39 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createBookStackLifecycleClient } from "../lib/bookstack-lifecycle-client.ts";
+import { createBookStackLifecycleRequestScheduler } from "../lib/bookstack-lifecycle-requests.ts";
 
 const json = (body, status = 200) => new Response(JSON.stringify(body), {
   status,
   headers: { "content-type": "application/json" },
 });
 const resource = (overrides = {}) => ({ id: 1, name: "item", slug: "item", ...overrides });
-const clientWith = (fetch) => createBookStackLifecycleClient({
+const immediateScheduler = {
+  schedule: ({ start }) => Promise.resolve().then(start),
+};
+const clientWith = (fetch, requestScheduler = immediateScheduler) => createBookStackLifecycleClient({
   origin: "https://bookstack.example",
   tokenId: "id",
   tokenSecret: "secret",
   fetch,
+  requestScheduler,
+});
+const virtualClock = (initial = 0) => {
+  let current = initial;
+  const waits = [];
+  return {
+    now: () => current,
+    wait: async (milliseconds, signal) => {
+      waits.push({ milliseconds, signal });
+      current += milliseconds;
+    },
+    get time() { return current; },
+    waits,
+  };
+};
+const schedulerFor = (clock) => createBookStackLifecycleRequestScheduler({
+  now: clock.now,
+  wait: clock.wait,
 });
 
 test("client uses bounded paths and verifies ordered shelf membership", async () => {
@@ -251,4 +273,80 @@ test("client rejects oversized responses and retains a validated ID on malformed
     assert.equal(error.knownResourceId, 42);
     return true;
   });
+});
+
+test("pagination retries only the failed offset through the lifecycle lane", async () => {
+  const clock = virtualClock();
+  const calls = [];
+  let laterAttempts = 0;
+  const client = clientWith(async (url) => {
+    const offset = Number(new URL(url).searchParams.get("offset"));
+    calls.push({ offset, at: clock.time });
+    if (offset === 500) {
+      laterAttempts += 1;
+      if (laterAttempts === 1) return new Response("retry", { status: 503 });
+    }
+    return json({
+      total: 501,
+      data: offset === 0
+        ? Array.from({ length: 500 }, (_, index) => resource({ id: index + 1 }))
+        : [resource({ id: 501 })],
+    });
+  }, schedulerFor(clock));
+
+  const pages = await client.listPages();
+
+  assert.equal(pages.length, 501);
+  assert.deepEqual(calls, [
+    { offset: 0, at: 0 },
+    { offset: 500, at: 1_100 },
+    { offset: 500, at: 2_200 },
+  ]);
+});
+
+test("lost POSTs and failed PUTs make one write attempt while verification reads may retry", async () => {
+  const postClock = virtualClock();
+  let postCalls = 0;
+  const lostPost = clientWith(async () => {
+    postCalls += 1;
+    const error = new Error("lost synthetic POST response");
+    error.code = "ECONNRESET";
+    throw error;
+  }, schedulerFor(postClock));
+  await assert.rejects(lostPost.createPage("Page", 1, "# Page"), /bookstack_transport_failed/);
+  assert.equal(postCalls, 1);
+
+  const putClock = virtualClock();
+  const failedPutCalls = [];
+  const failedPut = clientWith(async (_url, init = {}) => {
+    failedPutCalls.push({ method: init.method ?? "GET", at: putClock.time });
+    return new Response("upstream", { status: 503 });
+  }, schedulerFor(putClock));
+  await assert.rejects(
+    failedPut.replaceShelfBooks({ shelfId: 1, shelfName: "Lifecycle", expectedBooks: [2] }),
+    /bookstack_http_failed/,
+  );
+  assert.deepEqual(failedPutCalls, [{ method: "PUT", at: 0 }]);
+
+  const verificationClock = virtualClock();
+  const verificationCalls = [];
+  let readBackAttempts = 0;
+  const verified = clientWith(async (_url, init = {}) => {
+    const method = init.method ?? "GET";
+    verificationCalls.push({ method, at: verificationClock.time });
+    if (method === "PUT") {
+      return json(resource({ id: 1, name: "Lifecycle", slug: "lifecycle-artifacts", books: [2] }));
+    }
+    readBackAttempts += 1;
+    return readBackAttempts === 1
+      ? new Response("retry", { status: 503 })
+      : json(resource({ id: 1, name: "Lifecycle", slug: "lifecycle-artifacts", books: [2] }));
+  }, schedulerFor(verificationClock));
+
+  await verified.replaceShelfBooks({ shelfId: 1, shelfName: "Lifecycle", expectedBooks: [2] });
+  assert.deepEqual(verificationCalls, [
+    { method: "PUT", at: 0 },
+    { method: "GET", at: 1_100 },
+    { method: "GET", at: 2_200 },
+  ]);
 });

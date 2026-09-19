@@ -19,6 +19,7 @@ import type {
   BookStackResource,
 } from "./bookstack-lifecycle-client.ts";
 import { normalizeHttpsOrigin } from "./bookstack-http.ts";
+import { bookStackLifecycleRequestWasNotDispatched } from "./bookstack-lifecycle-requests.ts";
 import {
   createBookStackPageRecoveryCheckpoint,
   originFingerprint,
@@ -84,6 +85,11 @@ export type BookStackRecoveryDiscovery = {
   pageCount: number;
   existing: VerifiedResult | null;
 };
+
+const noWriteBlockedResults = new WeakSet<object>();
+
+export const bookStackLifecycleResultIsNoWrite = (value: unknown) =>
+  Boolean(value && typeof value === "object" && noWriteBlockedResults.has(value));
 
 const VALID_PHASES = new Set([
   "plan", "implementation", "test", "review", "resolution", "rereview", "document", "decision", "closeout",
@@ -178,12 +184,17 @@ const blocked = (
   error: unknown,
   fallback: string,
   recovery: RecoveryDescriptor | null = null,
-): BlockedResult => ({
-  provider: "bookstack",
-  status: "blocked",
-  ...safeFailure(error, fallback),
-  recovery,
-});
+  noWrite = false,
+): BlockedResult => {
+  const result: BlockedResult = {
+    provider: "bookstack",
+    status: "blocked",
+    ...safeFailure(error, fallback),
+    recovery,
+  };
+  if (noWrite) noWriteBlockedResults.add(result);
+  return result;
+};
 
 const throwIfAborted = (signal?: AbortSignal) => {
   if (signal?.aborted) signal.throwIfAborted();
@@ -244,12 +255,15 @@ const verifyHierarchy = async (input: {
   client: BookStackLifecycleClient;
   placement: LifecyclePlacement;
   page?: BookStackResource;
+  signal?: AbortSignal;
 }): Promise<VerifiedHierarchy> => {
-  const [shelf, book, chapter] = await Promise.all([
-    input.client.readShelf(input.placement.shelfId),
-    input.client.readBook(input.placement.bookId),
-    input.client.readChapter(input.placement.chapterId),
-  ]);
+  throwIfAborted(input.signal);
+  const shelf = await input.client.readShelf(input.placement.shelfId, input.signal);
+  throwIfAborted(input.signal);
+  const book = await input.client.readBook(input.placement.bookId, input.signal);
+  throwIfAborted(input.signal);
+  const chapter = await input.client.readChapter(input.placement.chapterId, input.signal);
+  throwIfAborted(input.signal);
   const hierarchy = { shelf, book, chapter };
   if (!hierarchyMatches({ hierarchy, placement: input.placement, page: input.page })) {
     throw new Error("bookstack_placement_conflict");
@@ -266,13 +280,14 @@ const verifiedPageRecord = async (input: {
   signal?: AbortSignal;
 }) => {
   throwIfAborted(input.signal);
-  const page = await input.client.readPage(input.pageId);
+  const page = await input.client.readPage(input.pageId, input.signal);
   throwIfAborted(input.signal);
   if (page.id !== input.pageId) throw new Error("bookstack_verification_failed");
   const hierarchy = input.hierarchy ?? await verifyHierarchy({
     client: input.client,
     placement: input.placement,
     page,
+    signal: input.signal,
   });
   throwIfAborted(input.signal);
   if (!hierarchyMatches({ hierarchy, placement: input.placement, page })) {
@@ -297,6 +312,7 @@ const verifiedPage = async (input: {
   pageId: number;
   placement: LifecyclePlacement;
   expected?: BookStackLifecycleRecord;
+  signal?: AbortSignal;
 }) => {
   const verified = await verifiedPageRecord(input);
   if (!placementMatches(verified.record.placement, input.placement)) {
@@ -419,13 +435,20 @@ const discoverRecovery = async (input: {
   client: BookStackLifecycleClient;
   placement: LifecyclePlacement;
   record: BookStackLifecycleRecord;
+  signal?: AbortSignal;
 }): Promise<BookStackRecoveryDiscovery> => {
   const origin = normalizeHttpsOrigin(input.client.origin);
   if (utf8ByteLength(origin) > MAX_RECOVERY_CONFIRMATION_ORIGIN_BYTES) {
     throw new Error("bookstack_origin_invalid");
   }
-  const hierarchy = await verifyHierarchy({ client: input.client, placement: input.placement });
-  const pages = await input.client.listPages();
+  throwIfAborted(input.signal);
+  const hierarchy = await verifyHierarchy({
+    client: input.client,
+    placement: input.placement,
+    signal: input.signal,
+  });
+  const pages = await input.client.listPages(input.signal);
+  throwIfAborted(input.signal);
   const title = pageName(input.record);
   const candidates = pages.filter((page) => page.slug === title);
   const nonCanonicalTargetNames = pages.filter((page) =>
@@ -443,6 +466,7 @@ const discoverRecovery = async (input: {
       pageId: candidates[0].id,
       placement: input.placement,
       expected: input.record,
+      signal: input.signal,
     });
     if (verified.page.id !== candidates[0].id || verified.page.slug !== title) {
       throw new Error("bookstack_recovery_unresolved");
@@ -475,7 +499,8 @@ const placementPageCandidates = async (
   client: BookStackLifecycleClient,
   placement: LifecyclePlacement,
   pageSlug: string,
-) => (await client.listPages()).filter((page) =>
+  signal?: AbortSignal,
+) => (await client.listPages(signal)).filter((page) =>
   page.chapterId === placement.chapterId && page.slug === pageSlug,
 );
 
@@ -518,7 +543,10 @@ export const createBookStackLifecycleProvider = (input: {
   client: BookStackLifecycleClient;
   approvePlacement?: (preview: PlacementPreview) => Promise<boolean> | boolean;
 }) => {
-  const placement = async (location: unknown): Promise<PlacementPreview | BlockedResult> => {
+  const placement = async (
+    location: unknown,
+    signal?: AbortSignal,
+  ): Promise<PlacementPreview | BlockedResult> => {
     const projected = projectPlacementInput(location);
     if (!projected) return blocked("bookstack_placement_invalid", "bookstack_placement_invalid");
     try {
@@ -526,13 +554,16 @@ export const createBookStackLifecycleProvider = (input: {
         projectSlug: projected.projectSlug,
         sourceRef: projected.sourceRef,
         lifecycleKey: projected.lifecycleKey,
-      });
+      }, signal);
     } catch (error) {
       return blocked(error, "bookstack_placement_unavailable");
     }
   };
 
-  const ensure = async (location: unknown): Promise<PlacementResult> => {
+  const ensure = async (
+    location: unknown,
+    signal?: AbortSignal,
+  ): Promise<PlacementResult> => {
     const call = optionalRecovery(location, ["projectSlug", "sourceRef", "lifecycleKey"]);
     const projected = projectPlacementInput(call?.values);
     if (!call || !projected) return blocked("bookstack_placement_invalid", "bookstack_placement_invalid");
@@ -545,18 +576,22 @@ export const createBookStackLifecycleProvider = (input: {
       },
       approve: input.approvePlacement,
       ...(call.hasRecovery ? { recovery: call.recovery } : {}),
+      signal,
     });
   };
 
   const discoverSameAttemptRecovery = async (
     value: unknown,
+    signal?: AbortSignal,
   ): Promise<BookStackRecoveryDiscovery | BlockedResult> => {
     try {
+      throwIfAborted(signal);
       const recovered = recoveryRecord(value);
       return await discoverRecovery({
         client: input.client,
         placement: recovered.placement,
         record: recovered.record,
+        signal,
       });
     } catch (error) {
       return blocked(error, "bookstack_recovery_unresolved");
@@ -589,6 +624,7 @@ export const createBookStackLifecycleProvider = (input: {
         client: input.client,
         placement: recovered.placement,
         record: recovered.record,
+        signal,
       });
     } catch (error) {
       return blocked(error, "bookstack_recovery_unresolved");
@@ -607,6 +643,7 @@ export const createBookStackLifecycleProvider = (input: {
         title,
         recovered.placement.chapterId,
         recovered.record.pageMarkdown,
+        signal,
       );
       if (!positiveId(created.id)) throw new Error("bookstack_response_invalid");
     } catch (error) {
@@ -634,6 +671,7 @@ export const createBookStackLifecycleProvider = (input: {
         pageId: created.id,
         placement: recovered.placement,
         expected: recovered.record,
+        signal,
       });
       return receipt({ client: input.client, verified, disposition: "stored" });
     } catch (error) {
@@ -641,7 +679,10 @@ export const createBookStackLifecycleProvider = (input: {
     }
   };
 
-  const reconcile = async (value: unknown): Promise<VerifiedResult | BlockedResult> => {
+  const reconcile = async (
+    value: unknown,
+    signal?: AbortSignal,
+  ): Promise<VerifiedResult | BlockedResult> => {
     const recovery = projectRecoveryDescriptor(value);
     if (!recovery || recovery.operation !== "create_page" || recovery.originFingerprint !== originFingerprint(input.client.origin)) {
       return blocked("bookstack_recovery_unresolved", "bookstack_recovery_unresolved");
@@ -659,12 +700,19 @@ export const createBookStackLifecycleProvider = (input: {
     });
     if (!placement) return blocked("bookstack_recovery_unresolved", "bookstack_recovery_unresolved", recovery);
     try {
+      throwIfAborted(signal);
       const candidates = recovery.pageId
-        ? [await input.client.readPage(recovery.pageId)]
-        : await placementPageCandidates(input.client, placement, recovery.intendedSlug);
+        ? [await input.client.readPage(recovery.pageId, signal)]
+        : await placementPageCandidates(input.client, placement, recovery.intendedSlug, signal);
+      throwIfAborted(signal);
       if (candidates.length !== 1 || candidates[0].id !== recovery.pageId && recovery.pageId !== null
         || candidates[0].slug !== recovery.intendedSlug) throw new Error("bookstack_recovery_unresolved");
-      const verified = await verifiedPage({ client: input.client, pageId: candidates[0].id, placement });
+      const verified = await verifiedPage({
+        client: input.client,
+        pageId: candidates[0].id,
+        placement,
+        signal,
+      });
       if (verified.record.artifactId !== recovery.artifactId
         || verified.record.recordKey !== recovery.recordKey
         || verified.record.contentHash !== recovery.contentHash) {
@@ -679,7 +727,10 @@ export const createBookStackLifecycleProvider = (input: {
     }
   };
 
-  const persist = async (value: unknown): Promise<VerifiedResult | BlockedResult> => {
+  const persist = async (
+    value: unknown,
+    signal?: AbortSignal,
+  ): Promise<VerifiedResult | BlockedResult> => {
     const call = optionalRecovery(value, ["request", "placement"]);
     const placement = projectLifecyclePlacement(call?.values.placement);
     if (!call || !placement) return blocked("bookstack_placement_invalid", "bookstack_placement_invalid");
@@ -698,10 +749,10 @@ export const createBookStackLifecycleProvider = (input: {
         || JSON.stringify(recovery) !== JSON.stringify(expected)) {
         return blocked("bookstack_recovery_unresolved", "bookstack_recovery_unresolved", recovery);
       }
-      return reconcile(recovery);
+      return reconcile(recovery, signal);
     }
     try {
-      await verifyHierarchy({ client: input.client, placement });
+      await verifyHierarchy({ client: input.client, placement, signal });
     } catch (error) {
       return blocked(error, "bookstack_record_invalid");
     }
@@ -709,7 +760,8 @@ export const createBookStackLifecycleProvider = (input: {
     let candidates: BookStackResource[];
     let nonCanonicalTargetNames: BookStackResource[];
     try {
-      const pages = await input.client.listPages();
+      const pages = await input.client.listPages(signal);
+      throwIfAborted(signal);
       candidates = pages.filter((page) => page.slug === title);
       nonCanonicalTargetNames = pages.filter((page) =>
         page.name === title && page.slug !== title,
@@ -722,7 +774,13 @@ export const createBookStackLifecycleProvider = (input: {
     }
     if (candidates.length === 1) {
       try {
-        const verified = await verifiedPage({ client: input.client, pageId: candidates[0].id, placement, expected: record });
+        const verified = await verifiedPage({
+          client: input.client,
+          pageId: candidates[0].id,
+          placement,
+          expected: record,
+          signal,
+        });
         return receipt({ client: input.client, verified, disposition: "unchanged" });
       } catch (error) {
         return blocked(error, "bookstack_verification_failed");
@@ -731,26 +789,49 @@ export const createBookStackLifecycleProvider = (input: {
 
     let created: BookStackResource;
     try {
-      created = await input.client.createPage(title, placement.chapterId, record.pageMarkdown);
+      throwIfAborted(signal);
+      created = await input.client.createPage(title, placement.chapterId, record.pageMarkdown, signal);
       if (!positiveId(created.id)) throw new Error("bookstack_response_invalid");
     } catch (error) {
-      return blocked(error, "bookstack_write_unknown", recoveryForPage({ client: input.client, record, pageId: knownPostId(error) }));
+      const notDispatched = bookStackLifecycleRequestWasNotDispatched(error);
+      return blocked(
+        error,
+        "bookstack_write_unknown",
+        notDispatched
+          ? null
+          : recoveryForPage({ client: input.client, record, pageId: knownPostId(error) }),
+        notDispatched,
+      );
     }
     const recovery = recoveryForPage({ client: input.client, record, pageId: created.id });
     if (created.slug !== title) return blocked("bookstack_slug_unexpected", "bookstack_verification_failed", recovery);
     try {
-      const verified = await verifiedPage({ client: input.client, pageId: created.id, placement, expected: record });
+      const verified = await verifiedPage({
+        client: input.client,
+        pageId: created.id,
+        placement,
+        expected: record,
+        signal,
+      });
       return receipt({ client: input.client, verified, disposition: "stored" });
     } catch (error) {
       return blocked(error, "bookstack_verification_failed", recovery);
     }
   };
 
-  const get = async (value: unknown): Promise<VerifiedResult | BlockedResult> => {
+  const get = async (
+    value: unknown,
+    signal?: AbortSignal,
+  ): Promise<VerifiedResult | BlockedResult> => {
     const locator = projectLocator(value, input.client.origin);
     if (!locator) return blocked("bookstack_locator_invalid", "bookstack_locator_invalid");
     try {
-      const verified = await verifiedPage({ client: input.client, pageId: locator.pageId, placement: locator });
+      const verified = await verifiedPage({
+        client: input.client,
+        pageId: locator.pageId,
+        placement: locator,
+        signal,
+      });
       if (verified.page.slug !== locator.pageSlug
         || verified.record.artifactId !== locator.artifactId
         || verified.record.recordKey !== locator.recordKey
@@ -772,9 +853,13 @@ export const createBookStackLifecycleProvider = (input: {
     if (!selection) return blocked("bookstack_placement_invalid", "bookstack_placement_invalid");
     try {
       throwIfAborted(signal);
-      const hierarchy = await verifyHierarchy({ client: input.client, placement: selection.placement });
+      const hierarchy = await verifyHierarchy({
+        client: input.client,
+        placement: selection.placement,
+        signal,
+      });
       throwIfAborted(signal);
-      const candidates = (await input.client.listPages())
+      const candidates = (await input.client.listPages(signal))
         .filter((page) => page.chapterId === selection.placement.chapterId);
       throwIfAborted(signal);
       const records: VerifiedResult[] = [];

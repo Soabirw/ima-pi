@@ -54,7 +54,12 @@ import {
   createSerenaLifecycleRecord,
 } from "../lib/serena-lifecycle-record.ts";
 import { createBookStackLifecycleProvider } from "../lib/bookstack-lifecycle.ts";
+import { createBookStackLifecycleClient } from "../lib/bookstack-lifecycle-client.ts";
 import { createLifecycleRecord, digestBookStackValue } from "../lib/bookstack-lifecycle-record.ts";
+import {
+  createBookStackLifecycleJsonRequester,
+  createBookStackLifecycleRequestScheduler,
+} from "../lib/bookstack-lifecycle-requests.ts";
 import { originFingerprint } from "../lib/bookstack-lifecycle-recovery.ts";
 import { lifecycleContentBinding } from "../lib/ima-lifecycle-security.ts";
 
@@ -2150,6 +2155,366 @@ test("routes a provider-neutral four-key request into native BookStack persisten
   assert.equal(placementConfirmations, 1);
   assert.equal(pages.length, 1);
   assert.equal((await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey)).status, "pinned");
+});
+
+test("REVIEW-001 retains provisioning writes when a lifecycle page POST is rejected before dispatch", async (t) => {
+  const queueRejectedClient = (preprovisioned, existingPages = []) => {
+    const shelves = preprovisioned
+      ? [{ id: 1, name: "Lifecycle", slug: "lifecycle-artifacts", books: [2] }]
+      : [];
+    const books = preprovisioned
+      ? [{ id: 2, name: "ima-pi", slug: "ima-pi" }]
+      : [];
+    const chapters = preprovisioned
+      ? [{ id: 3, name: bookStackRecoveryPlacement.chapterSlug, slug: bookStackRecoveryPlacement.chapterSlug, bookId: 2 }]
+      : [];
+    const pages = structuredClone(existingPages);
+    const rejected = new AbortController();
+    rejected.abort(new Error("page request rejected before dispatch"));
+    const requester = createBookStackLifecycleJsonRequester(
+      createBookStackLifecycleRequestScheduler({ now: () => 0, wait: async () => undefined }),
+    );
+    let pageAttempts = 0;
+    let pagePosts = 0;
+    let provisioningWrites = 0;
+    const placementWrites = [];
+    const page = () => requester({
+      fetcher: async () => {
+        pagePosts += 1;
+        return new Response("must not dispatch", { status: 500 });
+      },
+      url: new URL("https://bookstack.example/api/pages"),
+      init: { method: "POST" },
+      signal: rejected.signal,
+      timeoutMs: 60_000,
+      maxResponseBytes: 4 * 1024 * 1024,
+      failurePrefix: "bookstack",
+    });
+    return {
+      client: {
+        origin: "https://bookstack.example",
+        listShelves: async () => shelves.map(({ books: _books, ...shelf }) => ({ ...shelf })),
+        listBooks: async () => books.map((book) => ({ ...book })),
+        listChapters: async () => chapters.map((chapter) => ({ ...chapter })),
+        readShelf: async (id) => structuredClone(shelves.find((shelf) => shelf.id === id)),
+        readBook: async (id) => structuredClone(books.find((book) => book.id === id)),
+        readChapter: async (id) => structuredClone(chapters.find((chapter) => chapter.id === id)),
+        listPages: async () => pages.map((page) => structuredClone(page)),
+        readPage: async (id) => structuredClone(pages.find((page) => page.id === id)),
+        createShelf: async (name) => {
+          provisioningWrites += 1;
+          placementWrites.push("create-shelf");
+          const shelf = { id: 1, name, slug: name, books: [] };
+          shelves.push(shelf);
+          return structuredClone(shelf);
+        },
+        createBook: async (name) => {
+          provisioningWrites += 1;
+          placementWrites.push("create-book");
+          const book = { id: 2, name, slug: name };
+          books.push(book);
+          return structuredClone(book);
+        },
+        replaceShelfBooks: async ({ shelfId, expectedBooks }) => {
+          provisioningWrites += 1;
+          placementWrites.push("replace-shelf-books");
+          const shelf = shelves.find((candidate) => candidate.id === shelfId);
+          shelf.books = [...expectedBooks];
+          return structuredClone(shelf);
+        },
+        createChapter: async (name, bookId) => {
+          provisioningWrites += 1;
+          placementWrites.push("create-chapter");
+          const chapter = { id: 3, name, slug: name, bookId };
+          chapters.push(chapter);
+          return structuredClone(chapter);
+        },
+        createPage: async () => {
+          pageAttempts += 1;
+          return page();
+        },
+      },
+      pageAttempts: () => pageAttempts,
+      pagePosts: () => pagePosts,
+      provisioningWrites: () => provisioningWrites,
+      placementWrites: () => [...placementWrites],
+    };
+  };
+
+  for (const scenario of [
+    { name: "provisioning", preprovisioned: false, writes: 4, pin: "pending", possibleWrite: true },
+    { name: "reused read-only placement", preprovisioned: true, writes: 0, pin: "absent", possibleWrite: false },
+  ]) {
+    const root = await pinTestRoot(t);
+    const fixture = queueRejectedClient(scenario.preprovisioned);
+    const corpus = noHistoricalLifecycleCorpus;
+    const result = await coordinateLifecycle({
+      ...localLifecycleRequest(),
+      provider: "bookstack",
+    }, {
+      cwd: root,
+      corpus,
+      bookStackLifecycleClient: fixture.client,
+      environment: {},
+      resolveProjectRoot: async () => root,
+      now: () => new Date("2026-10-02T00:00:00.000Z"),
+      confirmProvider: async () => true,
+      confirmBookStackPlacement: async () => true,
+    });
+
+    assert.equal(result.status, "failed", scenario.name);
+    assert.equal(result.provider, "bookstack", scenario.name);
+    assert.equal(result.writeState === "possible-write", scenario.possibleWrite, scenario.name);
+    assert.equal(fixture.provisioningWrites(), scenario.writes, scenario.name);
+    assert.deepEqual(
+      fixture.placementWrites(),
+      scenario.preprovisioned
+        ? []
+        : ["create-shelf", "create-book", "replace-shelf-books", "create-chapter"],
+      scenario.name,
+    );
+    assert.equal(fixture.pageAttempts(), 1, scenario.name);
+    assert.equal(fixture.pagePosts(), 0, scenario.name);
+    const state = await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey);
+    assert.equal(state.status, scenario.pin, scenario.name);
+    if (scenario.possibleWrite) {
+      assert.equal(Object.hasOwn(result, "recommendation"), false, scenario.name);
+      assert.equal(state.status, "pending", scenario.name);
+      if (state.status === "pending") assert.equal(state.attempt.status, "writing", scenario.name);
+    }
+  }
+
+  const root = await pinTestRoot(t);
+  const initialRequest = localLifecycleRequest();
+  const initialRecord = createLifecycleRecord({
+    request: initialRequest,
+    placement: bookStackRecoveryPlacement,
+  });
+  const initialPage = {
+    id: 9,
+    name: `${initialRecord.phase}-${initialRecord.artifactId}`,
+    slug: `${initialRecord.phase}-${initialRecord.artifactId}`,
+    bookId: bookStackRecoveryPlacement.bookId,
+    chapterId: bookStackRecoveryPlacement.chapterId,
+    markdown: initialRecord.pageMarkdown,
+    revisionCount: 1,
+    updatedAt: "2026-10-02T00:00:00.000Z",
+    creatorId: 7,
+    updaterId: 8,
+  };
+  const pinnedFixture = queueRejectedClient(true, [initialPage]);
+  const initial = {
+    provider: "bookstack",
+    artifactId: initialRecord.artifactId,
+    recordKey: initialRecord.recordKey,
+    lifecycleKey,
+    phase: initialRecord.phase,
+    summary: initialRecord.summary,
+    artifact: initialRecord.artifact,
+    reference: {
+      ...bookStackRecoveryPlacement,
+      pageId: initialPage.id,
+      pageSlug: initialPage.slug,
+      originFingerprint: originFingerprint(pinnedFixture.client.origin),
+      artifactId: initialRecord.artifactId,
+      recordKey: initialRecord.recordKey,
+      contentHash: initialRecord.contentHash,
+      pageHash: digestBookStackValue(initialRecord.pageMarkdown),
+      revisionCount: initialPage.revisionCount,
+      updatedAt: initialPage.updatedAt,
+    },
+    createdAt: null,
+  };
+  await pinLifecycleReadAuthority(root, "bookstack", initial);
+  const registry = join(root, ".ima-cycle", "provider-pins.json");
+  const before = await readFile(registry, "utf8");
+  const pinnedResult = await coordinateLifecycle({
+    ...localLifecycleRequest("implementation", initialRecord.artifactId),
+    provider: "bookstack",
+  }, {
+    cwd: root,
+    corpus: noHistoricalLifecycleCorpus,
+    bookStackLifecycleClient: pinnedFixture.client,
+    environment: {},
+    resolveProjectRoot: async () => root,
+    now: () => new Date("2026-10-02T00:00:00.000Z"),
+    confirmProvider: async () => true,
+    confirmBookStackPlacement: async () => true,
+  });
+
+  assert.equal(pinnedResult.status, "failed");
+  assert.equal(pinnedResult.writeState, undefined);
+  assert.equal(pinnedFixture.provisioningWrites(), 0);
+  assert.deepEqual(pinnedFixture.placementWrites(), []);
+  assert.equal(pinnedFixture.pageAttempts(), 1);
+  assert.equal(pinnedFixture.pagePosts(), 0);
+  assert.equal((await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey)).status, "pinned");
+  assert.equal(await readFile(registry, "utf8"), before);
+});
+
+test("REVIEW-002 forwards operation-local cancellation through initial and pinned BookStack persistence", async (t) => {
+  const cancellableClient = () => {
+    const shelf = { id: 1, name: "Lifecycle", slug: "lifecycle-artifacts", books: [2] };
+    const book = { id: 2, name: "ima-pi", slug: "ima-pi" };
+    const chapter = {
+      id: 3,
+      name: bookStackRecoveryPlacement.chapterSlug,
+      slug: bookStackRecoveryPlacement.chapterSlug,
+      book_id: 2,
+    };
+    const pages = [];
+    const calls = [];
+    const admissions = [];
+    const transports = [];
+    let current = 0;
+    let blockNextPost = false;
+    let signalPostStarted;
+    let postStarted = Promise.resolve();
+    const lane = createBookStackLifecycleRequestScheduler({
+      now: () => current,
+      wait: async (milliseconds) => { current += milliseconds; },
+    });
+    const client = createBookStackLifecycleClient({
+      origin: "https://bookstack.example",
+      tokenId: "test-id",
+      tokenSecret: "test-secret",
+      requestScheduler: {
+        schedule: (input) => {
+          admissions.push(input.signal);
+          return lane.schedule(input);
+        },
+      },
+      fetch: async (input, init = {}) => {
+        const url = new URL(String(input));
+        const method = init.method ?? "GET";
+        calls.push({ pathname: url.pathname, method, signal: init.signal });
+        const json = (value) => new Response(JSON.stringify(value), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+        const list = (data) => json({ total: data.length, data });
+        if (method === "GET" && url.pathname === "/api/shelves") return list([shelf]);
+        if (method === "GET" && url.pathname === "/api/books") return list([book]);
+        if (method === "GET" && url.pathname === "/api/chapters") return list([chapter]);
+        if (method === "GET" && url.pathname === "/api/pages") return list(pages);
+        if (method === "GET" && url.pathname === "/api/shelves/1") return json(shelf);
+        if (method === "GET" && url.pathname === "/api/books/2") return json(book);
+        if (method === "GET" && url.pathname === "/api/chapters/3") return json(chapter);
+        const pageId = /^\/api\/pages\/(\d+)$/.exec(url.pathname)?.[1];
+        if (method === "GET" && pageId) {
+          const page = pages.find((candidate) => candidate.id === Number(pageId));
+          return page ? json(page) : new Response("not found", { status: 404 });
+        }
+        if (method === "POST" && url.pathname === "/api/pages") {
+          const body = JSON.parse(String(init.body));
+          if (blockNextPost) {
+            const signal = init.signal;
+            transports.push(signal);
+            signalPostStarted?.();
+            return new Promise((_resolve, reject) => {
+              const abort = () => reject(signal?.reason ?? new Error("missing abort reason"));
+              if (signal?.aborted) abort();
+              else signal?.addEventListener("abort", abort, { once: true });
+            });
+          }
+          const page = {
+            id: pages.length + 10,
+            name: body.name,
+            slug: body.name,
+            book_id: 2,
+            chapter_id: 3,
+            markdown: body.markdown,
+            revision_count: 1,
+            updated_at: "2026-10-03T00:00:00.000Z",
+            created_by: { id: 7 },
+            updated_by: { id: 8 },
+          };
+          pages.push(page);
+          return json(page);
+        }
+        return new Response("unexpected request", { status: 404 });
+      },
+    });
+    return {
+      client,
+      calls,
+      admissions,
+      transports,
+      armPostCancellation: () => {
+        blockNextPost = true;
+        postStarted = new Promise((resolve) => { signalPostStarted = resolve; });
+      },
+      postStarted: () => postStarted,
+      reset: () => {
+        calls.length = 0;
+        admissions.length = 0;
+        transports.length = 0;
+      },
+    };
+  };
+
+  for (const mode of ["initial", "pinned"]) {
+    const root = await pinTestRoot(t);
+    const fixture = cancellableClient();
+    const corpus = noHistoricalLifecycleCorpus;
+    const supplied = {
+      cwd: root,
+      corpus,
+      bookStackLifecycleClient: fixture.client,
+      environment: {},
+      resolveProjectRoot: async () => root,
+      now: () => new Date("2026-10-03T00:00:00.000Z"),
+      confirmProvider: async () => true,
+      confirmBookStackPlacement: async () => true,
+    };
+    let request = { ...localLifecycleRequest(), provider: "bookstack" };
+    let pinBefore = null;
+    if (mode === "pinned") {
+      const initial = await coordinateLifecycle(request, supplied);
+      assert.equal(initial.status, "completed", mode);
+      assert.ok(initial.artifactId, mode);
+      request = {
+        ...localLifecycleRequest("implementation", initial.artifactId),
+        provider: "bookstack",
+      };
+      pinBefore = await readFile(join(root, ".ima-cycle", "provider-pins.json"), "utf8");
+      fixture.reset();
+    }
+
+    fixture.armPostCancellation();
+    const controller = new AbortController();
+    const pending = coordinateLifecycle(request, supplied, controller.signal);
+    await fixture.postStarted();
+    const activeTransport = fixture.transports[0];
+    assert.ok(activeTransport, mode);
+    assert.equal(fixture.admissions.every((signal) => signal === controller.signal), true, mode);
+    const callsBeforeAbort = fixture.calls.length;
+    controller.abort(new Error(`${mode} persistence cancelled`));
+    const result = await pending;
+
+    assert.equal(activeTransport.aborted, true, mode);
+    assert.equal(result.status, "failed", mode);
+    assert.equal(result.provider, "bookstack", mode);
+    assert.equal(result.writeState, "possible-write", mode);
+    assert.equal(fixture.calls.length, callsBeforeAbort, mode);
+    assert.equal(fixture.calls.at(-1)?.method, "POST", mode);
+    assert.equal(fixture.calls.every(({ signal }) => signal && typeof signal.aborted === "boolean"), true, mode);
+
+    const unrelated = new AbortController();
+    await fixture.client.listPages(unrelated.signal);
+    assert.equal(fixture.admissions.at(-1), unrelated.signal, mode);
+    assert.equal(fixture.calls.at(-1)?.pathname, "/api/pages", mode);
+    assert.equal(fixture.calls.at(-1)?.signal?.aborted, false, mode);
+
+    const state = await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey);
+    if (mode === "initial") {
+      assert.equal(state.status, "pending", mode);
+      if (state.status === "pending") assert.equal(state.attempt.status, "writing", mode);
+    } else {
+      assert.equal(state.status, "pinned", mode);
+      assert.equal(await readFile(join(root, ".ima-cycle", "provider-pins.json"), "utf8"), pinBefore, mode);
+    }
+  }
 });
 
 test("continues a verified BookStack pin without selecting, confirming placement, or provisioning", async (t) => {
@@ -5091,11 +5456,11 @@ test("public lifecycle reads expose a safe BookStack HTTP failure diagnostic", a
       },
     },
   });
-  assert.deepEqual(calls, [{
+  assert.deepEqual(calls, Array.from({ length: 2 }, () => ({
     origin: fixture.environment.BOOKSTACK_BASE_URL,
     pathname: "/api/pages/1796",
     method: "GET",
-  }]);
+  })));
   assert.doesNotMatch(JSON.stringify(result), /test-token-(?:id|secret)/);
   assert.equal(await readFile(fixture.registry, "utf8"), fixture.before);
 });
@@ -6618,4 +6983,76 @@ test("withholds an unexpected post-write warning with a precise possible-write d
   assert.doesNotMatch(JSON.stringify(result), /test-token-value/);
   assert.equal(routed.calls.qdrant.filter(({ operation }) => operation === "persist").length, 1);
   assert.deepEqual(routed.calls.markdown, []);
+});
+
+test("persistent BookStack rate limits identify authority and recall steps without mutating the pin", async (t) => {
+  const root = await pinTestRoot(t);
+  const initial = lifecycleReadRecordFor({
+    provider: "bookstack",
+    request: lifecycleReadRequestFor("plan", "rate-limit-root"),
+    root,
+    pageId: 1796,
+  });
+  await pinLifecycleReadAuthority(root, "bookstack", initial);
+  const registry = join(root, ".ima-cycle", "provider-pins.json");
+  const before = await readFile(registry, "utf8");
+
+  for (const stage of ["authority", "recall"]) {
+    const calls = [];
+    const routing = createLifecycleRouting([{
+      provider: "bookstack",
+      persist: async () => ({
+        status: "blocked",
+        provider: "bookstack",
+        code: "read_only_fixture",
+        writeState: "no-write",
+      }),
+      reconcile: async () => {
+        calls.push("reconcile");
+        return stage === "authority"
+          ? {
+            status: "blocked",
+            provider: "bookstack",
+            code: "bookstack_rate_limited",
+            writeState: "no-write",
+          }
+          : { status: "verified", record: structuredClone(initial) };
+      },
+      recall: async () => {
+        calls.push("recall");
+        return {
+          status: "blocked",
+          provider: "bookstack",
+          code: "bookstack_rate_limited",
+        };
+      },
+    }]);
+
+    const result = await coordinateLifecycleRecall({
+      lifecycleKey: SKYNET_230_LIFECYCLE_KEY,
+      phase: "plan",
+      limit: 1,
+    }, {
+      cwd: root,
+      routing,
+      resolveProjectRoot: async () => root,
+    });
+
+    assert.deepEqual(result, {
+      schemaVersion: 1,
+      status: "failed",
+      error: {
+        code: "lifecycle_read_unavailable",
+        message: "Lifecycle read is unavailable.",
+        diagnostic: {
+          stage: "provider",
+          code: "provider_rate_limited",
+          step: stage,
+        },
+      },
+    }, stage);
+    assert.deepEqual(calls, stage === "authority" ? ["reconcile"] : ["reconcile", "recall"], stage);
+    assert.equal(await readFile(registry, "utf8"), before, stage);
+    assert.doesNotMatch(JSON.stringify(result), /test-token|secret/i, stage);
+  }
 });

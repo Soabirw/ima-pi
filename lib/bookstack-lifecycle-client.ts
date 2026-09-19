@@ -3,6 +3,10 @@ import {
   createBookStackHttpClient,
   type BookStackHttpClientInput,
 } from "./bookstack-http.ts";
+import {
+  createBookStackLifecycleJsonRequester,
+  type BookStackLifecycleRequestScheduler,
+} from "./bookstack-lifecycle-requests.ts";
 import { utf8ByteLength } from "./qdrant-corpus.ts";
 
 const PAGE_SIZE = 500;
@@ -108,20 +112,34 @@ const hasStrictlyAscendingPositiveIds = (
     && resource.id > (index === 0 ? previousId : resources[index - 1].id),
 );
 
-export type BookStackLifecycleClientInput = BookStackHttpClientInput;
+export type BookStackLifecycleClientInput = BookStackHttpClientInput & {
+  requestScheduler?: BookStackLifecycleRequestScheduler;
+};
 
 export const createBookStackLifecycleClient = (input: BookStackLifecycleClientInput) => {
-  const http = createBookStackHttpClient({ ...input, maxResponseBytes: MAX_LIFECYCLE_RESPONSE_BYTES });
-  const list = async (resource: "shelves" | "books" | "chapters" | "pages") => {
+  const { requestScheduler, ...httpInput } = input;
+  const http = createBookStackHttpClient(
+    { ...httpInput, maxResponseBytes: MAX_LIFECYCLE_RESPONSE_BYTES },
+    createBookStackLifecycleJsonRequester(requestScheduler),
+  );
+  const list = async (
+    resource: "shelves" | "books" | "chapters" | "pages",
+    signal?: AbortSignal,
+  ) => {
     const entries: BookStackResource[] = [];
     let expectedTotal: number | null = null;
     let previousId = 0;
     for (let offset = 0; ; offset += PAGE_SIZE) {
-      const response = object(await http.request(resource, {}, new URLSearchParams({
-        count: String(PAGE_SIZE),
-        offset: String(offset),
-        sort: "+id",
-      })));
+      const response = object(await http.request(
+        resource,
+        {},
+        new URLSearchParams({
+          count: String(PAGE_SIZE),
+          offset: String(offset),
+          sort: "+id",
+        }),
+        signal,
+      ));
       const total = response?.total;
       if (!Number.isSafeInteger(total) || Number(total) < 0 || Number(total) > MAX_LIST_ENTRIES) {
         throw new Error("bookstack_pagination_invalid");
@@ -150,46 +168,66 @@ export const createBookStackLifecycleClient = (input: BookStackLifecycleClientIn
       if (page.length !== expectedBatchSize) throw new Error("bookstack_pagination_invalid");
     }
   };
-  const read = async (resource: "shelves" | "books" | "chapters" | "pages", id: number) => {
+  const read = async (
+    resource: "shelves" | "books" | "chapters" | "pages",
+    id: number,
+    signal?: AbortSignal,
+  ) => {
     if (!positiveId(id)) throw new Error("bookstack_resource_id_invalid");
-    return expectedResource(await http.request(`${resource}/${id}`), id);
+    return expectedResource(await http.request(`${resource}/${id}`, {}, undefined, signal), id);
   };
-  const create = async (resource: "shelves" | "books" | "chapters" | "pages", body: ObjectValue) =>
-    expectedResource(await http.request(resource, { method: "POST", body: JSON.stringify(body) }));
+  const create = async (
+    resource: "shelves" | "books" | "chapters" | "pages",
+    body: ObjectValue,
+    signal?: AbortSignal,
+  ) => expectedResource(await http.request(
+    resource,
+    { method: "POST", body: JSON.stringify(body) },
+    undefined,
+    signal,
+  ));
 
   return {
     origin: http.origin,
-    listShelves: () => list("shelves"),
-    listBooks: () => list("books"),
-    listChapters: () => list("chapters"),
-    listPages: () => list("pages"),
-    readShelf: (id: number) => read("shelves", id),
-    readBook: (id: number) => read("books", id),
-    readChapter: (id: number) => read("chapters", id),
-    readPage: (id: number) => read("pages", id),
-    createShelf: (name: string) => create("shelves", { name }),
-    createBook: (name: string) => create("books", { name }),
-    createChapter: (name: string, bookId: number) => create("chapters", {
+    listShelves: (signal?: AbortSignal) => list("shelves", signal),
+    listBooks: (signal?: AbortSignal) => list("books", signal),
+    listChapters: (signal?: AbortSignal) => list("chapters", signal),
+    listPages: (signal?: AbortSignal) => list("pages", signal),
+    readShelf: (id: number, signal?: AbortSignal) => read("shelves", id, signal),
+    readBook: (id: number, signal?: AbortSignal) => read("books", id, signal),
+    readChapter: (id: number, signal?: AbortSignal) => read("chapters", id, signal),
+    readPage: (id: number, signal?: AbortSignal) => read("pages", id, signal),
+    createShelf: (name: string, signal?: AbortSignal) => create("shelves", { name }, signal),
+    createBook: (name: string, signal?: AbortSignal) => create("books", { name }, signal),
+    createChapter: (name: string, bookId: number, signal?: AbortSignal) => create("chapters", {
       name,
       book_id: bookId,
       description: "Immutable IMA lifecycle artifacts.",
-    }),
-    createPage: (name: string, chapterId: number, markdown: string) => create("pages", {
+    }, signal),
+    createPage: (name: string, chapterId: number, markdown: string, signal?: AbortSignal) => create("pages", {
       name,
       chapter_id: chapterId,
       markdown,
-    }),
-    async replaceShelfBooks(value: { shelfId: number; shelfName: string; expectedBooks: number[] }) {
+    }, signal),
+    async replaceShelfBooks(
+      value: { shelfId: number; shelfName: string; expectedBooks: number[] },
+      signal?: AbortSignal,
+    ) {
       if (!positiveId(value.shelfId) || !boundedText(value.shelfName)
         || !value.expectedBooks.every(positiveId)
         || new Set(value.expectedBooks).size !== value.expectedBooks.length) {
         throw new Error("bookstack_shelf_membership_invalid");
       }
-      const updated = expectedResource(await http.request(`shelves/${value.shelfId}`, {
-        method: "PUT",
-        body: JSON.stringify({ name: value.shelfName, books: value.expectedBooks }),
-      }), value.shelfId);
-      const readBack = await read("shelves", value.shelfId);
+      const updated = expectedResource(await http.request(
+        `shelves/${value.shelfId}`,
+        {
+          method: "PUT",
+          body: JSON.stringify({ name: value.shelfName, books: value.expectedBooks }),
+        },
+        undefined,
+        signal,
+      ), value.shelfId);
+      const readBack = await read("shelves", value.shelfId, signal);
       if (updated.name !== value.shelfName
         || !readBack.books
         || readBack.books.length !== value.expectedBooks.length

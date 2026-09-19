@@ -52,6 +52,9 @@ export type PlacementResult =
   };
 
 const positiveId = (value: unknown): value is number => Number.isSafeInteger(value) && value > 0;
+const throwIfAborted = (signal?: AbortSignal) => {
+  if (signal?.aborted) signal.throwIfAborted();
+};
 const sameMembers = (left: readonly number[], right: readonly number[]) =>
   left.length === right.length && left.every((value, index) => value === right[index]);
 const detachedMembers = (value: unknown) => Array.isArray(value)
@@ -131,16 +134,22 @@ const recovery = (input: {
 export const planPlacement = async (
   client: BookStackLifecycleClient,
   input: PlacementInput,
+  signal?: AbortSignal,
 ): Promise<PlacementPreview> => {
   const location = projectPlacementInput(input);
   if (!location) throw new Error("bookstack_placement_invalid");
-  const [shelves, books, chapters] = await Promise.all([
-    client.listShelves(),
-    client.listBooks(),
-    client.listChapters(),
-  ]);
+  throwIfAborted(signal);
+  const shelves = await client.listShelves(signal);
+  throwIfAborted(signal);
+  const books = await client.listBooks(signal);
+  throwIfAborted(signal);
+  const chapters = await client.listChapters(signal);
+  throwIfAborted(signal);
   const listedShelf = matching(shelves, SHELF_SLUG);
-  const shelf = listedShelf ? exactResource(await client.readShelf(listedShelf.id), { id: listedShelf.id, slug: SHELF_SLUG }) : null;
+  const shelf = listedShelf
+    ? exactResource(await client.readShelf(listedShelf.id, signal), { id: listedShelf.id, slug: SHELF_SLUG })
+    : null;
+  throwIfAborted(signal);
   const membershipBefore = shelf ? requiredMembers(shelf.books) : [];
   const book = matching(books, location.projectSlug);
   const attached = Boolean(book && membershipBefore.includes(book.id));
@@ -182,6 +191,7 @@ const reconcilePlacement = async (
   client: BookStackLifecycleClient,
   input: PlacementInput,
   value: unknown,
+  signal?: AbortSignal,
 ): Promise<PlacementResult> => {
   const recoveryValue = projectRecoveryDescriptor(value);
   const location = projectPlacementInput(input);
@@ -194,15 +204,16 @@ const reconcilePlacement = async (
     return failed("bookstack_recovery_unresolved", "bookstack_recovery_unresolved", recoveryValue);
   }
   try {
-    const readShelf = async () => exactResource(await client.readShelf(recoveryValue.shelfId!), {
+    throwIfAborted(signal);
+    const readShelf = async () => exactResource(await client.readShelf(recoveryValue.shelfId!, signal), {
       id: recoveryValue.shelfId!, slug: SHELF_SLUG,
     });
     if (recoveryValue.operation === "create_shelf") {
       const shelf = recoveryValue.shelfId
         ? await readShelf()
         : await (async () => {
-          const candidate = exactResource(matching(await client.listShelves(), SHELF_SLUG), { slug: SHELF_SLUG });
-          return exactResource(await client.readShelf(candidate.id), { id: candidate.id, slug: SHELF_SLUG });
+          const candidate = exactResource(matching(await client.listShelves(signal), SHELF_SLUG), { slug: SHELF_SLUG });
+          return exactResource(await client.readShelf(candidate.id, signal), { id: candidate.id, slug: SHELF_SLUG });
         })();
       const complete = recoveryValue.shelfId ? recoveryValue : recovery({
         client,
@@ -215,10 +226,10 @@ const reconcilePlacement = async (
     const shelf = await readShelf();
     if (recoveryValue.operation === "create_book") {
       const book = recoveryValue.bookId
-        ? exactResource(await client.readBook(recoveryValue.bookId), { id: recoveryValue.bookId, slug: location.projectSlug })
+        ? exactResource(await client.readBook(recoveryValue.bookId, signal), { id: recoveryValue.bookId, slug: location.projectSlug })
         : await (async () => {
-          const candidate = exactResource(matching(await client.listBooks(), location.projectSlug), { slug: location.projectSlug });
-          return exactResource(await client.readBook(candidate.id), { id: candidate.id, slug: location.projectSlug });
+          const candidate = exactResource(matching(await client.listBooks(signal), location.projectSlug), { slug: location.projectSlug });
+          return exactResource(await client.readBook(candidate.id, signal), { id: candidate.id, slug: location.projectSlug });
         })();
       const complete = recoveryValue.bookId ? recoveryValue : recovery({
         client,
@@ -229,19 +240,19 @@ const reconcilePlacement = async (
       if (!sameMembers(requiredMembers(shelf.books), complete.membershipBefore)) throw new Error("bookstack_recovery_unresolved");
       return failed("bookstack_recovery_reconciled", "bookstack_recovery_unresolved", complete);
     }
-    const book = exactResource(await client.readBook(recoveryValue.bookId!), { id: recoveryValue.bookId!, slug: location.projectSlug });
+    const book = exactResource(await client.readBook(recoveryValue.bookId!, signal), { id: recoveryValue.bookId!, slug: location.projectSlug });
     if (recoveryValue.operation === "attach_book") {
       if (!sameMembers(requiredMembers(shelf.books), recoveryValue.membershipAfter as number[])) throw new Error("bookstack_recovery_unresolved");
       return failed("bookstack_recovery_reconciled", "bookstack_recovery_unresolved", recoveryValue);
     }
     const chapter = recoveryValue.chapterId
-      ? exactResource(await client.readChapter(recoveryValue.chapterId), { id: recoveryValue.chapterId, slug: location.chapterSlug, bookId: book.id })
+      ? exactResource(await client.readChapter(recoveryValue.chapterId, signal), { id: recoveryValue.chapterId, slug: location.chapterSlug, bookId: book.id })
       : await (async () => {
         const candidate = exactResource(
-          matching(await client.listChapters(), location.chapterSlug, book.id),
+          matching(await client.listChapters(signal), location.chapterSlug, book.id),
           { slug: location.chapterSlug, bookId: book.id },
         );
-        return exactResource(await client.readChapter(candidate.id), {
+        return exactResource(await client.readChapter(candidate.id, signal), {
           id: candidate.id,
           slug: location.chapterSlug,
           bookId: book.id,
@@ -265,6 +276,7 @@ export const ensurePlacement = async (input: {
   placement: PlacementInput;
   approve?: (preview: PlacementPreview) => Promise<boolean> | boolean;
   recovery?: unknown;
+  signal?: AbortSignal;
 }): Promise<PlacementResult> => {
   const location = projectPlacementInput(input.placement);
   if (!location) return failed("bookstack_placement_invalid", "bookstack_placement_invalid");
@@ -274,11 +286,11 @@ export const ensurePlacement = async (input: {
     lifecycleKey: location.lifecycleKey,
   };
   if (Object.hasOwn(input, "recovery")) {
-    return reconcilePlacement(input.client, placement, input.recovery);
+    return reconcilePlacement(input.client, placement, input.recovery, input.signal);
   }
   let approved: PlacementPreview;
   try {
-    approved = await planPlacement(input.client, placement);
+    approved = await planPlacement(input.client, placement, input.signal);
   } catch (error) {
     return failed(error, "bookstack_placement_unavailable");
   }
@@ -292,7 +304,7 @@ export const ensurePlacement = async (input: {
   }
   let current: PlacementPreview;
   try {
-    current = await planPlacement(input.client, placement);
+    current = await planPlacement(input.client, placement, input.signal);
   } catch (error) {
     return failed(error, "bookstack_placement_unavailable");
   }
@@ -302,7 +314,7 @@ export const ensurePlacement = async (input: {
   let shelfId = current.shelf.id;
   if (!shelfId) {
     try {
-      shelfId = (await input.client.createShelf(SHELF_SLUG)).id;
+      shelfId = (await input.client.createShelf(SHELF_SLUG, input.signal)).id;
       if (!positiveId(shelfId)) throw new Error("bookstack_response_invalid");
     } catch (error) {
       return failed(error, "bookstack_placement_unavailable", recovery({
@@ -313,7 +325,7 @@ export const ensurePlacement = async (input: {
   }
   let shelf: BookStackResource;
   try {
-    shelf = exactResource(await input.client.readShelf(shelfId), { id: shelfId, slug: SHELF_SLUG });
+    shelf = exactResource(await input.client.readShelf(shelfId, input.signal), { id: shelfId, slug: SHELF_SLUG });
     if (!sameMembers(requiredMembers(shelf.books), current.shelf.membershipBefore)) throw new Error("bookstack_shelf_membership_conflict");
   } catch (error) {
     if (!shelfWasCreated) return failed(error, "bookstack_placement_unavailable");
@@ -327,7 +339,7 @@ export const ensurePlacement = async (input: {
   let bookId = current.book.id;
   if (!bookId) {
     try {
-      bookId = (await input.client.createBook(current.projectSlug)).id;
+      bookId = (await input.client.createBook(current.projectSlug, input.signal)).id;
       if (!positiveId(bookId)) throw new Error("bookstack_response_invalid");
     } catch (error) {
       return failed(error, "bookstack_placement_unavailable", recovery({
@@ -339,7 +351,7 @@ export const ensurePlacement = async (input: {
   }
   let book: BookStackResource;
   try {
-    book = exactResource(await input.client.readBook(bookId), { id: bookId, slug: current.projectSlug });
+    book = exactResource(await input.client.readBook(bookId, input.signal), { id: bookId, slug: current.projectSlug });
   } catch (error) {
     if (!bookWasCreated) return failed(error, "bookstack_placement_unavailable");
     return failed(error, "bookstack_placement_unavailable", recovery({
@@ -353,9 +365,12 @@ export const ensurePlacement = async (input: {
     : [...current.shelf.membershipBefore, book.id];
   if (!shelf.books?.includes(book.id)) {
     try {
-      const beforeMutation = exactResource(await input.client.readShelf(shelf.id), { id: shelf.id, slug: SHELF_SLUG });
+      const beforeMutation = exactResource(await input.client.readShelf(shelf.id, input.signal), { id: shelf.id, slug: SHELF_SLUG });
       if (!sameMembers(requiredMembers(beforeMutation.books), current.shelf.membershipBefore)) throw new Error("bookstack_shelf_membership_conflict");
-      await input.client.replaceShelfBooks({ shelfId: shelf.id, shelfName: shelf.name, expectedBooks: membershipAfter });
+      await input.client.replaceShelfBooks(
+        { shelfId: shelf.id, shelfName: shelf.name, expectedBooks: membershipAfter },
+        input.signal,
+      );
     } catch (error) {
       return failed(error, "bookstack_placement_unavailable", recovery({
         client: input.client, location: current, operation: "attach_book", shelfId: shelf.id, bookId: book.id, chapterId: null,
@@ -367,7 +382,7 @@ export const ensurePlacement = async (input: {
   let chapterId = current.chapter.id;
   if (!chapterId) {
     try {
-      chapterId = (await input.client.createChapter(current.chapterSlug, book.id)).id;
+      chapterId = (await input.client.createChapter(current.chapterSlug, book.id, input.signal)).id;
       if (!positiveId(chapterId)) throw new Error("bookstack_response_invalid");
     } catch (error) {
       return failed(error, "bookstack_placement_unavailable", recovery({
@@ -378,8 +393,8 @@ export const ensurePlacement = async (input: {
   }
   let chapter: BookStackResource;
   try {
-    chapter = exactResource(await input.client.readChapter(chapterId), { id: chapterId, slug: current.chapterSlug, bookId: book.id });
-    const verifiedShelf = exactResource(await input.client.readShelf(shelf.id), { id: shelf.id, slug: SHELF_SLUG });
+    chapter = exactResource(await input.client.readChapter(chapterId, input.signal), { id: chapterId, slug: current.chapterSlug, bookId: book.id });
+    const verifiedShelf = exactResource(await input.client.readShelf(shelf.id, input.signal), { id: shelf.id, slug: SHELF_SLUG });
     if (!sameMembers(requiredMembers(verifiedShelf.books), membershipAfter)) throw new Error("bookstack_shelf_membership_invalid");
   } catch (error) {
     return failed(error, "bookstack_placement_unavailable", recovery({

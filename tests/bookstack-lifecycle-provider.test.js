@@ -1,8 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createBookStackLifecycleProvider } from "../lib/bookstack-lifecycle.ts";
+import {
+  bookStackLifecycleResultIsNoWrite,
+  createBookStackLifecycleProvider,
+} from "../lib/bookstack-lifecycle.ts";
 import { createLifecycleRecord, digestBookStackValue } from "../lib/bookstack-lifecycle-record.ts";
+import { createBookStackLifecycleClient } from "../lib/bookstack-lifecycle-client.ts";
 import { recoveryDescriptor } from "../lib/bookstack-lifecycle-recovery.ts";
+import {
+  createBookStackLifecycleJsonRequester,
+  createBookStackLifecycleRequestScheduler,
+} from "../lib/bookstack-lifecycle-requests.ts";
 
 const sourceRef = "taskwarrior:shared-dev-memory:cc4755dd-67bf-49a6-8e2d-6563d080dde1";
 const identity = {
@@ -1099,4 +1107,148 @@ test("rejects new closeout writes that carry document-phase evidence before Book
 
   assert.equal(result.status, "blocked");
   assert.equal(fake.creates(), 0);
+});
+
+test("a blocked hierarchy read prevents all later hierarchy, discovery, and page work", async () => {
+  const fake = createClient();
+  const calls = [];
+  fake.readShelf = async () => {
+    calls.push("shelf");
+    throw new Error("bookstack_rate_limited");
+  };
+  fake.readBook = async () => {
+    calls.push("book");
+    return { id: placement.bookId, name: "Shared", slug: placement.bookSlug };
+  };
+  fake.readChapter = async () => {
+    calls.push("chapter");
+    return { id: placement.chapterId, name: placement.chapterSlug, slug: placement.chapterSlug, bookId: placement.bookId };
+  };
+  fake.listPages = async () => {
+    calls.push("pages");
+    return [];
+  };
+
+  const result = await createBookStackLifecycleProvider({ client: fake }).persist({ request, placement });
+
+  assert.equal(result.status, "blocked");
+  assert.equal(result.code, "bookstack_rate_limited");
+  assert.equal(result.category, "unavailable");
+  assert.deepEqual(calls, ["shelf"]);
+  assert.equal(fake.creates(), 0);
+});
+
+test("a pre-dispatch page POST failure has no recovery proof or implicit write replay", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  const scheduler = createBookStackLifecycleRequestScheduler({
+    now: () => 0,
+    wait: async () => undefined,
+  });
+  const requester = createBookStackLifecycleJsonRequester(scheduler);
+  let createCalls = 0;
+  let fetchCalls = 0;
+  const fake = createClient();
+  fake.createPage = async () => {
+    createCalls += 1;
+    return requester({
+      fetcher: async () => {
+        fetchCalls += 1;
+        return new Response("must not dispatch", { status: 500 });
+      },
+      url: new URL("https://bookstack.example/api/pages"),
+      init: { method: "POST" },
+      signal: controller.signal,
+      timeoutMs: 60_000,
+      maxResponseBytes: 4 * 1024 * 1024,
+      failurePrefix: "bookstack",
+    });
+  };
+
+  const result = await createBookStackLifecycleProvider({ client: fake }).persist({ request, placement });
+
+  assert.equal(result.status, "blocked");
+  assert.equal(result.code, "bookstack_transport_failed");
+  assert.equal(result.recovery, null);
+  assert.equal(bookStackLifecycleResultIsNoWrite(result), true);
+  assert.equal(createCalls, 1);
+  assert.equal(fetchCalls, 0);
+  assert.equal(fake.creates(), 0);
+});
+
+test("eight concurrent provider recalls share one paced lifecycle request lane", async () => {
+  let current = 0;
+  const starts = [];
+  const scheduler = createBookStackLifecycleRequestScheduler({
+    now: () => current,
+    wait: async (milliseconds) => { current += milliseconds; },
+  });
+  const record = createLifecycleRecord({ request, placement });
+  const page = {
+    id: 42,
+    name: `${record.phase}-${record.artifactId}`,
+    slug: `${record.phase}-${record.artifactId}`,
+    book_id: placement.bookId,
+    chapter_id: placement.chapterId,
+    markdown: record.pageMarkdown,
+    revision_count: 1,
+    updated_at: "2026-09-11T00:00:00Z",
+    created_by: { id: 7 },
+    updated_by: { id: 8 },
+  };
+  const client = createBookStackLifecycleClient({
+    origin: "https://bookstack.example",
+    tokenId: "test-id",
+    tokenSecret: "test-secret",
+    requestScheduler: scheduler,
+    fetch: async (url, init = {}) => {
+      const parsed = new URL(String(url));
+      starts.push({ at: current, pathname: parsed.pathname, method: init.method ?? "GET" });
+      if (parsed.pathname === "/api/shelves/1") {
+        return new Response(JSON.stringify({
+          id: placement.shelfId,
+          name: "Lifecycle",
+          slug: placement.shelfSlug,
+          books: [placement.bookId],
+        }), { headers: { "content-type": "application/json" } });
+      }
+      if (parsed.pathname === "/api/books/2") {
+        return new Response(JSON.stringify({
+          id: placement.bookId,
+          name: "Shared",
+          slug: placement.bookSlug,
+        }), { headers: { "content-type": "application/json" } });
+      }
+      if (parsed.pathname === "/api/chapters/3") {
+        return new Response(JSON.stringify({
+          id: placement.chapterId,
+          name: placement.chapterSlug,
+          slug: placement.chapterSlug,
+          book_id: placement.bookId,
+        }), { headers: { "content-type": "application/json" } });
+      }
+      if (parsed.pathname === "/api/pages") {
+        return new Response(JSON.stringify({ data: [page], total: 1 }), {
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (parsed.pathname === "/api/pages/42") {
+        return new Response(JSON.stringify(page), { headers: { "content-type": "application/json" } });
+      }
+      throw new Error("unexpected_provider_recall_request");
+    },
+  });
+
+  const results = await Promise.all(Array.from(
+    { length: 8 },
+    () => createBookStackLifecycleProvider({ client }).recall(recallInput()),
+  ));
+
+  assert.equal(results.every((result) => Array.isArray(result) && result.length === 1), true);
+  assert.equal(starts.length, 40);
+  assert.deepEqual(
+    starts.map(({ at }) => at),
+    Array.from({ length: 40 }, (_unused, index) => index * 1_100),
+  );
+  assert.equal(starts.every(({ method }) => method === "GET"), true);
 });
