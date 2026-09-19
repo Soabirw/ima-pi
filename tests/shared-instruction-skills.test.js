@@ -56,7 +56,7 @@ test("shared instruction skills retain their bounded contracts", async () => {
     /ima_corpus_recall/,
     /ima_corpus_get/,
     /manifest summaries only/i,
-    /direct retrieval verifies its lifecycle key, phase/i,
+    /complete result after verifying its lifecycle key, phase/i,
     /Vestige fallback/i,
     /\/ima:memorize/,
     /ima_lifecycle/,

@@ -239,7 +239,8 @@ test("manual closeout partitions recall evidence by phase and blocks each exact 
     "optional, separate `phase: closeout` recall for prior closeout evidence",
     "it is not document evidence and must never be relabeled as `document`",
     "including `decision` and optional prior `closeout`",
-    "for every selected descriptor from that phase, pass it unchanged to `ima_lifecycle_get`",
+    "for every selected descriptor from that phase, call `ima_lifecycle_get` with only its exact `lifecycleKey`, `phase`, and `artifactId`",
+    "Never reconstruct or send its `recordKey`, `contentHash`, `summary`, or `reference` as get arguments",
     "If **any one phase-specific** recall returns exactly 20 descriptors",
     "More than 20 descriptors across distinct phase calls is acceptable only when every individual phase call returned fewer than 20",
   ]) has(text, value);

@@ -21,8 +21,9 @@ perform, repeat, or alter the review.
   and stop; the bounded response cannot prove completeness.
 - Filter descriptors to `review` or `rereview` candidates. If none remain, report the missing
   completed-review prerequisite and stop.
-- Directly retrieve every candidate by passing its unchanged selected descriptor to
-  `ima_lifecycle_get`; never reconstruct a descriptor or accept one as evidence.
+- Directly retrieve every candidate by calling `ima_lifecycle_get` with only its selected exact
+  `lifecycleKey`, `phase`, and `artifactId`; never reconstruct or send descriptor proof fields, and
+  never accept a descriptor as evidence. The package freshly resolves the exact phase and proof.
 - Validate every candidate's complete result for lifecycle identity, review/rereview phase,
   authoritative completion marker, returned `artifactId`, logical `recordKey`, content hash, read reference, and
   authoritative usable `createdAt` before narration; never infer a missing timestamp.

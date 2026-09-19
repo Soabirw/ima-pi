@@ -56,7 +56,7 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ### Known limitations
 
-- An operator completed a Qdrant-to-BookStack `apply` and a separate BookStack-to-Cloudflare AI Search ingestion. The canary, report `verify`, cleanup, discovery/cutover, source deletion, and `ima-rag` disposition remain separately operator-gated.
+- An operator confirmed that the Qdrant-to-BookStack migration completed and was verified twice; this is acceptance evidence, not fresh API evidence. Cleanup, discovery/cutover, source deletion, and `ima-rag` disposition remain separately operator-gated.
 
 ## [1.20.0] - 2026-09-09
 

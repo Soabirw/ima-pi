@@ -173,8 +173,9 @@ an invalid adjustment: it requires correction, then a new complete preview and r
 approval; no prior approval survives an adjustment. Convert the approved key to the canonical
 handoff `lifecycle:<key>`. Perform an exact public `ima_lifecycle_recall` collision check at
 `limit: 20`: descriptors are not evidence. An existing exact key may proceed only through the human-selected resume path,
-and an expected-empty exact key may proceed only through the human-selected new path. For a resume, pass its selected
-descriptor unchanged to `ima_lifecycle_get` before acting. A collision, missing requested resume,
+and an expected-empty exact key may proceed only through the human-selected new path. For a resume, call
+`ima_lifecycle_get` with only the selected descriptor's exact `lifecycleKey`, `phase`, and `artifactId`
+before acting; never reconstruct or send its proof fields. A collision, missing requested resume,
 20-result potential overflow, multiple result, incomplete evidence, or any uncertainty is `BLOCKED`.
 Never create or consult a naming registry, auto-suffix, merge, overwrite, or similarity-match a manual identity.
 
@@ -185,8 +186,9 @@ decision; it pauses for the human gate before the first persistence.
 After the one hydration and, for file/text work, the completed manual identity gate, load
 `ima-lifecycle-contract` and call `ima_lifecycle_recall` for the exact lifecycle key at `limit: 20`.
 Its results are descriptors only: if 20 return, block as potentially overflowed; otherwise select
-matching required descriptors and pass each unchanged to `ima_lifecycle_get` before acting. Accept a
-prior artifact only after its complete result verifies lifecycle/source identity, phase and terminal
+matching required descriptors and call `ima_lifecycle_get` for each with only its exact
+`lifecycleKey`, `phase`, and `artifactId` before acting. The package freshly resolves each exact phase
+and keeps descriptor proof fields out of model-generated arguments. Accept a prior artifact only after its complete result verifies lifecycle/source identity, phase and terminal
 outcome, returned `artifactId`/`recordKey`, content hash, read reference, and phase-specific
 semantics. A descriptor, summary, handoff pointer, or cache alone is never lifecycle evidence.
 
@@ -299,8 +301,10 @@ When test reports `DEFECTS`, require stable `TEST-NNN` evidence containing the a
 Before each phase, summarize the inherited plan outcome, non-goals, exact target boundary,
 acceptance criteria, prior evidence, and the one decision the specialist is authorized to make.
 Immediately before each `ima_delegate` delegation, the current-session soft-cycle orchestrator must
-freshly recall descriptors for the exact lifecycle key with `ima_lifecycle_recall`, then pass every
-selected required descriptor unchanged to `ima_lifecycle_get`. It may delegate only after it verifies
+freshly recall descriptors for the exact lifecycle key with `ima_lifecycle_recall`, then call
+`ima_lifecycle_get` for every selected required descriptor with only its exact `lifecycleKey`,
+`phase`, and `artifactId`. The package freshly resolves each exact phase and keeps descriptor proof
+fields out of model-generated arguments. It may delegate only after it verifies
 each complete required artifact's lifecycle/source identity, phase, terminal outcome,
 `artifactId`/`recordKey`, content hash, read reference, and phase-specific prerequisite semantics.
 It then supplies the specialist a bounded complete verified evidence packet needed for its

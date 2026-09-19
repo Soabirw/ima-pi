@@ -55,10 +55,14 @@ migrate, select a provider, fall back, or perform historical rewriting.
 For every fresh manual or `/ima:soft-cycle` phase session, use the package-native public read pair
 before accepting a prior artifact. Call `ima_lifecycle_recall` with the exact lifecycle key and a
 bounded selection (at most 20 descriptors). Its descriptors are selection proofs, not phase evidence:
-never act on a descriptor, summary, handoff pointer, or cache alone. Select each required descriptor
-and pass it unchanged to `ima_lifecycle_get`. Accept a prerequisite only after its complete returned
-artifact verifies the lifecycle and source identity, phase, terminal outcome, returned `artifactId`,
-`recordKey`, content hash, read reference, and phase-specific prerequisite semantics.
+never act on a descriptor, summary, handoff pointer, or cache alone. Select each required descriptor,
+then call `ima_lifecycle_get` with only its exact `lifecycleKey`, `phase`, and `artifactId`. The
+package freshly recalls that exact phase, requires one unambiguous non-saturated match, and keeps the
+closed proof out of model-generated arguments before its exact provider get. Never reconstruct or
+send a descriptor's `recordKey`, `contentHash`, `summary`, or `reference` as get arguments. Accept a
+prerequisite only after the complete returned artifact verifies the lifecycle and source identity,
+phase, terminal outcome, returned `artifactId`, `recordKey`, content hash, read reference, and
+phase-specific prerequisite semantics.
 
 The pair derives authority from the checkout-local pin. Only while genuinely unpinned does it use
 exact all-phase historical Qdrant authority. Callers never select a provider, checkout, endpoint,

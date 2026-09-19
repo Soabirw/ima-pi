@@ -472,6 +472,12 @@ type LifecycleReadRecallRequest = {
   limit: number;
 };
 
+type LifecycleReadGetSelector = {
+  lifecycleKey: string;
+  phase: LifecyclePhase;
+  artifactId: string;
+};
+
 type LifecycleReadGetRequest = {
   lifecycleKey: string;
   phase: LifecyclePhase;
@@ -480,6 +486,10 @@ type LifecycleReadGetRequest = {
   contentHash: string;
   reference: LifecycleReadReference;
 };
+
+type LifecycleReadGetInput =
+  | { kind: "descriptor"; request: LifecycleReadGetRequest }
+  | { kind: "selector"; selector: LifecycleReadGetSelector };
 
 const lifecycleReadRecallRequest = (value: unknown): LifecycleReadRecallRequest | null => {
   const request = ownDataRecord(value, ["lifecycleKey"], ["phase", "limit"]);
@@ -503,7 +513,7 @@ const lifecycleReadRecallRequest = (value: unknown): LifecycleReadRecallRequest 
   };
 };
 
-const lifecycleReadGetRequest = (value: unknown): LifecycleReadGetRequest | null => {
+const lifecycleReadDescriptorRequest = (value: unknown): LifecycleReadGetRequest | null => {
   const request = ownDataRecord(value, [
     "lifecycleKey",
     "phase",
@@ -542,6 +552,24 @@ const lifecycleReadGetRequest = (value: unknown): LifecycleReadGetRequest | null
     && Buffer.byteLength(serializedReference, "utf8") <= MAX_LIFECYCLE_READ_REFERENCE_BYTES
     ? { lifecycleKey, phase, artifactId, recordKey, contentHash, reference }
     : null;
+};
+
+const lifecycleReadGetSelector = (value: unknown): LifecycleReadGetSelector | null => {
+  const selector = ownDataRecord(value, ["lifecycleKey", "phase", "artifactId"]);
+  if (!selector) return null;
+  const lifecycleKey = exactLifecycleReadKey(selector.lifecycleKey);
+  const phase = exactLifecycleReadPhase(selector.phase);
+  const artifactId = exactLifecycleReadUuid(selector.artifactId);
+  return lifecycleKey && phase && artifactId
+    ? { lifecycleKey, phase, artifactId }
+    : null;
+};
+
+const lifecycleReadGetRequest = (value: unknown): LifecycleReadGetInput | null => {
+  const descriptor = lifecycleReadDescriptorRequest(value);
+  if (descriptor) return { kind: "descriptor", request: descriptor };
+  const selector = lifecycleReadGetSelector(value);
+  return selector ? { kind: "selector", selector } : null;
 };
 
 const recalledLifecycleRecord = (value: unknown): RecalledLifecycleRecord | null => {
@@ -3295,7 +3323,7 @@ const lifecycleReadDescriptor = (
     || Buffer.byteLength(record.summary, "utf8") > MAX_LIFECYCLE_READ_SUMMARY_BYTES
     || Buffer.byteLength(record.artifact, "utf8") > MAX_LIFECYCLE_READ_ARTIFACT_BYTES
   ) return null;
-  return {
+  const descriptor = {
     lifecycleKey: record.lifecycleKey,
     phase: record.phase,
     artifactId: record.artifactId,
@@ -3304,6 +3332,7 @@ const lifecycleReadDescriptor = (
     summary: record.summary,
     reference,
   };
+  return lifecycleReadDescriptorRequest(descriptor) ? descriptor : null;
 };
 
 const lifecycleReadAuthorityFor = async (input: {
@@ -3420,6 +3449,7 @@ const lifecycleReadRecords = async (input: {
       routing: input.setup.routing,
       provider: "qdrant",
       lifecycleKey: input.request.lifecycleKey,
+      ...(input.request.phase ? { phase: input.request.phase } : {}),
       limit: MAX_LIFECYCLE_READ_RESULTS,
       approvedWarningBindings: input.approvedWarningBindings,
       captureWarningBindings: input.captureWarningBindings,
@@ -3436,6 +3466,48 @@ const lifecycleReadRecords = async (input: {
   return selected.length <= MAX_LIFECYCLE_READ_RESULTS
     ? { records: selected.map((record) => structuredClone(record)), failure: null }
     : { records: null, failure: { code: "lifecycle_read_verification_failed" } };
+};
+
+const lifecycleReadSelectorDescriptor = async (input: {
+  selector: LifecycleReadGetSelector;
+  setup: LifecycleReadSetup;
+  approvedWarningBindings?: readonly string[];
+  captureWarningBindings?: (warnings: readonly {
+    binding: string;
+    findings: readonly LifecycleContentFinding[];
+  }[]) => void;
+  signal?: AbortSignal;
+}): Promise<{
+  descriptor: LifecycleReadDescriptor | null;
+  failure: LifecycleReadRouteFailure | null;
+}> => {
+  const recalled = await lifecycleReadRecords({
+    request: {
+      lifecycleKey: input.selector.lifecycleKey,
+      phase: input.selector.phase,
+      limit: MAX_LIFECYCLE_READ_RESULTS,
+    },
+    setup: input.setup,
+    approvedWarningBindings: input.approvedWarningBindings,
+    captureWarningBindings: input.captureWarningBindings,
+    signal: input.signal,
+  });
+  if (!recalled.records) return { descriptor: null, failure: recalled.failure };
+  if (recalled.records.length >= MAX_LIFECYCLE_READ_RESULTS) {
+    return { descriptor: null, failure: { code: "lifecycle_read_verification_failed" } };
+  }
+  const matches = recalled.records.filter((record) =>
+    record.lifecycleKey === input.selector.lifecycleKey
+    && record.phase === input.selector.phase
+    && record.artifactId === input.selector.artifactId,
+  );
+  if (matches.length !== 1) {
+    return { descriptor: null, failure: { code: "lifecycle_read_verification_failed" } };
+  }
+  const descriptor = lifecycleReadDescriptor(matches[0], input.approvedWarningBindings);
+  return descriptor
+    ? { descriptor, failure: null }
+    : { descriptor: null, failure: { code: "lifecycle_read_verification_failed" } };
 };
 
 const orderedLifecycleReadDescriptors = (
@@ -3553,19 +3625,56 @@ export const coordinateLifecycleGet = async (
   supplied?: LifecycleIntegrationDependencies,
   signal?: AbortSignal,
 ) => {
-  const request = lifecycleReadGetRequest(requestValue);
-  if (!request) return lifecycleReadFailure("lifecycle_read_request_invalid");
+  const input = lifecycleReadGetRequest(requestValue);
+  if (!input) return lifecycleReadFailure("lifecycle_read_request_invalid");
+  const lifecycleKey = input.kind === "selector"
+    ? input.selector.lifecycleKey
+    : input.request.lifecycleKey;
   const admission = consumeLifecycleContentAdmission(
     supplied?.contentScreeningAdmission,
     "read-get",
   );
   try {
     throwIfAborted(signal);
-    const setup = await lifecycleReadSetup({ lifecycleKey: request.lifecycleKey, supplied, signal });
+    const setup = await lifecycleReadSetup({ lifecycleKey, supplied, signal });
     throwIfAborted(signal);
     if ("status" in setup) return setup;
     const cwd = supplied?.cwd;
     if (typeof cwd !== "string") return lifecycleReadFailure("lifecycle_read_authority_unavailable");
+    const warningCandidates: {
+      binding: string;
+      findings: readonly LifecycleContentFinding[];
+    }[] = [];
+    const captureWarnings = () => {
+      if (!admission && warningCandidates.length > 0) {
+        supplied?.captureContentWarning?.({
+          kind: "read-get",
+          warnings: warningCandidates.map(({ binding, findings }) => ({
+            binding,
+            findings: [...findings],
+          })),
+        });
+      }
+    };
+    let request: LifecycleReadGetRequest;
+    if (input.kind === "descriptor") {
+      request = input.request;
+    } else {
+      const selected = await lifecycleReadSelectorDescriptor({
+        selector: input.selector,
+        setup,
+        approvedWarningBindings: admission?.approvedWarningBindings,
+        captureWarningBindings: (warnings) => warningCandidates.push(...warnings),
+        signal,
+      });
+      throwIfAborted(signal);
+      if (!selected.descriptor) {
+        const failure = selected.failure ?? { code: "lifecycle_read_verification_failed" };
+        captureWarnings();
+        return lifecycleReadFailure(failure.code, failure.diagnostic);
+      }
+      request = selected.descriptor;
+    }
     const nativeReference = await lifecycleReadNativeReference({ request, setup });
     throwIfAborted(signal);
     if (!nativeReference) {
@@ -3583,10 +3692,6 @@ export const coordinateLifecycleGet = async (
     throwIfAborted(signal);
     if (!authorityUnchangedBeforeRead) return lifecycleReadFailure("lifecycle_read_authority_changed");
 
-    const warningCandidates: {
-      binding: string;
-      findings: readonly LifecycleContentFinding[];
-    }[] = [];
     const read = setup.authority.kind === "pinned"
       ? await routePinnedLifecycleGet({
         routing: setup.routing,
@@ -3607,15 +3712,7 @@ export const coordinateLifecycleGet = async (
     throwIfAborted(signal);
     if (read.status !== "verified") {
       const failure = lifecycleReadRouteFailure(read);
-      if (!admission && warningCandidates.length > 0) {
-        supplied?.captureContentWarning?.({
-          kind: "read-get",
-          warnings: warningCandidates.map(({ binding, findings }) => ({
-            binding,
-            findings: [...findings],
-          })),
-        });
-      }
+      captureWarnings();
       return lifecycleReadFailure(failure.code, failure.diagnostic);
     }
     const warningOptions = { approvedWarningBindings: admission?.approvedWarningBindings };
@@ -3851,7 +3948,13 @@ const LIFECYCLE_RECALL_TOOL_PARAMETERS = Type.Object({
   limit: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_LIFECYCLE_READ_RESULTS, description: "Maximum verified descriptors; defaults to 20." })),
 }, { additionalProperties: false });
 
-const LIFECYCLE_GET_TOOL_PARAMETERS = Type.Object({
+const LIFECYCLE_GET_SELECTOR_TOOL_PARAMETERS = Type.Object({
+  lifecycleKey: Type.String({ minLength: 1, maxLength: 512, pattern: CONTROL_SAFE_STRING_PATTERN }),
+  phase: LIFECYCLE_READ_PHASE_PARAMETERS,
+  artifactId: Type.String({ pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" }),
+}, { additionalProperties: false });
+
+const LIFECYCLE_GET_DESCRIPTOR_TOOL_PARAMETERS = Type.Object({
   lifecycleKey: Type.String({ minLength: 1, maxLength: 512, pattern: CONTROL_SAFE_STRING_PATTERN }),
   phase: LIFECYCLE_READ_PHASE_PARAMETERS,
   artifactId: Type.String({ pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" }),
@@ -3860,6 +3963,22 @@ const LIFECYCLE_GET_TOOL_PARAMETERS = Type.Object({
   reference: LIFECYCLE_READ_REFERENCE_PARAMETERS,
   summary: Type.Optional(Type.String({ minLength: 1, maxLength: MAX_LIFECYCLE_READ_SUMMARY_BYTES, pattern: CONTROL_SAFE_STRING_PATTERN })),
 }, { additionalProperties: false });
+
+const LIFECYCLE_GET_TOOL_PARAMETERS = Type.Object({
+  lifecycleKey: Type.String({ minLength: 1, maxLength: 512, pattern: CONTROL_SAFE_STRING_PATTERN }),
+  phase: LIFECYCLE_READ_PHASE_PARAMETERS,
+  artifactId: Type.String({ pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" }),
+  recordKey: Type.Optional(Type.String({ minLength: 1, maxLength: 512, pattern: CONTROL_SAFE_STRING_PATTERN })),
+  contentHash: Type.Optional(Type.String({ pattern: "^[a-f0-9]{64}$" })),
+  reference: Type.Optional(LIFECYCLE_READ_REFERENCE_PARAMETERS),
+  summary: Type.Optional(Type.String({ minLength: 1, maxLength: MAX_LIFECYCLE_READ_SUMMARY_BYTES, pattern: CONTROL_SAFE_STRING_PATTERN })),
+}, {
+  additionalProperties: false,
+  oneOf: [
+    LIFECYCLE_GET_SELECTOR_TOOL_PARAMETERS,
+    LIFECYCLE_GET_DESCRIPTOR_TOOL_PARAMETERS,
+  ],
+});
 
 const BOOKSTACK_LIFECYCLE_RECOVERY_PARAMETERS = Type.Object({
   request: Type.Object({
@@ -4392,7 +4511,7 @@ export default function integrations(pi: ExtensionAPI) {
   pi.registerTool({
     name: "ima_lifecycle_get",
     label: "Get one IMA lifecycle artifact",
-    description: "Read one complete verified lifecycle artifact using a saved descriptor returned by ima_lifecycle_recall; no prior recall or cache is required. Provider, checkout, endpoint, and resource authority are derived internally; the descriptor contains only bounded non-authority verification proof. This tool never writes, pins, falls back, or returns partial content.",
+    description: "Read one complete verified lifecycle artifact by selector or saved descriptor. A selector contains lifecycleKey, phase, and artifactId; this tool freshly recalls that exact phase, requires one unambiguous non-saturated match, and projects its proof internally. A complete saved descriptor remains accepted and is verified unchanged. Provider, checkout, endpoint, and resource authority are derived internally. This tool never writes, pins, falls back, or returns partial content.",
     parameters: LIFECYCLE_GET_TOOL_PARAMETERS,
     execute: async (_id, request, signal, _update, ctx) => {
       let warning: {

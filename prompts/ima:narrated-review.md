@@ -46,8 +46,10 @@ it cannot prove completeness and stop. A descriptor, summary, handoff pointer, o
 review evidence.
 
 Filter descriptors to `review` or `rereview` candidates. If no candidates remain, report the
-missing completed-review prerequisite and stop. Directly retrieve every candidate by passing its
-unchanged selected descriptor to `ima_lifecycle_get`. Validate every candidate's complete lifecycle
+missing completed-review prerequisite and stop. Directly retrieve every candidate by calling
+`ima_lifecycle_get` with only its selected exact `lifecycleKey`, `phase`, and `artifactId`. Never
+reconstruct or send descriptor proof fields; the package freshly resolves the exact phase and proof.
+Validate every candidate's complete lifecycle
 identity, review/rereview phase, authoritative completion marker, returned `artifactId`, logical
 `recordKey`, content hash, read reference, and usable authoritative `createdAt`; never infer a
 missing timestamp. If any candidate is pending, inaccessible, unavailable, incomplete, corrupt,

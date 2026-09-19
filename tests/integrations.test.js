@@ -353,6 +353,40 @@ test("registers strict lifecycle summary schema alongside Serena-first context",
     lifecycleKey,
     checkoutRoot: "/caller-selected-checkout",
   }), false);
+  assert.deepEqual(
+    [...lifecycleGet.parameters.required].sort(),
+    ["artifactId", "lifecycleKey", "phase"],
+  );
+  assert.deepEqual(
+    Object.keys(lifecycleGet.parameters.properties).sort(),
+    [
+      "artifactId",
+      "contentHash",
+      "lifecycleKey",
+      "phase",
+      "recordKey",
+      "reference",
+      "summary",
+    ],
+  );
+  const selector = {
+    lifecycleKey,
+    phase: "plan",
+    artifactId: "00000000-0000-4000-8000-000000000001",
+  };
+  assert.equal(Check(lifecycleGet.parameters, selector), true);
+  assert.equal(Check(lifecycleGet.parameters, {
+    ...selector,
+    recordKey: `${lifecycleKey}:plan:0123456789ab`,
+  }), false);
+  assert.equal(Check(lifecycleGet.parameters, {
+    lifecycleKey,
+    phase: "plan",
+  }), false);
+  assert.equal(Check(lifecycleGet.parameters, {
+    ...selector,
+    provider: "qdrant",
+  }), false);
   assert.equal(Check(lifecycleGet.parameters, {
     lifecycleKey,
     phase: "plan",
@@ -378,6 +412,20 @@ test("registers strict lifecycle summary schema alongside Serena-first context",
     },
     summary: "Verified plan descriptor.",
   }), true);
+  for (const length of [63, 65]) {
+    assert.equal(Check(lifecycleGet.parameters, {
+      lifecycleKey,
+      phase: "plan",
+      artifactId: "00000000-0000-4000-8000-000000000001",
+      recordKey: `${lifecycleKey}:plan:0123456789ab`,
+      contentHash: "a".repeat(length),
+      reference: {
+        schemaVersion: 1,
+        fingerprint: "b".repeat(64),
+        nonce: "00000000-0000-4000-8000-000000000001",
+      },
+    }), false);
+  }
   assert.equal(Check(lifecycleGet.parameters, {
     lifecycleKey,
     phase: "plan",
@@ -1499,6 +1547,12 @@ const lifecycleReadDescriptorFor = (record) => {
     reference,
   };
 };
+
+const lifecycleReadSelectorFor = (record) => ({
+  lifecycleKey: record.lifecycleKey,
+  phase: record.phase,
+  artifactId: record.artifactId,
+});
 
 const pinLifecycleReadAuthority = async (root, provider, initial) => {
   const attempt = createLifecycleProviderPinAttempt({
@@ -4544,6 +4598,214 @@ test("SKYNET-230 pinned public reads retrieve an original root plan behind a lat
   assert.deepEqual(route.fallbackCalls, []);
 });
 
+test("public lifecycle get selector owns fresh pinned recall proof before exact get", async (t) => {
+  const root = await pinTestRoot(t);
+  const initial = lifecycleReadRecordFor({
+    provider: "qdrant",
+    request: lifecycleReadRequestFor("plan", "selector-pinned-root"),
+    root,
+  });
+  const target = lifecycleReadRecordFor({
+    provider: "qdrant",
+    request: lifecycleReadRequestFor("implementation", "selector-pinned-target", {
+      lifecycleRootMemoryId: initial.artifactId,
+    }),
+    root,
+  });
+  await pinLifecycleReadAuthority(root, "qdrant", initial);
+  const registry = join(root, ".ima-cycle", "provider-pins.json");
+  const before = await readFile(registry, "utf8");
+  const route = lifecycleReadRoutingFor({
+    provider: "qdrant",
+    initial,
+    target,
+    records: [initial, target],
+  });
+
+  const result = await coordinateLifecycleGet(lifecycleReadSelectorFor(target), {
+    cwd: root,
+    routing: route.routing,
+    resolveProjectRoot: async () => root,
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.artifact, target.artifact);
+  assert.equal(result.recordKey, target.recordKey);
+  assert.deepEqual(route.calls.map(({ operation }) => operation), [
+    "reconcile",
+    "recall",
+    "reconcile",
+    "get",
+  ]);
+  assert.deepEqual(route.calls[1].selection, {
+    lifecycleKey: SKYNET_230_LIFECYCLE_KEY,
+    phase: "implementation",
+    limit: 20,
+    reference: initial.reference,
+  });
+  assert.deepEqual(route.calls[3].reference, target.reference);
+  assert.deepEqual(route.fallbackCalls, []);
+  assert.equal(await readFile(registry, "utf8"), before);
+});
+
+test("public lifecycle get selectors fail closed on no match, duplicate match, and phase saturation", async (t) => {
+  const scenarios = [
+    {
+      label: "no match",
+      recordsFor: ({ initial, target }) => [initial, target],
+      selectorFor: ({ initial, target }) => ({
+        ...lifecycleReadSelectorFor(target),
+        artifactId: initial.artifactId,
+      }),
+      error: "lifecycle_read_verification_failed",
+    },
+    {
+      label: "duplicate match",
+      recordsFor: ({ initial, target }) => [initial, target, structuredClone(target)],
+      selectorFor: ({ target }) => lifecycleReadSelectorFor(target),
+      error: "lifecycle_read_unavailable",
+    },
+    {
+      label: "phase saturation",
+      recordsFor: ({ root, initial, target }) => [
+        initial,
+        target,
+        ...Array.from({ length: 19 }, (_unused, index) => lifecycleReadRecordFor({
+          provider: "qdrant",
+          request: lifecycleReadRequestFor("implementation", `selector-saturation-${index + 2}`, {
+            lifecycleRootMemoryId: initial.artifactId,
+          }),
+          root,
+        })),
+      ],
+      selectorFor: ({ target }) => lifecycleReadSelectorFor(target),
+      error: "lifecycle_read_verification_failed",
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const root = await pinTestRoot(t);
+    const initial = lifecycleReadRecordFor({
+      provider: "qdrant",
+      request: lifecycleReadRequestFor("plan", `selector-${scenario.label}-root`),
+      root,
+    });
+    const target = lifecycleReadRecordFor({
+      provider: "qdrant",
+      request: lifecycleReadRequestFor("implementation", `selector-${scenario.label}-target`, {
+        lifecycleRootMemoryId: initial.artifactId,
+      }),
+      root,
+    });
+    await pinLifecycleReadAuthority(root, "qdrant", initial);
+    const registry = join(root, ".ima-cycle", "provider-pins.json");
+    const before = await readFile(registry, "utf8");
+    const route = lifecycleReadRoutingFor({
+      provider: "qdrant",
+      initial,
+      target,
+      records: scenario.recordsFor({ root, initial, target }),
+    });
+
+    const result = await coordinateLifecycleGet(scenario.selectorFor({ initial, target }), {
+      cwd: root,
+      routing: route.routing,
+      resolveProjectRoot: async () => root,
+    });
+
+    assert.equal(result.status, "failed", scenario.label);
+    assert.equal(result.error.code, scenario.error, scenario.label);
+    assert.deepEqual(route.calls.map(({ operation }) => operation), ["reconcile", "recall"], scenario.label);
+    assert.deepEqual(route.fallbackCalls, [], scenario.label);
+    assert.equal(await readFile(registry, "utf8"), before, scenario.label);
+  }
+});
+
+test("public lifecycle get selector passes its exact phase to unpinned Qdrant recall", async (t) => {
+  const root = await pinTestRoot(t);
+  const initial = lifecycleReadRecordFor({
+    provider: "qdrant",
+    request: lifecycleReadRequestFor("plan", "selector-unpinned-root"),
+    root,
+  });
+  const plans = Array.from({ length: 19 }, (_unused, index) => lifecycleReadRecordFor({
+    provider: "qdrant",
+    request: lifecycleReadRequestFor("plan", `selector-unpinned-plan-${index + 2}`),
+    root,
+  }));
+  const target = lifecycleReadRecordFor({
+    provider: "qdrant",
+    request: lifecycleReadRequestFor("implementation", "selector-unpinned-target", {
+      lifecycleRootMemoryId: initial.artifactId,
+    }),
+    root,
+  });
+  const route = lifecycleReadRoutingFor({
+    provider: "qdrant",
+    initial,
+    target,
+    records: [initial, ...plans, target],
+  });
+
+  assert.deepEqual(
+    await loadLifecyclePinStateWith(async () => root)(root, SKYNET_230_LIFECYCLE_KEY),
+    { status: "absent" },
+  );
+  const result = await coordinateLifecycleGet(lifecycleReadSelectorFor(target), {
+    cwd: root,
+    routing: route.routing,
+    resolveProjectRoot: async () => root,
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.artifactId, target.artifactId);
+  assert.deepEqual(route.calls.map(({ operation }) => operation), ["recall", "get"]);
+  assert.deepEqual(route.calls[0].selection, {
+    lifecycleKey: SKYNET_230_LIFECYCLE_KEY,
+    phase: "implementation",
+    limit: 20,
+  });
+  assert.deepEqual(route.calls[1].reference, target.reference);
+  assert.deepEqual(route.fallbackCalls, []);
+  assert.deepEqual(
+    await loadLifecyclePinStateWith(async () => root)(root, SKYNET_230_LIFECYCLE_KEY),
+    { status: "absent" },
+  );
+});
+
+test("public lifecycle get rejects an altered legacy fingerprint before provider get", async (t) => {
+  const root = await pinTestRoot(t);
+  const record = lifecycleReadRecordFor({
+    provider: "qdrant",
+    request: lifecycleReadRequestFor("plan", "legacy-fingerprint"),
+    root,
+  });
+  const descriptor = lifecycleReadDescriptorFor(record);
+  const alteredFingerprint = descriptor.reference.fingerprint === "0".repeat(64)
+    ? "1".repeat(64)
+    : "0".repeat(64);
+  const route = lifecycleReadRoutingFor({
+    provider: "qdrant",
+    initial: record,
+    target: record,
+    records: [record],
+  });
+
+  const result = await coordinateLifecycleGet({
+    ...descriptor,
+    reference: { ...descriptor.reference, fingerprint: alteredFingerprint },
+  }, {
+    cwd: root,
+    routing: route.routing,
+    resolveProjectRoot: async () => root,
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.code, "lifecycle_read_verification_failed");
+  assert.deepEqual(route.calls, []);
+  assert.deepEqual(route.fallbackCalls, []);
+});
+
 test("public lifecycle reads fail closed with a bounded authority code for wrong pinned roots", async (t) => {
   const root = await pinTestRoot(t);
   const initial = lifecycleReadRecordFor({
@@ -5315,6 +5577,7 @@ test("TEST-007 registered public lifecycle reads use pinned BookStack process.en
   }, undefined, undefined, context);
   assert.equal(recalled.details.status, "completed");
   assert.equal(recalled.details.results.length, 1);
+  assert.equal(Check(get.parameters, recalled.details.results[0]), true);
   const [{ summary, ...descriptor }] = recalled.details.results;
   assert.deepEqual([descriptor], [fixture.descriptor]);
   assert.equal(typeof summary, "string");
@@ -5327,9 +5590,15 @@ test("TEST-007 registered public lifecycle reads use pinned BookStack process.en
     true,
   );
 
+  const selector = {
+    lifecycleKey: SKYNET_230_LIFECYCLE_KEY,
+    phase: "implementation",
+    artifactId: fixture.descriptor.artifactId,
+  };
+  assert.equal(Check(get.parameters, selector), true);
   const retrieved = await get.execute(
     "test",
-    recalled.details.results[0],
+    selector,
     undefined,
     undefined,
     context,
