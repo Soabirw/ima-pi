@@ -23,6 +23,8 @@ date: "2026-08-31"
 
 # SKYNET-12: Shared Development Memory Architecture
 
+> **Supersession notice:** [SKYNET-225: Legacy Store Policy Reconciliation](SKYNET-225-legacy-store-policy.md) is the canonical current policy for lifecycle provider support and per-machine `ima-rag` boundaries. The historical body below remains intact.
+
 ## Status and scope
 
 This is the approved target architecture for the shared human/AI development

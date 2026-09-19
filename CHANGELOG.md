@@ -23,6 +23,7 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ### Changed
 
+- Documented SKYNET-225 policy reconciliation: BookStack, Qdrant, Serena, and Markdown remain supported lifecycle providers under existing provider-pin, genuinely-unpinned historical-Qdrant authority, no-fallback, and fail-closed rules. Per-machine `ima-rag` is deprecated legacy storage outside `ima-pi` automation; `ima-pi` does not inventory, operate, mutate, delete, or clean it up, and preservation plus any future disposition belong to the relevant machine owner/operator.
 - Extended `ima_bookstack_read` while preserving `sourceId` compatibility: its provider-facing schema exposes bounded `sourceId` and `url` properties, while local validation requires exactly one, for only the exact configured-origin HTTPS `/books/{bookSlug}/page/{pageSlug}` UI path. The URL is parsed but never fetched; authenticated exact-slug filtering paginates matching slugs only, verifies exact page/book identity, and permits one bounded book-first fallback only after complete valid no-target evidence. It has no global page scan and fails closed on invalid, ambiguous, draft, unauthorized, redirected, rate-limited, cancelled, timed-out, oversized, contradictory, or incomplete evidence. Focused provider-free coverage includes this contract.
 - Made bare `/ima:bookstack-migrate` start package-relative guided preparation with the bundled shared-memory spec, preserving all six advanced forms, exact dry-run report routing, distinct canary/apply/cleanup approvals, fail-closed recovery, and limited report-created-Page cleanup.
 - Expanded and hardened the prompt-only `/ima:soft-cycle` input contract: it accepts canonical and alias tracker/lifecycle identifiers, bare Jira keys, approved Jira/Plane browse URLs, source commentary (`--`), source-less `--` instructions with explicit controls (including autonomous mode), bare guided instructions, and constrained project-contained files. Complete-input/file limits and malformed source/control cases fail closed; text/file work requires human-approved manual identity and new-versus-resume gates, while BookStack consent, guided plan approval, and safety-gated autonomous plan approval remain distinct. It still stops after `document` and never auto-closes.
@@ -56,7 +57,7 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ### Known limitations
 
-- An operator confirmed that the Qdrant-to-BookStack migration completed and was verified twice; this is acceptance evidence, not fresh API evidence. Cleanup, discovery/cutover, source deletion, and `ima-rag` disposition remain separately operator-gated.
+- An operator confirmed that the Qdrant-to-BookStack migration completed and was verified twice; this remains acceptance evidence, not fresh API evidence or fresh destination-verification evidence. Qdrant remains a supported lifecycle provider, and `ima-pi` performs no operation on per-machine `ima-rag`.
 
 ## [1.20.0] - 2026-09-09
 
