@@ -131,9 +131,55 @@ test("manual lifecycle prompts normalize shared source identifiers before declar
   const document = await prompt("document");
   assert.ok(document.indexOf("First call `ima_context`") < document.indexOf("recall verified plan"));
   assert.ok(document.indexOf("recall verified plan") < document.indexOf("Fail closed only"));
+  assert.match(
+    document,
+    /First call `ima_context`[\s\S]*?hydrate the source, then recall[\s\S]*?`ima_lifecycle_recall`[\s\S]*?`ima_lifecycle_get`[\s\S]*?accept each prerequisite only after its complete result verifies/i,
+    "source hydration must not replace public phase-prerequisite recall/get",
+  );
   const planning = await prompt("plan");
   for (const value of ["ima-memory-workflow", "canonical prefixed source form", "/ima:implement taskwarrior:<project>:<uuid>", "/ima:implement jira:<KEY>", "/ima:implement lifecycle:<lifecycle-key>", "/ima:implement vestige:<UUID>"]) has(planning, value);
   assert.ok(planning.indexOf("ima_context") < planning.indexOf("ima-memory-workflow"));
+});
+
+test("lifecycle documentation separates hydration and coordinator recovery from public phase reads", async () => {
+  const [contextContract, fnr3025, fnr3032, fnr3036] = await Promise.all([
+    readFile(join(root, ".serena", "memories", "ima_context_contract.md"), "utf8"),
+    readFile(join(root, "docs", "foundation", "FNR-3025.md"), "utf8"),
+    readFile(join(root, "docs", "foundation", "FNR-3032.md"), "utf8"),
+    readFile(join(root, "docs", "foundation", "FNR-3036.md"), "utf8"),
+  ]);
+
+  has(contextContract, "Lifecycle-source hydration is package-owned");
+  has(contextContract, "it neither performs nor replaces public phase-prerequisite reads");
+  has(contextContract, "Manual and phase callers separately use `ima_lifecycle_recall` followed by selected exact `ima_lifecycle_get` for prerequisite artifacts");
+  assert.doesNotMatch(contextContract, /Lifecycle hydration uses the checkout-pin-aware public lifecycle pair/i);
+
+  for (const [name, text] of [["FNR-3025", fnr3025], ["FNR-3032", fnr3032]]) {
+    has(text, "That hydration neither invokes the public selector/get pair nor proves a phase prerequisite");
+    has(text, "Programmatic `/ima:cycle` recovery and reconciliation use package-internal pin-aware recall/reconciliation");
+    has(text, "manual and phase callers separately use the public `ima_lifecycle_recall`/`ima_lifecycle_get` pair");
+    assert.doesNotMatch(
+      text,
+      /formal lifecycle retrieval—including `\/ima:cycle` reconciliation—uses the pin-aware public `ima_lifecycle_recall`\/`ima_lifecycle_get` pair/i,
+      `${name} must not attribute coordinator reconciliation to the public pair`,
+    );
+  }
+
+  has(fnr3036, "it does not invoke the public selector/get pair or establish a phase prerequisite");
+  has(fnr3036, "Programmatic coordinator recovery and reconciliation separately use their internal pin-aware recall/reconciliation path over provider-native verified records, not the public pair");
+  has(fnr3036, "Neither source hydration nor internal reconciliation replaces required manual or phase prerequisite reads");
+  has(fnr3036, "Manual and phase callers use the public pin-aware pair: a bounded `ima_lifecycle_recall` selection followed by `ima_lifecycle_get`");
+  assert.match(
+    fnr3036,
+    /A historical immutable `closeout` record may satisfy document recovery only when package-internal pin-aware reconciliation establishes complete provider-native verified evidence for its exact source and required lineage, carries one exact terminal standalone `phase=document` `READY` or `BLOCKED` marker outside Markdown fences and quotes, is not a final-closeout artifact, and is the deterministic unambiguous newest eligible record\./i,
+  );
+  has(fnr3036, "Its required lineage must include the consumed evidence and respect approved-plan ordering");
+  has(fnr3036, "Missing, corrupt, incomplete, malformed, competing, ambiguous, forged, wrong-source, wrong-lineage, or unclear-newest candidates fail closed");
+  assert.doesNotMatch(
+    fnr3036,
+    /A historical immutable `closeout` record may satisfy document recovery only when it passes that public pair/i,
+    "historical coordinator recovery must not require the manual/phase public pair",
+  );
 });
 
 test("documentation prompts reserve canonical document persistence and cycle markers for their respective routes", async () => {
