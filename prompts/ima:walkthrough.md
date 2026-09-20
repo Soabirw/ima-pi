@@ -30,7 +30,9 @@ Activate the project and navigate Serena-first and read-only. Use `mcp-serena` t
 symbols, callers, and surrounding architecture only as far as the walkthrough needs. Route any
 supplied image through `vision-handoff`. If the diff or files cannot be read, state the missing
 prerequisite concisely and stop; do not invent unread code. This command needs no lifecycle
-recall; `ima-memory-workflow` governs Vestige preferences-only boundaries.
+recall. `ima-memory-workflow` governs current preferences in Pi's global `AGENTS.md`, stable
+project context in Serena, and Vestige's limited role in cited legacy evidence and the separate T7
+migration; lifecycle evidence uses pin-aware lifecycle tools.
 
 ## Boundaries
 

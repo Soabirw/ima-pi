@@ -27,10 +27,10 @@ MEMORIES = (
 ORG_STANDARD_SEEDS = {
     "conventions": [
         "## Org Standard: Tier-1 Lifecycle Memory",
-        "- For task-scoped project work, use Tier-1 Qdrant lifecycle manifests and verified direct detail across planning, implementation, review, resolution, and closeout.",
-        "- Before planning, implementing, reviewing, or closing a task, recall the exact derived lifecycle key through Qdrant and fetch selected full detail only when needed.",
-        "- Persist formal lifecycle updates through ima_lifecycle so deterministic manifest/chunk verification keeps one correlated task history.",
-        "- Serena stores stable project instructions; Vestige stores bounded preferences; Qdrant stores the formal lifecycle thread.",
+        "- For task-scoped project work, use the pin-aware public lifecycle read pair: `ima_lifecycle_recall` followed by selected exact `ima_lifecycle_get` across planning, implementation, review, resolution, and closeout.",
+        "- Before planning, implementing, reviewing, or closing a task, call `ima_lifecycle_recall` for the exact derived lifecycle key, then call `ima_lifecycle_get` for selected exact detail.",
+        "- Persist formal lifecycle updates through `ima_lifecycle` so provider-native direct verification keeps one correlated task history; deterministic manifest/chunk verification applies only when Qdrant is pinned.",
+        "- Serena stores stable project instructions; Pi global `AGENTS.md` owns current preferences; Vestige is limited to cited legacy evidence and the separate T7 migration; formal lifecycle evidence uses pin-aware lifecycle tools.",
         "## Org Standard: Testing Contract",
         "- Inspect project evidence before choosing a test level; choose the smallest supported level that proves the behavior.",
         "- Do not introduce unsupported integration or E2E infrastructure implicitly.",
@@ -41,24 +41,26 @@ ORG_STANDARD_SEEDS = {
     ],
     "suggested_commands": [
         "## Org Standard: Tier-1 Lifecycle Lookup",
-        "- Recall Qdrant manifests for the exact active lifecycle key before acting, then fetch selected deterministic record detail only when the summary is insufficient.",
+        "- Call `ima_lifecycle_recall` for the exact active lifecycle key before acting, then call `ima_lifecycle_get` for selected exact detail; descriptors are selectors, not lifecycle evidence.",
+        "- The pair derives authority from the checkout-local pin; only while genuinely unpinned does it internally use exact all-phase historical Qdrant authority.",
+        "- Do not select a provider or use Qdrant as a lifecycle fallback; `ima_corpus_*` remains institutional knowledge, not a lifecycle fallback.",
         "- Useful lifecycle keys include derived `ima-pi:taskwarrior:<project>:<uuid>` and `ima-pi:jira:<KEY>` values.",
-        "- When using Taskwarrior, read the task first, capture the project and UUID, then use the derived lifecycle key in Qdrant recall.",
+        "- When using Taskwarrior, read the task first, capture the project and UUID, then use the derived lifecycle key with `ima_lifecycle_recall` and selected exact `ima_lifecycle_get` detail.",
         "## Org Standard: Testing Commands",
         "- Record canonical targeted and broader test commands plus required environment prerequisites.",
     ],
     "task_completion": [
         "## Org Standard: Tier-1 Lifecycle Closeout",
-        "- Before marking a Taskwarrior task or equivalent tracker item complete, persist the final lifecycle outcome through ima_lifecycle and require verified Qdrant reassembly.",
+        "- Before marking a Taskwarrior task or equivalent tracker item complete, persist the final lifecycle outcome through `ima_lifecycle` and recover formal evidence through `ima_lifecycle_recall` followed by selected exact `ima_lifecycle_get`.",
         "- Include verification performed, review concerns resolved, changed files or modules, remaining risk, and follow-up task references.",
-        "- If review found issues, recall the verified Tier-1 review artifact before resolving and persist the resolution summary through ima_lifecycle afterward.",
+        "- If review found issues, use `ima_lifecycle_recall` followed by selected exact `ima_lifecycle_get` to retrieve the verified review artifact before resolving and persist the resolution summary through `ima_lifecycle` afterward.",
         "## Org Standard: Testing Completion",
         "- Record mandatory validation gates, expected signals, and unverified-path reporting.",
     ],
     "memory_maintenance": [
         "## Org Standard: Memory Roles",
         "- Serena memories hold stable project context loaded at startup.",
-        "- Vestige holds bounded preferences; Tier-1 Qdrant carries the formal lifecycle from plan to implementation, review, resolution, and closeout.",
+        "- Pi global `AGENTS.md` owns current preferences; Vestige is limited to cited legacy evidence and the separate T7 migration; formal lifecycle evidence uses pin-aware lifecycle tools from plan to implementation, review, resolution, and closeout.",
         "- Keep the Tier-1 lifecycle rule in Serena `conventions`, `suggested_commands`, and `task_completion` so prompts load it consistently.",
         "- Treat the testing-contract seeds as reusable guidance alongside the lifecycle seeds.",
     ],
@@ -210,7 +212,7 @@ def build_memories(
             f"- Migration date: {today}",
             "- Standard memory names: core, conventions, tech_stack, suggested_commands, task_completion, memory_maintenance.",
             "- Refresh these memories when the source context files change.",
-            "- Treat Serena memories as the runtime source of truth across Goose, Claude Code, Codex, and other harnesses.",
+            "- Treat Serena memories as stable-project-context authority; Pi global `AGENTS.md` owns current preferences; pin-aware lifecycle tools own formal lifecycle evidence.",
         ]
     )
     if include_org_standards:

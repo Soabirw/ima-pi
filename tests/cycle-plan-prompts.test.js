@@ -21,7 +21,11 @@ test("implementation prompts require the original imported plan contract", async
     assert.match(prompt, /approvedPlanArtifactId/);
     assert.match(prompt, /approvedPlanRecordKey/);
     assert.match(prompt, /approval receipt alone is not/);
-    assert.match(prompt, /directly through Tier-1 Qdrant/);
+    assert.match(prompt, /ima_lifecycle_recall[\s\S]*?ima_lifecycle_get/);
+    assert.match(prompt, /(?:public lifecycle read pair|public pair)[\s\S]*?checkout-pin authority/i);
+    assert.match(prompt, /(?:never\s+retrieve\s+directly\s+through\s+Tier-1 Qdrant|callers\s+never\s+select\s+providers)/i);
+    assert.match(prompt, /(?:never|no)[^.\n]*provider-native/i);
+    assert.match(prompt, /(?:never|no)[^.\n]*ima_corpus_\*/i);
   }
 });
 

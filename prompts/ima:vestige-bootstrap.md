@@ -6,6 +6,6 @@ Routine user preferences are already present in Pi's active global `AGENTS.md` c
 
 Use `/ima:memorize` to propose an approved preference update. After a direct human edit to the global `AGENTS.md`, use `/reload` or restart Pi to load it into the active session.
 
-Vestige remains available only for explicitly cited legacy evidence and the separate T7 migration. A cited `vestige:<UUID>` source belongs to the applicable lifecycle workflow, which retrieves only that cited memory before continuing with Tier-1 Qdrant evidence. Do not use this command as a broad preference fallback.
+Vestige remains available only for explicitly cited legacy evidence and the separate T7 migration. A cited `vestige:<UUID>` source belongs to the applicable lifecycle workflow, which retrieves only that cited memory, recovers an explicitly present lifecycle identity, then uses the pin-aware public pair: `ima_lifecycle_recall` followed by selected exact `ima_lifecycle_get`; the workflow fails closed when that identity is absent. Do not use this command as a broad preference fallback.
 
 Do not call Vestige, ingest, suppress, delete, or otherwise mutate memory. Stop after this compatibility guidance.

@@ -276,8 +276,9 @@ For every persisted artifact, retain the inherited lifecycle identity, canonical
 when it is a continuation, relevant prior artifact IDs and logical record keys, phase result, scope
 and non-goals, evidence used, commands/results, changed or reviewed files, blockers, residual risk,
 deviations, and recommended next phase. Claim a phase outcome only after `ima_lifecycle` verifies
-its persistence and direct detail reassembly. Persisting an approval receipt alone never makes
-implementation safe.
+provider-native persistence and direct read-back; this verification is required regardless of provider.
+Only when Qdrant is the pinned provider must it additionally verify deterministic manifest/chunk detail
+reassembly. Persisting an approval receipt alone never makes implementation safe.
 
 ## Implement
 

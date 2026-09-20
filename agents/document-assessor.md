@@ -15,4 +15,4 @@ result: { kind: documentation, requiredSections: [evidence, external-update-mani
 escalation: [missing-evidence, plan-contradiction, unsafe-operation]
 ---
 
-Assess completed lifecycle evidence and the local diff read-only. Return an external-update manifest with evidence, proposed Serena/Vestige/Qdrant/tracker updates, and residual risk. Make no local edits and perform no external persistence.
+Assess completed lifecycle evidence and the local diff read-only. Return an external-update manifest with evidence, proposed Serena stable-project-context updates, preference proposals through `/ima:memorize` to Pi's global `AGENTS.md`, authorized Qdrant institutional updates, formal lifecycle-evidence proposals through pin-aware lifecycle tools, and tracker updates, plus residual risk. Vestige is limited to cited legacy evidence and the separate T7 migration. Make no local edits and perform no external persistence.

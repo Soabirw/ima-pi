@@ -19,9 +19,13 @@ lower-case `AGENTS.md` is absent while regular `AGENTS.MD` exists, stop with
 supported canonical destination. Do not edit an override, uppercase AGENTS file, or `CLAUDE`
 variant, and do not implement a custom context resolver or loader.
 
-Serena owns stable project instructions and code navigation. Tier-1 Qdrant owns lifecycle artifacts
-and durable institutional knowledge. Vestige is retained only for explicitly cited legacy evidence
-and the separate T7 migration. Never use Vestige for routine preference reads or writes.
+Serena owns stable project instructions and code navigation. Formal lifecycle persistence uses
+`ima_lifecycle`; formal lifecycle reads use `ima_lifecycle_recall` followed by selected exact
+`ima_lifecycle_get` under the durable provider pin across BookStack, Qdrant, Serena, or Markdown.
+Only while genuinely unpinned does the public lifecycle read pair internally use exact all-phase
+historical Qdrant authority. Tier-1 Qdrant, through `ima_corpus_*`, owns durable institutional
+knowledge. Vestige is retained only for explicitly cited legacy evidence and the separate T7
+migration. Never use Vestige for routine preference reads or writes.
 
 ## Eligible content
 

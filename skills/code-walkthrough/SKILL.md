@@ -42,8 +42,10 @@ far as the walkthrough needs. Route any supplied image (mockup, screenshot, diag
 - Do not run tests; describe how the change is intended to be verified instead.
 - Do not write a lifecycle artifact, persist walkthrough state, or make any lifecycle mutation.
 - Do not change the active model, invoke another phase, `/ima:cycle`, or `/ima:speak`.
-- Vestige is preferences-only; use [ima-memory-workflow](../ima-memory-workflow/SKILL.md) for
-  its boundaries. This skill needs no lifecycle recall.
+- Pi's global `AGENTS.md` owns current preferences; Serena owns stable project context, and
+  Vestige is limited to cited legacy evidence and the separate T7 migration. Use
+  [ima-memory-workflow](../ima-memory-workflow/SKILL.md) for these and pin-aware lifecycle
+  boundaries. This skill needs no lifecycle recall.
 
 ## Build the walkthrough
 

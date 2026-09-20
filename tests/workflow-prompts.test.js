@@ -10,6 +10,23 @@ const has = (text, value) => assert.match(text, new RegExp(value.replace(/[.*+?^
 const localMarkdownTargets = (content) => [...content.matchAll(/\[[^\]]+\]\(([^)]+)\)/g)]
   .map(([, target]) => target.trim().split("#", 1)[0])
   .filter((target) => target && !target.includes("$") && !/^(?:[a-z]+:|\/)/i.test(target));
+const assertPinAwarePersistenceVerification = (text) => {
+  assert.match(
+    text,
+    /\bverif(?:y|ies|ied|ication)\b[\s\S]{0,160}\bprovider-native\b[\s\S]{0,160}\bpersistence\b[\s\S]{0,160}\bdirect\s+read-?back\b/i,
+    "persistence must be verified through a provider-native direct read-back",
+  );
+  assert.match(
+    text,
+    /\b(?:required\s+regardless\s+of\s+(?:the\s+)?providers?|(?:all|every|each)\s+(?:the\s+)?providers?\s+(?:must|require|need))\b/i,
+    "provider-native verification must apply to all providers",
+  );
+  assert.match(
+    text,
+    /\bonly\b[\s\S]{0,120}\bQdrant\b[\s\S]{0,120}\bpin(?:ned)?\b[\s\S]{0,120}\b(?:must|require)\b[\s\S]{0,120}\bdeterministic\b[\s\S]{0,80}\bmanifest\s*\/\s*chunk\b[\s\S]{0,80}\breassembly\b/i,
+    "deterministic manifest/chunk reassembly must be required only for a Qdrant pin",
+  );
+};
 test("production planning prompts have distinct Pi frontmatter and HIGH-tier authority", async () => { for (const name of ["brainstorm", "decompose"]) { const text = await prompt(name); has(text, "description:"); has(text, "argument-hint:"); has(text, "HIGH-tier"); has(text, "explicit approval"); assert.doesNotMatch(text, /\/ima:cycle|workflow DSL/i); } const planText = await prompt("plan"); for (const value of ["description:", "argument-hint:", "HIGH-tier", "explicit approval", "ima-cycle outcome: phase=plan"]) has(planText, value); assert.doesNotMatch(planText, /workflow DSL/i); });
 test("plan prompt makes autonomous self-approval fail safe", async () => {
   const text = await prompt("plan");
@@ -170,8 +187,9 @@ test("manual closeout best-effort matches its source and uses one aggregate appr
     "extracting one recognizable identifier from a copied command, supported tracker URL, or short prose phrase",
     "using exact read-only lookups to complete a structurally recognizable Plane item, Taskwarrior UUID, lifecycle key, or cited UUID",
     "Do not fuzzy-match titles",
-    "exact Tier-1 Qdrant manifest recall",
-    "selected direct detail retrieval",
+    "ima_lifecycle_recall",
+    "ima_lifecycle_get",
+    "public pair derives checkout-pin authority",
     "approved plan, implementation, test, final review or rereview, and canonical `document` artifacts",
     "Closeout is available only after `/ima:document` has completed",
     "do not invoke `/ima:cycle`, auto-dispatch from document, call a next lifecycle phase, or create a cycle-outcome marker",
@@ -204,10 +222,10 @@ test("manual closeout best-effort matches its source and uses one aggregate appr
     "prior artifact IDs and separate prior artifact record keys",
     "without embedding them",
     "Do not include an `ima-cycle` marker",
-    "verifies persistence and direct detail reassembly",
     "distinguish completed actions from recommendations and unperformed human-owned work",
     "then stop",
   ]) has(text, value);
+  assertPinAwarePersistenceVerification(text);
 
   for (const value of [
     "taskwarrior:<project>:<uuid>",
@@ -222,7 +240,13 @@ test("manual closeout best-effort matches its source and uses one aggregate appr
     "vestige <UUID>",
   ]) has(text, value);
 
-  assert.ok(text.indexOf("First normalize the supplied parameter") < text.indexOf("exact Tier-1 Qdrant manifest recall"));
+  assert.ok(text.indexOf("First normalize the supplied parameter") < text.indexOf("ima_lifecycle_recall"));
+  assert.match(text, /ima_lifecycle_recall[\s\S]*?ima_lifecycle_get/);
+  for (const guard of [
+    /\bNever use\b[^.\n]*\bTier-1 Qdrant\b/i,
+    /\bDo not\b[^.\n]*\bprovider-native read\b/i,
+    /\bDo not\b[^.\n]*`ima_corpus_\*`/i,
+  ]) assert.match(text, guard);
   assert.doesNotMatch(text, /<!-- ima-cycle outcome:/i);
   assert.doesNotMatch(text, /individually confirms|Do not batch confirmations|Proposal approval is not authority|requires its own immediate confirmation/i);
 });
@@ -265,7 +289,7 @@ test("active documentation assigns lifecycle artifacts to Qdrant, current prefer
     has(text, "Vestige");
     assert.doesNotMatch(text, /Vestige MCP `smart_ingest`.*lifecycle/i);
   }
-  has(vestige, "explicitly cited legacy evidence");
+  assert.match(vestige, /explicitly cited\s+legacy evidence/i);
   has(conventions, "Pi global AGENTS.md");
   has(completion, "ima_lifecycle");
 });
@@ -351,6 +375,7 @@ test("soft-cycle is a prompt-only delegating SDLC orchestrator with bounded auto
     "ASCII letters, digits, `.`, `_`, or `-`",
     "percent-encoded",
   ]) has(text, value);
+  assertPinAwarePersistenceVerification(text);
   assert.match(text, /one source followed only by\s+controls/i);
   assert.match(text, /never falls back to\s+prose/i);
   assert.match(text, /must not\s+be `\.` or `\.\.`/i);
