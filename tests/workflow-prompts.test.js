@@ -597,6 +597,17 @@ test("quality and learning prompts retain distinct bounded terminal contracts", 
   for (const value of ["ima-memory-workflow", "ima-vision-handoff", "ima-delegation-contract", "active docs", "archive docs", "transient notes", "high-signal", "document-assessor", "documenter", "writeScope"]) has(document, value);
 });
 
+test("/ima:test operationalizes the provider-free core-suite policy", async () => {
+  const testing = await prompt("test");
+  for (const value of [
+    "provider-free core suite policy",
+    "`npm test`",
+    "`tests/live/`",
+    "fetch stubs in memory",
+    "non-secret variable",
+    "Provider credentials are **secrets**",
+  ]) has(testing, value);
+});
 
 const advisoryPrompts = ["architect", "investigate", "instruct", "prompt-start"];
 

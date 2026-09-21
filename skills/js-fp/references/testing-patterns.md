@@ -10,6 +10,13 @@ Test systematically against ALL data types and edge cases. Pure functions make t
 - Fast execution - pure functions run quickly
 - Predictable behavior - easy to reason about
 
+## Provider-free core-suite boundary
+
+Follow the [provider-free core suite policy](../../unit-testing/SKILL.md#provider-free-core-suite-policy).
+Use in-memory fetch stubs for the core suite; optional real provider checks belong in `tests/live/`
+and require a **non-secret variable** opt-in. Provider credentials are **secrets** and no platform
+binding is introduced.
+
 ## Test Matrix Template
 
 ```javascript

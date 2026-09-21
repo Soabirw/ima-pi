@@ -11,6 +11,10 @@ E2E testing with Playwright and TypeScript.
 
 Test critical user journeys (login, checkout, signup). Don't duplicate unit test coverage. Test integration points and real workflows, not implementation details. Each test must be self-contained — set up its own data via API, never depend on another test's state.
 
+## Provider-free core-suite boundary
+
+Playwright is an optional browser/E2E layer under the [provider-free core suite policy](../unit-testing/SKILL.md#provider-free-core-suite-policy); it does not expand `npm test`. Use in-memory routes or injected fetch stubs for the core suite. A real browser or provider target is an additional explicit run: its opt-in flag is a **non-secret variable**, its `BASE_URL` is a **platform binding**, its credentials are **secrets**, and generated auth state is a **local-only value**. This policy introduces no platform binding.
+
 ```typescript
 // GOOD: Real user journey
 test('user completes checkout flow', async ({ page }) => {

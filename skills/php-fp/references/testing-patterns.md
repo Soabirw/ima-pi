@@ -10,6 +10,13 @@ Pure functions guarantee:
 - **Fast**: No I/O, network, or database needed
 - **Complete**: All edge cases can be systematically tested
 
+## Provider-free core-suite boundary
+
+Follow the [provider-free core suite policy](../../unit-testing/SKILL.md#provider-free-core-suite-policy).
+Use injected PHP stubs for the core suite; optional real provider, migration, or integration
+checks belong in `tests/live/` and require a **non-secret variable** opt-in. Provider credentials
+are **secrets** and no platform binding is introduced.
+
 ## The Test Matrix Approach
 
 ### Systematic Type Coverage

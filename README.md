@@ -109,11 +109,18 @@ silent when automatic setup becomes non-idle or stale. It retains the existing n
 `/ima:speak stop` cancellation behavior. To opt into live audible acceptance checks, run:
 
 ```bash
-IMA_TTS_IT=1 OPENAI_API_KEY=<configured-secret> node --test tests/tts-speech-live.test.js
+IMA_TTS_IT=1 OPENAI_API_KEY=<configured-secret> node --test tests/live/tts-speech-live.test.js
 ```
 
 The live test uses the configured default player (`ffplay`) or
 `IMA_TTS_PLAYER_COMMAND`; it is skipped unless explicitly enabled and never prints the key.
+
+`npm test` is the provider-free, unit-focused core suite: its root-only `tests/*.test.js` glob
+does not discover `tests/live/`. Live acceptance tests are optional additional runs. `IMA_TTS_IT`,
+`IMA_MIGRATE_IT`, and `IMA_TTS_PLAYER_COMMAND` are **non-secret variables**; the selected player
+path is a **local-only value**. `OPENAI_API_KEY` and any other provider credential are **secrets**
+and must never be written to source, logs, or test output. No **platform binding** is introduced;
+test artifacts are **local-only values**.
 
 ## Desktop notifications (SKYNET-185)
 
@@ -276,6 +283,15 @@ See [`docs/foundation/FNR-3025.md`](docs/foundation/FNR-3025.md) for source cove
 4. Only then run `/ima:vestige-migrate cleanup <report-path> confirm`, using the exact relative report path and literal `confirm`. Cleanup re-verifies every destination and applies only to verified `migrated` or idempotently `unchanged` sources; it never deletes standalone preferences.
 
 Unavailable, negative, malformed, or incomplete cleanup evidence retains the source in Vestige. There is no reset or collection-drop command.
+
+The optional live migration acceptance run is separate from `npm test`:
+
+```bash
+IMA_MIGRATE_IT=1 node --test tests/live/vestige-migrate-live.test.js
+```
+
+`IMA_MIGRATE_IT` is the non-secret opt-in variable; any configured provider credentials are
+secrets and remain outside the command text and migration artifacts.
 
 ## Pi operational guidance
 

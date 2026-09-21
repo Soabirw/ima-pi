@@ -217,3 +217,38 @@ test("JavaScript framework, browser, API, and testing guidance retains its bound
     /fail-closed/i,
   ], "unit-test strategy");
 });
+
+test("testing guidance preserves the provider-free core-suite boundary", async () => {
+  const [unitTesting, playwright, patterns] = await Promise.all([
+    read("skills/unit-testing/SKILL.md"),
+    read("skills/playwright/SKILL.md"),
+    read("skills/js-fp/references/testing-patterns.md"),
+  ]);
+
+  mustContain(unitTesting, [
+    /Provider-free core suite policy/i,
+    /npm test/,
+    /tests\/fixtures\/deny-live-fetch\.js/,
+    /tests\/live\//,
+    /fixed, secret-free error/i,
+    /in-memory `globalThis\.fetch`/i,
+    /non-secret variables/i,
+    /OPENAI_API_KEY/,
+    /No\s+\*\*platform binding\*\* is introduced/i,
+  ], "unit-testing provider-free core policy");
+  mustContain(playwright, [
+    /optional browser\/E2E layer/i,
+    /does not expand `npm test`/i,
+    /in-memory routes or injected fetch stubs/i,
+    /BASE_URL.*platform binding/is,
+    /credentials are \*\*secrets\*\*/i,
+    /auth state is a \*\*local-only value\*\*/i,
+  ], "Playwright provider-free boundary");
+  mustContain(patterns, [
+    /provider-free core suite policy/i,
+    /in-memory fetch stubs/i,
+    /tests\/live\//,
+    /non-secret variable/i,
+    /credentials are \*\*secrets\*\*/i,
+  ], "JavaScript provider-free boundary");
+});

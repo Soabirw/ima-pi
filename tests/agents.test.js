@@ -246,6 +246,28 @@ test("quality agents enforce fresh verification and exact documentation authorit
   assert.equal(byName.get("documenter").result.kind, "documentation");
 });
 
+test("tester operationalizes the provider-free core-suite policy", async () => {
+  const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const loaded = await loadAgentDefinitions({
+    paths: deriveAgentPaths({
+      packageRoot,
+      agentDir: resolve(packageRoot, ".missing-agent-home"),
+      cwd: packageRoot,
+    }),
+    projectTrusted: false,
+  });
+  const tester = loaded.definitions.find(({ name }) => name === "tester");
+
+  assert.ok(tester);
+  for (const marker of [
+    /provider-free core suite policy/i,
+    /`npm test`/,
+    /`tests\/live\/`/,
+    /fetch stubs in memory/i,
+    /non-secret variable/i,
+    /Provider credentials are \*\*secrets\*\*/i,
+  ]) assert.match(tester.prompt, marker);
+});
 
 test("adversaries require fresh, distinct, read-only review contracts", async () => {
   const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");

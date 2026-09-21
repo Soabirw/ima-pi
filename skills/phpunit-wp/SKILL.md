@@ -76,6 +76,14 @@ ddev wp plugin list
 
 Check `.ddev/config.yaml` and `ddev describe` before environment-dependent work. See `../wp-ddev/SKILL.md` for the supported local WordPress path.
 
+### Provider-free core-suite boundary
+
+Apply the [provider-free core suite policy](../unit-testing/SKILL.md#provider-free-core-suite-policy).
+Keep `composer test` focused on pure PHP with injected WordPress and HTTP stubs. Treat DDEV,
+browser, provider, and other `tests/live/` checks as optional additional runs, never as default
+suite work. Their opt-in flags are **non-secret variables**; credentials are **secrets**; test
+artifacts are **local-only values**. This policy introduces no platform binding.
+
 ### Quick Diagnosis
 
 ```bash

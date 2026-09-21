@@ -13,6 +13,22 @@ Pure functions are trivially testable. Hard-to-test code is a design problem, no
 - Bottom-heavy pyramid: many unit, few integration, fewer E2E
 - Mock only boundaries (DB, network, filesystem), not your own code
 
+## Provider-free core suite policy
+
+The default core suite is provider-free and unit-focused. In this package, `npm test`
+preloads the writable `tests/fixtures/deny-live-fetch.js` guard and runs the root-only
+`tests/*.test.js` glob, structurally excluding `tests/live/`. The guard fails closed with a
+fixed, secret-free error. It must not log or expose a URL, headers, body, credentials, or raw
+provider errors. Keep it writable so tests can install and restore in-memory `globalThis.fetch`
+stubs.
+
+Provider, migration, audible, browser, integration, and E2E acceptance checks remain supported
+as optional additional runs. Put such package checks in `tests/live/`, preserve their explicit
+opt-in gates, and never broaden `npm test` to run them. Opt-in flags such as `IMA_TTS_IT` and
+`IMA_MIGRATE_IT` are **non-secret variables**. Provider credentials, including `OPENAI_API_KEY`,
+are **secrets**: keep their values out of source, commands, logs, assertions, and output. No
+**platform binding** is introduced; test artifacts and machine-specific paths are **local-only values**.
+
 ## Decision Tree: Which Skills
 
 ```

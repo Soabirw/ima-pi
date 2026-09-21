@@ -3,16 +3,16 @@ import { spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { access } from "node:fs/promises";
 import test from "node:test";
-import { cleanForSpeech } from "../lib/ima-tts-clean.ts";
+import { cleanForSpeech } from "../../lib/ima-tts-clean.ts";
 import {
   createSpeechEngine,
   synthesizeSpeech,
-} from "../lib/ima-tts-speech.ts";
-import { MAX_SPEECH_INPUT_CHARACTERS } from "../lib/ima-tts-segment.ts";
+} from "../../lib/ima-tts-speech.ts";
+import { MAX_SPEECH_INPUT_CHARACTERS } from "../../lib/ima-tts-segment.ts";
 import {
   playerCandidatePaths,
   TTS_CONFIG_DEFAULTS,
-} from "../lib/ima-tts.ts";
+} from "../../lib/ima-tts.ts";
 
 const playerIsAvailable = async (playerCommand) => {
   const candidates = playerCandidatePaths(playerCommand, process.env.PATH);

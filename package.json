@@ -10,7 +10,7 @@
     "pi-package"
   ],
   "scripts": {
-    "test": "node --test tests/*.test.js",
+    "test": "node --import ./tests/fixtures/deny-live-fetch.js --test tests/*.test.js",
     "install:skills": "node scripts/install.ts"
   },
   "pi": {

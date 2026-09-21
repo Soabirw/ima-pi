@@ -173,3 +173,16 @@ test("search and source-control skill routing remains explicit", async () => {
     /human owns actual deployment/i,
   ], "ima-git");
 });
+
+test("PHP testing patterns retain the provider-free core-suite boundary", async () => {
+  const patterns = await read("skills/php-fp/references/testing-patterns.md");
+
+  mustContain(patterns, [
+    /provider-free core suite policy/i,
+    /injected PHP stubs/i,
+    /tests\/live\//,
+    /non-secret variable/i,
+    /Provider credentials\s+are \*\*secrets\*\*/i,
+    /no platform binding is introduced/i,
+  ], "PHP provider-free boundary");
+});

@@ -221,3 +221,18 @@ test("FNR-3029 packages the DDEV path without packaging deprecated wp-local", as
   assert.match(readme, /DDEV.*supported local WordPress environment/is);
   assert.match(readme, /LocalWP.*deprecated.*not packaged/is);
 });
+
+test("PHPUnit guidance preserves the provider-free core-suite boundary", async () => {
+  const phpunit = await read("skills/phpunit-wp/SKILL.md");
+
+  mustContain(phpunit, [
+    /provider-free core suite policy/i,
+    /composer test/i,
+    /injected WordPress and HTTP stubs/i,
+    /tests\/live\//,
+    /non-secret variables/i,
+    /credentials are \*\*secrets\*\*/i,
+    /local-only values/i,
+    /introduces no platform binding/i,
+  ], "PHPUnit provider-free boundary");
+});
