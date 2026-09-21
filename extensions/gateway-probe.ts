@@ -33,12 +33,8 @@ export const MCP_TIMEOUT_MS = 300_000;
 export const CHILD_EXECUTION_TIMEOUT = Symbol("child_execution_timeout");
 const CHILD_TOOLS = ["mcp"] as const;
 
-type Service = "serena" | "vestige" | "unknown";
-type Operation =
-  | "activate_project"
-  | "get_current_config"
-  | "session_start"
-  | "unknown";
+type Service = "serena" | "unknown";
+type Operation = "activate_project" | "get_current_config" | "unknown";
 
 type GatewayContext = {
   repoPath: string;
@@ -98,12 +94,10 @@ export interface GatewayProbeResult {
   parent: {
     serenaActivate: GatewayCheck;
     serenaConfig: GatewayCheck;
-    vestigePreference: GatewayCheck;
   };
   child: {
     serenaActivate: GatewayCheck;
     serenaConfig: GatewayCheck;
-    vestigePreference: GatewayCheck;
   };
   corpus: {
     store: CorpusCheck;
@@ -168,7 +162,7 @@ export function buildLifecyclePayload(input: {
   jiraKey: string;
   nonce: string;
 }): string {
-  return `FNR-3011 implementation-probe completed external Serena and Qdrant lifecycle workflow checks. lifecycle_key=${input.lifecycleKey}; jira_key=${input.jiraKey}; run_nonce=${input.nonce}; outcome=completed. Serena and Vestige preference bootstrap remain read-only services; Qdrant direct retrieval verifies this logical lifecycle record.`;
+  return `FNR-3011 implementation-probe completed Serena gateway and parent-side native Qdrant lifecycle checks. lifecycle_key=${input.lifecycleKey}; jira_key=${input.jiraKey}; run_nonce=${input.nonce}; outcome=completed. Serena gateway calls remain read-only; Qdrant direct retrieval verifies this logical lifecycle record.`;
 }
 
 export const childOperations = (input: GatewayContext): GatewayOperation[] => [
@@ -186,19 +180,6 @@ export const childOperations = (input: GatewayContext): GatewayOperation[] => [
     compactTool: "serena_get_current_config",
     args: {},
     operation: "get_current_config",
-    mutation: false,
-  },
-  {
-    server: "vestige",
-    serverTool: "session_start",
-    compactTool: "vestige_session_start",
-    args: {
-      queries: ["user preferences"],
-      include_intentions: false,
-      include_predictions: false,
-      include_status: false,
-    },
-    operation: "session_start",
     mutation: false,
   },
 ];
@@ -300,7 +281,6 @@ export function evaluateObservedWorkflow(events: ObservedCommand[]): {
   const expected: ObservedCommand[] = [
     { service: "serena", operation: "activate_project", mutation: false },
     { service: "serena", operation: "get_current_config", mutation: false },
-    { service: "vestige", operation: "session_start", mutation: false },
   ];
   const passed = events.length === expected.length
     && events.every((event, index) => isDeepStrictEqual(event, expected[index]));
@@ -452,10 +432,10 @@ async function runGatewayProbe(input: {
 }): Promise<GatewayProbeResult> {
   const requestedChild = { provider: input.provider, model: input.model };
   const parentOperations = childOperations({ repoPath: repoRoot, payload: "" });
-  const [serenaActivate, serenaConfig, vestigePreference] = await Promise.all(
+  const [serenaActivate, serenaConfig] = await Promise.all(
     parentOperations.map(runParentCheck),
   );
-  const parent = { serenaActivate, serenaConfig, vestigePreference };
+  const parent = { serenaActivate, serenaConfig };
   const blank = (): GatewayProbeResult => deriveGatewayProbeResult({
     schemaVersion: 1,
     story: STORY,
@@ -465,7 +445,6 @@ async function runGatewayProbe(input: {
     child: {
       serenaActivate: failedCheck("serena", "activate_project", "not_run"),
       serenaConfig: failedCheck("serena", "get_current_config", "not_run"),
-      vestigePreference: failedCheck("vestige", "session_start", "not_run"),
     },
     corpus: {
       store: failedCorpusCheck("logical_store", "not_run"),
@@ -483,10 +462,7 @@ async function runGatewayProbe(input: {
     observedCommands: [],
   });
   if (!Object.values(parent).every((check) => check.passed)) {
-    const errorCode = !parent.serenaActivate.passed || !parent.serenaConfig.passed
-      ? "parent_serena_failed"
-      : "parent_vestige_failed";
-    return { ...blank(), error: sanitizeGatewayError(errorCode, "") };
+    return { ...blank(), error: sanitizeGatewayError("parent_serena_failed", "") };
   }
 
   const modelRuntime = await ModelRuntime.create();
@@ -557,7 +533,6 @@ async function runGatewayProbe(input: {
     const child = {
       serenaActivate: childResult(resultsByOperation, "serena", "activate_project", "activate_project"),
       serenaConfig: childResult(resultsByOperation, "serena", "get_current_config", "get_current_config"),
-      vestigePreference: childResult(resultsByOperation, "vestige", "session_start", "session_start"),
     };
     const corpus = createQdrantCorpusClient();
     const recordKey = `${LIFECYCLE_KEY}:gateway-probe:${nonce}`;

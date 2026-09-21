@@ -58,25 +58,11 @@ const expectedEvents = [
       args: {},
     },
   },
-  {
-    toolName: "mcp",
-    args: {
-      server: "vestige",
-      tool: "vestige_session_start",
-      args: {
-        queries: ["user preferences"],
-        include_intentions: false,
-        include_predictions: false,
-        include_status: false,
-      },
-    },
-  },
 ];
 
 const expectedWorkflow = [
   { service: "serena", operation: "activate_project", mutation: false },
   { service: "serena", operation: "get_current_config", mutation: false },
-  { service: "vestige", operation: "session_start", mutation: false },
 ];
 
 const check = (service, operation, passed = true) => ({
@@ -100,12 +86,10 @@ const successfulResult = () => ({
   parent: {
     serenaActivate: check("serena", "activate_project"),
     serenaConfig: check("serena", "get_current_config"),
-    vestigePreference: check("vestige", "session_start"),
   },
   child: {
     serenaActivate: check("serena", "activate_project"),
     serenaConfig: check("serena", "get_current_config"),
-    vestigePreference: check("vestige", "session_start"),
   },
   corpus: {
     store: corpusCheck("logical_store", true),
@@ -157,18 +141,16 @@ test("selector and command grammar accept one nested provider/model selector onl
   }
 });
 
-test("child contract uses read-only Serena and Vestige preference operations only", () => {
+test("child contract uses exactly two ordered read-only Serena operations", () => {
   const brief = buildChildBrief(context);
   assert.deepEqual(childOperations(context).map(({ compactTool, mutation }) => [compactTool, mutation]), [
     ["serena_activate_project", false],
     ["serena_get_current_config", false],
-    ["vestige_session_start", false],
   ]);
-  assert.match(brief, /vestige_session_start/);
-  assert.match(brief, /user preferences/);
-  assert.doesNotMatch(brief, /smart_ingest|vestige_smart_ingest/i);
+  assert.doesNotMatch(brief, /vestige/i);
+  assert.doesNotMatch(brief, /smart_ingest/i);
   assert.match(brief, /Do not modify the repository/i);
-  assert.match(payload, /Qdrant lifecycle workflow/i);
+  assert.match(payload, /parent-side native Qdrant lifecycle checks/i);
 });
 
 test("classifier permits only the exact compact read operations in order", () => {
@@ -188,7 +170,7 @@ test("classifier permits only the exact compact read operations in order", () =>
   });
 });
 
-test("parent checks use native server tool names with exact preference arguments", async () => {
+test("parent checks use native Serena tool names with exact arguments", async () => {
   const calls = [];
   const session = async (server, callback) => callback(async (tool, args, timeout) => {
     calls.push({ server, tool, args, timeout });
@@ -200,7 +182,6 @@ test("parent checks use native server tool names with exact preference arguments
   assert.deepEqual(calls, [
     { server: "serena", tool: "activate_project", args: { project: "/repo" }, timeout: MCP_TIMEOUT_MS },
     { server: "serena", tool: "get_current_config", args: {}, timeout: MCP_TIMEOUT_MS },
-    { server: "vestige", tool: "session_start", args: expectedEvents[2].args.args, timeout: MCP_TIMEOUT_MS },
   ]);
 });
 
@@ -246,7 +227,7 @@ test("corpus completion requires a successful logical store and matching direct 
   }).passed, false);
 });
 
-test("MCP policy blocks off-contract calls before a fake adapter executes", async () => {
+test("MCP policy rejects off-contract Vestige calls and permits only Serena operations", async () => {
   let state = createMcpPolicyState(expectedEvents.map(({ args }) => args));
   const attempt = (input) => {
     const decision = authorizeMcpPolicyCall(state, input);
@@ -254,11 +235,20 @@ test("MCP policy blocks off-contract calls before a fake adapter executes", asyn
     return decision.allowed;
   };
 
+  assert.equal(attempt({
+    server: "vestige",
+    tool: "vestige_session_start",
+    args: {
+      queries: ["user preferences"],
+      include_intentions: false,
+      include_predictions: false,
+      include_status: false,
+    },
+  }), false);
   assert.equal(attempt({ server: "vestige", tool: "vestige_smart_ingest", args: {} }), false);
   assert.equal(attempt(expectedEvents[0].args), true);
   assert.equal(attempt(expectedEvents[1].args), true);
-  assert.equal(attempt(expectedEvents[2].args), true);
-  assert.equal(attempt(expectedEvents[2].args), false);
+  assert.equal(attempt(expectedEvents[1].args), false);
   await assert.rejects(createMcpChildRuntime({
     cwd: "/tmp",
     model: {},

@@ -253,7 +253,7 @@ Then try:
 /ima:vision-probe <provider>/<model> <absolute-image-path>
 ```
 
-`/ima:delegate-probe`, `/ima:control-probe`, `/ima:gateway-probe`, and `/ima:vision-probe` are bounded technical-spike entry points, not production orchestration interfaces. The gateway probe keeps Serena bootstrap and retained Vestige evidence checks read-only, then verifies one dedicated non-production Qdrant corpus record by logical store and direct get; it does not clean up that inert deterministic corpus record. Qdrant/Ollama status is separate package-native evidence through read-only `ima_corpus_status`. The control probe accepts `/ima:control-probe cancel <run-id> <a|b>` after startup; see its spike document for live acceptance steps and limitations.
+`/ima:delegate-probe`, `/ima:control-probe`, `/ima:gateway-probe`, and `/ima:vision-probe` are bounded technical-spike entry points, not production orchestration interfaces. The gateway probe keeps its two ordered child Serena gateway operations read-only, then verifies one dedicated non-production Qdrant corpus record by logical store and direct get; it does not clean up that inert deterministic corpus record. Qdrant/Ollama status is separate package-native evidence through read-only `ima_corpus_status`. The control probe accepts `/ima:control-probe cancel <run-id> <a|b>` after startup; see its spike document for live acceptance steps and limitations.
 
 ## Production support workflows
 

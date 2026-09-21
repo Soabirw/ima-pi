@@ -86,7 +86,8 @@ test("current gateway documentation separates native Qdrant status from historic
     readFile(join(root, "README.md"), "utf8"),
   ]);
   const current = spike.slice(0, spike.indexOf("## Historical outcome"));
-  assert.match(current, /only Serena and\s+>\s*Vestige/i);
+  assert.match(current, /only Serena through\s+>\s*the package MCP boundary/i);
+  assert.match(current, /parent-side native Qdrant logical-store\/direct-get/i);
   assert.match(current, /Qdrant is not a gateway operation/i);
   assert.match(current, /ima_corpus_status/);
   assert.match(current, /not current operator instructions/i);
