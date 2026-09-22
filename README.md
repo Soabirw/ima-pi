@@ -42,11 +42,11 @@ The underlying authority contract is documented for `plane:ima:SKYNET-94`, lifec
 
 ### P/R/S lineage authority
 
-**P** is the verified provider-pin anchor, **R** the original plan root, and **S** the stable source identity. A rootless original plan remains valid; later records preserve its original R and S, and a rooted initial pin preserves R. An approval receipt preserves the original R and S and never replaces the plan root.
+**P** is the verified provider-pin anchor, **R** the original lifecycle-seed root, and **S** the stable source identity. A rootless `plan` or `decision` is a valid lifecycle seed and establishes R; later records preserve its original R and S, and a rooted initial pin preserves R. An approval receipt preserves the original R and S and never replaces the lifecycle-seed root.
 
-A legacy rootless non-plan pin remains unchanged but blocks: it has no repair, migration, repinning, or fallback. Future non-plan rootless first writes reject before effects. Before tracker effects, closeout revalidates exact P/R/S evidence and blocks if it is missing or mismatched; closeout never auto-closes a tracker. This selector form does not change provider-neutral authority or lineage semantics.
+A legacy rootless phase other than `plan` or `decision` remains unchanged but blocks: it has no repair, migration, repinning, or fallback. Future rootless first writes for phases other than `plan` or `decision` reject before effects. A `decision` never satisfies approved technical-plan selection; cycle adoption and closeout require a distinct approved `plan`. Before tracker effects, closeout revalidates exact P/R/S evidence and blocks if it is missing or mismatched; closeout never auto-closes a tracker. This selector form does not change provider-neutral authority or lineage semantics.
 
-Approved lineage evidence: canonical source `plane:ima:SKYNET-230`; final approved rereview `d2ffc65d-35ae-57cd-bfc2-ed9f3c65c69c`; assessment `direct:d7f62171-e139-422b-a05b-7b59b929fef1`.
+Approved lineage evidence: baseline canonical source `plane:ima:SKYNET-230`; final approved rereview `d2ffc65d-35ae-57cd-bfc2-ed9f3c65c69c`; assessment `direct:d7f62171-e139-422b-a05b-7b59b929fef1`; verified decision-seed correction `plane:ima:SKYNET-245`.
 
 ### Provider-neutral lifecycle reads
 

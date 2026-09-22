@@ -264,13 +264,15 @@ marker:
 
 If safe approval is impossible, persist a plan `BLOCKED` outcome and stop. This plan marker records reusable plan approval only; it does not dispatch `/ima:cycle`.
 
-Keep the verified provider-pin anchor `P`, original plan root `R`, and stable source identity `S`
-distinct. Only the original `plan` may be rootless; its verified artifact establishes R, while P is
-only the provider anchor. A rooted later pin supplies its explicit R and verified S. Every later
-artifact, including a later `plan` approval receipt, preserves exact R/S; an approval receipt never
-becomes a replacement root. A future rootless non-plan first write is `BLOCKED` before provider
-effect. An existing rootless non-plan P remains unchanged and blocks; do not infer, repair pins,
-repin, migrate, select a provider, fall back, or perform historical rewriting.
+Keep the verified provider-pin anchor `P`, original lifecycle-seed root `R`, and stable source
+identity `S` distinct. Only `plan` and `decision` may be rootless lifecycle seeds; either verified
+artifact establishes R, while P is only the provider anchor. A rooted later pin supplies its explicit
+R and verified S. Every later artifact, including a later `plan` approval receipt, preserves exact
+R/S; an approval receipt never becomes a replacement root. A decision seed never satisfies the
+distinct approved technical `plan` requirement for implementation or closeout. A future rootless
+phase other than `plan` or `decision` first write is `BLOCKED` before provider effect. An existing
+rootless phase other than `plan` or `decision` P remains unchanged and blocks; do not infer, repair
+pins, repin, migrate, select a provider, fall back, or perform historical rewriting.
 
 For every persisted artifact, retain the inherited lifecycle identity, canonical source, exact R/S
 when it is a continuation, relevant prior artifact IDs and logical record keys, phase result, scope
@@ -319,7 +321,8 @@ Pending, inaccessible, unavailable, corrupt, mismatched, overflowed, or cancelle
 phase without a retry, fallback, provider-native read, `ima_corpus_*` substitution, or provider
 change. Before a continuation phase, use complete verified evidence to resolve P/R/S and hand off
 exact R/S with the canonical source in that verified packet; `priorArtifactIds`, a latest receipt,
-or a tracker never derives or replaces them. A rootless non-plan authority blocks without repair.
+or a tracker never derives or replaces them. A rootless phase other than `plan` or `decision`
+authority blocks without repair.
 After each report, check that it addresses the requested boundary and has not introduced a material
 contradiction. If a child report is partial, stale, or lacks observable evidence, request a bounded
 clarification through the existing child reference where available; otherwise stop and surface the

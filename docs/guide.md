@@ -134,11 +134,11 @@ There is no live-provider or cross-device acceptance. Provider-native verificati
 
 ### P/R/S lineage authority
 
-Lifecycle evidence has three fixed operator-facing roles: **P** is the verified provider-pin anchor, **R** is the original plan root, and **S** is the stable source identity. A rootless original plan is valid. Once that plan exists, later records retain its original R and S; a rooted initial pin also retains R. An approval receipt preserves the original R and S and never becomes or replaces the plan root.
+Lifecycle evidence has three fixed operator-facing roles: **P** is the verified provider-pin anchor, **R** is the original lifecycle-seed root, and **S** is the stable source identity. A rootless `plan` or `decision` is a valid lifecycle seed and establishes R. Later records retain its original R and S; a rooted initial pin also retains R. An approval receipt preserves the original R and S and never becomes or replaces the lifecycle-seed root.
 
-Existing legacy rootless non-plan pins remain unchanged but block. They have no repair, migration, repinning, or fallback path. A future non-plan rootless first write is rejected before any effect. Before tracker effects, closeout revalidates the exact P/R/S lineage and blocks on any missing or mismatched evidence; it never auto-closes a tracker.
+Existing legacy rootless phases other than `plan` or `decision` remain unchanged but block. They have no repair, migration, repinning, or fallback path. A future rootless first write for a phase other than `plan` or `decision` is rejected before any effect. A `decision` never satisfies approved technical-plan selection; cycle adoption and closeout require a distinct approved `plan`. Before tracker effects, closeout revalidates the exact P/R/S lineage and blocks on any missing or mismatched evidence; it never auto-closes a tracker.
 
-This selector form does not change the provider-neutral authority or lineage semantics below. Their approved evidence is canonical source `plane:ima:SKYNET-230`, final approved rereview `d2ffc65d-35ae-57cd-bfc2-ed9f3c65c69c`, and assessment `direct:d7f62171-e139-422b-a05b-7b59b929fef1`.
+This selector form does not change the provider-neutral authority or lineage semantics below. Their approved evidence is baseline canonical source `plane:ima:SKYNET-230`, final approved rereview `d2ffc65d-35ae-57cd-bfc2-ed9f3c65c69c`, and assessment `direct:d7f62171-e139-422b-a05b-7b59b929fef1`; verified decision-seed correction `plane:ima:SKYNET-245`.
 
 ### Provider-neutral lifecycle reads
 

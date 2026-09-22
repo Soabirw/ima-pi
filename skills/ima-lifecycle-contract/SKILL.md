@@ -36,19 +36,21 @@ authority claim.
 
 ### P/R/S lineage
 
-Keep three exact values separate: `P` is the verified provider-pin anchor, `R` is the original plan
-root, and `S` is the stable source identity, including canonical source references. Derive R only
-from P's complete verified artifact: a rootless original `plan` P yields its artifact ID, an
-explicitly rooted P yields its exact root, and a rootless non-plan P is unresolved. P never replaces
-R.
+Keep three exact values separate: `P` is the verified provider-pin anchor, `R` is the original
+lifecycle-seed root, and `S` is the stable source identity, including canonical source references.
+Derive R only from P's complete verified artifact: a rootless `plan` or `decision` P yields its
+artifact ID, an explicitly rooted P yields its exact root, and a rootless phase other than `plan` or
+`decision` is unresolved. P never replaces R.
 
-Only the original `plan` may be rootless. Every continuation—including a later `plan`, decision,
-approval receipt, implementation, test, review, document, or closeout—must retain exact R and
-unchanged S. Approval receipts preserve the original R/S and never become replacement roots.
-Existing rootless non-plan pins remain unchanged but block lineage-dependent reads and writes. A
-future rootless non-plan first write is rejected before provider effect. Do not infer R from pin
-identity, ordering, a tracker, an approval receipt, or `priorArtifactIds`; do not repair pins, repin,
-migrate, select a provider, fall back, or perform historical rewriting.
+Only `plan` and `decision` may be rootless lifecycle seeds. Every continuation—including a later
+`plan`, `decision`, approval receipt, implementation, test, review, document, or closeout—must
+retain exact R and unchanged S. A `decision` seed never satisfies approved technical-plan
+selection: cycle adoption and closeout require a distinct approved `plan` artifact. Approval
+receipts preserve the original R/S and never become replacement roots. Existing rootless phases
+other than `plan` or `decision` remain unchanged but block lineage-dependent reads and writes. A
+future rootless phase other than `plan` or `decision` first write is rejected before provider effect.
+Do not infer R from pin identity, ordering, a tracker, an approval receipt, or `priorArtifactIds`; do
+not repair pins, repin, migrate, select a provider, fall back, or perform historical rewriting.
 
 ## Public lifecycle reads
 
@@ -136,9 +138,9 @@ Do not pass a `lifecycle:` wrapper or snake_case keys as the tool identity. `pla
 `planeWorkItem` are optional as a pair: omit both, or send both empty, for a non-Plane identity; for
 a Plane identity, send both nonempty values. A partial pair is invalid. `summary` is explicit,
 non-empty, control-character-safe, and used for manifest-only semantic retrieval; do not extract it
-mechanically from the artifact. `lifecycleRootMemoryId` holds R: it may be empty only for the
-original `plan`. A rooted later pin and every continuation require exact R and the unchanged S
-identity fields.
+mechanically from the artifact. `lifecycleRootMemoryId` holds R: it may be empty only for a
+rootless `plan` or `decision` seed. A rooted later pin and every continuation require exact R and the
+unchanged S identity fields.
 
 ## Persisted artifact metadata
 
@@ -154,7 +156,7 @@ lifecycle:
   taskwarrior_uuid: ""
   jira_key: ""
   source_refs: []
-  phase: "plan|implementation|test|review|resolution|rereview|document|closeout"
+  phase: "plan|implementation|test|review|resolution|rereview|document|decision|closeout"
   prior_artifact_ids: []
 ```
 
@@ -173,9 +175,9 @@ Persist lifecycle artifacts through `ima_lifecycle`; do not substitute a generat
 direct service storage, or an undocumented fallback. It applies the pin-aware authority above,
 performs provider-native direct read-back or reassembly verification, and verifies the full detail,
 nonce, phase, completed outcome, lifecycle key, and required source identity. Before a first provider
-effect, it rejects a rootless non-plan first write. For pinned persistence, it revalidates P, derives
-R/S, validates the continuation's exact R/S, and only then invokes the pinned provider; invalid
-prewrite lineage is `no-write`. `artifactId` is the provider-verified immutable artifact identity
+effect, it rejects a rootless phase other than `plan` or `decision`. For pinned persistence, it
+revalidates P, derives R/S, validates the continuation's exact R/S, and only then invokes the pinned
+provider; invalid prewrite lineage is `no-write`. `artifactId` is the provider-verified immutable artifact identity
 (`Qdrant` uses its manifest point ID); `recordKey` is the canonical logical retrieval key. Both are
 additive lifecycle-result references. Preserve the provider-native reference with them, but never
 translate it into another provider. No Vestige lifecycle write, recall, or fallback is permitted.

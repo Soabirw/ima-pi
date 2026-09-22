@@ -12,11 +12,11 @@ Lifecycle integration preserves user confirmation, provider selection, the check
 
 ## P/R/S lineage authority
 
-For operator use, **P** is the verified provider-pin anchor, **R** is the original plan root, and **S** is the stable source identity. A rootless original plan is valid. Later records retain its original R and S, and a rooted initial pin retains R. Approval receipts preserve the original R and S; they never become or replace the plan root.
+For operator use, **P** is the verified provider-pin anchor, **R** is the original lifecycle-seed root, and **S** is the stable source identity. A rootless `plan` or `decision` is a valid lifecycle seed and establishes R. Later records retain its original R and S, and a rooted initial pin retains R. Approval receipts preserve the original R and S; they never become or replace the lifecycle-seed root.
 
-An existing legacy rootless non-plan pin remains unchanged but blocks. There is no repair, migration, repinning, or fallback. A future non-plan rootless first write rejects before any effect. Before tracker effects, closeout revalidates the exact P/R/S lineage and blocks on missing or mismatched evidence; it does not auto-close a tracker. This policy does not change the public, provider-neutral recall or get signatures.
+An existing legacy rootless phase other than `plan` or `decision` remains unchanged but blocks. There is no repair, migration, repinning, or fallback. A future rootless first write for a phase other than `plan` or `decision` rejects before any effect. A `decision` never satisfies approved technical-plan selection; cycle adoption and closeout require a distinct approved `plan`. Before tracker effects, closeout revalidates the exact P/R/S lineage and blocks on missing or mismatched evidence; it does not auto-close a tracker. This policy does not change the public, provider-neutral recall or get signatures.
 
-The approved lineage authority is canonical source `plane:ima:SKYNET-230`, final approved rereview `d2ffc65d-35ae-57cd-bfc2-ed9f3c65c69c`, with assessment `direct:d7f62171-e139-422b-a05b-7b59b929fef1`.
+The approved lineage authority is baseline canonical source `plane:ima:SKYNET-230`, final approved rereview `d2ffc65d-35ae-57cd-bfc2-ed9f3c65c69c`, with assessment `direct:d7f62171-e139-422b-a05b-7b59b929fef1`; verified decision-seed correction `plane:ima:SKYNET-245`.
 
 ## API and value contracts
 

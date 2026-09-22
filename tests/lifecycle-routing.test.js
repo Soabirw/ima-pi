@@ -10,9 +10,11 @@ import {
   routeLifecycleGet,
   routeLifecyclePersistence,
   routeLifecycleRecall,
+  resolvePinnedLifecycleLineage,
   routePinnedLifecycleGet,
   routePinnedLifecyclePersistence,
   routePinnedLifecycleRecall,
+  validateInitialLifecycleWriteRequest,
 } from "../lib/ima-lifecycle-routing.ts";
 
 const lifecycleKey = "shared-dev-memory:manual:routing-contract:2026-08-31";
@@ -768,38 +770,110 @@ test("derives an explicit root from a rooted non-plan pin", async () => {
   assert.deepEqual(calls, ["reconcile", "recall", "reconcile", "persist"]);
 });
 
-test("blocks existing rootless non-plan pins before recall or continuation persistence", async () => {
-  const rootlessDecision = recordFor(requestFor("decision"));
-  const pin = pinFor(rootlessDecision);
+test("accepts a rootless decision seed and preserves exact R/S through decision, plan, and closeout", async () => {
+  const rootDecision = recordFor(requestFor("decision"));
+  const laterDecision = recordFor(requestFor("decision", rootDecision.artifactId));
+  const technicalPlan = recordFor(requestFor("plan", rootDecision.artifactId));
+  const implementation = recordFor(requestFor("implementation", rootDecision.artifactId));
+  const closeout = recordFor(requestFor("closeout", rootDecision.artifactId));
+  const pin = pinFor(rootDecision);
   const calls = [];
   const routing = createLifecycleRouting([{
     provider: "qdrant",
     reconcile: async () => {
       calls.push("reconcile");
-      return { status: "verified", record: rootlessDecision };
+      return { status: "verified", record: rootDecision };
     },
-    recall: async () => { calls.push("recall"); return { status: "verified", provider: "qdrant", records: [] }; },
-    persist: async () => { calls.push("persist"); return { status: "verified", record: rootlessDecision }; },
+    recall: async () => {
+      calls.push("recall");
+      return {
+        status: "verified",
+        provider: "qdrant",
+        records: [rootDecision, laterDecision, technicalPlan, implementation, closeout],
+      };
+    },
+    persist: async (request) => {
+      calls.push("persist");
+      return { status: "verified", record: recordFor(request) };
+    },
   }]);
 
-  const recalled = await routePinnedLifecycleRecall({ routing, pin, lifecycleKey, limit: 1 });
-  assert.deepEqual(recalled, {
+  for (const phase of ["plan", "decision"]) {
+    assert.deepEqual(validateInitialLifecycleWriteRequest(requestFor(phase)), { valid: true });
+  }
+  for (const phase of [
+    "implementation",
+    "test",
+    "review",
+    "resolution",
+    "rereview",
+    "document",
+    "closeout",
+  ]) {
+    assert.deepEqual(validateInitialLifecycleWriteRequest(requestFor(phase)), {
+      valid: false,
+      code: "lifecycle_initial_root_required",
+    });
+  }
+
+  const resolved = await resolvePinnedLifecycleLineage({ routing, pin });
+  assert.equal(resolved.status, "verified");
+  if (resolved.status !== "verified") return;
+  assert.equal(resolved.lineage.rootArtifactId, rootDecision.artifactId);
+  assert.deepEqual(resolved.lineage.sourceIdentity, {
+    project: identity.project,
+    lifecycleKey,
+    taskwarriorProject: "",
+    taskwarriorTask: "",
+    taskwarriorUuid: "",
+    jiraKey: "",
+    sourceRefs: [`lifecycle:${lifecycleKey}`],
+  });
+
+  const recalled = await routePinnedLifecycleRecall({ routing, pin, lifecycleKey, limit: 5 });
+  assert.equal(recalled.status, "verified");
+  assert.deepEqual(
+    recalled.status === "verified" ? recalled.records.map(({ artifactId }) => artifactId) : [],
+    [
+      rootDecision.artifactId,
+      laterDecision.artifactId,
+      technicalPlan.artifactId,
+      implementation.artifactId,
+      closeout.artifactId,
+    ],
+  );
+
+  const sourceMismatch = validateLifecycleWriteRequest({
+    type: "plan",
+    identity: {
+      ...identity,
+      lifecycleRootMemoryId: rootDecision.artifactId,
+      sourceRefs: ["lifecycle:other"],
+    },
+    summary: "A decision-seeded technical plan must preserve the original source identity.",
+    artifact: "# Plan\n\nMismatched decision-seeded source identity.",
+  });
+  assert.equal(sourceMismatch.valid, true);
+  if (!sourceMismatch.valid) return;
+  assert.deepEqual(await routePinnedLifecyclePersistence({
+    routing,
+    pin,
+    request: sourceMismatch,
+  }), {
     status: "blocked",
     provider: "qdrant",
-    code: "lifecycle_read_authority_invalid",
+    code: "lifecycle_lineage_conflict",
+    writeState: "no-write",
   });
+  assert.equal(calls.filter((operation) => operation === "persist").length, 0);
+
   const persisted = await routePinnedLifecyclePersistence({
     routing,
     pin,
-    request: requestFor("closeout", "00000000-0000-5000-8000-000000000232"),
+    request: requestFor("closeout", rootDecision.artifactId),
   });
-  assert.deepEqual(persisted, {
-    status: "blocked",
-    provider: "qdrant",
-    code: "lifecycle_lineage_unresolved",
-    writeState: "no-write",
-  });
-  assert.deepEqual(calls, ["reconcile", "reconcile"]);
+  assert.equal(persisted.status, "verified");
+  assert.equal(calls.filter((operation) => operation === "persist").length, 1);
 });
 
 test("keeps safe post-write screening diagnostics and possible-write state", async () => {

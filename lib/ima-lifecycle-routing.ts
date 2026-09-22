@@ -336,6 +336,9 @@ export const createLifecycleContinuationIdentity = (input: {
   priorArtifactIds: input.priorArtifactIds,
 });
 
+const lifecycleSeedPhase = (phase: LifecyclePhase) =>
+  phase === "plan" || phase === "decision";
+
 export const deriveLifecycleRoot = (input: {
   phase: LifecyclePhase;
   artifactId: unknown;
@@ -343,7 +346,7 @@ export const deriveLifecycleRoot = (input: {
 }): string | null => {
   const root = input.lifecycleRootMemoryId;
   if (root === "") {
-    return input.phase === "plan" ? canonicalArtifactId(input.artifactId) : null;
+    return lifecycleSeedPhase(input.phase) ? canonicalArtifactId(input.artifactId) : null;
   }
   return canonicalArtifactId(root);
 };
@@ -351,7 +354,7 @@ export const deriveLifecycleRoot = (input: {
 export const validateInitialLifecycleWriteRequest = (
   value: ValidLifecycleRequest,
 ): { valid: true } | { valid: false; code: string } => {
-  if (value.type === "plan" && value.identity.lifecycleRootMemoryId === "") {
+  if (lifecycleSeedPhase(value.type) && value.identity.lifecycleRootMemoryId === "") {
     return { valid: true };
   }
   return deriveLifecycleRoot({
@@ -1594,7 +1597,7 @@ export const lifecycleRecordMatchesPinnedLineage = (input: {
   ) return false;
 
   return (
-    request.type === "plan"
+    lifecycleSeedPhase(request.type)
     && record.artifactId === input.lineage.rootArtifactId
     && request.identity.lifecycleRootMemoryId === ""
   ) || request.identity.lifecycleRootMemoryId === input.lineage.rootArtifactId;

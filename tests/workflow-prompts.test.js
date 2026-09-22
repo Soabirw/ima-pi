@@ -64,6 +64,34 @@ test("shared lifecycle skill keeps artifact, identity, source-identifier, and cy
   for (const value of ["name: ima-lifecycle-contract", "artifact is the detailed source of truth", "ima_lifecycle", "generated SDK namespace", "lifecycle_key", "prior_artifact_ids", "Do not create a disconnected lifecycle thread", "exactly one cycle outcome marker", "taskwarrior:<project>:<uuid>", "lifecycle:<lifecycle-key>", "vestige:<UUID>", "canonical colon identifiers", "Tier-1 Qdrant", "No Vestige lifecycle write, recall, or fallback", "summary"]) has(text, value);
 });
 
+test("lifecycle guidance permits only decision and plan seeds while retaining technical plan selection", async () => {
+  const [contract, workflow, brainstorm, decompose, plan, closeout, softCycle] = await Promise.all([
+    skill("ima-lifecycle-contract"),
+    skill("ima-memory-workflow"),
+    prompt("brainstorm"),
+    prompt("decompose"),
+    prompt("plan"),
+    prompt("closeout"),
+    prompt("soft-cycle"),
+  ]);
+
+  for (const text of [contract, workflow, closeout, softCycle]) {
+    has(text, "plan");
+    has(text, "decision");
+    has(text, "rootless");
+  }
+  for (const text of [brainstorm, decompose]) {
+    has(text, "A rootless `decision` is a permitted lifecycle seed");
+    has(text, "distinct approved");
+  }
+  has(plan, "A rootless `plan` is a permitted lifecycle seed");
+  has(contract, "A `decision` seed never satisfies approved technical-plan");
+  has(workflow, "A decision never satisfies approved technical-plan selection");
+  has(plan, "A decision never satisfies approved technical-plan selection");
+  has(closeout, "distinct approved technical `plan`");
+  has(softCycle, "distinct approved technical `plan` requirement");
+});
+
 const implementationPrompts = ["implement", "implement-js", "implement-wp"];
 
 test("cycle resolution prompts expose exact phase markers and bounded handoffs", async () => {
