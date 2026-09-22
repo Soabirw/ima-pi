@@ -193,6 +193,7 @@ const HASH = /^[a-f0-9]{64}$/;
 const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
 const SAFE_CODE = /^[a-z][a-z0-9_:-]{0,127}$/;
 const MAX_LIFECYCLE_ARTIFACT_BYTES = 160_000;
+const MAX_LIFECYCLE_RECALL_LIMIT = 50;
 const MAX_LIFECYCLE_REFERENCES = 64;
 const ROUTED_LIFECYCLE_RECORD_FIELDS = [
   "provider",
@@ -1310,7 +1311,7 @@ export const projectRoutedLifecycleRecallResult = (
   }
   if (result.status !== "verified" || Object.keys(result).length !== 3) return null;
   const provider = normalizeLifecycleProvider(result.provider);
-  const records = ownDataArray(result.records, 20);
+  const records = ownDataArray(result.records, MAX_LIFECYCLE_RECALL_LIMIT);
   if (!provider || expectedProvider && provider !== expectedProvider || !records) return null;
   const projected = records.map((record) => projectRoutedLifecycleRecordResult(record, provider, options));
   const definite = projected.find((result) =>
@@ -1509,7 +1510,7 @@ const validRecallSelection = (input: {
     && typeof limit === "number"
     && Number.isSafeInteger(limit)
     && limit >= 1
-    && limit <= 20
+    && limit <= MAX_LIFECYCLE_RECALL_LIMIT
     ? { lifecycleKey, ...(phase ? { phase } : {}), limit }
     : null;
 };

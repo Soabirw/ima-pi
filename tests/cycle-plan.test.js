@@ -291,7 +291,7 @@ test("fails closed on tied, saturated, malformed, and unsafe plan evidence", () 
     code: "plan_selection_ambiguous",
   });
 
-  const saturated = Array.from({ length: 20 }, (_, index) => planRecord({
+  const saturated = Array.from({ length: 50 }, (_, index) => planRecord({
     id: uuid(100 + index),
     key: recordKey(`saturated-${index}`),
     createdAt: `2026-09-08T00:${String(index).padStart(2, "0")}:00.000Z`,
@@ -386,12 +386,12 @@ test("rejects equal parsed newest instants and saturated imported lineage before
     phase: "implementation",
     lineage: { approvalArtifactId: approval.id, approvedAt: approval.createdAt },
   };
-  const valid = filterImportedPlanLineage(recallPayload(Array.from({ length: 19 }, (_, index) => downstream(index, "2026-09-08T00:03:00.000Z"))), context);
+  const valid = filterImportedPlanLineage(recallPayload(Array.from({ length: 49 }, (_, index) => downstream(index, "2026-09-08T00:03:00.000Z"))), context);
   assert.equal(valid.valid, true);
-  if (valid.valid) assert.equal(valid.payload.results.length, 19);
+  if (valid.valid) assert.equal(valid.payload.results.length, 49);
   for (const createdAt of ["2026-09-08T00:03:00.000Z", "2026-09-08T00:00:00.000Z"]) {
     assert.deepEqual(filterImportedPlanLineage(
-      recallPayload(Array.from({ length: 20 }, (_, index) => downstream(20 + index, createdAt))),
+      recallPayload(Array.from({ length: 50 }, (_, index) => downstream(50 + index, createdAt))),
       context,
     ), { valid: false, code: "plan_lineage_recall_invalid" });
   }

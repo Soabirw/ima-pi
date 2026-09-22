@@ -1658,7 +1658,7 @@ test("cycle start adopts through authorized read-only recall and dispatches veri
     });
 
     assert.equal(result.ok, true);
-    assert.deepEqual(corpusCalls, [{ lifecycleKey: initial.lifecycleKey, phase: "plan", limit: 20 }]);
+    assert.deepEqual(corpusCalls, [{ lifecycleKey: initial.lifecycleKey, phase: "plan", limit: 50 }]);
     assert.deepEqual(routed, ["plan"]);
     assert.deepEqual(messages, ["expanded prompt"]);
     assert.equal(entries.length, 2);
@@ -1897,7 +1897,7 @@ test("uses strict plan selection for every explicit awaiting-evidence resume", a
     directPlanRecord(initial, "APPROVED", { id: reviewUuid(993), recordKey: "ima-pi:jira:FNR-3036:plan:tie-a", createdAt: "2026-08-04T18:00:00Z" }),
     directPlanRecord(initial, "BLOCKED", { id: reviewUuid(994), recordKey: "ima-pi:jira:FNR-3036:plan:tie-b", createdAt: "2026-08-04T18:00:00.000Z" }),
   ];
-  const saturated = Array.from({ length: 20 }, (_, index) => directPlanRecord(initial, "APPROVED", {
+  const saturated = Array.from({ length: 50 }, (_, index) => directPlanRecord(initial, "APPROVED", {
     id: reviewUuid(1000 + index),
     recordKey: `ima-pi:jira:FNR-3036:plan:saturated-${index}`,
   }));
@@ -2184,7 +2184,7 @@ test("invalidates adoption across session replacement and idle planning recovery
   assert.equal(adopted.evidence.at(-1).approvedPlan.artifactId, approved.id);
   assert.deepEqual(idleHarness.messages, []);
 
-  const saturated = Array.from({ length: 20 }, (_, index) => directDownstreamRecord(idle, "implementation", "COMPLETED", approved.id, {
+  const saturated = Array.from({ length: 50 }, (_, index) => directDownstreamRecord(idle, "implementation", "COMPLETED", approved.id, {
     id: reviewUuid(980 + index),
     recordKey: `${idle.lifecycleKey}:implementation:saturated-${index}`,
   }));

@@ -64,6 +64,7 @@ const MAX_QDRANT_VERSION_LENGTH = 32;
 const QDRANT_VERSION = /^(\d{1,9})\.(\d{1,9})\.(\d{1,9})$/;
 const LEGACY_KNOWLEDGE_COLLECTION = "ima-knowledge";
 const LIFECYCLE_PHASE_SET = new Set<string>(LIFECYCLE_PHASES);
+const MAX_LIFECYCLE_RECALL_LIMIT = 50;
 const REQUIRED_INDEXES = [
   "lifecycle_key",
   "phase",
@@ -256,7 +257,7 @@ const lifecycleRecallSelection = (
       || /[\u0000-\u001f\u007f-\u009f]/.test(lifecycleKey)
       || !Number.isInteger(limit)
       || limit < 1
-      || limit > 20
+      || limit > MAX_LIFECYCLE_RECALL_LIMIT
       || (hasPhase && (
         typeof phase !== "string"
         || phase !== phase.trim()
@@ -310,7 +311,7 @@ const terminalLifecycleScroll = (value: unknown): CorpusResult<JsonObject> => {
   if (nextPageOffset.value === null) return success(scroll);
   return typeof nextPageOffset.value === "string"
     || (typeof nextPageOffset.value === "number" && Number.isFinite(nextPageOffset.value))
-    ? failure("record_incomplete")
+    ? failure("lifecycle_scroll_non_terminal")
     : failure("response_invalid");
 };
 

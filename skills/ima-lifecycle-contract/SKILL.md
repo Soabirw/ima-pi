@@ -56,7 +56,7 @@ not repair pins, repin, migrate, select a provider, fall back, or perform histor
 
 For every fresh manual or `/ima:soft-cycle` phase session, use the package-native public read pair
 before accepting a prior artifact. Call `ima_lifecycle_recall` with the exact lifecycle key and a
-bounded selection (at most 20 descriptors). Its descriptors are selection proofs, not phase evidence:
+bounded selection (at most 50 descriptors). Its descriptors are selection proofs, not phase evidence:
 never act on a descriptor, summary, handoff pointer, or cache alone. Select each required descriptor,
 then call `ima_lifecycle_get` with only its exact `lifecycleKey`, `phase`, and `artifactId`. The
 package freshly recalls that exact phase, requires one unambiguous non-saturated match, and keeps the

@@ -325,11 +325,11 @@ test("manual closeout best-effort matches its source and uses one aggregate appr
   assert.doesNotMatch(text, /individually confirms|Do not batch confirmations|Proposal approval is not authority|requires its own immediate confirmation/i);
 });
 
-test("manual closeout partitions recall evidence by phase and blocks each exact twenty-result phase", async () => {
+test("manual closeout partitions recall evidence by phase and blocks each exact fifty-result phase", async () => {
   const text = await prompt("closeout");
   for (const value of [
     "call `ima_lifecycle_recall` separately for each required phase",
-    "exact `phase`, and `limit: 20`",
+    "exact `phase`, and `limit: 50`",
     "always `plan`, `implementation`, `test`, `decision`, and `document`",
     "the final approval path's `review` or `rereview`",
     "The `phase: decision` recall is separate evidence",
@@ -339,8 +339,8 @@ test("manual closeout partitions recall evidence by phase and blocks each exact 
     "including `decision` and optional prior `closeout`",
     "for every selected descriptor from that phase, call `ima_lifecycle_get` with only its exact `lifecycleKey`, `phase`, and `artifactId`",
     "Never reconstruct or send its `recordKey`, `contentHash`, `summary`, or `reference` as get arguments",
-    "If **any one phase-specific** recall returns exactly 20 descriptors",
-    "More than 20 descriptors across distinct phase calls is acceptable only when every individual phase call returned fewer than 20",
+    "If **any one phase-specific** recall returns exactly 50 descriptors",
+    "More than 50 descriptors across distinct phase calls is acceptable only when every individual phase call returned fewer than 50",
   ]) has(text, value);
   assert.match(text, /Do not make one aggregate lifecycle-wide recall/i);
 });

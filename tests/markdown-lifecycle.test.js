@@ -462,7 +462,11 @@ test("isolates lifecycle keys, filters phases, and applies bounded recall limits
     "review",
   ]);
 
-  const plans = await adapter.recall({ lifecycleKey: LIFECYCLE_KEY, phase: "plan", limit: 20 });
+  const plans = await adapter.recall({
+    lifecycleKey: LIFECYCLE_KEY,
+    phase: "plan",
+    limit: MAX_MARKDOWN_LIFECYCLE_RECALL_LIMIT,
+  });
   assert.ok(Array.isArray(plans));
   assert.equal(plans.length, 1);
   assert.equal(plans[0].phase, "plan");
@@ -474,7 +478,7 @@ test("isolates lifecycle keys, filters phases, and applies bounded recall limits
 
   const secondOnly = await adapter.recall({
     lifecycleKey: secondIdentity.lifecycleKey,
-    limit: 20,
+    limit: MAX_MARKDOWN_LIFECYCLE_RECALL_LIMIT,
   });
   assert.ok(Array.isArray(secondOnly));
   assert.equal(secondOnly.length, 1);
@@ -497,7 +501,7 @@ test("isolates lifecycle keys, filters phases, and applies bounded recall limits
   assert.deepEqual(await snapshotTree(root), beforeInvalidSelection);
 });
 
-test("fails closed when a phase has more than the public twenty-record recall bound", async (t) => {
+test("fails closed when a phase has more than the public fifty-record recall bound", async (t) => {
   const root = await createCheckout(t, "ima-markdown-read-bound-");
   const adapter = createMarkdownLifecycleAdapter({ checkoutRoot: root });
   for (let index = 0; index < MAX_MARKDOWN_LIFECYCLE_RECALL_LIMIT + 1; index += 1) {
@@ -536,7 +540,10 @@ test("preserves ordinary files and leaves read-only get and recall tree snapshot
   const beforeReadOnly = await snapshotTree(root);
   const fresh = createMarkdownLifecycleAdapter({ checkoutRoot: root });
   const get = await fresh.get(JSON.parse(JSON.stringify(stored.reference)));
-  const recall = await fresh.recall({ lifecycleKey: LIFECYCLE_KEY, limit: 20 });
+  const recall = await fresh.recall({
+    lifecycleKey: LIFECYCLE_KEY,
+    limit: MAX_MARKDOWN_LIFECYCLE_RECALL_LIMIT,
+  });
   assert.equal(get.status, "verified");
   assert.ok(Array.isArray(recall));
   assert.equal(recall.length, 1);
@@ -683,7 +690,10 @@ test("blocks malformed, duplicate-ID, missing, and overflowing recall evidence w
     { mode: 0o600 },
   );
   const duplicateBefore = await snapshotTree(duplicate.root);
-  assertBlocked(await duplicate.adapter.recall({ lifecycleKey: LIFECYCLE_KEY, limit: 20 }), "markdown_recall_unverifiable");
+  assertBlocked(await duplicate.adapter.recall({
+    lifecycleKey: LIFECYCLE_KEY,
+    limit: MAX_MARKDOWN_LIFECYCLE_RECALL_LIMIT,
+  }), "markdown_recall_unverifiable");
   assert.deepEqual(await snapshotTree(duplicate.root), duplicateBefore);
 
   const missing = await storedCheckout(t, {

@@ -134,12 +134,14 @@ const execFile = promisify(execFileCallback);
 const TIMEOUT = 30_000;
 const MCP_TIMEOUT = 300_000;
 const VESTIGE_TIMEOUT = 300_000;
-const LIFECYCLE_RECALL_LIMIT = 20;
+const LIFECYCLE_RECALL_LIMIT = 50;
+const INSTITUTIONAL_RECALL_LIMIT = 20;
 const MAX_LIFECYCLE_READ_REFERENCE_BYTES = 2_048;
 const MAX_LIFECYCLE_READ_SUMMARY_BYTES = 2_000;
 const MAX_LIFECYCLE_READ_ARTIFACT_BYTES = 160_000;
 const MAX_LIFECYCLE_READ_OUTPUT_BYTES = (MAX_LIFECYCLE_READ_ARTIFACT_BYTES * 6) + 32_000;
-const MAX_LIFECYCLE_READ_RESULTS = 20;
+const MAX_LIFECYCLE_READ_RESULTS = 50;
+const MAX_LIFECYCLE_CONTENT_DECISIONS = 20;
 const MAX_BUFFER = 128 * 1024;
 const MAX_BOOKSTACK_RECOVERY_CONFIRMATION_BYTES = 16_384;
 const PLANE_SOURCE_CONTENT_MAXIMUM_BYTES = 64_000;
@@ -628,9 +630,10 @@ const recallCorpusLifecyclePhase = async (
       : null;
   }
 
-  const recalled = await corpus.recallInstitutional({ ...selection, limit }, signal);
+  const institutionalLimit = Math.min(limit, INSTITUTIONAL_RECALL_LIMIT);
+  const recalled = await corpus.recallInstitutional({ ...selection, limit: institutionalLimit }, signal);
   throwIfAborted(signal);
-  if (!recalled.success || recalled.data.length >= limit) return null;
+  if (!recalled.success || recalled.data.length >= institutionalLimit) return null;
 
   const records: RecalledLifecycleRecord[] = [];
   const recordKeys = new Set<string>();
@@ -1102,7 +1105,7 @@ async function sourcePayload(
     if (pinned.status !== "absent") return null;
     const recalled = await deps.corpus.recallInstitutional({
       lifecycleKey: source.key,
-      limit: LIFECYCLE_RECALL_LIMIT,
+      limit: INSTITUTIONAL_RECALL_LIMIT,
     }, signal);
     throwIfAborted(signal);
     if (!recalled.success) return null;
@@ -3276,7 +3279,9 @@ const lifecycleReadRouteFailure = (
   const routeCode = result.status === "blocked" ? result.code : null;
   const step = result.status === "blocked" && "readStep" in result
     ? result.readStep
-    : undefined;
+    : routeCode === "lifecycle_provider_recall_overflow"
+      ? "recall"
+      : undefined;
   const phase = result.status === "blocked" && "readPhase" in result
     ? result.readPhase
     : undefined;
@@ -3608,6 +3613,9 @@ export const coordinateLifecycleRecall = async (
     });
     throwIfAborted(signal);
     if (!authorityUnchanged) return lifecycleReadFailure("lifecycle_read_authority_changed");
+    if (records.length >= MAX_LIFECYCLE_READ_RESULTS) {
+      return lifecycleReadFailure("lifecycle_read_verification_failed");
+    }
 
     const results = orderedLifecycleReadDescriptors(
       records,
@@ -3891,7 +3899,7 @@ const LIFECYCLE_CONTENT_ADJUDICATION_PARAMETERS = Type.Object({
   }),
   decisions: Type.Array(LIFECYCLE_CONTENT_ADJUDICATION_DECISION_PARAMETERS, {
     minItems: 1,
-    maxItems: MAX_LIFECYCLE_READ_RESULTS,
+    maxItems: MAX_LIFECYCLE_CONTENT_DECISIONS,
     description: "One explicit closed decision for every disclosed warning finding.",
   }),
 }, { additionalProperties: false });
@@ -3951,7 +3959,7 @@ const LIFECYCLE_READ_REFERENCE_PARAMETERS = Type.Union([
 const LIFECYCLE_RECALL_TOOL_PARAMETERS = Type.Object({
   lifecycleKey: Type.String({ minLength: 1, maxLength: 512, pattern: CONTROL_SAFE_STRING_PATTERN, description: "Exact lifecycle key. Provider and checkout are derived from trusted local authority." }),
   phase: Type.Optional(LIFECYCLE_READ_PHASE_PARAMETERS),
-  limit: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_LIFECYCLE_READ_RESULTS, description: "Maximum verified descriptors; defaults to 20." })),
+  limit: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_LIFECYCLE_READ_RESULTS, description: "Maximum verified descriptors; defaults to 50." })),
 }, { additionalProperties: false });
 
 const LIFECYCLE_GET_SELECTOR_TOOL_PARAMETERS = Type.Object({
@@ -4063,7 +4071,7 @@ const lifecycleContentAdjudicationEnvelope = (value: unknown): {
   const request = ownDataRecord(value, ["contentAdjudication"]);
   const adjudication = request && ownDataRecord(request.contentAdjudication, ["handle", "decisions"]);
   const handle = adjudication?.handle;
-  const decisions = closedDataArray(adjudication?.decisions, MAX_LIFECYCLE_READ_RESULTS);
+  const decisions = closedDataArray(adjudication?.decisions, MAX_LIFECYCLE_CONTENT_DECISIONS);
   if (typeof handle !== "string" || !PIN_ATTEMPT_ID_PATTERN.test(handle) || !decisions?.length) {
     return null;
   }
@@ -4120,7 +4128,7 @@ const pendingLifecycleContentOperation = (
   if (!operation) return null;
   const kind = operation.kind;
   if (kind !== "write" && kind !== "read-get" && kind !== "read-recall") return null;
-  const decisions = closedDataArray(operation.warningDecisions, MAX_LIFECYCLE_READ_RESULTS);
+  const decisions = closedDataArray(operation.warningDecisions, MAX_LIFECYCLE_CONTENT_DECISIONS);
   if (!decisions?.length) return null;
   const projected = decisions.map((entry) => ownDataRecord(entry, ["finding", "findings"], ["binding"]));
   if (projected.some((entry) => entry === null)) return null;
@@ -4148,7 +4156,7 @@ const pendingLifecycleContentOperation = (
   ) return null;
   const suppliedBindings = closedDataArray(
     operation.approvedWarningBindings,
-    MAX_LIFECYCLE_READ_RESULTS,
+    MAX_LIFECYCLE_CONTENT_DECISIONS,
   );
   const derivedBindings = warningDecisions.flatMap(({ binding }) => binding ? [binding] : []);
   if (kind === "write" && operation.approvedWarningBindings !== undefined) return null;
@@ -4482,7 +4490,7 @@ export default function integrations(pi: ExtensionAPI) {
   pi.registerTool({
     name: "ima_lifecycle_recall",
     label: "Recall IMA lifecycle artifacts",
-    description: "Read-only lifecycle recall. Returns at most 20 complete-identity descriptors from the checkout's pinned provider, or exact all-phase historical Qdrant authority when genuinely unpinned. It never selects a provider, writes, pins, falls back, or exposes native provider locations.",
+    description: "Read-only lifecycle recall. Returns at most 50 complete-identity descriptors from the checkout's pinned provider, or exact all-phase historical Qdrant authority when genuinely unpinned. It never selects a provider, writes, pins, falls back, or exposes native provider locations.",
     parameters: LIFECYCLE_RECALL_TOOL_PARAMETERS,
     execute: async (_id, request, signal, _update, ctx) => {
       let warning: {

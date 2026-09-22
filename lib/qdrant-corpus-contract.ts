@@ -33,6 +33,7 @@ export type CorpusErrorCode =
   | "record_too_large"
   | "record_conflict"
   | "record_incomplete"
+  | "lifecycle_scroll_non_terminal"
   | "embedding_dimension_mismatch"
   | "embedding_failed"
   | "store_failed"
@@ -97,6 +98,7 @@ const corpusErrorGuidance: Record<CorpusErrorCode, string> = {
   record_too_large: "Reduce the bounded record or result payload before retrying.",
   record_conflict: "Use a new record key; immutable records are never overwritten.",
   record_incomplete: "Inspect the immutable manifest and chunk set; incomplete detail was not returned.",
+  lifecycle_scroll_non_terminal: "The bounded lifecycle scroll has more records; no partial lifecycle recall was returned.",
   embedding_dimension_mismatch: "Verify the approved embedding model and 768-value vector contract.",
   embedding_failed: "Check the local Ollama service and approved embedding model.",
   store_failed: "Check local Qdrant service and operator configuration; no overwrite was performed.",

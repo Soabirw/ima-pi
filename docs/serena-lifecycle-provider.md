@@ -68,7 +68,9 @@ Alternative layout, unregistered/unavailable project, relative/noncanonical path
 
 - `persist(request, signal?)` snapshots and validates the canonical lifecycle request; acquires a per-project native exclusion; prepares the MCP session; activates and inspects the project; lists names; reads and verifies an existing exact target when present; otherwise performs at most one write; then directly reads back and fully verifies it. It returns `stored` only after that direct read-back. An exact same request returns `unchanged`; a changed, malformed, ambiguous, or unverifiable target blocks with no overwrite, repair, fallback, or second write.
 - `get(reference, signal?)` and `reconcile(reference, signal?)` use the exact session protocol, activate the exact project, find exactly the named memory, read it, and verify the complete reference and record. Both are read-only.
-- `recall(selection, signal?)` accepts only an exact lifecycle key, optional lifecycle phase, and a limit of 1–20. It returns only complete verified records or one bounded blocked result; it never returns authoritative partial evidence.
+- `recall(selection, signal?)` accepts only an exact lifecycle key, optional lifecycle phase, and a limit of 1–50 that defaults to 50. It returns only complete verified records or one bounded blocked result; it never returns authoritative partial evidence.
+
+A complete Serena provider recall may contain exactly 50 records, but the provider-neutral public `ima_lifecycle_recall` treats that internally complete count as saturated and returns no descriptors; a successful public result contains at most 49 verified descriptors.
 
 The deterministic memory name is `ima-serena-lifecycle-v1-<lifecycle-key-digest>-<phase>-<artifact-id>`. The provider validates canonical artifact framing, nonce, lifecycle identity, record key, content/request/canonical integrity values, timestamp, serialized bytes, and project/reference binding before treating a record as evidence.
 

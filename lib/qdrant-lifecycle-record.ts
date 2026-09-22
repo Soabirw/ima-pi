@@ -29,7 +29,7 @@ export const QDRANT_LIFECYCLE_PROVIDER = "qdrant";
 export const QDRANT_LIFECYCLE_REFERENCE_SCHEMA_VERSION = 1;
 export const QDRANT_LIFECYCLE_REPOSITORY = "ima-pi";
 export const QDRANT_LIFECYCLE_SITE = "";
-export const MAX_QDRANT_LIFECYCLE_RECALL_LIMIT = 20;
+export const MAX_QDRANT_LIFECYCLE_RECALL_LIMIT = 50;
 
 export type QdrantLifecycleSelection = {
   lifecycleKey: string;

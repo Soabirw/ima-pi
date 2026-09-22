@@ -1208,3 +1208,36 @@ test("withholds warning-tier provider content until an internal continuation bin
   assert.equal(approvedRead.status, "verified");
   assert.equal(approvedRead.status === "verified" ? approvedRead.records.length : 0, 1);
 });
+
+test("accepts the fifty-record lifecycle routing bound and rejects fifty-one before adapter recall", async () => {
+  const calls = [];
+  const routing = createLifecycleRouting([{
+    provider: "qdrant",
+    recall: async (selection) => {
+      calls.push(structuredClone(selection));
+      return { status: "verified", provider: "qdrant", records: [] };
+    },
+  }]);
+
+  const accepted = await routeLifecycleRecall({
+    routing,
+    provider: "qdrant",
+    lifecycleKey,
+    limit: 50,
+  });
+  assert.deepEqual(accepted, { status: "verified", provider: "qdrant", records: [] });
+  assert.deepEqual(calls, [{ lifecycleKey, limit: 50 }]);
+
+  const rejected = await routeLifecycleRecall({
+    routing,
+    provider: "qdrant",
+    lifecycleKey,
+    limit: 51,
+  });
+  assert.deepEqual(rejected, {
+    status: "blocked",
+    provider: "qdrant",
+    code: "lifecycle_recall_request_invalid",
+  });
+  assert.deepEqual(calls, [{ lifecycleKey, limit: 50 }]);
+});

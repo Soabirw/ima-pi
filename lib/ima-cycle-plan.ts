@@ -23,7 +23,7 @@ import {
 } from "./ima-lifecycle-routing.ts";
 import { normalizeLifecycleProvider, type LifecycleProviderName } from "./ima-lifecycle-selection.ts";
 
-export const PLAN_RECALL_LIMIT = 20;
+export const PLAN_RECALL_LIMIT = 50;
 
 export type PlanApprovalReference = {
   version: 1;

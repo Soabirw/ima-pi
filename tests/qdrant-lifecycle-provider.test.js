@@ -528,3 +528,54 @@ test("fails closed on unverified read-back and never falls back or repairs recal
   assert.equal(invalidSelection.code, "qdrant_selection_invalid");
   assert.equal(corpus.calls.insertPoints.length, writesBeforeRecall);
 });
+
+test("accepts lifecycle limits through fifty, rejects fifty-one before recall, and maps only non-terminal scrolls to overflow", async () => {
+  let recalled = success([]);
+  const corpus = createCorpus({
+    onRecallLifecycleInstitutional: async () => recalled,
+  });
+  const provider = createQdrantLifecycleProvider({ client: corpus.client });
+
+  for (const limit of [49, 50]) {
+    const result = await provider.recall({
+      lifecycleKey: planeIdentity.lifecycleKey,
+      phase: "implementation",
+      limit,
+    });
+    assert.ok(Array.isArray(result), String(limit));
+  }
+
+  const callsBeforeRejectedLimit = corpus.calls.recallLifecycleInstitutional.length;
+  const rejected = await provider.recall({
+    lifecycleKey: planeIdentity.lifecycleKey,
+    phase: "implementation",
+    limit: 51,
+  });
+  assert.equal(rejected.status, "blocked");
+  assert.equal(rejected.code, "qdrant_selection_invalid");
+  assert.equal(corpus.calls.recallLifecycleInstitutional.length, callsBeforeRejectedLimit);
+
+  recalled = failure("lifecycle_scroll_non_terminal");
+  const overflow = await provider.recall({
+    lifecycleKey: planeIdentity.lifecycleKey,
+    phase: "implementation",
+    limit: 50,
+  });
+  assert.equal(overflow.status, "blocked");
+  assert.equal(overflow.code, "lifecycle_provider_recall_overflow");
+
+  recalled = failure("record_incomplete");
+  const incomplete = await provider.recall({
+    lifecycleKey: planeIdentity.lifecycleKey,
+    phase: "implementation",
+    limit: 50,
+  });
+  assert.equal(incomplete.status, "blocked");
+  assert.equal(incomplete.code, "record_incomplete");
+  assert.notEqual(incomplete.code, "lifecycle_provider_recall_overflow");
+  assert.deepEqual(
+    corpus.calls.recallLifecycleInstitutional.map(({ selection }) => selection.limit),
+    [49, 50, 50, 50],
+  );
+  assert.deepEqual(corpus.calls.insertPoints, []);
+});

@@ -39,9 +39,9 @@ Do not use `ima_corpus_recall` at `limit: 20` or `ima_corpus_get` for lifecycle 
 remain institutional Qdrant-only.
 
 In every fresh narration session, recall every descriptor for this lifecycle with
-`ima_lifecycle_recall` and `limit: 20`. The public pair derives checkout-pin authority or, only
+`ima_lifecycle_recall` and `limit: 50`. The public pair derives checkout-pin authority or, only
 while genuinely unpinned, exact all-phase historical
-Tier-1 Qdrant authority. If 20 descriptors return, lifecycle evidence is potentially saturated; report that
+Tier-1 Qdrant authority. If 50 descriptors return, lifecycle evidence is potentially saturated; report that
 it cannot prove completeness and stop. A descriptor, summary, handoff pointer, or cache is not
 review evidence.
 

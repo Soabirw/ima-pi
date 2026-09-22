@@ -249,6 +249,33 @@ test("lifecycle recall accepts terminal scroll pages at zero, fewer-than-limit, 
   }
 });
 
+test("lifecycle recall completes 49 and exactly 50 terminal records at the lifecycle cap", async () => {
+  const recordsFor = (count) => Array.from({ length: count }, (_unused, index) => makeStored({
+    schemaVersion: 1,
+    summary: `Terminal lifecycle evidence ${index + 1}.`,
+    artifact: `# Plan\n\nTerminal lifecycle evidence ${index + 1}.`,
+  }));
+
+  for (const count of [49, 50]) {
+    const records = recordsFor(count);
+    const corpus = createHttpCorpus({
+      summaryPoints: records.map((record) => record.summaryPoint),
+      points: pointMap(records.flatMap((record) => record.points)),
+    });
+    const result = await corpus.client.recallLifecycleInstitutional({
+      lifecycleKey,
+      phase: "plan",
+      limit: 50,
+    });
+
+    assert.equal(result.success, true, String(count));
+    if (!result.success) continue;
+    assert.equal(result.data.length, count, String(count));
+    assert.equal(corpus.calls.scroll[0].limit, 50, String(count));
+    assert.equal(corpus.calls.direct.length, count, String(count));
+  }
+});
+
 test("lifecycle recall requires terminal scroll completeness before direct detail reads", async () => {
   const v1 = makeStored({
     schemaVersion: 1,
@@ -260,13 +287,13 @@ test("lifecycle recall requires terminal scroll completeness before direct detai
       label: "non-null string continuation on a fewer-than-limit page",
       limit: 2,
       scrollResponse: { result: { points: [v1.summaryPoint], next_page_offset: "next-page" } },
-      code: "record_incomplete",
+      code: "lifecycle_scroll_non_terminal",
     },
     {
       label: "non-null numeric continuation at the limit",
       limit: 1,
       scrollResponse: { result: { points: [v1.summaryPoint], next_page_offset: 1 } },
-      code: "record_incomplete",
+      code: "lifecycle_scroll_non_terminal",
     },
     {
       label: "missing continuation metadata on a zero-point page",
@@ -298,6 +325,33 @@ test("lifecycle recall requires terminal scroll completeness before direct detai
     assert.equal(corpus.calls.scroll.length, 1, item.label);
     assert.deepEqual(corpus.calls.direct, [], item.label);
   }
+});
+
+test("lifecycle recall blocks a continuation past fifty records before direct detail reads", async () => {
+  const records = Array.from({ length: 50 }, (_unused, index) => makeStored({
+    schemaVersion: 1,
+    summary: `Overflow lifecycle evidence ${index + 1}.`,
+    artifact: `# Plan\n\nOverflow lifecycle evidence ${index + 1}.`,
+  }));
+  const corpus = createHttpCorpus({
+    summaryPoints: [],
+    points: pointMap([]),
+    scrollResponse: {
+      result: {
+        points: records.map((record) => record.summaryPoint),
+        next_page_offset: "record-51",
+      },
+    },
+  });
+
+  const result = await corpus.client.recallLifecycleInstitutional({
+    lifecycleKey,
+    phase: "plan",
+    limit: 50,
+  });
+
+  assert.deepEqual(result, failure("lifecycle_scroll_non_terminal"));
+  assert.deepEqual(corpus.calls.direct, []);
 });
 
 test("lifecycle recall rejects accessor-backed continuation metadata before direct reads", async () => {
@@ -456,5 +510,6 @@ test("provider surfaces unverifiable direct lifecycle history as blocked without
   const result = await provider.recall({ lifecycleKey, phase: "plan", limit: 1 });
   assert.equal(result.status, "blocked");
   assert.equal(result.code, "record_incomplete");
+  assert.notEqual(result.code, "lifecycle_provider_recall_overflow");
   assert.equal(corpus.calls.direct.length > 0, true);
 });

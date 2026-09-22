@@ -33,7 +33,8 @@ export type QdrantLifecycleFailureCode = CorpusErrorCode
   | "qdrant_selection_invalid"
   | "qdrant_time_invalid"
   | "qdrant_verification_failed"
-  | "qdrant_recall_unverifiable";
+  | "qdrant_recall_unverifiable"
+  | "lifecycle_provider_recall_overflow";
 
 export type QdrantLifecycleBlockedResult = {
   provider: "qdrant";
@@ -105,6 +106,11 @@ const corpusCode = (
   fallback: QdrantLifecycleFailureCode,
 ): QdrantLifecycleFailureCode =>
   typeof value === "string" && isCorpusErrorCode(value) ? value : fallback;
+
+const lifecycleRecallCode = (code: QdrantLifecycleFailureCode): QdrantLifecycleFailureCode =>
+  code === "lifecycle_scroll_non_terminal"
+    ? "lifecycle_provider_recall_overflow"
+    : code;
 
 const lifecycleCode = (value: unknown): QdrantLifecycleFailureCode =>
   typeof value === "string" && LIFECYCLE_FAILURE_CODES.has(value as QdrantLifecycleFailureCode)
@@ -467,7 +473,7 @@ export const createQdrantLifecycleProvider = (input: {
     if (isAborted(signal)) return blocked("aborted");
     const recallResult = observedCorpusResult(recalled, "query_failed");
     if (!recallResult) return blocked("query_failed");
-    if (!recallResult.success) return blocked(recallResult.code);
+    if (!recallResult.success) return blocked(lifecycleRecallCode(recallResult.code));
     const recalledRecords = detachedDataArray(recallResult.data, selection.limit);
     if (!recalledRecords) return blocked("qdrant_recall_unverifiable");
 

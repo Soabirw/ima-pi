@@ -342,7 +342,8 @@ test("fails closed for malformed evidence and returns detached closed projection
     }),
     null,
   );
-  assert.equal(projectQdrantLifecycleSelection({ ...selection, limit: 21 }), null);
+  assert.ok(projectQdrantLifecycleSelection({ ...selection, limit: 50 }));
+  assert.equal(projectQdrantLifecycleSelection({ ...selection, limit: 51 }), null);
   assert.equal(projectQdrantLifecycleReference({ ...reference, extra: true }), null);
 
   verified.sourceRefs.push("caller-mutation");

@@ -172,11 +172,11 @@ Never infer a name from prose, a file name, similarity, or prior history. Do not
 an invalid adjustment: it requires correction, then a new complete preview and renewed human
 approval; no prior approval survives an adjustment. Convert the approved key to the canonical
 handoff `lifecycle:<key>`. Perform an exact public `ima_lifecycle_recall` collision check at
-`limit: 20`: descriptors are not evidence. An existing exact key may proceed only through the human-selected resume path,
+`limit: 50`: descriptors are not evidence. An existing exact key may proceed only through the human-selected resume path,
 and an expected-empty exact key may proceed only through the human-selected new path. For a resume, call
 `ima_lifecycle_get` with only the selected descriptor's exact `lifecycleKey`, `phase`, and `artifactId`
 before acting; never reconstruct or send its proof fields. A collision, missing requested resume,
-20-result potential overflow, multiple result, incomplete evidence, or any uncertainty is `BLOCKED`.
+50-result potential overflow, multiple result, incomplete evidence, or any uncertainty is `BLOCKED`.
 Never create or consult a naming registry, auto-suffix, merge, overwrite, or similarity-match a manual identity.
 
 The manual identity/new-versus-resume decision and required first-use BookStack placement consent
@@ -184,8 +184,8 @@ are human-owned and independent of plan approval. Autonomous mode never supplies
 decision; it pauses for the human gate before the first persistence.
 
 After the one hydration and, for file/text work, the completed manual identity gate, load
-`ima-lifecycle-contract` and call `ima_lifecycle_recall` for the exact lifecycle key at `limit: 20`.
-Its results are descriptors only: if 20 return, block as potentially overflowed; otherwise select
+`ima-lifecycle-contract` and call `ima_lifecycle_recall` for the exact lifecycle key at `limit: 50`.
+Its results are descriptors only: if 50 return, block as potentially overflowed; otherwise select
 matching required descriptors and call `ima_lifecycle_get` for each with only its exact
 `lifecycleKey`, `phase`, and `artifactId` before acting. The package freshly resolves each exact phase
 and keeps descriptor proof fields out of model-generated arguments. Accept a prior artifact only after its complete result verifies lifecycle/source identity, phase and terminal

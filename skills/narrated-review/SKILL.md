@@ -15,9 +15,9 @@ perform, repeat, or alter the review.
 - Do not use `ima_corpus_recall` at `limit: 20` or `ima_corpus_get` for lifecycle evidence; both
   remain institutional Qdrant-only.
 - In every fresh narration session, call `ima_lifecycle_recall` for the exact lifecycle key at
-  `limit: 20`. It derives the checkout pin or, only while genuinely unpinned, exact historical
+  `limit: 50`. It derives the checkout pin or, only while genuinely unpinned, exact historical
   Qdrant authority.
-- Its results are descriptors only. If 20 descriptors return, treat lifecycle evidence as potentially saturated
+- Its results are descriptors only. If 50 descriptors return, treat lifecycle evidence as potentially saturated
   and stop; the bounded response cannot prove completeness.
 - Filter descriptors to `review` or `rereview` candidates. If none remain, report the missing
   completed-review prerequisite and stop.

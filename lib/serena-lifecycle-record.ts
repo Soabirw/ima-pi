@@ -17,7 +17,7 @@ import { utf8ByteLength } from "./qdrant-corpus.ts";
 export const SERENA_LIFECYCLE_PROVIDER = "serena";
 export const SERENA_LIFECYCLE_SCHEMA_VERSION = 1;
 export const SERENA_LIFECYCLE_NAMESPACE = "ima-serena-lifecycle-v1";
-export const MAX_SERENA_LIFECYCLE_RECALL_LIMIT = 20;
+export const MAX_SERENA_LIFECYCLE_RECALL_LIMIT = 50;
 export const MAX_SERENA_LIFECYCLE_MEMORY_CHARACTERS = 200_000;
 export const MAX_SERENA_LIFECYCLE_MEMORY_BYTES = 256_000;
 export const MAX_SERENA_LIFECYCLE_PROJECT_NAME_BYTES = 256;
