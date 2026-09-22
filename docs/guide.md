@@ -40,9 +40,11 @@ These names classify handling only; use no real values in source control, exampl
 | `CLOUDFLARE_API_MEMORY`, `BOOKSTACK_TOKEN_ID`, and `BOOKSTACK_TOKEN_SECRET` | **Secrets** for shared-memory operations. |
 | `SYNC_COORDINATOR` | **Platform binding** for the separate Worker; Pi BookStack tools do not consume it. |
 | Invoking shell environment | **Local-only value** for developer-scoped shared-memory configuration. |
-| `IMA_QDRANT_URL` and `IMA_OLLAMA_URL` | **Non-secret variables** only when a Qdrant/Ollama capability is invoked. |
-| Qdrant or Ollama credentials | **Secrets**. |
-| Local Qdrant data and synthetic fixtures | **Local-only values**. |
+| `IMA_QDRANT_URL` and `IMA_OLLAMA_URL` | **Non-secret variables** only when a Qdrant/Ollama capability is invoked. `IMA_QDRANT_URL` supplies a trusted Qdrant endpoint **platform binding**, never a reset argument. |
+| Qdrant endpoint and institutional collection | **Platform bindings** from trusted configuration; a lifecycle reset neither selects nor changes them. |
+| Qdrant or Ollama credentials/tokens | **Secrets** in environment-only secret storage; never source-control, report, or paste them. |
+| Lifecycle keys, reset report paths, report/inventory/pin hashes, counts, and non-sensitive artifact or point IDs | **Non-secret variables**. A report hash binds one reset operation; it is not a credential. |
+| Reset reports, archives, snapshot identifiers/receipts, pins, leases, recovery state, local Qdrant data, and synthetic fixtures | **Local-only values**. |
 | `SERENA_HOME`, when an integrator uses it outside the Serena provider | **Non-secret variable**; the provider itself does not configure it. |
 | Serena project paths, `.serena` configuration/memories, and retained sidecars | **Local-only values**. |
 | Serena, MCP, service, or platform credentials/tokens | **Secrets**. |
@@ -53,7 +55,7 @@ These names classify handling only; use no real values in source control, exampl
 | Configured provider service, project, or workspace destinations | **Platform bindings** where applicable; they are internal authority context, never public lifecycle-read inputs. |
 | Checkout-local pin registry and retained BookStack writing attempts/checkpoints | **Local-only values**. |
 
-Qdrant, Serena, Markdown, and the lifecycle authority contract add no new platform binding. Configured provider destinations remain separately classified platform bindings where applicable. This guide invents no preference key and enables no automatic preference loading.
+This guide introduces no new platform binding or preference key. The existing trusted Qdrant endpoint/collection and configured provider destinations remain separately classified **platform bindings** where applicable; the guide enables no automatic preference loading.
 
 ### Owner-owned readiness gates
 
@@ -139,6 +141,16 @@ Lifecycle evidence has three fixed operator-facing roles: **P** is the verified 
 Existing legacy rootless phases other than `plan` or `decision` remain unchanged but block. They have no repair, migration, repinning, or fallback path. A future rootless first write for a phase other than `plan` or `decision` is rejected before any effect. A `decision` never satisfies approved technical-plan selection; cycle adoption and closeout require a distinct approved `plan`. Before tracker effects, closeout revalidates the exact P/R/S lineage and blocks on any missing or mismatched evidence; it never auto-closes a tracker.
 
 This selector form does not change the provider-neutral authority or lineage semantics below. Their approved evidence is baseline canonical source `plane:ima:SKYNET-230`, final approved rereview `d2ffc65d-35ae-57cd-bfc2-ed9f3c65c69c`, and assessment `direct:d7f62171-e139-422b-a05b-7b59b929fef1`; verified decision-seed correction `plane:ima:SKYNET-245`.
+
+### Report-bound Qdrant lifecycle reset
+
+For the exceptional reset of one exact Qdrant-pinned lifecycle authority, use only [`prompts/ima:qdrant-lifecycle-reset.md`](../prompts/ima:qdrant-lifecycle-reset.md): `/ima:qdrant-lifecycle-reset <lifecycle-key>`, then its returned `execute <report-path> <report-hash>` or, only to prove already-complete removal, `reconcile <report-path> <report-hash>`. The prompt uses `ima_qdrant_lifecycle_reset`, whose object-root request accepts only its exact route fields; do not replace it with direct Qdrant, filesystem, lifecycle, BookStack, tracker, or closeout calls.
+
+`prepare` is mutation-free for Qdrant and the pin. It completely inventories only the exact key's validated schema-v1 records and schema-v2 manifests/chunks, then writes protected checkout-local archive/report evidence. The report binds the expected pin, archive, attempt, inventory fingerprint, report-listed UUIDs, counts, path, and SHA-256. `execute` accepts only that exact path/hash binding, validates the report/archive/pin/inventory again, takes one trusted UI intent confirmation before recovery/snapshot work, and takes a second trusted UI deletion confirmation only after a verified snapshot receipt. It deletes only report-listed UUIDs and clears recovery only after direct plus exhaustive absence proof.
+
+`reconcile` uses the same exact report/path/hash binding and one trusted UI intent confirmation, but is Qdrant-read-only: it neither creates a snapshot nor deletes. It clears local recovery only after complete absence proof. Cancellation, mismatches, partial or uncertain outcomes, failed verification, and contention retain blocking recovery; there is no retry, fallback, migration, broad deletion, BookStack/tracker/closeout action, or automatic repin. Ordinary lifecycle operations reject while recovery is retained. After proof clears it, only a normal first write rooted in a rootless `plan` or `decision` may establish a new pin.
+
+Reset and ordinary lifecycle persistence share one checkout-local lease. It fails closed on busy, stale, or unavailable local state, but does not coordinate external writers or other checkouts. No live Qdrant execution or snapshot-restore acceptance has been performed. The provider runbook has the full [report-bound reset protocol and configuration classifications](qdrant-lifecycle-provider.md#report-bound-qdrant-lifecycle-reset).
 
 ### Provider-neutral lifecycle reads
 

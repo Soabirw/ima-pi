@@ -24,6 +24,7 @@ import {
   detailChunkIds,
   deriveRecordId,
   normalizeInstitutionalManifestPoint,
+  normalizeInstitutionalRecord,
   reassembleInstitutionalManifest,
   storeInstitutionalManifest,
 } from "../lib/qdrant-corpus.ts";
@@ -34,8 +35,11 @@ import {
 } from "../lib/ima-lifecycle.ts";
 import {
   abandonLifecyclePinAttemptWith,
+  advanceQdrantLifecyclePinRecoveryWith,
   beginLifecyclePinWith,
+  beginQdrantLifecyclePinRecoveryWith,
   claimLifecyclePinRecoveryWith,
+  clearQdrantLifecyclePinRecoveryWith,
   confirmLifecyclePinWith,
   loadLifecyclePinStateWith,
   markLifecyclePinAttemptWritingWith,
@@ -44,6 +48,15 @@ import {
   createLifecycleProviderPin,
   createLifecycleProviderPinAttempt,
 } from "../lib/ima-lifecycle-pin.ts";
+import {
+  createQdrantLifecycleRecoveryAbsenceProof,
+  createQdrantLifecycleRecoveryCheckpoint,
+  qdrantLifecycleRecoveryPinFingerprint,
+} from "../lib/qdrant-lifecycle-recovery-report.ts";
+import {
+  executeQdrantLifecycleReset,
+  prepareQdrantLifecycleReset,
+} from "../lib/qdrant-lifecycle-recovery.ts";
 import {
   createLifecycleRouting,
   lifecycleReadReferenceFor,
@@ -1389,6 +1402,362 @@ const pinQdrantAttempt = async (root, attempt) => {
   assert.equal(confirmed.status, "pinned");
   return pin;
 };
+
+const qdrantRecoveryInventory = () => {
+  const normalized = normalizeInstitutionalRecord({
+    recordKey: `${lifecycleKey}:plan:0123456789ab`,
+    project: identity.project,
+    site: "",
+    repo: "ima-pi",
+    lifecycleKey,
+    phase: "plan",
+    summary: "Exact Qdrant recovery inventory fixture.",
+    detail: "# Recovery inventory\n\nBounded test evidence.",
+    sourceRefs: identity.sourceRefs,
+  }, "2026-08-31T12:00:00.000Z");
+  assert.equal(normalized.success, true, "recovery inventory fixture must normalize");
+  if (!normalized.success) throw new Error("recovery inventory fixture is invalid");
+  return {
+    schemaVersion: 1,
+    lifecycleKey,
+    records: [{
+      storageSchemaVersion: 1,
+      recordKey: normalized.data.recordKey,
+      contentHash: normalized.data.payload.content_hash,
+      points: [{ id: normalized.data.id, payload: structuredClone(normalized.data.payload) }],
+    }],
+  };
+};
+
+const qdrantRecoveryStage = async ({ root, pin, stage }) => {
+  const resolveProjectRoot = async () => root;
+  const expectedPinFingerprint = qdrantLifecycleRecoveryPinFingerprint(pin);
+  assert.ok(expectedPinFingerprint, "recovery fixture pin fingerprint must be valid");
+  const initial = createQdrantLifecycleRecoveryCheckpoint({
+    lifecycleKey,
+    attemptId: "00000000-0000-5000-8000-000000000009",
+    reportHash: "a".repeat(64),
+    inventoryFingerprint: "b".repeat(64),
+    expectedPinFingerprint,
+    stage: "prepared",
+    startedAt: "2026-08-31T12:00:00.000Z",
+  });
+  assert.ok(initial, "recovery checkpoint fixture must be valid");
+  const started = await beginQdrantLifecyclePinRecoveryWith(resolveProjectRoot)(root, pin, initial);
+  assert.equal(started.status, "recovering");
+  if (started.status !== "recovering") throw new Error("recovery fixture did not begin");
+  let recovery = started.recovery;
+  const transitions = ["snapshot_started", "snapshot_verified", "deletion_started"];
+  const limit = transitions.indexOf(stage);
+  for (const nextStage of transitions.slice(0, limit + 1)) {
+    const checkpoint = createQdrantLifecycleRecoveryCheckpoint({
+      lifecycleKey: recovery.checkpoint.lifecycleKey,
+      attemptId: recovery.checkpoint.attemptId,
+      reportHash: recovery.checkpoint.reportHash,
+      inventoryFingerprint: recovery.checkpoint.inventoryFingerprint,
+      expectedPinFingerprint: recovery.checkpoint.expectedPinFingerprint,
+      stage: nextStage,
+      startedAt: recovery.checkpoint.startedAt,
+      ...(nextStage === "snapshot_verified" || nextStage === "deletion_started"
+        ? { snapshotName: "recovery.snapshot" }
+        : {}),
+    });
+    assert.ok(checkpoint, `valid ${nextStage} checkpoint fixture`);
+    const advanced = await advanceQdrantLifecyclePinRecoveryWith(resolveProjectRoot)(
+      root,
+      recovery,
+      checkpoint,
+    );
+    assert.equal(advanced.status, "recovering");
+    if (advanced.status !== "recovering") throw new Error(`recovery fixture did not reach ${nextStage}`);
+    recovery = advanced.recovery;
+  }
+  assert.equal(recovery.checkpoint.stage, stage);
+  return recovery;
+};
+
+const deferred = () => {
+  let resolve;
+  const promise = new Promise((next) => { resolve = next; });
+  return { promise, resolve };
+};
+
+test("REVIEW-002 blocks every Qdrant recovery checkpoint before corpus, provider, confirmation, or pin effects", async (t) => {
+  for (const stage of ["prepared", "snapshot_started", "snapshot_verified", "deletion_started"]) {
+    const root = await pinTestRoot(t);
+    const pin = await pinQdrantAttempt(root, await authorizedPinAttempt(root));
+    const recovery = await qdrantRecoveryStage({ root, pin, stage });
+    const before = await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey);
+    assert.equal(before.status, "recovering", stage);
+    const inventory = qdrantRecoveryInventory();
+    const effects = { corpus: 0, confirmation: 0, now: 0 };
+    const corpus = new Proxy({}, {
+      get: () => {
+        effects.corpus += 1;
+        throw new Error("recovery must block before corpus access");
+      },
+    });
+    const routed = localRouting({
+      persist: async () => {
+        throw new Error("recovery must block before provider persistence");
+      },
+    });
+    const result = await coordinateLifecycle({
+      ...localLifecycleRequest("implementation", pin.artifactId),
+      provider: "qdrant",
+    }, localRoutingOptions(root, routed.routing, {
+      corpus,
+      now: () => {
+        effects.now += 1;
+        return new Date("2026-08-31T12:00:00.000Z");
+      },
+      confirmProvider: async () => {
+        effects.confirmation += 1;
+        const proof = createQdrantLifecycleRecoveryAbsenceProof({
+          checkpoint: recovery.checkpoint,
+          inventory,
+          verifiedAt: "2026-08-31T12:00:01.000Z",
+        });
+        assert.ok(proof, "the confirmation callback could clear recovery if invoked");
+        const cleared = await clearQdrantLifecyclePinRecoveryWith(async () => root)(
+          root,
+          recovery,
+          proof,
+        );
+        assert.equal(cleared.status, "cleared");
+        return true;
+      },
+    }));
+
+    assert.equal(result.status, "failed", stage);
+    assert.equal(result.error.code, "lifecycle_pin_recovery_unresolved", stage);
+    assert.deepEqual(effects, { corpus: 0, confirmation: 0, now: 0 }, stage);
+    assert.deepEqual(routed.calls, { qdrant: [], markdown: [] }, stage);
+    assert.deepEqual(
+      await loadLifecyclePinStateWith(async () => root)(root, lifecycleKey),
+      before,
+      stage,
+    );
+  }
+});
+
+test("REVIEW-003 uses one checkout-local lease across ordinary lifecycle and Qdrant reset boundaries", async (t) => {
+  const ordinaryRoot = await pinTestRoot(t);
+  const ordinaryPin = await pinQdrantAttempt(ordinaryRoot, await authorizedPinAttempt(ordinaryRoot));
+  const ordinaryInventory = qdrantRecoveryInventory();
+  const resetCalls = { inventory: 0, snapshot: 0, deletion: 0, absence: 0, confirmation: 0 };
+  const ordinaryResetDependencies = {
+    client: {
+      inventoryLifecycleRecovery: async () => {
+        resetCalls.inventory += 1;
+        return success(structuredClone(ordinaryInventory));
+      },
+      deleteLifecycleRecoveryInventory: async () => {
+        resetCalls.deletion += 1;
+        return success(undefined);
+      },
+      proveLifecycleRecoveryAbsence: async () => {
+        resetCalls.absence += 1;
+        return success(undefined);
+      },
+    },
+    createSnapshot: async () => {
+      resetCalls.snapshot += 1;
+      return success({ name: "ordinary-lease.snapshot" });
+    },
+    resolveProjectRoot: async () => ordinaryRoot,
+    now: () => new Date("2026-08-31T12:00:00.000Z"),
+    confirmReset: async () => {
+      resetCalls.confirmation += 1;
+      return null;
+    },
+  };
+  const ordinaryPrepared = await prepareQdrantLifecycleReset({
+    cwd: ordinaryRoot,
+    lifecycleKey,
+    dependencies: ordinaryResetDependencies,
+  });
+  assert.equal(ordinaryPrepared.status, "prepared");
+  if (ordinaryPrepared.status !== "prepared") return;
+
+  const initialRecord = routedQdrantRecord(localLifecycleRequest());
+  const persistenceEntered = deferred();
+  const releasePersistence = deferred();
+  const ordinaryProviderEffects = { reconcile: 0, persist: 0, readback: 0 };
+  const ordinaryRouting = localRouting({
+    reconcile: async () => {
+      ordinaryProviderEffects.reconcile += 1;
+      return { status: "verified", record: initialRecord };
+    },
+    persist: async (_request, defaultResult) => {
+      ordinaryProviderEffects.persist += 1;
+      persistenceEntered.resolve();
+      await releasePersistence.promise;
+      ordinaryProviderEffects.readback += 1;
+      return defaultResult;
+    },
+  });
+  const ordinary = coordinateLifecycle(
+    localLifecycleRequest("implementation", ordinaryPin.artifactId),
+    localRoutingOptions(ordinaryRoot, ordinaryRouting.routing),
+  );
+  let ordinaryResult;
+  try {
+    await persistenceEntered.promise;
+    const resetContender = await executeQdrantLifecycleReset({
+      cwd: ordinaryRoot,
+      reportPath: ordinaryPrepared.reportPath,
+      confirmation: ordinaryPrepared.reportHash,
+      dependencies: ordinaryResetDependencies,
+    });
+    assert.deepEqual(resetContender, {
+      status: "blocked",
+      code: "lifecycle_reset_in_progress",
+    });
+    assert.deepEqual(resetCalls, {
+      inventory: 1,
+      snapshot: 0,
+      deletion: 0,
+      absence: 0,
+      confirmation: 0,
+    });
+    assert.deepEqual(
+      await loadLifecyclePinStateWith(async () => ordinaryRoot)(ordinaryRoot, lifecycleKey),
+      { status: "pinned", pin: ordinaryPin },
+    );
+  } finally {
+    releasePersistence.resolve();
+    ordinaryResult = await ordinary;
+  }
+  assert.equal(ordinaryResult.status, "completed");
+  assert.deepEqual(ordinaryProviderEffects, { reconcile: 1, persist: 1, readback: 1 });
+
+  const resetRoot = await pinTestRoot(t);
+  const resetPin = await pinQdrantAttempt(resetRoot, await authorizedPinAttempt(resetRoot));
+  const resetInventory = qdrantRecoveryInventory();
+  const absenceEntered = deferred();
+  const releaseAbsence = deferred();
+  const resetEffects = { inventory: 0, snapshot: 0, deletion: 0, absence: 0, confirmation: 0 };
+  const resetDependencies = {
+    client: {
+      inventoryLifecycleRecovery: async () => {
+        resetEffects.inventory += 1;
+        return success(structuredClone(resetInventory));
+      },
+      deleteLifecycleRecoveryInventory: async () => {
+        resetEffects.deletion += 1;
+        return success(undefined);
+      },
+      proveLifecycleRecoveryAbsence: async () => {
+        resetEffects.absence += 1;
+        absenceEntered.resolve();
+        await releaseAbsence.promise;
+        return success(undefined);
+      },
+    },
+    createSnapshot: async () => {
+      resetEffects.snapshot += 1;
+      return success({ name: "reset-lease.snapshot" });
+    },
+    resolveProjectRoot: async () => resetRoot,
+    now: () => new Date("2026-08-31T12:00:00.000Z"),
+  };
+  const resetPrepared = await prepareQdrantLifecycleReset({
+    cwd: resetRoot,
+    lifecycleKey,
+    dependencies: resetDependencies,
+  });
+  assert.equal(resetPrepared.status, "prepared");
+  if (resetPrepared.status !== "prepared") return;
+  const resetReport = JSON.parse(await readFile(join(resetRoot, resetPrepared.reportPath), "utf8"));
+  const expectedStages = ["intent", "deletion"];
+  resetDependencies.confirmReset = async (confirmation) => {
+    const stage = expectedStages[resetEffects.confirmation];
+    assert.ok(stage, "reset must not retry or request an unbound confirmation");
+    assert.deepEqual(confirmation, {
+      operation: "execute",
+      stage,
+      lifecycleKey,
+      reportHash: resetPrepared.reportHash,
+      recordCount: resetReport.inventory.recordCount,
+      pointCount: resetReport.inventory.pointCount,
+      destructiveScope: {
+        kind: "report_listed_qdrant_lifecycle_inventory",
+        lifecycleKey,
+        inventoryFingerprint: resetReport.inventory.fingerprint,
+        recordCount: resetReport.inventory.recordCount,
+        pointCount: resetReport.inventory.pointCount,
+      },
+      ...(stage === "deletion" ? { snapshotReceipt: { name: "reset-lease.snapshot" } } : {}),
+    });
+    resetEffects.confirmation += 1;
+    return confirmation;
+  };
+  const resetting = executeQdrantLifecycleReset({
+    cwd: resetRoot,
+    reportPath: resetPrepared.reportPath,
+    confirmation: resetPrepared.reportHash,
+    dependencies: resetDependencies,
+  });
+  let resetResult;
+  try {
+    await absenceEntered.promise;
+    const recoveryBefore = await loadLifecyclePinStateWith(async () => resetRoot)(resetRoot, lifecycleKey);
+    assert.equal(recoveryBefore.status, "recovering");
+    if (recoveryBefore.status === "recovering") {
+      assert.equal(recoveryBefore.recovery.checkpoint.stage, "deletion_started");
+    }
+    const contenderEffects = { corpus: 0, confirmation: 0, now: 0 };
+    const contenderCorpus = new Proxy({}, {
+      get: () => {
+        contenderEffects.corpus += 1;
+        throw new Error("blocked ordinary lifecycle must not access corpus");
+      },
+    });
+    const contenderRouting = localRouting({
+      persist: async () => {
+        throw new Error("blocked ordinary lifecycle must not persist");
+      },
+    });
+    const ordinaryContender = await coordinateLifecycle(
+      localLifecycleRequest("implementation", resetPin.artifactId),
+      localRoutingOptions(resetRoot, contenderRouting.routing, {
+        corpus: contenderCorpus,
+        now: () => {
+          contenderEffects.now += 1;
+          return new Date("2026-08-31T12:00:00.000Z");
+        },
+        confirmProvider: async () => {
+          contenderEffects.confirmation += 1;
+          return true;
+        },
+      }),
+    );
+    assert.equal(ordinaryContender.status, "failed");
+    assert.equal(ordinaryContender.error.code, "lifecycle_operation_in_progress");
+    assert.deepEqual(contenderEffects, { corpus: 0, confirmation: 0, now: 0 });
+    assert.deepEqual(contenderRouting.calls, { qdrant: [], markdown: [] });
+    assert.deepEqual(
+      await loadLifecyclePinStateWith(async () => resetRoot)(resetRoot, lifecycleKey),
+      recoveryBefore,
+    );
+  } finally {
+    releaseAbsence.resolve();
+    resetResult = await resetting;
+  }
+  assert.equal(resetResult.status, "completed");
+  assert.deepEqual(resetEffects, {
+    inventory: 3,
+    snapshot: 1,
+    deletion: 1,
+    absence: 1,
+    confirmation: 2,
+  });
+  assert.deepEqual(
+    await loadLifecyclePinStateWith(async () => resetRoot)(resetRoot, lifecycleKey),
+    { status: "absent" },
+  );
+});
 
 const pinMarkdownLifecycleAuthority = async (root) => {
   const attempt = await authorizedPinAttempt(root, "markdown");

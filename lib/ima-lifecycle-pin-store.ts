@@ -11,17 +11,26 @@ import {
 } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
+  createQdrantLifecycleProviderRecovery,
   projectLifecycleProviderPin,
   projectLifecycleProviderPinAttempt,
+  projectQdrantLifecycleProviderRecovery,
   sameLifecycleProviderPin,
   sameLifecycleProviderPinAttempt,
+  sameQdrantLifecycleProviderRecovery,
   type LifecycleProviderPin,
   type LifecycleProviderPinAttempt,
+  type QdrantLifecycleProviderRecovery,
 } from "./ima-lifecycle-pin.ts";
 import {
   projectBookStackPageRecoveryCheckpoint,
 } from "./bookstack-lifecycle-recovery.ts";
 import { normalizeLifecycleRecordKey } from "./ima-lifecycle.ts";
+import {
+  projectQdrantLifecycleRecoveryAbsenceProof,
+  projectQdrantLifecycleRecoveryCheckpoint,
+  type QdrantLifecycleRecoveryCheckpoint,
+} from "./qdrant-lifecycle-recovery-report.ts";
 
 export const LIFECYCLE_PIN_STORE_DIRECTORY = ".ima-cycle";
 export const LIFECYCLE_PIN_STORE_FILENAME = "provider-pins.json";
@@ -35,7 +44,8 @@ const MAX_PIN_REGISTRY_ENTRIES = 256;
 
 type PinRegistryEntry =
   | { status: "pending"; attempt: LifecycleProviderPinAttempt }
-  | { status: "pinned"; pin: LifecycleProviderPin };
+  | { status: "pinned"; pin: LifecycleProviderPin }
+  | { status: "recovering"; recovery: QdrantLifecycleProviderRecovery };
 
 type PinRegistry = {
   schemaVersion: 1;
@@ -55,6 +65,7 @@ export type LifecyclePinLoadResult =
   | { status: "absent" }
   | { status: "pinned"; pin: LifecycleProviderPin }
   | { status: "pending"; attempt: LifecycleProviderPinAttempt }
+  | { status: "recovering"; recovery: QdrantLifecycleProviderRecovery }
   | { status: "corrupt" }
   | { status: "conflicting" }
   | { status: "inaccessible" };
@@ -78,6 +89,14 @@ export type LifecyclePinConfirmResult =
   | { status: "blocked"; code: string };
 
 export type LifecyclePinAbandonResult =
+  | { status: "cleared" }
+  | { status: "blocked"; code: string };
+
+export type LifecyclePinQdrantRecoveryResult =
+  | { status: "recovering"; recovery: QdrantLifecycleProviderRecovery }
+  | { status: "blocked"; code: string };
+
+export type LifecyclePinQdrantRecoveryClearResult =
   | { status: "cleared" }
   | { status: "blocked"; code: string };
 
@@ -179,8 +198,18 @@ const registryEntry = (value: unknown): PinRegistryEntry | null => {
     const pin = projectLifecycleProviderPin(entry.pin);
     return pin ? { status: "pinned", pin } : null;
   }
+  if (entry.status === "recovering" && keys.length === 2 && keys.includes("recovery")) {
+    const recovery = projectQdrantLifecycleProviderRecovery(entry.recovery);
+    return recovery ? { status: "recovering", recovery } : null;
+  }
   return null;
 };
+
+const entryLifecycleKey = (entry: PinRegistryEntry) => entry.status === "pinned"
+  ? entry.pin.lifecycleKey
+  : entry.status === "pending"
+    ? entry.attempt.lifecycleKey
+    : entry.recovery.lifecycleKey;
 
 export const parseLifecyclePinRegistry = (value: unknown): PinRegistry | null => {
   const registry = object(value);
@@ -190,9 +219,7 @@ export const parseLifecyclePinRegistry = (value: unknown): PinRegistry | null =>
   const entries = values.map(registryEntry);
   if (entries.some((entry) => entry === null)) return null;
   const projected = entries as PinRegistryEntry[];
-  const keys = projected.map((entry) => entry.status === "pinned"
-    ? entry.pin.lifecycleKey
-    : entry.attempt.lifecycleKey);
+  const keys = projected.map(entryLifecycleKey);
   if (new Set(keys).size !== keys.length) return null;
   const detached = clone(projected);
   return detached ? { schemaVersion: 1, entries: detached } : null;
@@ -288,9 +315,7 @@ const registryConflict = (value: unknown): boolean => {
   if (!registry || registry.schemaVersion !== LIFECYCLE_PIN_STORE_SCHEMA_VERSION || !values) return false;
   const entries = values.map(registryEntry);
   if (entries.some((entry) => entry === null)) return false;
-  const keys = (entries as PinRegistryEntry[]).map((entry) => entry.status === "pinned"
-    ? entry.pin.lifecycleKey
-    : entry.attempt.lifecycleKey);
+  const keys = (entries as PinRegistryEntry[]).map(entryLifecycleKey);
   return new Set(keys).size !== keys.length;
 };
 
@@ -327,9 +352,7 @@ const readRegistry = async (
 };
 
 const entryFor = (registry: PinRegistry, key: string): PinRegistryEntry | null =>
-  registry.entries.find((entry) => (entry.status === "pinned"
-    ? entry.pin.lifecycleKey
-    : entry.attempt.lifecycleKey) === key) ?? null;
+  registry.entries.find((entry) => entryLifecycleKey(entry) === key) ?? null;
 
 const acquireRegistryLock = async (
   root: string,
@@ -430,7 +453,9 @@ export const loadLifecyclePinStateWith = (
   if (!entry) return { status: "absent" };
   return entry.status === "pinned"
     ? { status: "pinned", pin: entry.pin }
-    : { status: "pending", attempt: entry.attempt };
+    : entry.status === "pending"
+      ? { status: "pending", attempt: entry.attempt }
+      : { status: "recovering", recovery: entry.recovery };
 };
 
 export const beginLifecyclePinWith = (
@@ -453,6 +478,9 @@ export const beginLifecyclePinWith = (
     const existing = entryFor(read.registry, attempt.lifecycleKey);
     if (existing?.status === "pinned") return { status: "pinned", pin: existing.pin };
     if (existing?.status === "pending") return { status: "pending", attempt: existing.attempt };
+    if (existing?.status === "recovering") {
+      return { status: "blocked", code: "lifecycle_pin_recovery_unresolved" };
+    }
     const next: PinRegistry = {
       schemaVersion: 1,
       entries: [...read.registry.entries, { status: "pending", attempt }],
@@ -591,6 +619,7 @@ export const confirmLifecyclePinWith = (
     }
     if (
       !existing
+      || existing.status !== "pending"
       || !sameLifecycleProviderPinAttempt(existing.attempt, attempt)
       || existing.attempt.status !== "writing"
     ) return { status: "blocked", code: "lifecycle_pin_attempt_conflict" };
@@ -602,6 +631,187 @@ export const confirmLifecyclePinWith = (
     };
     return await writeRegistry(store.root, store.paths, next)
       ? { status: "pinned", pin }
+      : { status: "blocked", code: "lifecycle_pin_store_write_failed" };
+  } finally {
+    await releaseRegistryLock(lock);
+  }
+};
+
+const recoveryMatchesStart = (
+  existing: QdrantLifecycleProviderRecovery,
+  requested: QdrantLifecycleProviderRecovery,
+) => existing.lifecycleKey === requested.lifecycleKey
+  && sameLifecycleProviderPin(existing.expectedPin, requested.expectedPin)
+  && existing.checkpoint.attemptId === requested.checkpoint.attemptId
+  && existing.checkpoint.reportHash === requested.checkpoint.reportHash
+  && existing.checkpoint.inventoryFingerprint === requested.checkpoint.inventoryFingerprint
+  && existing.checkpoint.expectedPinFingerprint === requested.checkpoint.expectedPinFingerprint
+  && existing.checkpoint.startedAt === requested.checkpoint.startedAt;
+
+const recoveryTransitionAllowed = (
+  current: QdrantLifecycleRecoveryCheckpoint,
+  next: QdrantLifecycleRecoveryCheckpoint,
+) => {
+  const sameBinding = current.lifecycleKey === next.lifecycleKey
+    && current.attemptId === next.attemptId
+    && current.reportHash === next.reportHash
+    && current.inventoryFingerprint === next.inventoryFingerprint
+    && current.expectedPinFingerprint === next.expectedPinFingerprint
+    && current.startedAt === next.startedAt;
+  if (!sameBinding) return false;
+  return current.stage === "prepared"
+    ? next.stage === "snapshot_started" && next.snapshotName === undefined
+    : current.stage === "snapshot_started"
+      ? next.stage === "snapshot_verified" && next.snapshotName !== undefined
+      : current.stage === "snapshot_verified"
+        ? next.stage === "deletion_started" && next.snapshotName === current.snapshotName
+        : false;
+};
+
+export const beginQdrantLifecyclePinRecoveryWith = (
+  resolveProjectRoot: ResolveLifecyclePinProjectRoot,
+) => async (
+  cwd: string,
+  expectedPinValue: unknown,
+  checkpointValue: unknown,
+): Promise<LifecyclePinQdrantRecoveryResult> => {
+  const expectedPin = projectLifecycleProviderPin(expectedPinValue);
+  const checkpoint = projectQdrantLifecycleRecoveryCheckpoint(checkpointValue);
+  const recovery = createQdrantLifecycleProviderRecovery({
+    lifecycleKey: expectedPin?.lifecycleKey,
+    expectedPin,
+    checkpoint,
+  });
+  if (
+    !expectedPin
+    || expectedPin.provider !== "qdrant"
+    || !checkpoint
+    || checkpoint.stage !== "prepared"
+    || !recovery
+  ) return { status: "blocked", code: "lifecycle_pin_recovery_invalid" };
+  const store = await prepareStore(cwd, resolveProjectRoot, true);
+  if (!store) return { status: "blocked", code: "lifecycle_pin_store_inaccessible" };
+  const lock = await acquireRegistryLock(store.root, store.paths);
+  if (!lock) return { status: "blocked", code: "lifecycle_pin_store_busy" };
+  try {
+    const read = await readRegistry(store.root, store.paths);
+    if (read.status === "corrupt" || read.status === "conflicting" || read.status === "inaccessible") {
+      return { status: "blocked", code: `lifecycle_pin_store_${read.status}` };
+    }
+    const existing = entryFor(read.registry, recovery.lifecycleKey);
+    if (existing?.status === "recovering") {
+      return recoveryMatchesStart(existing.recovery, recovery)
+        ? { status: "recovering", recovery: existing.recovery }
+        : { status: "blocked", code: "lifecycle_pin_recovery_conflict" };
+    }
+    if (existing?.status !== "pinned") {
+      return { status: "blocked", code: "lifecycle_pin_recovery_pin_missing" };
+    }
+    if (!sameLifecycleProviderPin(existing.pin, recovery.expectedPin)) {
+      return { status: "blocked", code: "lifecycle_pin_recovery_pin_conflict" };
+    }
+    const next: PinRegistry = {
+      schemaVersion: 1,
+      entries: read.registry.entries.map((entry) => entry === existing
+        ? { status: "recovering" as const, recovery }
+        : entry),
+    };
+    return await writeRegistry(store.root, store.paths, next)
+      ? { status: "recovering", recovery }
+      : { status: "blocked", code: "lifecycle_pin_store_write_failed" };
+  } finally {
+    await releaseRegistryLock(lock);
+  }
+};
+
+export const advanceQdrantLifecyclePinRecoveryWith = (
+  resolveProjectRoot: ResolveLifecyclePinProjectRoot,
+) => async (
+  cwd: string,
+  expectedRecoveryValue: unknown,
+  nextCheckpointValue: unknown,
+): Promise<LifecyclePinQdrantRecoveryResult> => {
+  const expected = projectQdrantLifecycleProviderRecovery(expectedRecoveryValue);
+  const nextCheckpoint = projectQdrantLifecycleRecoveryCheckpoint(nextCheckpointValue);
+  const next = createQdrantLifecycleProviderRecovery({
+    lifecycleKey: expected?.lifecycleKey,
+    expectedPin: expected?.expectedPin,
+    checkpoint: nextCheckpoint,
+  });
+  if (
+    !expected
+    || !nextCheckpoint
+    || !next
+    || !recoveryTransitionAllowed(expected.checkpoint, nextCheckpoint)
+  ) return { status: "blocked", code: "lifecycle_pin_recovery_invalid" };
+  const store = await prepareStore(cwd, resolveProjectRoot, true);
+  if (!store) return { status: "blocked", code: "lifecycle_pin_store_inaccessible" };
+  const lock = await acquireRegistryLock(store.root, store.paths);
+  if (!lock) return { status: "blocked", code: "lifecycle_pin_store_busy" };
+  try {
+    const read = await readRegistry(store.root, store.paths);
+    if (read.status === "corrupt" || read.status === "conflicting" || read.status === "inaccessible") {
+      return { status: "blocked", code: `lifecycle_pin_store_${read.status}` };
+    }
+    const existing = entryFor(read.registry, expected.lifecycleKey);
+    if (
+      !existing
+      || existing.status !== "recovering"
+      || !sameQdrantLifecycleProviderRecovery(existing.recovery, expected)
+    ) return { status: "blocked", code: "lifecycle_pin_recovery_conflict" };
+    const registry: PinRegistry = {
+      schemaVersion: 1,
+      entries: read.registry.entries.map((entry) => entry === existing
+        ? { status: "recovering" as const, recovery: next }
+        : entry),
+    };
+    return await writeRegistry(store.root, store.paths, registry)
+      ? { status: "recovering", recovery: next }
+      : { status: "blocked", code: "lifecycle_pin_store_write_failed" };
+  } finally {
+    await releaseRegistryLock(lock);
+  }
+};
+
+export const clearQdrantLifecyclePinRecoveryWith = (
+  resolveProjectRoot: ResolveLifecyclePinProjectRoot,
+) => async (
+  cwd: string,
+  expectedRecoveryValue: unknown,
+  proofValue: unknown,
+): Promise<LifecyclePinQdrantRecoveryClearResult> => {
+  const expected = projectQdrantLifecycleProviderRecovery(expectedRecoveryValue);
+  const proof = projectQdrantLifecycleRecoveryAbsenceProof(proofValue);
+  if (
+    !expected
+    || !proof
+    || proof.lifecycleKey !== expected.lifecycleKey
+    || proof.attemptId !== expected.checkpoint.attemptId
+    || proof.reportHash !== expected.checkpoint.reportHash
+    || proof.inventoryFingerprint !== expected.checkpoint.inventoryFingerprint
+    || proof.expectedPinFingerprint !== expected.checkpoint.expectedPinFingerprint
+  ) return { status: "blocked", code: "lifecycle_pin_recovery_invalid" };
+  const store = await prepareStore(cwd, resolveProjectRoot, true);
+  if (!store) return { status: "blocked", code: "lifecycle_pin_store_inaccessible" };
+  const lock = await acquireRegistryLock(store.root, store.paths);
+  if (!lock) return { status: "blocked", code: "lifecycle_pin_store_busy" };
+  try {
+    const read = await readRegistry(store.root, store.paths);
+    if (read.status === "corrupt" || read.status === "conflicting" || read.status === "inaccessible") {
+      return { status: "blocked", code: `lifecycle_pin_store_${read.status}` };
+    }
+    const existing = entryFor(read.registry, expected.lifecycleKey);
+    if (
+      !existing
+      || existing.status !== "recovering"
+      || !sameQdrantLifecycleProviderRecovery(existing.recovery, expected)
+    ) return { status: "blocked", code: "lifecycle_pin_recovery_conflict" };
+    const registry: PinRegistry = {
+      schemaVersion: 1,
+      entries: read.registry.entries.filter((entry) => entry !== existing),
+    };
+    return await writeRegistry(store.root, store.paths, registry)
+      ? { status: "cleared" }
       : { status: "blocked", code: "lifecycle_pin_store_write_failed" };
   } finally {
     await releaseRegistryLock(lock);

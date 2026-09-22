@@ -89,6 +89,7 @@ import {
   markLifecyclePinAttemptWritingWith,
   type LifecyclePinLoadResult,
 } from "../lib/ima-lifecycle-pin-store.ts";
+import { acquireLifecycleOperationLease } from "../lib/ima-lifecycle-operation-lease.ts";
 import {
   containsRecognizedLifecycleSecret,
   createLifecycleRouting,
@@ -2187,6 +2188,7 @@ const lifecyclePinStateFailureCode = (state: LifecyclePinLoadResult) => {
   if (["corrupt", "conflicting", "inaccessible"].includes(state.status)) {
     return `lifecycle_pin_store_${state.status}`;
   }
+  if (state.status === "recovering") return "lifecycle_pin_recovery_unresolved";
   return state.status === "pending" && state.attempt.status === "writing"
     ? "lifecycle_pin_write_unresolved"
     : "lifecycle_pin_attempt_conflict";
@@ -2240,18 +2242,34 @@ export async function coordinateLifecycle(
   if (!root || typeof root !== "string") {
     return failedLifecycleRoute({ request: envelope.request, provider: envelope.provider ?? "qdrant", code: "lifecycle_pin_store_inaccessible" });
   }
-  const routing = supplied.routing ?? lifecycleRouting({
-    checkoutRoot: root,
-    dependencies,
-    bookStackLifecycleClient: supplied.bookStackLifecycleClient,
-    confirmBookStackPlacement: supplied.confirmBookStackPlacement,
-    environment: supplied.environment,
+  const operationLease = await acquireLifecycleOperationLease({
+    root,
+    createDirectory: true,
   });
-  const loadPin = loadLifecyclePinStateWith(resolveProjectRoot);
-  const pinState = await loadPin(supplied.cwd, envelope.request.identity.lifecycleKey);
-  if (pinState.status === "corrupt" || pinState.status === "conflicting" || pinState.status === "inaccessible") {
-    return failedLifecycleRoute({ request: envelope.request, provider: envelope.provider ?? "qdrant", code: `lifecycle_pin_store_${pinState.status}` });
+  if (operationLease.status === "busy") {
+    return failedLifecycleRoute({ request: envelope.request, provider: envelope.provider ?? "qdrant", code: "lifecycle_operation_in_progress" });
   }
+  if (operationLease.status !== "acquired") {
+    return failedLifecycleRoute({ request: envelope.request, provider: envelope.provider ?? "qdrant", code: "lifecycle_operation_unavailable" });
+  }
+  try {
+    throwIfAborted(signal);
+    const resolveProjectRoot = async (_cwd: string) => operationLease.root;
+    const loadPin = loadLifecyclePinStateWith(resolveProjectRoot);
+    const pinState = await loadPin(supplied.cwd, envelope.request.identity.lifecycleKey);
+    if (pinState.status === "corrupt" || pinState.status === "conflicting" || pinState.status === "inaccessible") {
+      return failedLifecycleRoute({ request: envelope.request, provider: envelope.provider ?? "qdrant", code: `lifecycle_pin_store_${pinState.status}` });
+    }
+    if (pinState.status === "recovering") {
+      return failedLifecycleRoute({ request: envelope.request, provider: envelope.provider ?? "qdrant", code: "lifecycle_pin_recovery_unresolved" });
+    }
+    const routing = supplied.routing ?? lifecycleRouting({
+      checkoutRoot: operationLease.root,
+      dependencies,
+      bookStackLifecycleClient: supplied.bookStackLifecycleClient,
+      confirmBookStackPlacement: supplied.confirmBookStackPlacement,
+      environment: supplied.environment,
+    });
   if (
     pinState.status === "absent"
     || pinState.status === "pending" && pinState.attempt.status === "authorized"
@@ -2524,6 +2542,9 @@ export async function coordinateLifecycle(
     return failedLifecycleRoute({ request: envelope.request, provider, code: confirmedPin.code });
   }
   return lifecycleRouteResult({ request: envelope.request, prepared: prepared.data, provider, result });
+  } finally {
+    await operationLease.release().catch(() => undefined);
+  }
 }
 
 const invalidBookStackRecovery = (code: string) => ({

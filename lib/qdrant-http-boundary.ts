@@ -203,6 +203,73 @@ export const bodyOrFailure = (
     : diagnosticFailure(code, operation, "invalid_response");
 };
 
+const snapshotName = (value: unknown) =>
+  typeof value === "string" && SNAPSHOT_NAME.test(value) ? value : "";
+
+const snapshotDataField = (value: unknown, key: string): unknown => {
+  try {
+    const source = object(value);
+    const descriptor = source && Object.getOwnPropertyDescriptor(source, key);
+    return descriptor
+      && !descriptor.get
+      && !descriptor.set
+      && Object.hasOwn(descriptor, "value")
+      ? descriptor.value
+      : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+const snapshotValues = (value: unknown): unknown[] | null => {
+  try {
+    if (!Array.isArray(value)) return null;
+    const keys = Reflect.ownKeys(value);
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const length = descriptors.length?.value;
+    if (
+      !Number.isSafeInteger(length)
+      || length < 0
+      || keys.length !== length + 1
+      || keys.some((key) => typeof key !== "string")
+      || keys.some((key) => key !== "length" && !/^\d+$/.test(key as string))
+      || !descriptors.length
+      || descriptors.length.get
+      || descriptors.length.set
+      || !Object.hasOwn(descriptors.length, "value")
+    ) return null;
+    const snapshots: unknown[] = [];
+    for (let index = 0; index < length; index += 1) {
+      const descriptor = descriptors[String(index)];
+      if (
+        !descriptor
+        || descriptor.get
+        || descriptor.set
+        || !descriptor.enumerable
+        || !Object.hasOwn(descriptor, "value")
+      ) {
+        return null;
+      }
+      snapshots.push(descriptor.value);
+    }
+    return snapshots;
+  } catch {
+    return null;
+  }
+};
+
+const snapshotNames = (value: unknown): string[] | null => {
+  const snapshots = snapshotValues(snapshotDataField(value, "result"));
+  if (!snapshots) return null;
+  const names: string[] = [];
+  for (const candidate of snapshots) {
+    const name = snapshotName(snapshotDataField(candidate, "name"));
+    if (!name || names.includes(name)) return null;
+    names.push(name);
+  }
+  return names;
+};
+
 export async function createInstitutionalSnapshot(
   supplied: QdrantHttpDependencies = {},
   signal?: AbortSignal,
@@ -224,10 +291,70 @@ export async function createInstitutionalSnapshot(
   }), "qdrant_unavailable", "institutional_collection");
   if (!response.success) return response;
 
-  const snapshot = object(object(response.data)?.result);
-  const name = text(snapshot?.name);
-  return SNAPSHOT_NAME.test(name) ? success({ name }) : failure("response_invalid", {
+  const name = snapshotName(snapshotDataField(
+    snapshotDataField(response.data, "result"),
+    "name",
+  ));
+  return name ? success({ name }) : failure("response_invalid", {
     operation: "institutional_collection",
     cause: "invalid_response",
   });
+}
+
+export async function createVerifiedInstitutionalSnapshot(
+  supplied: QdrantHttpDependencies = {},
+  signal?: AbortSignal,
+): Promise<CorpusResult<{ name: string }>> {
+  const endpoints = resolveCorpusEndpoints(supplied.env ?? process.env);
+  if (!endpoints.success) return endpoints;
+
+  const fetcher = supplied.fetch ?? globalThis.fetch;
+  const timeoutMs = supplied.timeoutMs ?? DEFAULT_HTTP_TIMEOUT_MS;
+  const maximumResponseBytes = supplied.maxResponseBytes ?? MAX_HTTP_RESPONSE_BYTES;
+  const path = `collections/${encodeURIComponent(INSTITUTIONAL_COLLECTION)}/snapshots`;
+  const created = bodyOrFailure(await requestJson({
+    fetcher,
+    endpoint: endpoints.data.qdrantUrl,
+    path,
+    method: "POST",
+    timeoutMs,
+    maximumResponseBytes,
+    maxAttempts: 1,
+    signal,
+    unavailableCode: "qdrant_unavailable",
+    operation: "institutional_collection",
+  }), "qdrant_unavailable", "institutional_collection");
+  if (!created.success) return created;
+
+  const name = snapshotName(snapshotDataField(
+    snapshotDataField(created.data, "result"),
+    "name",
+  ));
+  if (!name) {
+    return failure("response_invalid", {
+      operation: "institutional_collection",
+      cause: "invalid_response",
+    });
+  }
+
+  const listed = bodyOrFailure(await requestJson({
+    fetcher,
+    endpoint: endpoints.data.qdrantUrl,
+    path,
+    timeoutMs,
+    maximumResponseBytes,
+    maxAttempts: 1,
+    signal,
+    unavailableCode: "qdrant_unavailable",
+    operation: "institutional_collection",
+  }), "qdrant_unavailable", "institutional_collection");
+  if (!listed.success) return listed;
+
+  const names = snapshotNames(listed.data);
+  return names?.filter((candidate) => candidate === name).length === 1
+    ? success({ name })
+    : failure("response_invalid", {
+      operation: "institutional_collection",
+      cause: "invalid_response",
+    });
 }

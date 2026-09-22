@@ -1,4 +1,4 @@
-import { LIFECYCLE_PHASES } from "./ima-lifecycle.ts";
+import { LIFECYCLE_PHASES, normalizeLifecycleRecordKey } from "./ima-lifecycle.ts";
 import {
   CORPUS_SCHEMA_VERSION,
   CORPUS_SCHEMA_VERSION_V2,
@@ -6,6 +6,7 @@ import {
   EMBEDDING_MODEL,
   EMBEDDING_MODEL_DIGEST,
   INSTITUTIONAL_COLLECTION,
+  MANIFEST_RECORD_KIND,
   MAX_DETAIL_CHUNK_COUNT,
   MAX_PAYLOAD_BYTES,
   MAX_STORED_ARTIFACT_BYTES,
@@ -48,6 +49,13 @@ import {
   type JsonObject,
   type QdrantHttpDependencies,
 } from "./qdrant-http-boundary.ts";
+import {
+  MAX_QDRANT_LIFECYCLE_RECOVERY_RECORDS,
+  lifecycleRecoveryPointIds,
+  projectQdrantLifecycleRecoveryInventory,
+  sameQdrantLifecycleRecoveryInventory,
+  type QdrantLifecycleRecoveryInventory,
+} from "./qdrant-lifecycle-recovery-report.ts";
 
 export {
   DEFAULT_HTTP_TIMEOUT_MS,
@@ -75,6 +83,8 @@ const REQUIRED_INDEXES = [
   "parent_record_key",
 ] as const;
 const MAX_DIRECT_POINT_IDS = MAX_DETAIL_CHUNK_COUNT + 1;
+const RECOVERY_SCROLL_PAGE_SIZE = 1;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 type CollectionDetails = JsonObject;
 
 export type CorpusCollectionState = {
@@ -142,6 +152,9 @@ export type QdrantCorpusClient = {
   recallInstitutional: (input: { lifecycleKey: string; limit: number; phase?: string }, signal?: AbortSignal) => Promise<CorpusResult<CorpusSummary[]>>;
   recallLifecycleInstitutional: (input: { lifecycleKey: string; limit: number; phase?: string }, signal?: AbortSignal) => Promise<CorpusResult<FullInstitutionalRecord[]>>;
   getInstitutional: (recordKey: string, signal?: AbortSignal) => Promise<CorpusResult<FullInstitutionalRecord>>;
+  inventoryLifecycleRecovery: (lifecycleKey: string, signal?: AbortSignal) => Promise<CorpusResult<QdrantLifecycleRecoveryInventory>>;
+  deleteLifecycleRecoveryInventory: (input: { lifecycleKey: string; inventory: unknown }, signal?: AbortSignal) => Promise<CorpusResult<undefined>>;
+  proveLifecycleRecoveryAbsence: (input: { lifecycleKey: string; inventory: unknown }, signal?: AbortSignal) => Promise<CorpusResult<undefined>>;
   findKnowledge: (input: { query: string; collection: string; limit: number }, signal?: AbortSignal) => Promise<CorpusResult<Array<{ summary: string; score: number }>>>;
 };
 
@@ -303,6 +316,77 @@ const ownDataField = (value: unknown, key: string): { value: unknown } | null =>
   }
 };
 
+const recoveryDataArray = (value: unknown, maximum: number): unknown[] | null => {
+  try {
+    if (!Array.isArray(value)) return null;
+    const keys = Reflect.ownKeys(value);
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const length = descriptors.length?.value;
+    if (
+      !Number.isSafeInteger(length)
+      || length < 0
+      || length > maximum
+      || keys.length !== length + 1
+      || keys.some((key) => typeof key !== "string")
+      || keys.some((key) => key !== "length" && !/^\d+$/.test(key as string))
+      || !descriptors.length
+      || descriptors.length.get
+      || descriptors.length.set
+      || !Object.hasOwn(descriptors.length, "value")
+    ) return null;
+    const entries: unknown[] = [];
+    for (let index = 0; index < length; index += 1) {
+      const descriptor = descriptors[String(index)];
+      if (
+        !descriptor
+        || descriptor.get
+        || descriptor.set
+        || !descriptor.enumerable
+        || !Object.hasOwn(descriptor, "value")
+      ) return null;
+      entries.push(descriptor.value);
+    }
+    return entries;
+  } catch {
+    return null;
+  }
+};
+
+const recoveryLifecycleKey = (value: unknown): string | null => {
+  const key = normalizeLifecycleRecordKey(value);
+  return key && key === value ? key : null;
+};
+
+const recoveryPoint = (value: unknown): { id: string; payload: JsonObject } | null => {
+  try {
+    const source = object(value);
+    const keys = source ? Reflect.ownKeys(source) : [];
+    const descriptors = source ? Object.getOwnPropertyDescriptors(source) : {};
+    if (
+      !source
+      || keys.length !== 2
+      || keys.some((key) => typeof key !== "string" || !["id", "payload"].includes(key))
+      || keys.some((key) => {
+        const descriptor = descriptors[key as string];
+        return !descriptor
+          || descriptor.get
+          || descriptor.set
+          || !descriptor.enumerable
+          || !Object.hasOwn(descriptor, "value");
+      })
+    ) return null;
+    const id = descriptors.id.value;
+    const payload = descriptors.payload.value;
+    return typeof id === "string" && UUID.test(id) && object(payload)
+      ? { id, payload: object(payload) as JsonObject }
+      : null;
+  } catch {
+    return null;
+  }
+};
+
+const recoveryField = (payload: JsonObject, key: string) => ownDataField(payload, key)?.value;
+
 const terminalLifecycleScroll = (value: unknown): CorpusResult<JsonObject> => {
   const result = ownDataField(value, "result");
   const scroll = object(result?.value);
@@ -387,6 +471,7 @@ export function createQdrantCorpusClient(
     method?: string,
     body?: unknown,
     operation?: CorpusFailureOperation,
+    attempts?: number,
   ) => {
     if (aborted(signal)) return Promise.resolve(failure("aborted"));
     if (!qdrantUrl) return Promise.resolve(endpointFailure("qdrant_unavailable"));
@@ -399,7 +484,7 @@ export function createQdrantCorpusClient(
       body,
       timeoutMs,
       maximumResponseBytes,
-      maxAttempts,
+      maxAttempts: attempts ?? maxAttempts,
       unavailableCode: "qdrant_unavailable",
       operation,
     });
@@ -669,6 +754,301 @@ export function createQdrantCorpusClient(
       if (point.data) points.push(point.data);
     }
     return success(points);
+  };
+
+  const recoveryCollection = async (
+    signal?: AbortSignal,
+  ): Promise<CorpusResult<undefined>> => {
+    const state = await institutionalState(signal);
+    if (!state.success) return state;
+    if (state.data.collection === "absent") return failure("query_failed");
+    return state.data.collection === "ready"
+      ? success(undefined)
+      : failure("collection_incompatible");
+  };
+
+  const recoveryScroll = async (input: {
+    filter: JsonObject;
+    maximumPoints: number;
+    signal?: AbortSignal;
+  }): Promise<CorpusResult<JsonObject[]>> => {
+    const points: JsonObject[] = [];
+    const pointIds = new Set<string>();
+    const offsets = new Set<string>();
+    let offset: string | undefined;
+
+    for (;;) {
+      if (aborted(input.signal)) return failure("aborted");
+      const response = bodyOrFailure(await qdrant(
+        `collections/${encodeURIComponent(INSTITUTIONAL_COLLECTION)}/points/scroll`,
+        input.signal,
+        "POST",
+        {
+          filter: input.filter,
+          limit: RECOVERY_SCROLL_PAGE_SIZE,
+          with_payload: true,
+          with_vector: false,
+          ...(offset === undefined ? {} : { offset }),
+        },
+        "institutional_collection",
+      ), "query_failed", "institutional_collection");
+      if (!response.success) return response;
+
+      const result = ownDataField(response.data, "result")?.value;
+      const scroll = object(result);
+      const pagePoints = recoveryDataArray(ownDataField(scroll, "points")?.value, RECOVERY_SCROLL_PAGE_SIZE);
+      const nextPageOffset = ownDataField(scroll, "next_page_offset")?.value;
+      if (!scroll || !pagePoints || nextPageOffset === undefined) return failure("response_invalid");
+
+      for (const rawPoint of pagePoints) {
+        const point = recoveryPoint(rawPoint);
+        if (!point || pointIds.has(point.id)) return failure("response_invalid");
+        pointIds.add(point.id);
+        points.push({ id: point.id, payload: point.payload });
+      }
+      if (points.length > input.maximumPoints) return failure("response_invalid");
+      if (nextPageOffset === null) return success(points);
+      if (typeof nextPageOffset !== "string" || !UUID.test(nextPageOffset) || !pagePoints.length) {
+        return failure("response_invalid");
+      }
+      if (offsets.has(nextPageOffset)) return failure("response_invalid");
+      offsets.add(nextPageOffset);
+      offset = nextPageOffset;
+    }
+  };
+
+  const recoveryRootDescriptor = (pointValue: JsonObject): {
+    storageSchemaVersion: 1 | 2;
+    recordKey: string;
+    contentHash: string;
+    chunkCount: number;
+    point: JsonObject;
+  } | null => {
+    const point = recoveryPoint(pointValue);
+    if (!point) return null;
+    const schemaVersion = recoveryField(point.payload, "schema_version");
+    const recordKey = recoveryLifecycleKey(recoveryField(point.payload, "record_key"));
+    const contentHash = recoveryField(point.payload, "content_hash");
+    if (
+      !recordKey
+      || typeof contentHash !== "string"
+      || !/^[a-f0-9]{64}$/.test(contentHash)
+    ) return null;
+    if (schemaVersion === 1) {
+      return {
+        storageSchemaVersion: 1,
+        recordKey,
+        contentHash,
+        chunkCount: 0,
+        point: { id: point.id, payload: point.payload },
+      };
+    }
+    const recordKind = recoveryField(point.payload, "record_kind");
+    const chunkCount = recoveryField(point.payload, "chunk_count");
+    return schemaVersion === 2
+      && recordKind === MANIFEST_RECORD_KIND
+      && Number.isInteger(chunkCount)
+      && Number(chunkCount) >= 1
+      && Number(chunkCount) <= MAX_DETAIL_CHUNK_COUNT
+      ? {
+        storageSchemaVersion: 2,
+        recordKey,
+        contentHash,
+        chunkCount: Number(chunkCount),
+        point: { id: point.id, payload: point.payload },
+      }
+      : null;
+  };
+
+  const recoveryInventory = async (
+    lifecycleKeyValue: string,
+    signal?: AbortSignal,
+  ): Promise<CorpusResult<QdrantLifecycleRecoveryInventory>> => {
+    const lifecycleKey = recoveryLifecycleKey(lifecycleKeyValue);
+    if (!lifecycleKey) return failure("record_invalid");
+    const collection = await recoveryCollection(signal);
+    if (!collection.success) return collection;
+    const rootPoints = await recoveryScroll({
+      filter: { must: [{ key: "lifecycle_key", match: { value: lifecycleKey } }] },
+      maximumPoints: MAX_QDRANT_LIFECYCLE_RECOVERY_RECORDS,
+      signal,
+    });
+    if (!rootPoints.success) return rootPoints;
+
+    const roots = rootPoints.data.map(recoveryRootDescriptor);
+    if (roots.some((root) => root === null)) return failure("response_invalid");
+    const descriptors = roots as Array<NonNullable<typeof roots[number]>>;
+    const recordKeys = new Set<string>();
+    const rootIds = new Set<string>();
+    if (descriptors.some((root) => {
+      if (recordKeys.has(root.recordKey) || rootIds.has(root.point.id)) return true;
+      recordKeys.add(root.recordKey);
+      rootIds.add(root.point.id);
+      return false;
+    })) return failure("response_invalid");
+
+    const records: unknown[] = [];
+    for (const root of descriptors) {
+      if (aborted(signal)) return failure("aborted");
+      if (root.storageSchemaVersion === 1) {
+        records.push({
+          storageSchemaVersion: 1,
+          recordKey: root.recordKey,
+          contentHash: root.contentHash,
+          points: [root.point],
+        });
+        continue;
+      }
+
+      const expectedChunkIds = detailChunkIds(root.recordKey, root.chunkCount);
+      const directChunks = await getRawPoints(INSTITUTIONAL_COLLECTION, expectedChunkIds, signal);
+      if (!directChunks.success) return directChunks;
+      if (directChunks.data.length !== expectedChunkIds.length) return failure("record_incomplete");
+
+      const parentChunks = await recoveryScroll({
+        filter: { must: [{ key: "parent_record_key", match: { value: root.recordKey } }] },
+        maximumPoints: MAX_DETAIL_CHUNK_COUNT,
+        signal,
+      });
+      if (!parentChunks.success) return parentChunks;
+      const parentById = new Map<string, JsonObject>();
+      for (const point of parentChunks.data) {
+        const parsed = recoveryPoint(point);
+        if (!parsed || parentById.has(parsed.id)) return failure("response_invalid");
+        parentById.set(parsed.id, { id: parsed.id, payload: parsed.payload });
+      }
+      if (
+        parentById.size !== expectedChunkIds.length
+        || expectedChunkIds.some((id) => !parentById.has(id))
+      ) return failure("record_incomplete");
+
+      const directCandidate = projectQdrantLifecycleRecoveryInventory({
+        schemaVersion: 1,
+        lifecycleKey,
+        records: [{
+          storageSchemaVersion: 2,
+          recordKey: root.recordKey,
+          contentHash: root.contentHash,
+          points: [root.point, ...directChunks.data],
+        }],
+      });
+      const parentCandidate = projectQdrantLifecycleRecoveryInventory({
+        schemaVersion: 1,
+        lifecycleKey,
+        records: [{
+          storageSchemaVersion: 2,
+          recordKey: root.recordKey,
+          contentHash: root.contentHash,
+          points: [root.point, ...expectedChunkIds.map((id) => parentById.get(id))],
+        }],
+      });
+      if (
+        !directCandidate
+        || !parentCandidate
+        || !sameQdrantLifecycleRecoveryInventory(directCandidate, parentCandidate)
+      ) return failure("record_incomplete");
+      records.push(parentCandidate.records[0]);
+    }
+
+    const inventory = projectQdrantLifecycleRecoveryInventory({
+      schemaVersion: 1,
+      lifecycleKey,
+      records: [...records].sort((left, right) => {
+        const leftKey = typeof left === "object" && left !== null
+          ? (left as { recordKey?: unknown }).recordKey
+          : "";
+        const rightKey = typeof right === "object" && right !== null
+          ? (right as { recordKey?: unknown }).recordKey
+          : "";
+        if (typeof leftKey !== "string" || typeof rightKey !== "string") return 0;
+        if (leftKey < rightKey) return -1;
+        if (leftKey > rightKey) return 1;
+        return 0;
+      }),
+    });
+    return inventory ? success(inventory) : failure("response_invalid");
+  };
+
+  const deletionCompleted = (value: unknown) => {
+    const responseStatus = ownDataField(value, "status")?.value;
+    const result = ownDataField(value, "result")?.value;
+    const status = object(result) ? ownDataField(result, "status")?.value : undefined;
+    const operationId = object(result) ? ownDataField(result, "operation_id")?.value : undefined;
+    return responseStatus === "ok"
+      && status === "completed"
+      && Number.isSafeInteger(operationId)
+      && Number(operationId) >= 0;
+  };
+
+  const deleteLifecycleRecoveryInventory = async (
+    input: { lifecycleKey: string; inventory: unknown },
+    signal?: AbortSignal,
+  ): Promise<CorpusResult<undefined>> => {
+    const lifecycleKey = recoveryLifecycleKey(input.lifecycleKey);
+    const expected = projectQdrantLifecycleRecoveryInventory(input.inventory);
+    const pointIds = lifecycleRecoveryPointIds(expected);
+    if (!lifecycleKey || !expected || expected.lifecycleKey !== lifecycleKey || !pointIds) {
+      return failure("record_invalid");
+    }
+    const current = await recoveryInventory(lifecycleKey, signal);
+    if (!current.success) return current;
+    if (!sameQdrantLifecycleRecoveryInventory(current.data, expected)) {
+      return failure("record_conflict");
+    }
+    if (pointIds.length === 0) return success(undefined);
+
+    const deleted = bodyOrFailure(await qdrant(
+      `collections/${encodeURIComponent(INSTITUTIONAL_COLLECTION)}/points/delete?wait=true`,
+      signal,
+      "POST",
+      { points: pointIds },
+      "institutional_collection",
+      1,
+    ), "store_failed", "institutional_collection");
+    return deleted.success && deletionCompleted(deleted.data)
+      ? success(undefined)
+      : deleted.success ? failure("store_unverified") : deleted;
+  };
+
+  const proveLifecycleRecoveryAbsence = async (
+    input: { lifecycleKey: string; inventory: unknown },
+    signal?: AbortSignal,
+  ): Promise<CorpusResult<undefined>> => {
+    const lifecycleKey = recoveryLifecycleKey(input.lifecycleKey);
+    const inventory = projectQdrantLifecycleRecoveryInventory(input.inventory);
+    const pointIds = lifecycleRecoveryPointIds(inventory);
+    if (!lifecycleKey || !inventory || inventory.lifecycleKey !== lifecycleKey || !pointIds) {
+      return failure("record_invalid");
+    }
+    const collection = await recoveryCollection(signal);
+    if (!collection.success) return collection;
+
+    for (const pointId of pointIds) {
+      if (aborted(signal)) return failure("aborted");
+      const direct = await getRawPoints(INSTITUTIONAL_COLLECTION, [pointId], signal);
+      if (!direct.success) return direct;
+      if (direct.data.length !== 0) return failure("record_conflict");
+    }
+
+    const rootPoints = await recoveryScroll({
+      filter: { must: [{ key: "lifecycle_key", match: { value: lifecycleKey } }] },
+      maximumPoints: MAX_QDRANT_LIFECYCLE_RECOVERY_RECORDS,
+      signal,
+    });
+    if (!rootPoints.success) return rootPoints;
+    if (rootPoints.data.length !== 0) return failure("record_conflict");
+
+    for (const record of inventory.records) {
+      if (record.storageSchemaVersion !== 2) continue;
+      const children = await recoveryScroll({
+        filter: { must: [{ key: "parent_record_key", match: { value: record.recordKey } }] },
+        maximumPoints: MAX_DETAIL_CHUNK_COUNT,
+        signal,
+      });
+      if (!children.success) return children;
+      if (children.data.length !== 0) return failure("record_conflict");
+    }
+    return success(undefined);
   };
 
   const getPoints = async (
@@ -1034,6 +1414,9 @@ export function createQdrantCorpusClient(
     recallInstitutional,
     recallLifecycleInstitutional,
     getInstitutional,
+    inventoryLifecycleRecovery: recoveryInventory,
+    deleteLifecycleRecoveryInventory,
+    proveLifecycleRecoveryAbsence,
     findKnowledge,
   };
 }

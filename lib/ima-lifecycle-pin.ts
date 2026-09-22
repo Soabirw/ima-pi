@@ -21,6 +21,12 @@ import {
   type LifecycleProviderName,
 } from "./ima-lifecycle-selection.ts";
 import { utf8ByteLength } from "./qdrant-corpus.ts";
+import {
+  projectQdrantLifecycleRecoveryCheckpoint,
+  qdrantLifecycleRecoveryPinFingerprint,
+  sameQdrantLifecycleRecoveryCheckpoint,
+  type QdrantLifecycleRecoveryCheckpoint,
+} from "./qdrant-lifecycle-recovery-report.ts";
 
 export const LIFECYCLE_PROVIDER_PIN_SCHEMA_VERSION = 1;
 export const LIFECYCLE_PROVIDER_PIN_ATTEMPT_SCHEMA_VERSION = 1;
@@ -43,6 +49,14 @@ export type LifecycleProviderPinAttempt = {
   status: "authorized" | "writing";
   startedAt: string;
   recoveryCheckpoint?: BookStackPageRecoveryCheckpoint;
+};
+
+export type QdrantLifecycleProviderRecovery = {
+  schemaVersion: 1;
+  provider: "qdrant";
+  lifecycleKey: string;
+  expectedPin: LifecycleProviderPin;
+  checkpoint: QdrantLifecycleRecoveryCheckpoint;
 };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -70,6 +84,13 @@ const ATTEMPT_FIELDS = [
 const ATTEMPT_WITH_RECOVERY_CHECKPOINT_FIELDS = [
   ...ATTEMPT_FIELDS,
   "recoveryCheckpoint",
+] as const;
+const QDRANT_RECOVERY_FIELDS = [
+  "schemaVersion",
+  "provider",
+  "lifecycleKey",
+  "expectedPin",
+  "checkpoint",
 ] as const;
 const BOOKSTACK_REFERENCE_FIELDS = [
   "projectSlug",
@@ -368,6 +389,57 @@ export const createLifecycleProviderPin = (input: {
   recordKey: input.recordKey,
   pinnedAt: input.pinnedAt,
 });
+
+export const projectQdrantLifecycleProviderRecovery = (
+  value: unknown,
+): QdrantLifecycleProviderRecovery | null => {
+  const recovery = ownDataRecord(value, QDRANT_RECOVERY_FIELDS);
+  const lifecycleKeyValue = lifecycleKey(recovery?.lifecycleKey);
+  const expectedPin = projectLifecycleProviderPin(recovery?.expectedPin);
+  const checkpoint = projectQdrantLifecycleRecoveryCheckpoint(recovery?.checkpoint);
+  const expectedPinFingerprint = expectedPin
+    ? qdrantLifecycleRecoveryPinFingerprint(expectedPin)
+    : null;
+  if (
+    !recovery
+    || recovery.schemaVersion !== 1
+    || recovery.provider !== "qdrant"
+    || !lifecycleKeyValue
+    || !expectedPin
+    || expectedPin.provider !== "qdrant"
+    || !checkpoint
+    || !expectedPinFingerprint
+    || expectedPin.lifecycleKey !== lifecycleKeyValue
+    || checkpoint.lifecycleKey !== lifecycleKeyValue
+    || checkpoint.expectedPinFingerprint !== expectedPinFingerprint
+  ) return null;
+  return {
+    schemaVersion: 1,
+    provider: "qdrant",
+    lifecycleKey: lifecycleKeyValue,
+    expectedPin,
+    checkpoint,
+  };
+};
+
+export const createQdrantLifecycleProviderRecovery = (input: {
+  lifecycleKey: unknown;
+  expectedPin: unknown;
+  checkpoint: unknown;
+}): QdrantLifecycleProviderRecovery | null => projectQdrantLifecycleProviderRecovery({
+  schemaVersion: 1,
+  provider: "qdrant",
+  lifecycleKey: input.lifecycleKey,
+  expectedPin: input.expectedPin,
+  checkpoint: input.checkpoint,
+});
+
+export const sameQdrantLifecycleProviderRecovery = (
+  left: QdrantLifecycleProviderRecovery,
+  right: QdrantLifecycleProviderRecovery,
+): boolean => sameLifecycleProviderPin(left.expectedPin, right.expectedPin)
+  && left.lifecycleKey === right.lifecycleKey
+  && sameQdrantLifecycleRecoveryCheckpoint(left.checkpoint, right.checkpoint);
 
 export const sameLifecycleProviderPin = (
   left: LifecycleProviderPin,
