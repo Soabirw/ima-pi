@@ -2,6 +2,7 @@ import { lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
+import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import {
   createAgentSession,
@@ -56,6 +57,20 @@ import {
   type SessionRecord,
 } from "../lib/ima-delegation.ts";
 import { loadImaConfig } from "../lib/ima-config.ts";
+import {
+  admitDelegatedVerifications,
+  canUseDelegatedVerification,
+  createDelegatedVerificationTool,
+  DELEGATED_VERIFICATION_ID_PATTERN,
+  DELEGATED_VERIFICATION_MAX_ARGS,
+  DELEGATED_VERIFICATION_MAX_ITEMS,
+  DELEGATED_VERIFICATION_MAX_TIMEOUT_MS,
+  DELEGATED_VERIFICATION_MIN_TIMEOUT_MS,
+  type DelegatedVerificationExecutor,
+  type DelegatedVerificationFilesystem,
+  type DelegatedVerificationSnapshot,
+  type DelegatedVerificationTimer,
+} from "../lib/ima-delegated-verification.ts";
 import { admitVisionImages, publicVisionSource } from "../lib/ima-vision.ts";
 import {
   createScopedToolOperationEvidence,
@@ -86,7 +101,12 @@ const agentDir = getAgentDir();
 export function resolveProjectTrust(ctx: Partial<Pick<ExtensionContext, "isProjectTrusted">> | undefined, fallback = process.env.IMA_PI_PROJECT_TRUSTED === "true"): boolean {
   return typeof ctx?.isProjectTrusted === "function" ? ctx.isProjectTrusted() : fallback;
 }
-const agentToolNames: Record<string, string> = { grep: "grep", find: "find", ls: "ls", read: "read", write: "write", edit: "edit", bash: "bash", test: "bash", image: "read" };
+const agentToolNames: Record<string, string> = { grep: "grep", find: "find", ls: "ls", read: "read", write: "write", edit: "edit", bash: "bash", test: "test", image: "read" };
+const childToolNames = (agent: AgentDefinition, verificationSnapshots: readonly DelegatedVerificationSnapshot[] = []) =>
+  deriveToolAuthority(agent)
+    .filter((tool) => tool !== "test" || verificationSnapshots.length > 0)
+    .map((tool) => agentToolNames[tool])
+    .filter((tool): tool is string => Boolean(tool));
 const activityProjectionKey = "ima-delegation";
 const text = (value: unknown) => typeof value === "string" ? value.trim() : "";
 const now = () => new Date().toISOString();
@@ -197,6 +217,13 @@ type ScopedToolInput = {
   agent: AgentDefinition;
   operationEvidence?: ScopedToolOperationEvidence;
   operations?: ScopedToolOperations;
+  verificationSnapshots?: readonly DelegatedVerificationSnapshot[];
+  verificationExecutor?: DelegatedVerificationExecutor;
+  verificationFilesystem?: DelegatedVerificationFilesystem;
+  verificationTimer?: DelegatedVerificationTimer;
+  onVerificationUnsafe?: (reason: string) => void;
+  onVerificationExecutionStart?: () => void;
+  onVerificationExecutionSettled?: () => void;
 };
 
 const hasSupportedNativeMutationPath = (value: unknown) => {
@@ -264,6 +291,14 @@ export function createScopedTools(input: ScopedToolInput): ToolDefinition[] {
     lstat: input.operations?.lstat ?? lstat,
     writeFile: input.operations?.writeFile ?? writeFile,
   };
+  let verificationUnsafeReason: string | null = null;
+  const latchVerificationUnsafe = (reason: string) => {
+    verificationUnsafeReason = reason;
+    try { input.onVerificationUnsafe?.(reason); } catch {}
+  };
+  const assertVerificationSafe = () => {
+    if (verificationUnsafeReason) throw new Error(verificationUnsafeReason);
+  };
   const documentTarget = (path: string, canonical: { root: string; target: string }) => {
     if (agent.authority !== "document-write") return;
     const lexicalTarget = relative(cwd, path);
@@ -293,6 +328,7 @@ export function createScopedTools(input: ScopedToolInput): ToolDefinition[] {
     return resolve(cwd, path.startsWith("@") ? path.slice(1) : path);
   };
   const authorizeNativeMutation = async (toolName: "write" | "edit", toolInput: unknown) => {
+    assertVerificationSafe();
     const target = nativeMutationTarget(toolInput);
     if (!target) return;
     await evidence.runOperation({
@@ -304,11 +340,19 @@ export function createScopedTools(input: ScopedToolInput): ToolDefinition[] {
     });
   };
   const mutationQueue = createAssignmentMutationQueue();
+  const verificationQueue: AssignmentMutationQueue = (effect) => mutationQueue(async () => {
+    assertVerificationSafe();
+    return effect();
+  });
   const mutationToolOptions = (toolName: "write" | "edit") => ({
     queue: mutationQueue,
     beforeExecute: (toolInput: unknown) => authorizeNativeMutation(toolName, toolInput),
   });
   const enabled = new Set(deriveToolAuthority(agent));
+  const verificationSnapshots = input.verificationSnapshots ?? [];
+  if (verificationSnapshots.length && (!canUseDelegatedVerification(agent) || !input.verificationExecutor)) {
+    throw new Error("delegated_verification_unavailable");
+  }
   const custom: ToolDefinition[] = [];
   if (enabled.has("write")) {
     custom.push(withScopedToolEvidence(createWriteToolDefinition(cwd, { operations: {
@@ -317,14 +361,20 @@ export function createScopedTools(input: ScopedToolInput): ToolDefinition[] {
         mutation: true,
         safeRelativePath: safeRelativePath(path),
         authorize: () => authorizeParentDirectory(path),
-        effect: async () => { await filesystem.mkdir(path, { recursive: true }); },
+        effect: async () => {
+          assertVerificationSafe();
+          await filesystem.mkdir(path, { recursive: true });
+        },
       }),
       writeFile: async (path, content) => evidence.runOperation({
         name: "writeFile",
         mutation: true,
         safeRelativePath: safeRelativePath(path),
         authorize: () => authorize(path),
-        effect: async () => { await filesystem.writeFile(path, content); },
+        effect: async () => {
+          assertVerificationSafe();
+          await filesystem.writeFile(path, content);
+        },
       }),
     } }), evidence, mutationToolOptions("write")));
   }
@@ -349,14 +399,18 @@ export function createScopedTools(input: ScopedToolInput): ToolDefinition[] {
         mutation: true,
         safeRelativePath: safeRelativePath(path),
         authorize: () => authorize(path),
-        effect: async () => { await filesystem.writeFile(path, content); },
+        effect: async () => {
+          assertVerificationSafe();
+          await filesystem.writeFile(path, content);
+        },
       }),
     } }), evidence, mutationToolOptions("edit")));
   }
-  if (enabled.has("bash") || enabled.has("test")) {
+  if (enabled.has("bash")) {
     const local = input.operations?.bash ?? createLocalBashOperations();
     custom.push(withScopedToolEvidence(createBashToolDefinition(cwd, { operations: {
       exec: async (command, commandCwd, options) => {
+        assertVerificationSafe();
         const classification = classifyBashCommand(command, assignment.writeScope);
         if (classification.kind === "unsafe-ambiguous") {
           evidence.denyBashBeforeExecution(classification.reason);
@@ -377,10 +431,26 @@ export function createScopedTools(input: ScopedToolInput): ToolDefinition[] {
           mutation: classification.kind === "owned-mutation",
           safeRelativePath: null,
           authorize: async () => undefined,
-          effect: () => local.exec(command, commandCwd, options),
+          effect: () => {
+            assertVerificationSafe();
+            return local.exec(command, commandCwd, options);
+          },
         });
       },
     } }), evidence));
+  }
+  if (enabled.has("test") && verificationSnapshots.length && input.verificationExecutor) {
+    custom.push(createDelegatedVerificationTool({
+      projectRoot: cwd,
+      snapshots: verificationSnapshots,
+      executor: input.verificationExecutor,
+      queue: verificationQueue,
+      filesystem: input.verificationFilesystem,
+      timer: input.verificationTimer,
+      onUnsafe: latchVerificationUnsafe,
+      onExecutionStart: input.onVerificationExecutionStart,
+      onExecutionSettled: input.onVerificationExecutionSettled,
+    }));
   }
   return custom;
 }
@@ -444,6 +514,10 @@ type CoordinatorDependencies = {
   clock?: () => string;
   activityClock?: () => number;
   admitImages?: typeof admitVisionImages;
+  admitVerifications?: typeof admitDelegatedVerifications;
+  verificationExecutor?: DelegatedVerificationExecutor;
+  verificationFilesystem?: DelegatedVerificationFilesystem;
+  verificationTimer?: DelegatedVerificationTimer;
 };
 
 type CoordinatorInput = {
@@ -455,6 +529,7 @@ type CoordinatorInput = {
   runId?: string;
   onActivity?: (snapshot: DelegationActivityState) => void;
   signal?: AbortSignal;
+  projectTrusted?: boolean;
   sessionStore?: Map<string, SessionRecord>;
   sessionReference?: (assignment: DelegationAssignment) => string;
   onSessionRecord?: (record: SessionRecord) => Promise<void> | void;
@@ -472,6 +547,10 @@ export async function coordinateDelegation(input: CoordinatorInput) {
     clock: input.dependencies?.clock ?? now,
     activityClock: input.dependencies?.activityClock ?? Date.now,
     admitImages: input.dependencies?.admitImages ?? admitVisionImages,
+    admitVerifications: input.dependencies?.admitVerifications ?? admitDelegatedVerifications,
+    verificationExecutor: input.dependencies?.verificationExecutor,
+    verificationFilesystem: input.dependencies?.verificationFilesystem,
+    verificationTimer: input.dependencies?.verificationTimer,
   };
   const store = input.sessionStore ?? sessions;
   let state = createDelegationState(input.request);
@@ -483,7 +562,9 @@ export async function coordinateDelegation(input: CoordinatorInput) {
   let unsafe = false;
   let cancelled = input.signal?.aborted === true;
   const unsafeEvidence: Array<{ assignmentId: string; writeScope: string[] }> = [];
+  const unsafeVerificationReasons = new Map<string, string>();
   const live = new Map<string, any>();
+  const activeVerificationAssignments = new Set<string>();
   const abortLive = async () => Promise.allSettled([...live.values()].map((session) => Promise.resolve(session.abort?.())));
   const markUnsafe = (assignment: DelegationAssignment) => {
     unsafe = true;
@@ -499,6 +580,7 @@ export async function coordinateDelegation(input: CoordinatorInput) {
       if (current && !["succeeded", "blocked", "failed", "cancelled"].includes(current.state)) {
         emit({ type: "cancel-requested", id: assignment.id, at: deps.activityClock(), possiblePartialWriteScopes: assignment.writeScope.length ? assignment.writeScope : [] });
       }
+      if (activeVerificationAssignments.has(assignment.id)) markUnsafe(assignment);
     }
   };
   const onAbort = () => { requestCancellation(); void abortLive(); };
@@ -559,12 +641,38 @@ export async function coordinateDelegation(input: CoordinatorInput) {
     }
     let attempt = 0;
     let firstSafeCause: string | null = null;
+    let verificationExecuted = false;
     while (attempt < 2) {
       if (cancelled || unsafe) {
         const failure = "unsafe-partial-state" as const;
         emit({ type: "cancelled", id: assignment.id, at: deps.activityClock(), blocker: unsafe ? failure : "cancelled", possiblePartialWriteScopes: assignment.writeScope.length ? assignment.writeScope : [] });
         return { id: assignment.id, status: "cancelled", attempts: attempt, error: unsafe ? failure : "cancelled", failure, resumeReference: null };
       }
+      if (assignment.verifications !== undefined && !deps.verificationExecutor) {
+        const blocker = "delegated_verification_executor_unavailable";
+        emit({ type: "blocked", id: assignment.id, at: deps.activityClock(), blocker, escalation: "restore Pi non-shell verification execution" });
+        return { id: assignment.id, status: "blocked", attempts: attempt, error: blocker, failure: "agent-contract" as const, escalation: "restore Pi non-shell verification execution", resumeReference: null };
+      }
+      let verificationAdmission: Awaited<ReturnType<typeof admitDelegatedVerifications>>;
+      try {
+        verificationAdmission = await deps.admitVerifications({
+          projectRoot: input.cwd,
+          assignmentCount: input.request.assignments.length,
+          verifications: assignment.verifications,
+          agent,
+          projectTrusted: input.projectTrusted === true,
+          filesystem: deps.verificationFilesystem,
+        });
+      } catch {
+        verificationAdmission = { admitted: false, error: "delegated_verification_admission_unverifiable" };
+      }
+      if (!verificationAdmission.admitted) {
+        const blocker = verificationAdmission.error;
+        emit({ type: "blocked", id: assignment.id, at: deps.activityClock(), blocker, escalation: "correct the delegated verification capability" });
+        return { id: assignment.id, status: "blocked", attempts: attempt, error: blocker, failure: "agent-contract" as const, escalation: "correct the delegated verification capability", resumeReference: null };
+      }
+      if (cancelled || unsafe) continue;
+      const verificationSnapshots = verificationAdmission.snapshots;
       attempt += 1;
       emit({ type: "child-started", id: assignment.id, at: deps.activityClock(), attempt });
       let session: any;
@@ -585,12 +693,26 @@ export async function coordinateDelegation(input: CoordinatorInput) {
           modelRuntime: input.runtime,
           model,
           thinkingLevel: route.route.thinking as any,
-          tools: deriveToolAuthority(agent).map((tool) => agentToolNames[tool]).filter(Boolean),
+          tools: childToolNames(agent, verificationSnapshots),
           customTools: deps.scopedTools({
             cwd: input.cwd,
             assignment,
             agent,
             operationEvidence,
+            verificationSnapshots,
+            verificationExecutor: deps.verificationExecutor,
+            verificationFilesystem: deps.verificationFilesystem,
+            verificationTimer: deps.verificationTimer,
+            onVerificationUnsafe: (reason) => {
+              const alreadyUnsafe = unsafeVerificationReasons.has(assignment.id);
+              unsafeVerificationReasons.set(assignment.id, reason);
+              if (!alreadyUnsafe) markUnsafe(assignment);
+            },
+            onVerificationExecutionStart: () => {
+              verificationExecuted = true;
+              activeVerificationAssignments.add(assignment.id);
+            },
+            onVerificationExecutionSettled: () => { activeVerificationAssignments.delete(assignment.id); },
           }),
           sessionManager: deps.createManager(input.cwd) as any,
         });
@@ -630,13 +752,13 @@ export async function coordinateDelegation(input: CoordinatorInput) {
           }
         }) ?? unsubscribe;
         if (cancelled || unsafe) { await session.abort?.(); throw new Error(cancelled ? "cancelled" : "unsafe-partial-state"); }
-        const brief = buildChildBrief({ projectRoot: input.cwd, assignment, agent, images: admitted.value.map(({ source }) => publicVisionSource(source)) });
+        const brief = buildChildBrief({ projectRoot: input.cwd, assignment, agent, tools: childToolNames(agent, verificationSnapshots), images: admitted.value.map(({ source }) => publicVisionSource(source)) });
         if (admitted.value.length) await session.prompt(brief, { images: admitted.value.map(({ attachment }) => attachment), expandPromptTemplates: false });
         else await session.prompt(brief);
         await session.waitForIdle();
-        if (operationEvidence.hasUnsettledToolExecution()) markUnsafe(assignment);
+        if (operationEvidence.hasUnsettledToolExecution() || activeVerificationAssignments.has(assignment.id)) markUnsafe(assignment);
         rememberSafeCause();
-        if (cancelled && operationEvidence.hasPossibleMutation()) markUnsafe(assignment);
+        if (cancelled && (operationEvidence.hasPossibleMutation() || activeVerificationAssignments.has(assignment.id))) markUnsafe(assignment);
         if (cancelled || unsafe) throw new Error(cancelled ? "cancelled" : "unsafe-partial-state");
         const final = finalAssistant(session);
         const report = final?.report ?? "";
@@ -647,13 +769,13 @@ export async function coordinateDelegation(input: CoordinatorInput) {
           const safeCause = rememberSafeCause();
           const providerError = final?.errorMessage;
           const error = unsafe
-            ? "unsafe-partial-state"
+            ? unsafeVerificationReasons.get(assignment.id) ?? "unsafe-partial-state"
             : safeCause ?? providerError ?? completion.failures.join(",");
           const failure = unsafe
             ? "unsafe-partial-state"
             : providerError ? classifyChildFailure(providerError) : "agent-contract";
           const recovery = decideRecovery({ failure, retries: attempt - 1 });
-          if (recovery.retry && !cancelled && !unsafe) {
+          if (recovery.retry && !cancelled && !unsafe && !verificationExecuted) {
             emit({ type: "retrying", id: assignment.id, at: deps.activityClock(), attempt: 2, reason: failure });
             continue;
           }
@@ -680,16 +802,16 @@ export async function coordinateDelegation(input: CoordinatorInput) {
         state = reduceDelegationEvent(state, { type: "succeeded", id: assignment.id });
         return { id: assignment.id, status: "succeeded", attempts: attempt, report, provider: record.provider, model: record.model, thinking: record.thinking, sessionId: record.sessionId, sessionFile: record.sessionFile, resumeReference: record.followUpAllowed ? record.reference : null };
       } catch (error) {
-        if (!unsafe && (operationEvidence.hasUnsettledToolExecution() || operationEvidence.hasPossibleMutation())) markUnsafe(assignment);
+        if (!unsafe && (operationEvidence.hasUnsettledToolExecution() || operationEvidence.hasPossibleMutation() || activeVerificationAssignments.has(assignment.id))) markUnsafe(assignment);
         const safeCause = rememberSafeCause();
         const failure = unsafe ? "unsafe-partial-state" : cancelled ? "unsafe-partial-state" : classifyChildFailure(error);
         const recovery = decideRecovery({ failure, retries: attempt - 1 });
-        if (recovery.retry && !cancelled && !unsafe) {
+        if (recovery.retry && !cancelled && !unsafe && !verificationExecuted) {
           emit({ type: "retrying", id: assignment.id, at: deps.activityClock(), attempt: 2, reason: failure });
           continue;
         }
         const detail = unsafe
-          ? "unsafe-partial-state"
+          ? unsafeVerificationReasons.get(assignment.id) ?? "unsafe-partial-state"
           : cancelled
             ? "cancelled"
             : safeCause ?? sanitizeDelegationError(error);
@@ -698,6 +820,7 @@ export async function coordinateDelegation(input: CoordinatorInput) {
         state = reduceDelegationEvent(state, { type: cancelled ? "cancelled" : "failed", id: assignment.id, detail, partialEffects: unsafe || (cancelled && possibleWrites) });
         return { id: assignment.id, status: cancelled ? "cancelled" : "failed", attempts: attempt, error: detail, failure, resumeReference: null };
       } finally {
+        activeVerificationAssignments.delete(assignment.id);
         live.delete(assignment.id);
         unsubscribe();
         session?.dispose?.();
@@ -923,6 +1046,32 @@ export const runAgentFollowUp = async (input: {
   }
 };
 
+const delegatedVerificationParameters = Type.Object({
+  id: Type.String({ minLength: 1, maxLength: 64, pattern: DELEGATED_VERIFICATION_ID_PATTERN.source }),
+  runner: StringEnum(["npm", "composer"] as const),
+  cwd: Type.String({ minLength: 1, maxLength: 1_024 }),
+  script: Type.String({ minLength: 1, maxLength: 128 }),
+  args: Type.Array(Type.String({ minLength: 1, maxLength: 256 }), { maxItems: DELEGATED_VERIFICATION_MAX_ARGS }),
+  timeout: Type.Integer({ minimum: DELEGATED_VERIFICATION_MIN_TIMEOUT_MS, maximum: DELEGATED_VERIFICATION_MAX_TIMEOUT_MS }),
+}, { additionalProperties: false });
+
+const delegationAssignmentParameters = Type.Object({
+  id: Type.String(),
+  agent: Type.String(),
+  goal: Type.String(),
+  context: Type.String(),
+  paths: Type.Array(Type.String()),
+  constraints: Type.Array(Type.String()),
+  nonGoals: Type.Array(Type.String()),
+  expectedOutput: Type.String(),
+  writeScope: Type.Array(Type.String()),
+  imagePaths: Type.Optional(Type.Array(Type.String(), { maxItems: 4 })),
+  verifications: Type.Optional(Type.Array(delegatedVerificationParameters, {
+    minItems: 1,
+    maxItems: DELEGATED_VERIFICATION_MAX_ITEMS,
+  })),
+});
+
 export default function agents(pi: ExtensionAPI) {
   pi.registerTool({
     name: "ima_delegate",
@@ -934,7 +1083,7 @@ export default function agents(pi: ExtensionAPI) {
       "With ima_delegate, give writers exact, disjoint write scopes, never ask a child to delegate, and rely on visible activity instead of a confirmation loop.",
     ],
     executionMode: "sequential",
-    parameters: Type.Object({ title: Type.String(), assignments: Type.Array(Type.Object({ id: Type.String(), agent: Type.String(), goal: Type.String(), context: Type.String(), paths: Type.Array(Type.String()), constraints: Type.Array(Type.String()), nonGoals: Type.Array(Type.String()), expectedOutput: Type.String(), writeScope: Type.Array(Type.String()), imagePaths: Type.Optional(Type.Array(Type.String(), { maxItems: 4 })) }), { minItems: 1, maxItems: 4 }) }),
+    parameters: Type.Object({ title: Type.String(), assignments: Type.Array(delegationAssignmentParameters, { minItems: 1, maxItems: 4 }) }),
     execute: async (toolCallId, request, signal, onUpdate, ctx) => {
       let projectionDegraded = false;
       const project = (snapshot: DelegationActivityState) => {
@@ -952,6 +1101,10 @@ export default function agents(pi: ExtensionAPI) {
         if (!config || loaded.diagnostics.length) return { content: [{ type: "text", text: JSON.stringify({ status: "blocked", errors: [...config?.diagnostics ?? [], ...loaded.diagnostics] }) }], details: { status: "blocked" } };
         const valid = validateDelegationRequest(request, loaded.definitions);
         if (!valid.valid) return { content: [{ type: "text", text: JSON.stringify({ status: "blocked", errors: valid.errors }) }], details: { status: "blocked" } };
+        const requiresVerificationExecutor = request.assignments.some((assignment) => assignment.verifications !== undefined);
+        if (requiresVerificationExecutor && typeof pi.exec !== "function") {
+          return { content: [{ type: "text", text: JSON.stringify({ status: "blocked", errors: ["delegated_verification_executor_unavailable"] }) }], details: { status: "blocked" } };
+        }
         const persistence = createSessionPersistence(ctx.cwd, cycleOwner(ctx));
         result = await coordinateDelegation({
           cwd: ctx.cwd,
@@ -962,7 +1115,15 @@ export default function agents(pi: ExtensionAPI) {
           runId: toolCallId,
           onActivity: project,
           signal,
+          projectTrusted: trusted,
           sessionStore: sessions,
+          dependencies: {
+            verificationExecutor: (command, args, options) => pi.exec(command, args, {
+              cwd: options.cwd,
+              signal: options.signal,
+              timeout: options.timeout,
+            }),
+          },
           ...persistence,
         });
       } finally {

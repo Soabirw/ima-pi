@@ -18,6 +18,14 @@ const page = (index, shelfName, bookName, chapterName) => ({
   pageName: `page-${index}`,
 });
 
+const virtualBookStackTiming = () => {
+  let current = 0;
+  return {
+    now: () => current,
+    wait: async (milliseconds) => { current += milliseconds; },
+  };
+};
+
 const cleanupFixture = async (projectRoot, reportName = "canary-report.json") => {
   const body = "# canary\n";
   const target = targetPage({
@@ -88,6 +96,7 @@ test("canary reports use the existing hash-guarded Page cleanup", async () => {
         origin: "https://bookstack.example",
         tokenId: "id",
         tokenSecret: "secret",
+        ...virtualBookStackTiming(),
         fetch: async (url, options = {}) => {
           calls.push(options.method ?? "GET");
           if (options.method === "DELETE") return new Response(null, { status: 204 });
@@ -128,6 +137,7 @@ test("cleanup preserves inventory hash and source-body guards without deletion",
         origin: "https://bookstack.example",
         tokenId: "test-id",
         tokenSecret: "synthetic-token-secret",
+        ...virtualBookStackTiming(),
         fetch: async () => {
           hashFetches += 1;
           throw new Error("unexpected_fetch");
@@ -145,6 +155,7 @@ test("cleanup preserves inventory hash and source-body guards without deletion",
         origin: "https://bookstack.example",
         tokenId: "test-id",
         tokenSecret: "synthetic-token-secret",
+        ...virtualBookStackTiming(),
         fetch: async (_url, options = {}) => {
           calls.push(options.method ?? "GET");
           return new Response(JSON.stringify({
@@ -179,6 +190,7 @@ test("cleanup combines operation and client cancellation signals before request 
           origin: "https://bookstack.example",
           tokenId: "test-id",
           tokenSecret: "synthetic-token-secret",
+          ...virtualBookStackTiming(),
           signal: client.signal,
           fetch: async () => {
             fetches += 1;

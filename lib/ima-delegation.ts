@@ -2,8 +2,13 @@ import { createHash } from "node:crypto";
 import type { AgentDefinition } from "./ima-agents.ts";
 import type { ImaPhase, ResolvedImaConfig, ResolvedRole } from "./ima-config.ts";
 import { validateImagePaths } from "./ima-vision.ts";
+import {
+  validateDelegatedVerifications,
+  type DelegatedVerification as DelegatedVerificationConfig,
+} from "./ima-delegated-verification.ts";
 
-export type DelegationAssignment = { id: string; agent: string; goal: string; context: string; paths: string[]; constraints: string[]; nonGoals: string[]; expectedOutput: string; writeScope: string[]; imagePaths?: string[]; allowUpwardFallback?: boolean };
+export type DelegationAssignment = { id: string; agent: string; goal: string; context: string; paths: string[]; constraints: string[]; nonGoals: string[]; expectedOutput: string; writeScope: string[]; imagePaths?: string[]; verifications?: DelegatedVerificationConfig[]; allowUpwardFallback?: boolean };
+export type { DelegatedVerification } from "./ima-delegated-verification.ts";
 export type DelegationRequest = { title: string; assignments: DelegationAssignment[] };
 export type DelegationFailure = "brief-correctable" | "transient-provider" | "model-unavailable" | "auth-or-quota" | "agent-contract" | "unsafe-partial-state" | "plan-contradiction" | "critical-decision" | "terminal";
 export type DelegationEvent = { type: "started" | "succeeded" | "failed" | "cancelled"; id: string; detail?: string; partialEffects?: boolean };
@@ -58,37 +63,47 @@ export function validateAdversarialAssignments(assignments: DelegationAssignment
 }
 
 export function validateDelegationRequest(request: DelegationRequest, agents: AgentDefinition[]) {
+  const assignments = Array.isArray(request.assignments) ? request.assignments : [];
   const errors: string[] = []; if (!clean(request.title)) errors.push("delegation_title_invalid");
-  if (!Array.isArray(request.assignments) || request.assignments.length < 1 || request.assignments.length > 4) errors.push("delegation_child_count_invalid");
+  if (!Array.isArray(request.assignments) || assignments.length < 1 || assignments.length > 4) errors.push("delegation_child_count_invalid");
+  const verificationAssignments = assignments.filter((assignment) => assignment?.verifications !== undefined);
+  if (verificationAssignments.length && assignments.length !== 1) errors.push("delegated_verification_assignment_count_invalid");
   const names = new Map(agents.map((agent) => [agent.name, agent])); const seen = new Set<string>();
-  for (const assignment of request.assignments ?? []) {
+  for (const assignment of assignments) {
     if (!clean(assignment.id) || seen.has(assignment.id)) errors.push(`delegation_assignment_id_invalid:${assignment.id}`); seen.add(assignment.id);
     const agent = names.get(assignment.agent); if (!agent) { errors.push(`delegation_agent_unknown:${assignment.agent}`); continue; }
     for (const field of ["goal", "context", "expectedOutput"] as const) if (!clean(assignment[field])) errors.push(`delegation_${field}_invalid:${assignment.id}`);
     for (const path of [...assignment.paths, ...assignment.writeScope]) if (!safeRelative(path)) errors.push(`delegation_path_invalid:${assignment.id}`);
     const imageValidation = validateImagePaths(assignment.imagePaths ?? []);
     if (!imageValidation.valid) errors.push(`${imageValidation.error}:${assignment.id}`);
+    if (assignment.verifications !== undefined) {
+      errors.push(...validateDelegatedVerifications({
+        verifications: assignment.verifications,
+        agent,
+      }).errors.map((error) => `${error}:${assignment.id}`));
+    }
     if ((assignment.imagePaths?.length ?? 0) > 0 && (agent.tier !== "vision" || agent.authority !== "vision-read" || agent.result.kind !== "vision")) errors.push(`delegation_images_vision_only:${assignment.id}`);
     if (["read", "review-read", "vision-read"].includes(agent.authority) && assignment.writeScope.length) errors.push(`delegation_read_write_scope:${assignment.id}`);
     if (["write", "test-write", "document-write"].includes(agent.authority) && !assignment.writeScope.length) errors.push(`delegation_write_scope_required:${assignment.id}`);
   if (agent?.authority === "document-write") errors.push(...validateDocumentWriteScope(assignment.writeScope).errors.map((error) => `${error}:${assignment.id}`));
   }
-  errors.push(...validateAdversarialAssignments(request.assignments).errors);
-  errors.push(...validateParallelAssignments(request.assignments));
+  errors.push(...validateAdversarialAssignments(assignments).errors);
+  errors.push(...validateParallelAssignments(assignments));
   return { valid: !errors.length, errors };
 }
 
-export function buildChildBrief(input: { projectRoot: string; assignment: DelegationAssignment; agent: AgentDefinition; images?: Array<{ id: string; sourceLabel: string; mimeType: string; byteLength: number }> }) {
+export function buildChildBrief(input: { projectRoot: string; assignment: DelegationAssignment; agent: AgentDefinition; tools?: readonly string[]; images?: Array<{ id: string; sourceLabel: string; mimeType: string; byteLength: number }> }) {
   const { assignment, agent } = input;
+  const tools = input.tools ?? deriveToolAuthority(agent);
   const brief = [
     `You are the ${agent.name} specialist.`, `Goal: ${assignment.goal}`, `Project root: ${input.projectRoot}`, `Relevant paths: ${assignment.paths.join(", ") || "none"}`, `Context and prior decisions: ${assignment.context}`,
     `Constraints: ${assignment.constraints.join("; ") || "none"}`, `Non-goals: ${assignment.nonGoals.join("; ") || "none"}`, `Expected output: ${assignment.expectedOutput}`,
     `Phase route: ${agent.phase ?? "tier-routed"}.`,
-    `Authority: ${agent.authority}. Allowed tools: ${agent.tools.join(", ")}.`, `Exact write ownership: ${assignment.writeScope.join(", ") || "none"}.`,
+    `Authority: ${agent.authority}. Allowed tools: ${tools.join(", ")}.`, `Exact write ownership: ${assignment.writeScope.join(", ") || "none"}.`,
     ...(input.images?.length ? [`Attached visual evidence only: ${input.images.map((image) => `${image.id} (${image.sourceLabel}, ${image.mimeType}, ${image.byteLength} bytes)`).join("; ")}. Analyze only those identities; report direct visual facts, exact legible text, uncertainty, and missing/ambiguous evidence. Do not include paths, bytes, or implementation decisions.`] : []),
     "Other work may run concurrently. Do not edit outside your ownership, rely on parent chat, or delegate further.", `Escalate: ${agent.escalation.join(", ")}.`, `Report sections: ${agent.result.requiredSections.join(", ")}.`, agent.prompt,
   ].join("\n\n");
-  return composeDelegatedBashPrompt(brief, deriveToolAuthority(agent));
+  return composeDelegatedBashPrompt(brief, tools);
 }
 
 type AgentRouteSelection = {

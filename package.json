@@ -11,6 +11,7 @@
   ],
   "scripts": {
     "test": "node --import ./tests/fixtures/deny-live-fetch.js --test tests/*.test.js",
+    "verify:package-dry-run": "npm pack --dry-run",
     "install:skills": "node scripts/install.ts"
   },
   "pi": {

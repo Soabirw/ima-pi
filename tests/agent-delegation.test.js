@@ -37,6 +37,59 @@ test("validates bounded assignments, path safety, and disjoint writers", () => {
   assert.equal(writeScopesOverlap(["lib/a"], ["lib/ab"]), false);
 });
 
+test("validates delegated verification capability declarations before child creation", () => {
+  const tester = {
+    ...agent,
+    name: "tester",
+    authority: "test-write",
+    tools: ["read", "test"],
+    result: { kind: "test", requiredSections: ["tests", "results", "defects"] },
+  };
+  const verification = {
+    id: "node-test",
+    runner: "npm",
+    cwd: ".",
+    script: "test:unit",
+    args: ["--grep=delegated"],
+    timeout: 1_000,
+  };
+  const verificationAssignment = {
+    ...assignment,
+    id: "verify",
+    agent: "tester",
+    paths: ["tests/delegated-verification.test.js"],
+    writeScope: ["tests/delegated-verification.test.js"],
+    verifications: [verification],
+  };
+
+  assert.equal(
+    validateDelegationRequest({ title: "verify", assignments: [verificationAssignment] }, [agent, tester]).valid,
+    true,
+  );
+  const extraField = validateDelegationRequest({
+    title: "verify",
+    assignments: [{
+      ...verificationAssignment,
+      verifications: [{ ...verification, command: "npm test" }],
+    }],
+  }, [agent, tester]);
+  assert.ok(extraField.errors.includes("delegated_verification_shape_invalid:verify"));
+
+  const multiAssignment = validateDelegationRequest({
+    title: "verify",
+    assignments: [verificationAssignment, { ...assignment, id: "other", writeScope: ["lib/other.ts"] }],
+  }, [agent, tester]);
+  assert.ok(multiAssignment.errors.includes("delegated_verification_assignment_count_invalid"));
+
+  const reader = { ...agent, name: "reader", authority: "read", tools: ["read"], result: { kind: "evidence", requiredSections: ["findings"] } };
+  const wrongRole = validateDelegationRequest({
+    title: "verify",
+    assignments: [{ ...verificationAssignment, agent: "reader", writeScope: [] }],
+  }, [agent, tester, reader]);
+  assert.ok(wrongRole.errors.includes("delegated_verification_role_denied:verify"));
+  assert.ok(wrongRole.errors.includes("delegated_verification_tool_denied:verify"));
+});
+
 test("requires one matching adversary-a and adversary-b evidence packet", () => {
   const adversaryA = { ...agent, name: "adversary-a", authority: "review-read", tools: ["read"], result: { kind: "review", requiredSections: ["findings"] } };
   const adversaryB = { ...adversaryA, name: "adversary-b" };

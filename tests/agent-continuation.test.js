@@ -3,6 +3,8 @@ import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { runFocusedAgentContinuation } from "../lib/ima-agent-continuation.ts";
+import { agentContractFingerprint } from "../lib/ima-delegation.ts";
 import {
   CYCLE_AGENT_SESSION_SCHEMA_VERSION,
   CYCLE_PHASE_CONTEXT_ENTRY,
@@ -296,4 +298,104 @@ test("fails closed rather than writing through a .ima-cycle symlink", async () =
       rm(outside, { recursive: true, force: true }),
     ]);
   }
+});
+
+test("continuations do not inherit parent-minted delegated test authority", async () => {
+  const continuationAgent = {
+    schemaVersion: 1,
+    name: "tester",
+    description: "Tester",
+    tier: "MID",
+    authority: "test-write",
+    tools: ["read", "test"],
+    skills: [],
+    delegation: { allowed: false, maxDepth: 0 },
+    independence: { freshInitial: false, followUpAllowed: true },
+    result: { kind: "test", requiredSections: ["tests", "results", "defects"] },
+    escalation: ["unsafe-operation"],
+    prompt: "Test safely.",
+    source: "package",
+    path: "/agents/tester.md",
+  };
+  const writeScope = ["tests/delegated-verification.test.js"];
+  const record = {
+    reference: "continued-tester",
+    agent: "tester",
+    role: "test-write",
+    resultKind: "test",
+    provider: "p",
+    model: "m",
+    thinking: "high",
+    sessionId: "continued-session",
+    sessionFile: "/sessions/continued-tester.jsonl",
+    writeScope,
+    contractFingerprint: agentContractFingerprint(continuationAgent, writeScope),
+    status: "succeeded",
+    fresh: false,
+    followUpAllowed: true,
+    createdAt: "2026-08-04T18:00:00.000Z",
+    updatedAt: "2026-08-04T18:00:00.000Z",
+  };
+  const observed = {};
+  let releases = 0;
+  const session = {
+    messages: [{
+      role: "assistant",
+      stopReason: "stop",
+      content: [{ type: "text", text: "No additional verification authority was used." }],
+    }],
+    model: { provider: "p", id: "m" },
+    thinkingLevel: "high",
+    sessionId: record.sessionId,
+    sessionFile: record.sessionFile,
+    subscribe: () => () => undefined,
+    prompt: async () => undefined,
+    waitForIdle: async () => undefined,
+    abort: async () => undefined,
+    dispose: async () => undefined,
+  };
+  const result = await runFocusedAgentContinuation({
+    record,
+    agent: continuationAgent,
+    brief: "Review the retained test result.",
+    runtime: { getModel: (provider, model) => provider === "p" && model === "m" ? { provider, id: model } : undefined },
+    cwd: "/repo",
+    sessionStore: new Map(),
+    dependencies: {
+      fileExists: () => true,
+      acquireSessionLock: async (path) => ({
+        target: path,
+        release: async () => { releases += 1; },
+      }),
+      openManager: (path) => ({
+        getSessionId: () => record.sessionId,
+        getSessionFile: () => path,
+        getCwd: () => "/repo",
+      }),
+      createSession: async (input) => {
+        observed.tools = input.tools;
+        observed.customTools = input.customTools;
+        return { session };
+      },
+      scopedTools: (input) => {
+        observed.agent = input.agent;
+        observed.hasVerificationSnapshots = Object.hasOwn(input, "verificationSnapshots");
+        return [];
+      },
+      toolNames: { read: "read", test: "test" },
+      finalAssistant: () => ({
+        stopReason: "stop",
+        report: "No additional verification authority was used.",
+      }),
+      mutationAttemptUnsafe: () => false,
+      clock: () => "2026-08-04T18:01:00.000Z",
+    },
+  });
+
+  assert.equal(result.status, "succeeded");
+  assert.deepEqual(observed.tools, ["read"]);
+  assert.deepEqual(observed.customTools, []);
+  assert.deepEqual(observed.agent.tools, ["read"]);
+  assert.equal(observed.hasVerificationSnapshots, false);
+  assert.equal(releases, 1);
 });

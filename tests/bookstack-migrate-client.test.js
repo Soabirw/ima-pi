@@ -7,13 +7,6 @@ const json = (body, status = 200) => new Response(JSON.stringify(body), {
   headers: { "content-type": "application/json" },
 });
 
-const clientInput = (overrides = {}) => ({
-  origin: "https://bookstack.example",
-  tokenId: "test-id",
-  tokenSecret: "synthetic-token-secret",
-  ...overrides,
-});
-
 const virtualClock = (initial = 0) => {
   let current = initial;
   const waits = [];
@@ -26,6 +19,18 @@ const virtualClock = (initial = 0) => {
     advance: (milliseconds) => { current += milliseconds; },
     get time() { return current; },
     waits,
+  };
+};
+
+const clientInput = (overrides = {}) => {
+  const clock = virtualClock();
+  return {
+    origin: "https://bookstack.example",
+    tokenId: "test-id",
+    tokenSecret: "synthetic-token-secret",
+    now: clock.now,
+    wait: clock.wait,
+    ...overrides,
   };
 };
 
@@ -116,7 +121,7 @@ test("accepts the empty success response used by Page deletion", async () => {
   assert.equal(calls[0].options.method, "DELETE");
 });
 
-test("observably uses the provisional 1,100 ms default between request starts", async () => {
+test("preserves the production 1,100 ms default between request starts", async () => {
   const clock = virtualClock();
   const starts = [];
   const client = createBookStackClient(clientInput({

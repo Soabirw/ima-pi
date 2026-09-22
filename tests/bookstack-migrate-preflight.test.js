@@ -14,6 +14,14 @@ import { dryRunBookStackMigration, preflightBookStackMigration } from "../lib/bo
 import { normalizeInstitutionalRecord } from "../lib/qdrant-corpus.ts";
 import { sourceHash, targetPage } from "../lib/bookstack-migrate-source.ts";
 
+const virtualBookStackTiming = () => {
+  let current = 0;
+  return {
+    now: () => current,
+    wait: async (milliseconds) => { current += milliseconds; },
+  };
+};
+
 const knowledgePage = (path, body = "# knowledge\n") => targetPage({
   kind: "knowledge",
   sourceOrigin: "filesystem",
@@ -135,6 +143,7 @@ test("preflight reads real fixture contracts without issuing a BookStack write",
     sourceRefs: [],
   }, "2026-09-10T00:00:00.000Z");
   assert.equal(record.success, true);
+  const timing = virtualBookStackTiming();
   const originalFetch = globalThis.fetch;
   let points = [{ id: record.data.id, payload: record.data.payload }];
   globalThis.fetch = async () => json({ result: { points, next_page_offset: null } });
@@ -163,7 +172,13 @@ test("preflight reads real fixture contracts without issuing a BookStack write",
     const result = await preflightBookStackMigration({
       projectRoot,
       dryRunReportPath: dryRun.artifact.path,
-      bookStack: { origin: "https://bookstack.example", tokenId: "id", tokenSecret: "secret", fetch: bookStackFetch },
+      bookStack: {
+        origin: "https://bookstack.example",
+        tokenId: "id",
+        tokenSecret: "secret",
+        ...timing,
+        fetch: bookStackFetch,
+      },
     });
     assert.equal(result.report.outcome, "PASS");
     assert.deepEqual(writes, []);
@@ -184,7 +199,13 @@ test("preflight reads real fixture contracts without issuing a BookStack write",
     const withAppend = await preflightBookStackMigration({
       projectRoot,
       dryRunReportPath: dryRun.artifact.path,
-      bookStack: { origin: "https://bookstack.example", tokenId: "id", tokenSecret: "secret", fetch: bookStackFetch },
+      bookStack: {
+        origin: "https://bookstack.example",
+        tokenId: "id",
+        tokenSecret: "secret",
+        ...timing,
+        fetch: bookStackFetch,
+      },
     });
     assert.equal(withAppend.report.outcome, "PASS");
     const delta = JSON.parse(await readFile(join(dryRun.run.directory, "apply-source-delta.json"), "utf8"));

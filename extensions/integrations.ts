@@ -2020,6 +2020,7 @@ const lifecycleReadRouting = (input: {
   provider: LifecycleProviderName;
   checkoutRoot: string;
   dependencies: ReturnType<typeof depsFor>;
+  bookStackLifecycleClient?: BookStackLifecycleClient;
   environment?: Record<string, string | undefined>;
   signal?: AbortSignal;
 }): ReturnType<typeof createLifecycleRouting> => {
@@ -2028,6 +2029,7 @@ const lifecycleReadRouting = (input: {
     : input.provider === "bookstack"
       ? bookStackLifecycleAdapter({
         environment: input.environment ?? process.env,
+        client: input.bookStackLifecycleClient,
         signal: input.signal,
       })
       : input.provider === "serena"
@@ -2942,6 +2944,7 @@ const readPinnedLifecycleSourceAnchor = async (input: {
     provider: pinState.pin.provider,
     checkoutRoot: root,
     dependencies,
+    bookStackLifecycleClient: input.supplied?.bookStackLifecycleClient,
     environment: input.supplied?.environment,
     signal: input.signal,
   });
@@ -2985,6 +2988,7 @@ const recallPinnedLifecycle = async (input: {
   const routing = input.supplied?.routing ?? lifecycleRouting({
     checkoutRoot: root,
     dependencies,
+    bookStackLifecycleClient: input.supplied?.bookStackLifecycleClient,
     environment: input.supplied?.environment,
   });
   const result = await routePinnedLifecycleRecall({
@@ -3040,6 +3044,7 @@ export const resolveLifecycleLineage = async (
       provider: authority.pin.provider,
       checkoutRoot: root,
       dependencies,
+      bookStackLifecycleClient: supplied?.bookStackLifecycleClient,
       environment: supplied?.environment,
       signal,
     });
@@ -3415,6 +3420,7 @@ const lifecycleReadSetup = async (input: {
       provider,
       checkoutRoot: root,
       dependencies,
+      bookStackLifecycleClient: input.supplied?.bookStackLifecycleClient,
       environment: input.supplied?.environment,
       signal: input.signal,
     }),

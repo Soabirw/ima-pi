@@ -3652,8 +3652,6 @@ test("TEST-006 hydrates a valid pinned BookStack anchor and phase-reads its exac
   const registry = join(root, ".ima-cycle", "provider-pins.json");
   const pinStateBeforeRecall = await readFile(registry, "utf8");
 
-  const originalFetch = globalThis.fetch;
-  t.after(() => { globalThis.fetch = originalFetch; });
   const calls = [];
   const shelf = { id: 1, name: "Lifecycle", slug: "lifecycle-artifacts", books: [2] };
   const book = { id: 2, name: "IMA Pi", slug: "ima-pi" };
@@ -3667,7 +3665,7 @@ test("TEST-006 hydrates a valid pinned BookStack anchor and phase-reads its exac
     status: 200,
     headers: { "content-type": "application/json" },
   });
-  globalThis.fetch = async (input, init = {}) => {
+  const fetch = async (input, init = {}) => {
     const url = new URL(String(input));
     const method = init.method ?? "GET";
     calls.push({ origin: url.origin, pathname: url.pathname, method });
@@ -3681,17 +3679,30 @@ test("TEST-006 hydrates a valid pinned BookStack anchor and phase-reads its exac
     if (method === "GET" && listed) return json(listed);
     return new Response("unexpected request", { status: 404 });
   };
+  let virtualTime = 0;
+  const waits = [];
+  const client = createBookStackLifecycleClient({
+    origin: "https://bookstack.test",
+    tokenId: "test-token-id",
+    tokenSecret: "test-token-secret",
+    requestScheduler: createBookStackLifecycleRequestScheduler({
+      now: () => virtualTime,
+      wait: async (milliseconds) => {
+        waits.push(milliseconds);
+        virtualTime += milliseconds;
+      },
+    }),
+    fetch,
+  });
 
   const access = corpusAccessCounter();
   let serenaCalls = 0;
   const supplied = {
     canonical: async (path) => path,
+    cwd: root,
     corpus: access.corpus,
-    environment: {
-      BOOKSTACK_BASE_URL: "https://bookstack.test",
-      BOOKSTACK_TOKEN_ID: "test-token-id",
-      BOOKSTACK_TOKEN_SECRET: "test-token-secret",
-    },
+    bookStackLifecycleClient: client,
+    environment: {},
     resolveProjectRoot: async () => root,
     session: async () => {
       serenaCalls += 1;
@@ -3741,6 +3752,27 @@ test("TEST-006 hydrates a valid pinned BookStack anchor and phase-reads its exac
   assert.ok(implementationRecalled);
   assert.equal(implementationRecalled.structuredContent.results.length, 10);
   assert.equal(implementationRecalled.structuredContent.results.every(({ phase }) => phase === "implementation"), true);
+
+  const lineage = await resolveLifecycleLineage(lifecycleKey, supplied);
+  assert.equal(lineage.status, "verified");
+  if (lineage.status === "verified") {
+    assert.equal(lineage.lineage.rootArtifactId, record.artifactId);
+  }
+
+  const routedRecall = await coordinateLifecycleRecall({
+    lifecycleKey,
+    phase: "implementation",
+    limit: 1,
+  }, supplied);
+  assert.equal(routedRecall.status, "completed");
+  assert.equal(routedRecall.results.length, 1);
+  const descriptor = routedRecall.results[0];
+  assert.ok(descriptor);
+  const routedGet = await coordinateLifecycleGet(descriptor, supplied);
+  assert.equal(routedGet.status, "completed");
+  assert.equal(routedGet.phase, "implementation");
+  assert.equal(waits.length > 0, true);
+  assert.equal(virtualTime > 0, true);
 
   const overflowPages = Array.from({ length: 20 }, (_, index) => pageFor(
     1798 + index,

@@ -505,6 +505,11 @@ export async function runFocusedAgentContinuation(input: FocusedContinuationInpu
       });
     };
     let firstSafeCause: string | null = null;
+    // Persisted continuation records never carry parent-minted verification snapshots.
+    const continuationAgent = {
+      ...input.agent,
+      tools: deriveToolAuthority(input.agent).filter((tool) => tool !== "test"),
+    };
 
     for (let attempt = 0; attempt < 2; attempt += 1) {
       let session: any;
@@ -548,7 +553,7 @@ export async function runFocusedAgentContinuation(input: FocusedContinuationInpu
           modelRuntime: input.runtime,
           model,
           thinkingLevel: record.thinking as any,
-          tools: deriveToolAuthority(input.agent).map((tool) => input.dependencies.toolNames[tool]).filter(Boolean),
+          tools: deriveToolAuthority(continuationAgent).map((tool) => input.dependencies.toolNames[tool]).filter(Boolean),
           customTools: input.dependencies.scopedTools({
             cwd,
             assignment: {
@@ -562,7 +567,7 @@ export async function runFocusedAgentContinuation(input: FocusedContinuationInpu
               expectedOutput: input.agent.result.requiredSections.join(", "),
               writeScope: record.writeScope,
             },
-            agent: input.agent,
+            agent: continuationAgent,
             operationEvidence,
           }),
           sessionManager: sessionManager as any,

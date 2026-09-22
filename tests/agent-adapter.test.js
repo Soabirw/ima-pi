@@ -12,6 +12,7 @@ import {
   restoreSessionRecord,
   runAgentFollowUp,
 } from "../extensions/agents.ts";
+import { DELEGATED_VERIFICATION_CLEANUP_TIMEOUT_MS } from "../lib/ima-delegated-verification.ts";
 import {
   CYCLE_AGENT_SESSION_SCHEMA_VERSION,
   CYCLE_PHASE_CONTEXT_ENTRY,
@@ -175,6 +176,52 @@ test("adapter denies composed delegated Bash before any command executes", async
     await assert.rejects(
       bash.execute(`composed-bash-${index}`, { command }, undefined, undefined, nativeBashContext),
       { message: "ownership_bash_denied:shell_composition" },
+    );
+  }
+  assert.equal(executions, 0);
+});
+
+test("adapter rejects raw package-manager, wrapper, and indirect commands before execution", async () => {
+  let executions = 0;
+  const tools = createScopedTools({
+    cwd: "/repo",
+    assignment: assignment("raw-verification-bash"),
+    agent,
+    operations: {
+      bash: {
+        exec: async () => {
+          executions += 1;
+          return { exitCode: 0 };
+        },
+      },
+    },
+  });
+  const bash = tools.find((tool) => tool.name === "bash");
+  const nativeBashContext = {
+    sessionManager: {
+      getSessionId: () => "raw-verification-bash-test",
+      getSessionFile: () => undefined,
+    },
+  };
+  const commands = [
+    "npm test",
+    "npm run test",
+    "composer test",
+    "npx playwright test",
+    "pnpm test",
+    "yarn test",
+    "ddev npm test",
+    "bash -c 'npm test'",
+    "sh -c 'composer test'",
+    "env npm test",
+    "command npm test",
+    "xargs npm",
+  ];
+
+  for (const [index, command] of commands.entries()) {
+    await assert.rejects(
+      bash.execute(`raw-verification-${index}`, { command }, undefined, undefined, nativeBashContext),
+      /ownership_bash_denied:/,
     );
   }
   assert.equal(executions, 0);
@@ -1341,4 +1388,267 @@ test("adversarial pairs block before child creation when routes are matching or 
   assert.equal(result.status, "failed");
   assert.equal(created, 0);
   assert.deepEqual(result.results.map(({ error }) => error), ["adversary_routes_not_distinct", "adversary_routes_not_distinct"]);
+});
+
+test("omits delegated test authority for assignments without a parent-approved verification", async () => {
+  const tester = {
+    ...agent,
+    name: "tester",
+    authority: "test-write",
+    tools: ["read", "test"],
+    result: { kind: "test", requiredSections: ["tests", "results", "defects"] },
+  };
+  const child = fakeSession({ text: "## Results\nno delegated verification" });
+  let suppliedTools;
+  let suppliedCustomTools;
+  const result = await coordinateDelegation({
+    cwd: "/repo",
+    request: { title: "no verification", assignments: [{ ...assignment("no-capability"), agent: "tester" }] },
+    agents: [tester],
+    config,
+    runtime,
+    sessionStore: new Map(),
+    dependencies: {
+      createManager: () => ({}),
+      scopedTools: createScopedTools,
+      createSession: async ({ tools, customTools }) => {
+        suppliedTools = tools;
+        suppliedCustomTools = customTools;
+        return { session: child.session };
+      },
+    },
+  });
+
+  assert.equal(result.status, "succeeded");
+  assert.deepEqual(suppliedTools, ["read"]);
+  assert.equal(suppliedCustomTools.some((tool) => tool.name === "test"), false);
+});
+
+test("uses typed delegated verification with bounded activity and no retry after a settled failure", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ima-agent-delegated-verification-"));
+  const tester = {
+    ...agent,
+    name: "tester",
+    authority: "test-write",
+    tools: ["read", "test"],
+    result: { kind: "test", requiredSections: ["tests", "results", "defects"] },
+  };
+  const verificationAssignment = {
+    ...assignment("delegated-verification"),
+    agent: "tester",
+    verifications: [{
+      id: "node-test",
+      runner: "npm",
+      cwd: ".",
+      script: "test:unit",
+      args: ["--grep=delegated"],
+      timeout: 1_000,
+    }],
+  };
+  let testTool;
+  let toolOutcome;
+  let created = 0;
+  const executions = [];
+  const activity = [];
+  const child = fakeSession({
+    text: "",
+    state: {
+      messages: [{
+        role: "assistant",
+        stopReason: "error",
+        errorMessage: "provider timeout",
+        content: [],
+      }],
+    },
+    prompt: async ({ listeners }) => {
+      for (const listener of listeners) {
+        listener({
+          type: "tool_execution_start",
+          toolCallId: "delegated-test",
+          toolName: "test",
+          args: { id: "node-test" },
+        });
+      }
+      toolOutcome = await testTool.execute("delegated-test", { id: "node-test" }, undefined, undefined, {});
+      for (const listener of listeners) {
+        listener({
+          type: "tool_execution_end",
+          toolCallId: "delegated-test",
+          toolName: "test",
+          isError: false,
+        });
+      }
+    },
+  });
+  try {
+    await writeFile(join(root, "package.json"), JSON.stringify({
+      scripts: { "test:unit": "node --test" },
+    }));
+    const result = await coordinateDelegation({
+      cwd: root,
+      request: { title: "delegated verification", assignments: [verificationAssignment] },
+      agents: [tester],
+      config,
+      runtime,
+      projectTrusted: true,
+      sessionStore: new Map(),
+      onActivity: (snapshot) => activity.push(snapshot),
+      dependencies: {
+        createManager: () => ({}),
+        scopedTools: createScopedTools,
+        verificationExecutor: async (command, args, options) => {
+          executions.push({ command, args, cwd: options.cwd, optionKeys: Object.keys(options).sort() });
+          return {
+            stdout: "token=delegated-secret",
+            stderr: "",
+            code: 1,
+            killed: false,
+          };
+        },
+        createSession: async ({ tools, customTools }) => {
+          created += 1;
+          assert.deepEqual(tools, ["read", "test"]);
+          testTool = customTools.find((tool) => tool.name === "test");
+          return { session: child.session };
+        },
+      },
+    });
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.results[0].attempts, 1);
+    assert.equal(result.results[0].failure, "transient-provider");
+    assert.equal(result.partialEffects, false);
+    assert.deepEqual(result.unsafeEvidence, []);
+    assert.equal(created, 1);
+    assert.deepEqual(executions, [{
+      command: "npm",
+      args: ["run", "test:unit", "--", "--grep=delegated"],
+      cwd: root,
+      optionKeys: ["cwd", "signal", "timeout"],
+    }]);
+    assert.equal(toolOutcome.details.status, "failed");
+    assert.match(toolOutcome.details.output, /token=\[redacted\]/i);
+    assert.doesNotMatch(toolOutcome.details.output, /delegated-secret/);
+    assert.ok(activity.some((snapshot) => snapshot.children[0].activity === "tool:test"));
+    assert.doesNotMatch(JSON.stringify(activity), /delegated-secret/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("pending delegated verification latches prompt safety and blocks later effects, retry, and reuse", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ima-agent-pending-verification-"));
+  const verifier = {
+    ...agent,
+    name: "verification-writer",
+    tools: ["read", "write", "test"],
+  };
+  const verificationAssignment = {
+    ...assignment("pending-verification", ["owned"]),
+    agent: verifier.name,
+    verifications: [{
+      id: "node-test",
+      runner: "npm",
+      cwd: ".",
+      script: "test:unit",
+      args: [],
+      timeout: 1_000,
+    }],
+  };
+  const scheduled = [];
+  const timer = {
+    schedule: (callback, milliseconds) => {
+      const entry = { callback, milliseconds, cancelled: false };
+      scheduled.push(entry);
+      return entry;
+    },
+    cancel: (entry) => { entry.cancelled = true; },
+  };
+  let testTool;
+  let writeTool;
+  let created = 0;
+  let executions = 0;
+  let writeEffects = 0;
+  let promptLatchedUnsafe = false;
+  const unsafeReasons = [];
+  const activity = [];
+  let signalExecutorStart;
+  const executorStarted = new Promise((resolve) => { signalExecutorStart = resolve; });
+  const child = fakeSession({
+    prompt: async () => {
+      const controller = new AbortController();
+      const pending = testTool.execute("pending-verification", { id: "node-test" }, controller.signal, undefined, {});
+      await executorStarted;
+      controller.abort();
+      for (let attempt = 0; attempt < 4 && scheduled.length < 2; attempt += 1) await Promise.resolve();
+      promptLatchedUnsafe = unsafeReasons.includes("delegated_verification_cancelled")
+        && activity.some((snapshot) => snapshot.children[0].activity === "safety:intercepted");
+      assert.equal(scheduled.length, 2);
+      assert.equal(scheduled[1].milliseconds, DELEGATED_VERIFICATION_CLEANUP_TIMEOUT_MS);
+      scheduled[1].callback();
+      await assert.rejects(pending, { message: "delegated_verification_process_cleanup_unverified" });
+      await assert.rejects(
+        testTool.execute("verification-reuse", { id: "node-test" }, undefined, undefined, {}),
+        { message: "delegated_verification_process_cleanup_unverified" },
+      );
+      await assert.rejects(
+        writeTool.execute("blocked-write", { path: "owned/later.txt", content: "blocked" }, undefined, undefined, {}),
+        { message: "delegated_verification_process_cleanup_unverified" },
+      );
+    },
+  });
+  try {
+    await writeFile(join(root, "package.json"), JSON.stringify({
+      scripts: { "test:unit": "node --test" },
+    }));
+    const result = await coordinateDelegation({
+      cwd: root,
+      request: { title: "pending verification", assignments: [verificationAssignment] },
+      agents: [verifier],
+      config,
+      runtime,
+      projectTrusted: true,
+      sessionStore: new Map(),
+      onActivity: (snapshot) => activity.push(snapshot),
+      dependencies: {
+        createManager: () => ({}),
+        scopedTools: (input) => createScopedTools({
+          ...input,
+          onVerificationUnsafe: (reason) => {
+            unsafeReasons.push(reason);
+            input.onVerificationUnsafe?.(reason);
+          },
+          operations: {
+            writeFile: async () => { writeEffects += 1; },
+          },
+        }),
+        verificationExecutor: async () => new Promise(() => {
+          executions += 1;
+          signalExecutorStart();
+        }),
+        verificationTimer: timer,
+        createSession: async ({ customTools }) => {
+          created += 1;
+          testTool = customTools.find((tool) => tool.name === "test");
+          writeTool = customTools.find((tool) => tool.name === "write");
+          return { session: child.session };
+        },
+      },
+    });
+
+    assert.equal(promptLatchedUnsafe, true);
+    assert.equal(result.status, "failed");
+    assert.equal(result.results[0].attempts, 1);
+    assert.equal(result.results[0].failure, "unsafe-partial-state");
+    assert.equal(result.results[0].error, "delegated_verification_process_cleanup_unverified");
+    assert.equal(result.partialEffects, true);
+    assert.deepEqual(result.unsafeEvidence, [{ assignmentId: "pending-verification", writeScope: ["owned"] }]);
+    assert.equal(created, 1);
+    assert.equal(executions, 1);
+    assert.equal(writeEffects, 0);
+    assert.equal(existsSync(join(root, "owned", "later.txt")), false);
+    assert.deepEqual(result.report.reusableSessionReferences, []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
