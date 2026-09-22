@@ -4,6 +4,12 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 ## [Unreleased]
 
+## [1.20.2] - 2026-09-22
+
+### Security
+
+- Remediated all npm audit advisories with a minimal dependency update: direct `yaml` `2.8.2` → `2.9.1` and transitive `fast-uri` `3.1.5` → `3.1.8` (high), `hono` `4.12.33` → `4.13.8`, and `qs` `6.15.3` → `6.16.0`. `npm audit` now reports zero vulnerabilities with the full test suite passing.
+
 ## [1.20.1] - 2026-09-10
 
 ### Fixed
