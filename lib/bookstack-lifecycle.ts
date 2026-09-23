@@ -201,6 +201,11 @@ const throwIfAborted = (signal?: AbortSignal) => {
 };
 
 const pageName = (record: BookStackLifecycleRecord) => `${record.phase}-${record.artifactId}`;
+const canonicalPhaseArtifactSlug = (value: unknown) => {
+  if (typeof value !== "string") return false;
+  const slug = /^([a-z]+)-([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i.exec(value);
+  return Boolean(slug && VALID_PHASES.has(slug[1]));
+};
 const placementMatches = (left: LifecyclePlacement, right: LifecyclePlacement) =>
   left.projectSlug === right.projectSlug
   && left.sourceRef === right.sourceRef
@@ -860,7 +865,8 @@ export const createBookStackLifecycleProvider = (input: {
       });
       throwIfAborted(signal);
       const candidates = (await input.client.listPages(signal))
-        .filter((page) => page.chapterId === selection.placement.chapterId);
+        .filter((page) => page.chapterId === selection.placement.chapterId
+          && (canonicalPhaseArtifactSlug(page.slug) || canonicalPhaseArtifactSlug(page.name)));
       throwIfAborted(signal);
       const records: VerifiedResult[] = [];
       for (const candidate of candidates) {

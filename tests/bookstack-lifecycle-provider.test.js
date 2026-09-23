@@ -542,6 +542,161 @@ test("BookStack recall filters a physically valid sibling lifecycle record", asy
   assert.equal(fake.reads(), 2);
 });
 
+test("BookStack recall skips unmanaged same-chapter migration pages and preserves pinned evidence", async () => {
+  const plan = createLifecycleRecord({ request, placement });
+  const fake = createClient({ pages: [
+    {
+      id: 121,
+      name: "Unrelated empty-slug draft",
+      slug: "",
+      bookId: placement.bookId,
+      chapterId: placement.chapterId,
+    },
+    {
+      id: 122,
+      name: "Migrated project notes",
+      slug: "migrated-project-notes",
+      bookId: placement.bookId,
+      chapterId: placement.chapterId,
+    },
+    {
+      id: 123,
+      name: "Legacy plan template",
+      slug: "plan-not-a-lifecycle-artifact",
+      bookId: placement.bookId,
+      chapterId: placement.chapterId,
+    },
+    pageForLifecycleRecord(124, plan),
+  ] });
+  const provider = createBookStackLifecycleProvider({ client: fake });
+  const readIds = [];
+  const readPage = fake.readPage;
+  fake.readPage = async (id) => {
+    readIds.push(id);
+    return readPage(id);
+  };
+
+  const recalled = await provider.recall(recallInput("plan"));
+  assert.equal(Array.isArray(recalled), true);
+  if (!Array.isArray(recalled)) return;
+  assert.deepEqual(recalled.map(({ artifactId }) => artifactId), [plan.artifactId]);
+  assert.deepEqual(readIds, [124]);
+  assert.equal(fake.hierarchyReads(), 3);
+  assert.equal(fake.lists(), 1);
+
+  const pinned = await provider.get(structuredClone(recalled[0].locator));
+  assert.equal(pinned.status, "verified");
+  if (pinned.status !== "verified") return;
+  assert.equal(pinned.artifactId, plan.artifactId);
+  assert.deepEqual(pinned.locator, recalled[0].locator);
+  assert.deepEqual(readIds, [124, 124]);
+  assert.equal(fake.creates(), 0);
+});
+
+test("BookStack recall treats canonical names as candidates before selected-phase filtering", async () => {
+  const plan = createLifecycleRecord({ request, placement });
+  const implementation = continuationRecord("implementation", plan.artifactId, "selected-before-name-verification");
+  const review = continuationRecord("review", plan.artifactId, "canonical-name-verification");
+  const scenarios = [
+    { name: "canonical name plus empty slug", slug: "" },
+    { name: "canonical name plus noncanonical slug", slug: "migrated-review-evidence" },
+  ];
+
+  for (const scenario of scenarios) {
+    const fake = createClient({ pages: [
+      pageForLifecycleRecord(125, plan),
+      pageForLifecycleRecord(126, implementation),
+      { ...pageForLifecycleRecord(127, review), slug: scenario.slug },
+    ] });
+    const readIds = [];
+    const readPage = fake.readPage;
+    fake.readPage = async (id) => {
+      readIds.push(id);
+      return readPage(id);
+    };
+
+    const result = await createBookStackLifecycleProvider({ client: fake })
+      .recall(recallInput("implementation"));
+    assert.equal(Array.isArray(result), false, scenario.name);
+    if (Array.isArray(result)) continue;
+    assert.equal(result.status, "blocked", scenario.name);
+    assert.equal(result.code, "bookstack_verification_failed", scenario.name);
+    assert.equal(result.category, "unverifiable", scenario.name);
+    assert.equal(result.recovery, null, scenario.name);
+    assert.equal(Object.hasOwn(result, "artifact"), false, scenario.name);
+    assert.deepEqual(readIds, [125, 126, 127], scenario.name);
+    assert.equal(fake.hierarchyReads(), 3, scenario.name);
+    assert.equal(fake.lists(), 1, scenario.name);
+    assert.equal(fake.reads(), 3, scenario.name);
+    assert.equal(fake.creates(), 0, scenario.name);
+  }
+});
+
+test("BookStack recall fails closed on canonical-looking candidates with safe failure categories", async () => {
+  const plan = createLifecycleRecord({ request, placement });
+  const canonicalSlug = "plan-00000000-0000-5000-8000-000000000000";
+  const scenarios = [
+    {
+      name: "malformed canonical page",
+      page: {
+        id: 131,
+        name: canonicalSlug,
+        slug: canonicalSlug,
+        bookId: placement.bookId,
+        chapterId: placement.chapterId,
+        markdown: "Malformed migration body token=verification-secret",
+        revisionCount: 1,
+        updatedAt: "2026-09-11T00:00:00Z",
+        creatorId: 7,
+        updaterId: 8,
+      },
+      expectedCode: "bookstack_verification_failed",
+      expectedCategory: "unverifiable",
+    },
+    {
+      name: "conflicting canonical page",
+      page: pageForLifecycleRecord(132, plan),
+      read: (page) => ({ ...page, chapterId: 99 }),
+      expectedCode: "bookstack_placement_conflict",
+      expectedCategory: "conflict",
+    },
+    {
+      name: "canonical page transport failure",
+      page: pageForLifecycleRecord(133, plan),
+      error: new Error("socket token=transport-secret"),
+      expectedCode: "bookstack_recall_unavailable",
+      expectedCategory: "unavailable",
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const fake = createClient({ pages: [scenario.page] });
+    const readIds = [];
+    const readPage = fake.readPage;
+    fake.readPage = async (id) => {
+      readIds.push(id);
+      if (scenario.error) throw scenario.error;
+      const page = await readPage(id);
+      return scenario.read ? scenario.read(page) : page;
+    };
+
+    const result = await createBookStackLifecycleProvider({ client: fake })
+      .recall(recallInput("implementation"));
+    assert.equal(Array.isArray(result), false, scenario.name);
+    if (Array.isArray(result)) continue;
+    assert.equal(result.status, "blocked", scenario.name);
+    assert.equal(result.code, scenario.expectedCode, scenario.name);
+    assert.equal(result.category, scenario.expectedCategory, scenario.name);
+    assert.equal(result.recovery, null, scenario.name);
+    assert.equal(Object.hasOwn(result, "artifact"), false, scenario.name);
+    assert.doesNotMatch(JSON.stringify(result), /token=|verification-secret|transport-secret/, scenario.name);
+    assert.deepEqual(readIds, [scenario.page.id], scenario.name);
+    assert.equal(fake.hierarchyReads(), 3, scenario.name);
+    assert.equal(fake.lists(), 1, scenario.name);
+    assert.equal(fake.creates(), 0, scenario.name);
+  }
+});
+
 test("ordinary persistence treats target-named noncanonical drafts as conflicts", async () => {
   const record = createLifecycleRecord({ request, placement });
   const title = `${record.phase}-${record.artifactId}`;
