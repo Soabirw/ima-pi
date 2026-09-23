@@ -70,6 +70,18 @@ All notable changes to `ima-pi` are documented here. This history is being backf
 
 - An operator confirmed that the Qdrant-to-BookStack migration completed and was verified twice; this remains acceptance evidence, not fresh API evidence or fresh destination-verification evidence. Qdrant remains a supported lifecycle provider, and `ima-pi` performs no operation on per-machine `ima-rag`.
 
+## [1.20.2] - 2026-09-22
+
+### Security
+
+- Remediated all npm audit advisories with a minimal dependency update: direct `yaml` `2.8.2` → `2.9.1` and transitive `fast-uri` `3.1.5` → `3.1.8` (high), `hono` `4.12.33` → `4.13.8`, and `qs` `6.15.3` → `6.16.0`. `npm audit` now reports zero vulnerabilities with the full test suite passing.
+
+## [1.20.1] - 2026-09-10
+
+### Fixed
+
+- Clarified acceptance-owner control placement so environmental and deployment criteria do not become unrelated per-operation runtime checks, while retaining operation-local security controls.
+
 ## [1.20.0] - 2026-09-09
 
 Notable upgrade to the `cycle` system. It can now be reliably triggered in three ways:
